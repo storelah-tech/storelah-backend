@@ -1,0 +1,277 @@
+// StoreLah — Operator CMS data model.
+// Extracted from the original dashboard prototype (storelah-cms/dashboard.html).
+// UI constraint: the dashboard layout/CSS is frozen — only data bindings may be added.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  OWNER
+  MANAGER
+  VIEWER
+}
+
+enum BranchStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum UnitStatus {
+  OCCUPIED
+  AVAILABLE
+  RESERVED
+  OVERDUE
+  MAINTENANCE
+  INACTIVE
+}
+
+enum TenantStatus {
+  ACTIVE
+  DUE_SOON
+  OVERDUE
+  NOTICE
+  INACTIVE
+}
+
+enum AccountType {
+  PERSONAL
+  BUSINESS
+}
+
+enum BookingStatus {
+  PENDING_PAYMENT
+  CONFIRMED
+  ACTIVE
+  CANCELLED
+}
+
+enum InvoiceStatus {
+  PAID
+  DUE
+  OVERDUE
+}
+
+enum LeadStage {
+  NEW_ENQUIRY
+  CONTACTED
+  VIEWING_BOOKED
+  PROPOSAL_SENT
+  WON
+  LOST
+}
+
+enum LeadSource {
+  WEBSITE
+  WHATSAPP
+  REFERRAL
+  GOOGLE
+}
+
+model AdminUser {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String
+  passwordHash String
+  role         Role     @default(MANAGER)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model Customer {
+  id           String      @id @default(cuid())
+  email        String      @unique
+  name         String
+  mobile       String?
+  passwordHash String
+  type         AccountType @default(PERSONAL)
+  companyName  String?
+  uen          String?
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+}
+
+model Branch {
+  id              String       @id @default(cuid())
+  code            String       @unique // BM / WD / UB
+  name            String
+  address         String
+  description     String?
+  operatingHours  String
+  status          BranchStatus @default(ACTIVE)
+  floors          Floor[]
+  units           Unit[]
+  tenants         Tenant[]
+  leads           Lead[]
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+}
+
+model Floor {
+  id       String @id @default(cuid())
+  branchId String
+  branch   Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  level    Int // 1..4
+  name     String
+
+  units Unit[]
+
+  @@unique([branchId, level])
+}
+
+model UnitSize {
+  id        String @id @default(cuid())
+  code      String @unique // LOCKER / SMALL / MEDIUM / LARGE / XL
+  name      String // Locker / Small / Medium / Large / XL Biz
+  sqftFrom  Int
+  sqftTo    Int
+  sortOrder Int
+
+  units      Unit[]
+  promotions Promotion[]
+
+  @@map("UnitSize")
+}
+
+model Unit {
+  id             String     @id @default(cuid())
+  branchId       String
+  branch         Branch     @relation(fields: [branchId], references: [id])
+  floorId        String
+  floor          Floor      @relation(fields: [floorId], references: [id])
+  sizeId         String
+  size           UnitSize   @relation(fields: [sizeId], references: [id])
+  unitCode       String     @unique // e.g. BM-01-01
+  sqft           Int
+  monthlyRate    Decimal    @default(0) @db.Decimal(10, 2)
+  status         UnitStatus @default(AVAILABLE)
+  climateControl String? // e.g. "Ambient climate"
+
+  tenant         Tenant?       @relation("CurrentTenant")
+  rateHistory    RateChange[]
+  bookings       Booking[]
+  invoices       Invoice[]
+
+  @@unique([branchId, unitCode])
+  @@index([branchId, floorId])
+  @@index([status])
+}
+
+model Tenant {
+  id             String      @id @default(cuid())
+  name           String
+  type           AccountType @default(PERSONAL)
+  segment        String? // E-commerce / Renovation / Downsizing / ...
+  email          String?
+  mobile         String?
+  unitId         String?     @unique
+  unit           Unit?       @relation("CurrentTenant", fields: [unitId], references: [id])
+  moveInDate     DateTime?
+  monthlyRate    Decimal     @db.Decimal(10, 2)
+  psf            Decimal     @db.Decimal(10, 2)
+  nextPayment    DateTime?
+  status         TenantStatus
+  lastAccessAt   DateTime?
+  accessMethod   String?
+  autoDebit      Boolean     @default(false)
+  missedPayments Int         @default(0)
+  paymentCount   Int         @default(0)
+  lifetimeValue  Decimal     @default(0) @db.Decimal(12, 2)
+  branchId       String?
+  branch         Branch?     @relation(fields: [branchId], references: [id])
+
+  bookings  Booking[]
+  invoices  Invoice[]
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+}
+
+model Booking {
+  id             String        @id @default(cuid())
+  bookingRef     String        @unique // e.g. SL-2026-0912
+  tenantId       String
+  tenant         Tenant        @relation(fields: [tenantId], references: [id])
+  unitId         String
+  unit           Unit          @relation(fields: [unitId], references: [id])
+  moveInDate     DateTime
+  duration       String // "Monthly" | "3 months" | ...
+  amount         Decimal       @db.Decimal(10, 2)
+  status         BookingStatus @default(PENDING_PAYMENT)
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+}
+
+model Invoice {
+  id         String        @id @default(cuid())
+  invoiceNo  String        @unique // e.g. INV-2026-0847
+  tenantId   String
+  tenant     Tenant        @relation(fields: [tenantId], references: [id])
+  unitId     String
+  unit       Unit          @relation(fields: [unitId], references: [id])
+  amount     Decimal       @db.Decimal(10, 2)
+  dueDate    DateTime
+  status     InvoiceStatus @default(DUE)
+  method     String? // Auto-debit / Card / Manual
+  billedMonth DateTime @default(now())
+
+  @@index([status])
+}
+
+model Lead {
+  id            String     @id @default(cuid())
+  name          String
+  type          AccountType @default(PERSONAL)
+  segment       String? // Reno / Home / SME / Expat
+  stage         LeadStage  @default(NEW_ENQUIRY)
+  source        LeadSource @default(WEBSITE)
+  preferredSize String?
+  preferredBranchId String?
+  branch        Branch?    @relation(fields: [preferredBranchId], references: [id])
+  monthlyRate   Decimal?   @db.Decimal(10, 2)
+  note          String?
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+}
+
+model RateChange {
+  id         String   @id @default(cuid())
+  unitId     String
+  unit       Unit     @relation(fields: [unitId], references: [id])
+  date       DateTime
+  previous   Decimal  @db.Decimal(10, 2)
+  current    Decimal  @db.Decimal(10, 2)
+  changePct  Decimal  @db.Decimal(6, 2)
+  reason     String
+  appliedBy  String // name or "System"
+
+  @@index([unitId])
+}
+
+enum PromotionDiscountType {
+  PERCENTAGE
+  FLAT
+}
+
+model Promotion {
+  id             String                 @id @default(cuid())
+  code           String                 @unique // e.g. STORELAH10
+  name           String
+  description    String?
+  discountType   PromotionDiscountType  @default(PERCENTAGE)
+  discountValue  Decimal                @db.Decimal(10, 2)
+  minMonths      Int?
+  applicableSizeId String?
+  applicableSize UnitSize?              @relation(fields: [applicableSizeId], references: [id])
+  startDate      DateTime?
+  endDate        DateTime?
+  active         Boolean                @default(true)
+  createdAt      DateTime               @default(now())
+  updatedAt      DateTime               @updatedAt
+
+  @@index([active])
+}

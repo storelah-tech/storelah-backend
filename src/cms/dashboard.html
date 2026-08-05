@@ -1,0 +1,772 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>StoreLah — Operator Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800;900&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --cream: #FAF7F2; --cream2: #F3EEE6; --sand: #E9E1D0;
+  --terra: #B86A4A; --terra-light: #F5EDE8; --terra-mid: #C97A5A;
+  --olive: #5A7A60; --olive-light: #EAF4EF;
+  --teal: #0B4F5E; --teal-mid: #1A6B7C; --teal-light: #E8F4F7;
+  --charcoal: #1F1F1F; --mid: #6B6560; --light: #9C948D;
+  --border: #E5DDD5; --border2: #EDE8E2; --white: #FFFFFF;
+  --red: #C0392B; --red-light: #FDECEA;
+  --amber: #D4860A; --amber-light: #FEF3E2;
+  --sidebar-w: 232px;
+}
+body { font-family: 'Manrope', sans-serif; background: var(--cream); color: var(--charcoal); display: flex; min-height: 100vh; font-size: 13px; line-height: 1.5; }
+
+/* SIDEBAR */
+.sidebar { width: var(--sidebar-w); background: var(--teal); min-height: 100vh; display: flex; flex-direction: column; position: fixed; top: 0; left: 0; z-index: 100; overflow-y: auto; }
+.sb-logo { padding: 18px 16px 14px; border-bottom: 1px solid rgba(255,255,255,0.1); display: flex; align-items: center; gap: 10px; }
+.sb-logo-mark { width: 32px; height: 32px; background: var(--terra); border-radius: 8px; display: flex; align-items: center; justify-content: center; font-family: 'Plus Jakarta Sans', sans-serif; font-weight: 900; font-size: 13px; color: white; flex-shrink: 0; }
+.sb-logo-text { font-family: 'Plus Jakarta Sans', sans-serif; font-weight: 800; font-size: 15px; color: white; }
+.sb-logo-text span { color: var(--terra-mid); }
+.sb-branch { margin: 10px 10px 0; background: rgba(255,255,255,0.07); border-radius: 8px; padding: 8px 10px; display: flex; align-items: center; justify-content: space-between; cursor: pointer; border: 1px solid rgba(255,255,255,0.1); }
+.sb-branch-name { font-size: 11px; font-weight: 700; color: rgba(255,255,255,0.9); text-transform: uppercase; letter-spacing: 0.5px; }
+.sb-branch-sub { font-size: 10px; color: rgba(255,255,255,0.45); margin-top: 1px; }
+.sb-section { padding: 14px 10px 3px; }
+.sb-section-lbl { font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; color: rgba(255,255,255,0.3); padding: 0 8px; margin-bottom: 3px; }
+.nav-item { display: flex; align-items: center; gap: 9px; padding: 8px 10px; border-radius: 7px; cursor: pointer; color: rgba(255,255,255,0.6); font-size: 12.5px; font-weight: 500; transition: all 0.15s; margin-bottom: 1px; }
+.nav-item:hover { background: rgba(255,255,255,0.08); color: white; }
+.nav-item.active { background: var(--terra); color: white; font-weight: 700; }
+.nav-icon { width: 16px; text-align: center; font-size: 13px; flex-shrink: 0; }
+.nav-badge { margin-left: auto; background: rgba(255,255,255,0.18); color: white; font-size: 9px; font-weight: 700; padding: 1px 6px; border-radius: 10px; }
+.nav-item.active .nav-badge { background: rgba(255,255,255,0.25); }
+.nav-badge.red { background: var(--red); }
+.sb-footer { margin-top: auto; padding: 10px; border-top: 1px solid rgba(255,255,255,0.1); }
+.sb-user { display: flex; align-items: center; gap: 9px; padding: 8px 10px; border-radius: 7px; cursor: pointer; }
+.sb-user:hover { background: rgba(255,255,255,0.07); }
+.sb-avatar { width: 28px; height: 28px; background: var(--terra); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 800; color: white; flex-shrink: 0; }
+.sb-user-name { font-size: 12px; font-weight: 700; color: white; }
+.sb-user-role { font-size: 10px; color: rgba(255,255,255,0.4); }
+
+/* MAIN */
+.main { margin-left: var(--sidebar-w); flex: 1; display: flex; flex-direction: column; min-height: 100vh; }
+.topbar { background: var(--white); border-bottom: 1px solid var(--border); padding: 0 24px; height: 54px; display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 50; }
+.topbar-title { font-family: 'Plus Jakarta Sans', sans-serif; font-size: 15px; font-weight: 800; color: var(--charcoal); }
+.topbar-sub { font-size: 11px; color: var(--light); margin-left: 6px; }
+.topbar-right { display: flex; align-items: center; gap: 8px; }
+.tb-btn { display: flex; align-items: center; gap: 5px; padding: 6px 12px; border-radius: 7px; font-size: 11px; font-weight: 700; cursor: pointer; border: none; font-family: 'Manrope', sans-serif; transition: all 0.15s; }
+.tb-btn.primary { background: var(--terra); color: white; }
+.tb-btn.primary:hover { background: var(--terra-mid); }
+.tb-btn.ghost { background: var(--cream); color: var(--charcoal); border: 1px solid var(--border); }
+.tb-btn.ghost:hover { background: var(--cream2); }
+.tb-notif { width: 32px; height: 32px; border-radius: 7px; background: var(--cream); border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; cursor: pointer; position: relative; font-size: 14px; }
+.notif-dot { position: absolute; top: 5px; right: 5px; width: 6px; height: 6px; background: var(--terra); border-radius: 50%; border: 1.5px solid white; }
+
+/* CONTENT */
+.content { padding: 22px 24px; flex: 1; }
+
+/* SECTION HEADER */
+.sec-hdr { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+.sec-title { font-family: 'Plus Jakarta Sans', sans-serif; font-size: 14px; font-weight: 800; color: var(--charcoal); }
+.sec-sub { font-size: 11px; color: var(--light); margin-top: 2px; }
+
+/* KPI STRIP */
+.kpi-strip { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin-bottom: 18px; }
+.kpi { background: var(--white); border: 1px solid var(--border); border-radius: 11px; padding: 14px 16px; position: relative; overflow: hidden; }
+.kpi::after { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px; background: var(--terra); border-radius: 11px 11px 0 0; }
+.kpi.olive::after { background: var(--olive); }
+.kpi.teal::after { background: var(--teal); }
+.kpi.red::after { background: var(--red); }
+.kpi.amber::after { background: var(--amber); }
+.kpi-lbl { font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.6px; color: var(--light); margin-bottom: 7px; }
+.kpi-val { font-family: 'Plus Jakarta Sans', sans-serif; font-size: 24px; font-weight: 900; color: var(--charcoal); line-height: 1; margin-bottom: 5px; }
+.kpi-val .unit { font-size: 12px; font-weight: 600; color: var(--mid); }
+.kpi-delta { display: inline-flex; align-items: center; gap: 3px; font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 20px; }
+.kpi-delta.up { background: var(--olive-light); color: var(--olive); }
+.kpi-delta.down { background: var(--red-light); color: var(--red); }
+.kpi-delta.flat { background: var(--cream2); color: var(--mid); }
+
+/* CHARTS ROW */
+.charts-row { display: grid; grid-template-columns: 1.5fr 1fr; gap: 14px; margin-bottom: 18px; }
+.chart-card { background: var(--white); border: 1px solid var(--border); border-radius: 11px; padding: 18px; }
+.chart-hdr { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 14px; }
+.chart-title { font-family: 'Plus Jakarta Sans', sans-serif; font-size: 13px; font-weight: 800; color: var(--charcoal); }
+.chart-sub { font-size: 10px; color: var(--light); margin-top: 2px; }
+.chart-tabs { display: flex; gap: 3px; }
+.c-tab { padding: 4px 9px; border-radius: 6px; font-size: 10px; font-weight: 700; cursor: pointer; border: 1px solid var(--border); background: transparent; color: var(--mid); transition: all 0.15s; }
+.c-tab.active { background: var(--terra); color: white; border-color: var(--terra); }
+
+/* UNIT MAP */
+.unit-map-card { background: var(--white); border: 1px solid var(--border); border-radius: 11px; padding: 18px; margin-bottom: 18px; }
+.floor-tabs { display: flex; gap: 4px; margin-bottom: 12px; border-bottom: 1px solid var(--border2); padding-bottom: 10px; }
+.floor-tab { padding: 5px 13px; border-radius: 6px; font-size: 11px; font-weight: 700; cursor: pointer; color: var(--mid); background: transparent; border: none; transition: all 0.15s; }
+.floor-tab.active { background: var(--teal); color: white; }
+.unit-filter-row { display: flex; align-items: center; gap: 7px; margin-bottom: 12px; flex-wrap: wrap; }
+.f-pill { padding: 4px 11px; border-radius: 20px; font-size: 10px; font-weight: 700; cursor: pointer; border: 1.5px solid var(--border); background: transparent; color: var(--mid); transition: all 0.15s; }
+.f-pill.active { background: var(--charcoal); color: white; border-color: var(--charcoal); }
+.f-pill.avail.active { background: var(--olive); border-color: var(--olive); color: white; }
+.f-pill.res.active { background: var(--amber); border-color: var(--amber); color: white; }
+.f-pill.over.active { background: var(--red); border-color: var(--red); color: white; }
+.f-search { margin-left: auto; display: flex; align-items: center; gap: 6px; background: var(--cream); border: 1px solid var(--border); border-radius: 7px; padding: 5px 10px; font-size: 11px; color: var(--mid); }
+.f-search input { border: none; background: transparent; font-family: 'Manrope', sans-serif; font-size: 11px; color: var(--charcoal); outline: none; width: 130px; }
+.unit-legend { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 12px; }
+.u-leg { display: flex; align-items: center; gap: 5px; font-size: 10px; font-weight: 700; color: var(--mid); }
+.u-leg-dot { width: 8px; height: 8px; border-radius: 50%; }
+.unit-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(68px, 1fr)); gap: 5px; }
+.u-cell { aspect-ratio: 1.15; border-radius: 7px; display: flex; flex-direction: column; align-items: center; justify-content: center; cursor: pointer; border: 1.5px solid transparent; transition: all 0.15s; position: relative; padding: 3px; }
+.u-cell:hover { transform: scale(1.05); box-shadow: 0 3px 10px rgba(0,0,0,0.1); z-index: 5; }
+.u-cell.occupied { background: var(--teal-light); border-color: var(--teal); }
+.u-cell.available { background: var(--olive-light); border-color: var(--olive); }
+.u-cell.reserved { background: var(--amber-light); border-color: var(--amber); }
+.u-cell.overdue { background: var(--red-light); border-color: var(--red); }
+.u-cell.maintenance { background: var(--cream2); border-color: var(--sand); }
+.u-cell.selected { border-color: var(--terra) !important; box-shadow: 0 0 0 2px var(--terra-light); }
+.u-dot { position: absolute; top: 4px; right: 4px; width: 5px; height: 5px; border-radius: 50%; }
+.u-cell.occupied .u-dot { background: var(--teal); }
+.u-cell.available .u-dot { background: var(--olive); }
+.u-cell.reserved .u-dot { background: var(--amber); }
+.u-cell.overdue .u-dot { background: var(--red); }
+.u-id { font-family: 'Plus Jakarta Sans', sans-serif; font-size: 10px; font-weight: 800; color: var(--charcoal); }
+.u-size { font-size: 8.5px; font-weight: 600; color: var(--mid); margin-top: 1px; }
+.u-psf { font-size: 8.5px; font-weight: 700; color: var(--terra); margin-top: 1px; }
+
+/* UNIT DETAIL PANEL */
+.unit-detail { background: var(--white); border: 1px solid var(--border); border-radius: 11px; padding: 18px; margin-bottom: 18px; }
+.ud-hdr { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 14px; padding-bottom: 14px; border-bottom: 1px solid var(--border2); }
+.ud-id { font-family: 'Plus Jakarta Sans', sans-serif; font-size: 20px; font-weight: 900; color: var(--charcoal); }
+.ud-badges { display: flex; gap: 5px; margin-top: 5px; flex-wrap: wrap; }
+.badge { display: inline-flex; align-items: center; gap: 3px; padding: 2px 8px; border-radius: 20px; font-size: 9.5px; font-weight: 700; }
+.badge.occ { background: var(--teal-light); color: var(--teal); }
+.badge.avail { background: var(--olive-light); color: var(--olive); }
+.badge.over { background: var(--red-light); color: var(--red); }
+.badge.res { background: var(--amber-light); color: var(--amber); }
+.badge.terra { background: var(--terra-light); color: var(--terra); }
+.badge.neutral { background: var(--cream2); color: var(--mid); }
+.ud-actions { display: flex; gap: 7px; }
+.act-btn { padding: 6px 12px; border-radius: 7px; font-size: 11px; font-weight: 700; cursor: pointer; border: 1px solid var(--border); background: var(--cream); color: var(--charcoal); transition: all 0.15s; font-family: 'Manrope', sans-serif; }
+.act-btn:hover { background: var(--cream2); }
+.act-btn.primary { background: var(--terra); color: white; border-color: var(--terra); }
+.act-btn.primary:hover { background: var(--terra-mid); }
+.ud-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 14px; }
+.ud-stat { background: var(--cream); border-radius: 8px; padding: 11px 12px; }
+.ud-stat-lbl { font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--light); margin-bottom: 4px; }
+.ud-stat-val { font-family: 'Plus Jakarta Sans', sans-serif; font-size: 17px; font-weight: 900; color: var(--charcoal); }
+.ud-stat-sub { font-size: 10px; color: var(--mid); margin-top: 2px; }
+
+/* RATE ADJUSTMENT */
+.rate-box { background: var(--cream); border-radius: 9px; padding: 14px 16px; }
+.rate-box-title { font-family: 'Plus Jakarta Sans', sans-serif; font-size: 12px; font-weight: 800; color: var(--charcoal); margin-bottom: 12px; }
+.rate-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; }
+.rate-lbl { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--mid); margin-bottom: 5px; }
+.rate-input-wrap { display: flex; align-items: center; background: var(--white); border: 1.5px solid var(--border); border-radius: 7px; padding: 7px 10px; gap: 5px; }
+.rate-input-wrap.active { border-color: var(--terra); background: var(--terra-light); }
+.rate-input-wrap .curr { font-size: 11px; color: var(--light); }
+.rate-input-wrap input { border: none; background: transparent; font-family: 'Manrope', sans-serif; font-size: 14px; font-weight: 800; color: var(--charcoal); outline: none; width: 70px; }
+.rate-input-wrap.active input { color: var(--terra); }
+.rate-change { font-size: 10px; font-weight: 700; margin-top: 4px; }
+.rate-change.up { color: var(--olive); }
+.rate-change.down { color: var(--red); }
+.rate-actions { display: flex; gap: 8px; margin-top: 12px; align-items: center; }
+.rate-note { font-size: 10px; color: var(--mid); }
+
+/* RATE HISTORY TABLE */
+.rate-hist { margin-top: 14px; }
+.rate-hist-title { font-size: 11px; font-weight: 700; color: var(--mid); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
+
+/* DATA TABLE */
+.tbl-card { background: var(--white); border: 1px solid var(--border); border-radius: 11px; padding: 18px; margin-bottom: 18px; }
+.data-tbl { width: 100%; border-collapse: collapse; }
+.data-tbl th { text-align: left; font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--light); padding: 7px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+.data-tbl td { padding: 10px 10px; font-size: 12px; color: var(--charcoal); border-bottom: 1px solid var(--border2); vertical-align: middle; }
+.data-tbl tr:last-child td { border-bottom: none; }
+.data-tbl tr:hover td { background: var(--cream); }
+.t-name { font-weight: 700; }
+.t-type { font-size: 10px; color: var(--mid); margin-top: 1px; }
+.psf-val { font-family: 'Plus Jakarta Sans', sans-serif; font-weight: 800; color: var(--terra); }
+.days-left { font-size: 10px; font-weight: 700; }
+.days-left.urgent { color: var(--red); }
+.days-left.soon { color: var(--amber); }
+.days-left.ok { color: var(--mid); }
+
+/* TWO/THREE COL */
+.two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 18px; }
+.three-col { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; margin-bottom: 18px; }
+
+/* REVENUE BARS */
+.rev-row { display: flex; align-items: center; padding: 9px 0; border-bottom: 1px solid var(--border2); }
+.rev-row:last-child { border-bottom: none; }
+.rev-lbl { font-size: 11px; font-weight: 600; color: var(--charcoal); width: 70px; flex-shrink: 0; }
+.rev-bar-wrap { flex: 1; margin: 0 12px; height: 6px; background: var(--cream2); border-radius: 3px; overflow: hidden; }
+.rev-bar { height: 100%; border-radius: 3px; }
+.rev-val { font-family: 'Plus Jakarta Sans', sans-serif; font-size: 12px; font-weight: 800; color: var(--charcoal); min-width: 60px; text-align: right; }
+
+/* KANBAN */
+.kanban-board { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin-top: 14px; }
+.k-col { background: var(--cream); border-radius: 9px; padding: 10px; }
+.k-col-hdr { display: flex; align-items: center; justify-content: space-between; margin-bottom: 9px; }
+.k-col-title { font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.5px; color: var(--mid); }
+.k-count { background: var(--white); border: 1px solid var(--border); border-radius: 10px; padding: 1px 6px; font-size: 9px; font-weight: 700; color: var(--charcoal); }
+.k-card { background: var(--white); border: 1px solid var(--border); border-radius: 7px; padding: 9px; margin-bottom: 7px; cursor: pointer; transition: all 0.15s; }
+.k-card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.07); transform: translateY(-1px); }
+.k-name { font-size: 11px; font-weight: 700; color: var(--charcoal); margin-bottom: 4px; }
+.k-meta { font-size: 10px; color: var(--mid); display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+.k-tag { padding: 2px 5px; border-radius: 4px; font-size: 9px; font-weight: 700; }
+.k-tag.biz { background: var(--teal-light); color: var(--teal); }
+.k-tag.per { background: var(--terra-light); color: var(--terra); }
+.k-tag.exp { background: var(--olive-light); color: var(--olive); }
+.k-tag.ren { background: var(--amber-light); color: var(--amber); }
+
+/* ALERTS */
+.alert-list { }
+.alert-item { display: flex; align-items: flex-start; gap: 10px; padding: 11px 0; border-bottom: 1px solid var(--border2); }
+.alert-item:last-child { border-bottom: none; }
+.alert-icon { width: 30px; height: 30px; border-radius: 7px; display: flex; align-items: center; justify-content: center; font-size: 13px; flex-shrink: 0; }
+.alert-icon.red { background: var(--red-light); }
+.alert-icon.amber { background: var(--amber-light); }
+.alert-icon.olive { background: var(--olive-light); }
+.alert-icon.terra { background: var(--terra-light); }
+.alert-body { flex: 1; }
+.alert-title { font-size: 12px; font-weight: 700; color: var(--charcoal); margin-bottom: 2px; }
+.alert-desc { font-size: 10px; color: var(--mid); }
+.alert-time { font-size: 10px; color: var(--light); white-space: nowrap; }
+.alert-act { padding: 4px 9px; border-radius: 6px; font-size: 10px; font-weight: 700; cursor: pointer; border: 1px solid var(--border); background: var(--cream); color: var(--charcoal); white-space: nowrap; align-self: center; transition: all 0.15s; font-family: 'Manrope', sans-serif; }
+.alert-act:hover { background: var(--terra); color: white; border-color: var(--terra); }
+
+/* PSF LEGEND */
+.psf-legend { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 10px; }
+.psf-leg { display: flex; align-items: center; gap: 5px; font-size: 10px; color: var(--mid); font-weight: 600; }
+.psf-dot { width: 9px; height: 9px; border-radius: 50%; }
+
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--sand); border-radius: 2px; }
+</style>
+</head>
+<body>
+
+<!-- SIDEBAR -->
+<nav class="sidebar">
+  <div class="sb-logo">
+    <div class="sb-logo-mark">SL</div>
+    <div class="sb-logo-text">Store<span>Lah</span></div>
+  </div>
+  <div class="sb-branch">
+    <div>
+      <div class="sb-branch-name">Bukit Merah</div>
+      <div class="sb-branch-sub">3 branches · All active</div>
+    </div>
+    <span style="color:rgba(255,255,255,0.4);font-size:10px;">▾</span>
+  </div>
+  <div class="sb-section">
+    <div class="sb-section-lbl">Overview</div>
+    <div class="nav-item active"><span class="nav-icon">▦</span> Dashboard</div>
+    <div class="nav-item"><span class="nav-icon">⚡</span> Action Centre <span class="nav-badge red">5</span></div>
+  </div>
+  <div class="sb-section">
+    <div class="sb-section-lbl">Operations</div>
+    <div class="nav-item"><span class="nav-icon">⬛</span> Unit Map</div>
+    <div class="nav-item"><span class="nav-icon">👥</span> Tenants <span class="nav-badge">2</span></div>
+    <div class="nav-item"><span class="nav-icon">📋</span> Bookings</div>
+    <div class="nav-item"><span class="nav-icon">🔑</span> Move-ins Today <span class="nav-badge">3</span></div>
+  </div>
+  <div class="sb-section">
+    <div class="sb-section-lbl">Revenue</div>
+    <div class="nav-item"><span class="nav-icon">💰</span> Payments</div>
+    <div class="nav-item"><span class="nav-icon">📈</span> Rate Management</div>
+    <div class="nav-item"><span class="nav-icon">🏷️</span> Promos & Offers</div>
+  </div>
+  <div class="sb-section">
+    <div class="sb-section-lbl">Growth</div>
+    <div class="nav-item"><span class="nav-icon">🎯</span> Leads CRM <span class="nav-badge">8</span></div>
+    <div class="nav-item"><span class="nav-icon">📊</span> Reports</div>
+  </div>
+  <div class="sb-section">
+    <div class="sb-section-lbl">System</div>
+    <div class="nav-item"><span class="nav-icon">⚙️</span> Settings</div>
+  </div>
+  <div class="sb-footer">
+    <div class="sb-user">
+      <div class="sb-avatar">FZ</div>
+      <div>
+        <div class="sb-user-name">Faisal Z.</div>
+        <div class="sb-user-role">Owner · Admin</div>
+      </div>
+    </div>
+  </div>
+</nav>
+
+<!-- MAIN -->
+<main class="main">
+  <div class="topbar">
+    <div style="display:flex;align-items:center;">
+      <div class="topbar-title">Good morning, Faisal 👋</div>
+      <div class="topbar-sub">Thu 31 Jul 2026 · Bukit Merah</div>
+    </div>
+    <div class="topbar-right">
+      <button class="tb-btn ghost">⬇ Export</button>
+      <button class="tb-btn ghost">📅 Jul 2026 ▾</button>
+      <button class="tb-btn primary">+ New Booking</button>
+      <div class="tb-notif">🔔<div class="notif-dot"></div></div>
+    </div>
+  </div>
+
+  <div class="content">
+
+    <!-- KPI STRIP -->
+    <div class="kpi-strip">
+      <div class="kpi">
+        <div class="kpi-lbl">Occupancy</div>
+        <div class="kpi-val">87.5<span class="unit">%</span></div>
+        <span class="kpi-delta up">↑ +2.3% MoM</span>
+      </div>
+      <div class="kpi teal">
+        <div class="kpi-lbl">Total Units</div>
+        <div class="kpi-val">80</div>
+        <span class="kpi-delta flat">70 occ · 10 avail</span>
+      </div>
+      <div class="kpi red">
+        <div class="kpi-lbl">Overdue</div>
+        <div class="kpi-val">4<span class="unit"> units</span></div>
+        <span class="kpi-delta down">↑ +1 from last month</span>
+      </div>
+      <div class="kpi olive">
+        <div class="kpi-lbl">MRR</div>
+        <div class="kpi-val"><span class="unit">$</span>42,860</div>
+        <span class="kpi-delta up">↑ +$1,240 MoM</span>
+      </div>
+      <div class="kpi amber">
+        <div class="kpi-lbl">Avg PSF</div>
+        <div class="kpi-val"><span class="unit">$</span>4.82</div>
+        <span class="kpi-delta up">↑ +$0.18 MoM</span>
+      </div>
+    </div>
+
+    <!-- CHARTS -->
+    <div class="charts-row">
+      <div class="chart-card">
+        <div class="chart-hdr">
+          <div>
+            <div class="chart-title">Monthly Revenue</div>
+            <div class="chart-sub">Actual vs target · Jan–Jul 2026</div>
+          </div>
+          <div class="chart-tabs">
+            <button class="c-tab active">Revenue</button>
+            <button class="c-tab">Occupancy</button>
+            <button class="c-tab">PSF</button>
+          </div>
+        </div>
+        <canvas id="revenueChart" height="110"></canvas>
+      </div>
+      <div class="chart-card">
+        <div class="chart-hdr">
+          <div>
+            <div class="chart-title">Occupancy by Branch</div>
+            <div class="chart-sub">Current period</div>
+          </div>
+        </div>
+        <canvas id="branchChart" height="110"></canvas>
+      </div>
+    </div>
+
+    <!-- UNIT MAP -->
+    <div class="unit-map-card">
+      <div class="sec-hdr">
+        <div>
+          <div class="sec-title">Unit Map — Bukit Merah · Level 1</div>
+          <div class="sec-sub">Click any unit to view details, adjust rate, or manage tenancy</div>
+        </div>
+        <div style="display:flex;gap:8px;">
+          <button class="tb-btn ghost" style="font-size:10px;">⬇ Export Floor Plan</button>
+        </div>
+      </div>
+
+      <div class="unit-legend">
+        <div class="u-leg"><div class="u-leg-dot" style="background:var(--teal);"></div>Occupied (56)</div>
+        <div class="u-leg"><div class="u-leg-dot" style="background:var(--olive);"></div>Available (10)</div>
+        <div class="u-leg"><div class="u-leg-dot" style="background:var(--amber);"></div>Reserved (3)</div>
+        <div class="u-leg"><div class="u-leg-dot" style="background:var(--red);"></div>Overdue (4)</div>
+        <div class="u-leg"><div class="u-leg-dot" style="background:var(--light);"></div>Maintenance (7)</div>
+      </div>
+
+      <div class="floor-tabs">
+        <button class="floor-tab active">Level 1</button>
+        <button class="floor-tab">Level 2</button>
+        <button class="floor-tab">Level 3</button>
+        <button class="floor-tab">Level 4</button>
+      </div>
+
+      <div class="unit-filter-row">
+        <button class="f-pill active">All (80)</button>
+        <button class="f-pill avail">Available (10)</button>
+        <button class="f-pill res">Reserved (3)</button>
+        <button class="f-pill over">Overdue (4)</button>
+        <button class="f-pill">Locker</button>
+        <button class="f-pill">Small</button>
+        <button class="f-pill">Medium</button>
+        <button class="f-pill">Large</button>
+        <button class="f-pill">XL Biz</button>
+        <div class="f-search">🔍 <input type="text" placeholder="Search unit or tenant…"></div>
+      </div>
+
+      <div class="unit-grid">
+        <div class="u-cell occupied selected" onclick="selectUnit(this,'BM-01-01')"><div class="u-dot"></div><div class="u-id">01-01</div><div class="u-size">Small</div><div class="u-psf">$4.80</div></div>
+        <div class="u-cell occupied" onclick="selectUnit(this,'BM-01-02')"><div class="u-dot"></div><div class="u-id">01-02</div><div class="u-size">Small</div><div class="u-psf">$4.80</div></div>
+        <div class="u-cell occupied" onclick="selectUnit(this,'BM-01-03')"><div class="u-dot"></div><div class="u-id">01-03</div><div class="u-size">Locker</div><div class="u-psf">$5.20</div></div>
+        <div class="u-cell available" onclick="selectUnit(this,'BM-01-04')"><div class="u-dot"></div><div class="u-id">01-04</div><div class="u-size">Locker</div><div class="u-psf">$5.20</div></div>
+        <div class="u-cell occupied" onclick="selectUnit(this,'BM-01-05')"><div class="u-dot"></div><div class="u-id">01-05</div><div class="u-size">Medium</div><div class="u-psf">$4.40</div></div>
+        <div class="u-cell overdue" onclick="selectUnit(this,'BM-01-06')"><div class="u-dot"></div><div class="u-id">01-06</div><div class="u-size">Small</div><div class="u-psf">$4.60</div></div>
+        <div class="u-cell occupied" onclick="selectUnit(this,'BM-01-07')"><div class="u-dot"></div><div class="u-id">01-07</div><div class="u-size">Large</div><div class="u-psf">$3.80</div></div>
+        <div class="u-cell available" onclick="selectUnit(this,'BM-01-08')"><div class="u-dot"></div><div class="u-id">01-08</div><div class="u-size">Large</div><div class="u-psf">$3.80</div></div>
+        <div class="u-cell reserved" onclick="selectUnit(this,'BM-01-09')"><div class="u-dot"></div><div class="u-id">01-09</div><div class="u-size">Small</div><div class="u-psf">$4.80</div></div>
+        <div class="u-cell occupied" onclick="selectUnit(this,'BM-01-10')"><div class="u-dot"></div><div class="u-id">01-10</div><div class="u-size">Medium</div><div class="u-psf">$4.50</div></div>
+        <div class="u-cell occupied" onclick="selectUnit(this,'BM-01-11')"><div class="u-dot"></div><div class="u-id">01-11</div><div class="u-size">XL Biz</div><div class="u-psf">$3.20</div></div>
+        <div class="u-cell overdue" onclick="selectUnit(this,'BM-01-12')"><div class="u-dot"></div><div class="u-id">01-12</div><div class="u-size">Small</div><div class="u-psf">$4.80</div></div>
+        <div class="u-cell available" onclick="selectUnit(this,'BM-01-13')"><div class="u-dot"></div><div class="u-id">01-13</div><div class="u-size">Locker</div><div class="u-psf">$5.20</div></div>
+        <div class="u-cell occupied" onclick="selectUnit(this,'BM-01-14')"><div class="u-dot"></div><div class="u-id">01-14</div><div class="u-size">Medium</div><div class="u-psf">$4.40</div></div>
+        <div class="u-cell occupied" onclick="selectUnit(this,'BM-01-15')"><div class="u-dot"></div><div class="u-id">01-15</div><div class="u-size">Small</div><div class="u-psf">$4.80</div></div>
+        <div class="u-cell reserved" onclick="selectUnit(this,'BM-01-16')"><div class="u-dot"></div><div class="u-id">01-16</div><div class="u-size">Large</div><div class="u-psf">$3.90</div></div>
+        <div class="u-cell occupied" onclick="selectUnit(this,'BM-01-17')"><div class="u-dot"></div><div class="u-id">01-17</div><div class="u-size">XL Biz</div><div class="u-psf">$3.20</div></div>
+        <div class="u-cell available" onclick="selectUnit(this,'BM-01-18')"><div class="u-dot"></div><div class="u-id">01-18</div><div class="u-size">Small</div><div class="u-psf">$4.80</div></div>
+        <div class="u-cell overdue" onclick="selectUnit(this,'BM-01-19')"><div class="u-dot"></div><div class="u-id">01-19</div><div class="u-size">Medium</div><div class="u-psf">$4.40</div></div>
+        <div class="u-cell occupied" onclick="selectUnit(this,'BM-01-20')"><div class="u-dot"></div><div class="u-id">01-20</div><div class="u-size">Locker</div><div class="u-psf">$5.20</div></div>
+        <div class="u-cell maintenance" onclick="selectUnit(this,'BM-01-21')"><div class="u-dot" style="background:var(--light);"></div><div class="u-id">01-21</div><div class="u-size">Small</div><div class="u-psf" style="color:var(--light);">Maint.</div></div>
+        <div class="u-cell occupied" onclick="selectUnit(this,'BM-01-22')"><div class="u-dot"></div><div class="u-id">01-22</div><div class="u-size">Small</div><div class="u-psf">$4.80</div></div>
+        <div class="u-cell available" onclick="selectUnit(this,'BM-01-23')"><div class="u-dot"></div><div class="u-id">01-23</div><div class="u-size">Medium</div><div class="u-psf">$4.40</div></div>
+        <div class="u-cell occupied" onclick="selectUnit(this,'BM-01-24')"><div class="u-dot"></div><div class="u-id">01-24</div><div class="u-size">Large</div><div class="u-psf">$3.80</div></div>
+        <div class="u-cell reserved" onclick="selectUnit(this,'BM-01-25')"><div class="u-dot"></div><div class="u-id">01-25</div><div class="u-size">Locker</div><div class="u-psf">$5.10</div></div>
+      </div>
+    </div>
+
+    <!-- UNIT DETAIL PANEL -->
+    <div class="unit-detail" id="unitDetail">
+      <div class="ud-hdr">
+        <div>
+          <div class="ud-id">BM-01-01 · Small Unit</div>
+          <div class="ud-badges">
+            <span class="badge occ">● Occupied</span>
+            <span class="badge terra">30 sq ft</span>
+            <span class="badge neutral">Level 1 · Bukit Merah</span>
+            <span class="badge neutral">Ambient climate</span>
+          </div>
+        </div>
+        <div class="ud-actions">
+          <button class="act-btn">📋 History</button>
+          <button class="act-btn">📧 Message</button>
+          <button class="act-btn">🔑 Override PIN</button>
+          <button class="act-btn primary">⚡ Adjust Rate</button>
+        </div>
+      </div>
+
+      <div class="ud-stats">
+        <div class="ud-stat">
+          <div class="ud-stat-lbl">Current Tenant</div>
+          <div class="ud-stat-val" style="font-size:14px;">Priya Nair</div>
+          <div class="ud-stat-sub">Business · E-commerce</div>
+        </div>
+        <div class="ud-stat">
+          <div class="ud-stat-lbl">Monthly Rate</div>
+          <div class="ud-stat-val">$144</div>
+          <div class="ud-stat-sub">$4.80/sq ft · GST incl.</div>
+        </div>
+        <div class="ud-stat">
+          <div class="ud-stat-lbl">Tenancy Duration</div>
+          <div class="ud-stat-val">14 mo</div>
+          <div class="ud-stat-sub">Since 15 May 2025</div>
+        </div>
+        <div class="ud-stat">
+          <div class="ud-stat-lbl">Lifetime Revenue</div>
+          <div class="ud-stat-val">$2,016</div>
+          <div class="ud-stat-sub">14 payments · 0 missed</div>
+        </div>
+        <div class="ud-stat">
+          <div class="ud-stat-lbl">Next Payment</div>
+          <div class="ud-stat-val" style="font-size:14px;">15 Aug</div>
+          <div class="ud-stat-sub">$144 · Auto-debit</div>
+        </div>
+        <div class="ud-stat">
+          <div class="ud-stat-lbl">Notice Given</div>
+          <div class="ud-stat-val" style="font-size:14px;">None</div>
+          <div class="ud-stat-sub">14-day notice required</div>
+        </div>
+        <div class="ud-stat">
+          <div class="ud-stat-lbl">Last Access</div>
+          <div class="ud-stat-val" style="font-size:14px;">Today</div>
+          <div class="ud-stat-sub">09:14am · PIN entry</div>
+        </div>
+        <div class="ud-stat">
+          <div class="ud-stat-lbl">Rate vs Market</div>
+          <div class="ud-stat-val" style="color:var(--olive);">+3.2%</div>
+          <div class="ud-stat-sub">Above avg for Small</div>
+        </div>
+      </div>
+
+      <!-- RATE ADJUSTMENT BOX -->
+      <div class="rate-box">
+        <div class="rate-box-title">⚡ Rate Adjustment</div>
+        <div class="rate-grid">
+          <div>
+            <div class="rate-lbl">Current Rate</div>
+            <div class="rate-input-wrap"><span class="curr">$</span><input type="number" value="144" readonly style="color:var(--mid);"><span style="font-size:10px;color:var(--mid);">/mo</span></div>
+            <div class="rate-change" style="color:var(--mid);">$4.80/sq ft</div>
+          </div>
+          <div>
+            <div class="rate-lbl">New Rate</div>
+            <div class="rate-input-wrap active"><span class="curr" style="color:var(--terra);">$</span><input type="number" value="154"><span style="font-size:10px;color:var(--terra);">/mo</span></div>
+            <div class="rate-change up">↑ +$10/mo (+6.9%) · $5.13/sqft</div>
+          </div>
+          <div>
+            <div class="rate-lbl">Effective Date</div>
+            <div class="rate-input-wrap"><input type="text" value="01 Sep 2026" style="width:110px;"> 📅</div>
+            <div class="rate-change" style="color:var(--mid);">30 days notice required</div>
+          </div>
+        </div>
+        <div class="rate-actions">
+          <button class="act-btn primary" style="font-size:11px;">Send Rate Notice to Tenant</button>
+          <button class="act-btn" style="font-size:11px;">Apply to All Similar Units</button>
+          <span class="rate-note">Tenant notified via email + WhatsApp</span>
+        </div>
+
+        <div class="rate-hist">
+          <div class="rate-hist-title">Rate History</div>
+          <table class="data-tbl">
+            <thead><tr><th>Date</th><th>Previous</th><th>New Rate</th><th>Change</th><th>Reason</th><th>By</th></tr></thead>
+            <tbody>
+              <tr><td>01 Jul 2026</td><td>$136/mo</td><td><strong>$144/mo</strong></td><td><span class="kpi-delta up" style="font-size:9px;">↑ +5.9%</span></td><td>Annual review</td><td>Faisal Z.</td></tr>
+              <tr><td>01 Jan 2026</td><td>$130/mo</td><td><strong>$136/mo</strong></td><td><span class="kpi-delta up" style="font-size:9px;">↑ +4.6%</span></td><td>CPI adjustment</td><td>System</td></tr>
+              <tr><td>15 May 2025</td><td>—</td><td><strong>$130/mo</strong></td><td><span class="kpi-delta flat" style="font-size:9px;">Initial</span></td><td>Move-in rate</td><td>Faisal Z.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- TENANTS TABLE -->
+    <div class="tbl-card">
+      <div class="sec-hdr">
+        <div>
+          <div class="sec-title">All Tenants</div>
+          <div class="sec-sub">70 active · 4 overdue · 3 branches</div>
+        </div>
+        <div style="display:flex;gap:7px;">
+          <button class="tb-btn ghost" style="font-size:10px;">⬇ Export CSV</button>
+          <button class="tb-btn ghost" style="font-size:10px;">Filter ▾</button>
+        </div>
+      </div>
+      <table class="data-tbl">
+        <thead>
+          <tr>
+            <th>Tenant</th><th>Unit</th><th>Size</th><th>Rate/mo</th><th>PSF</th><th>Since</th><th>Next Payment</th><th>Status</th><th></th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><div class="t-name">Priya Nair</div><div class="t-type">Business · E-commerce</div></td>
+            <td><strong>BM-01-01</strong></td><td>Small · 30 sqft</td><td><strong>$144</strong></td>
+            <td><span class="psf-val">$4.80</span></td><td>May 2025</td>
+            <td>15 Aug <span class="days-left ok">in 15d</span></td>
+            <td><span class="badge occ">Active</span></td>
+            <td><button class="act-btn" style="font-size:10px;padding:3px 8px;">Manage</button></td>
+          </tr>
+          <tr>
+            <td><div class="t-name">Aisha & Farid</div><div class="t-type">Personal · Renovation</div></td>
+            <td><strong>BM-01-05</strong></td><td>Medium · 60 sqft</td><td><strong>$264</strong></td>
+            <td><span class="psf-val">$4.40</span></td><td>Mar 2026</td>
+            <td>01 Aug <span class="days-left soon">in 1d</span></td>
+            <td><span class="badge res">Due Soon</span></td>
+            <td><button class="act-btn" style="font-size:10px;padding:3px 8px;">Manage</button></td>
+          </tr>
+          <tr>
+            <td><div class="t-name">Mr & Mrs Tan</div><div class="t-type">Personal · Downsizing</div></td>
+            <td><strong>BM-01-06</strong></td><td>Small · 30 sqft</td><td><strong>$138</strong></td>
+            <td><span class="psf-val">$4.60</span></td><td>Nov 2024</td>
+            <td>01 Jul <span class="days-left urgent">30d overdue</span></td>
+            <td><span class="badge over">Overdue</span></td>
+            <td><button class="act-btn primary" style="font-size:10px;padding:3px 8px;">Chase</button></td>
+          </tr>
+          <tr>
+            <td><div class="t-name">Wei Ming Lim</div><div class="t-type">Personal · Between homes</div></td>
+            <td><strong>WD-02-03</strong></td><td>Large · 120 sqft</td><td><strong>$456</strong></td>
+            <td><span class="psf-val">$3.80</span></td><td>Jun 2026</td>
+            <td>01 Aug <span class="days-left soon">in 1d</span></td>
+            <td><span class="badge occ">Active</span></td>
+            <td><button class="act-btn" style="font-size:10px;padding:3px 8px;">Manage</button></td>
+          </tr>
+          <tr>
+            <td><div class="t-name">Ravi Kumar</div><div class="t-type">Business · SME inventory</div></td>
+            <td><strong>UB-03-01</strong></td><td>XL Biz · 200 sqft</td><td><strong>$640</strong></td>
+            <td><span class="psf-val">$3.20</span></td><td>Jan 2026</td>
+            <td>01 Aug <span class="days-left soon">in 1d</span></td>
+            <td><span class="badge occ">Active</span></td>
+            <td><button class="act-btn" style="font-size:10px;padding:3px 8px;">Manage</button></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- PSF SCATTER + REVENUE BREAKDOWN -->
+    <div class="two-col">
+      <div class="chart-card">
+        <div class="chart-hdr">
+          <div>
+            <div class="chart-title">PSF Distribution by Unit Size</div>
+            <div class="chart-sub">All occupied units · Bukit Merah</div>
+          </div>
+        </div>
+        <canvas id="psfChart" height="150"></canvas>
+        <div class="psf-legend">
+          <div class="psf-leg"><div class="psf-dot" style="background:#B86A4A;"></div>Locker</div>
+          <div class="psf-leg"><div class="psf-dot" style="background:#5A7A60;"></div>Small</div>
+          <div class="psf-leg"><div class="psf-dot" style="background:#0B4F5E;"></div>Medium</div>
+          <div class="psf-leg"><div class="psf-dot" style="background:#D4860A;"></div>Large</div>
+          <div class="psf-leg"><div class="psf-dot" style="background:#9C948D;"></div>XL Biz</div>
+        </div>
+      </div>
+      <div class="chart-card">
+        <div class="chart-hdr">
+          <div>
+            <div class="chart-title">Revenue by Unit Size</div>
+            <div class="chart-sub">Jul 2026 · $42,860 total</div>
+          </div>
+        </div>
+        <div style="margin-top:10px;">
+          <div class="rev-row"><div class="rev-lbl">Locker</div><div class="rev-bar-wrap"><div class="rev-bar" style="width:18%;background:var(--terra);"></div></div><div class="rev-val">$7,680</div></div>
+          <div class="rev-row"><div class="rev-lbl">Small</div><div class="rev-bar-wrap"><div class="rev-bar" style="width:38%;background:var(--olive);"></div></div><div class="rev-val">$16,320</div></div>
+          <div class="rev-row"><div class="rev-lbl">Medium</div><div class="rev-bar-wrap"><div class="rev-bar" style="width:22%;background:var(--teal);"></div></div><div class="rev-val">$9,240</div></div>
+          <div class="rev-row"><div class="rev-lbl">Large</div><div class="rev-bar-wrap"><div class="rev-bar" style="width:14%;background:var(--amber);"></div></div><div class="rev-val">$6,080</div></div>
+          <div class="rev-row"><div class="rev-lbl">XL Biz</div><div class="rev-bar-wrap"><div class="rev-bar" style="width:8%;background:var(--light);"></div></div><div class="rev-val">$3,540</div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- LEADS KANBAN -->
+    <div class="tbl-card">
+      <div class="sec-hdr">
+        <div>
+          <div class="sec-title">Leads CRM</div>
+          <div class="sec-sub">8 active leads · 3 hot prospects</div>
+        </div>
+        <button class="tb-btn primary" style="font-size:10px;">+ Add Lead</button>
+      </div>
+      <div class="kanban-board">
+        <div class="k-col">
+          <div class="k-col-hdr"><div class="k-col-title">New Enquiry</div><div class="k-count">3</div></div>
+          <div class="k-card"><div class="k-name">Sarah Lim</div><div class="k-meta"><span class="k-tag per">Personal</span>Small · BM</div><div class="k-meta" style="margin-top:3px;">📅 Today</div></div>
+          <div class="k-card"><div class="k-name">James Koh</div><div class="k-meta"><span class="k-tag ren">Reno</span>Medium · WD</div><div class="k-meta" style="margin-top:3px;">📅 2 days ago</div></div>
+          <div class="k-card"><div class="k-name">Mei Ling</div><div class="k-meta"><span class="k-tag exp">Expat</span>Large · UB</div><div class="k-meta" style="margin-top:3px;">📅 3 days ago</div></div>
+        </div>
+        <div class="k-col">
+          <div class="k-col-hdr"><div class="k-col-title">Contacted</div><div class="k-count">2</div></div>
+          <div class="k-card"><div class="k-name">David Ng</div><div class="k-meta"><span class="k-tag biz">Business</span>XL · UB</div><div class="k-meta" style="margin-top:3px;">📞 Called yesterday</div></div>
+          <div class="k-card"><div class="k-name">Siti Rahman</div><div class="k-meta"><span class="k-tag per">Personal</span>Small · BM</div><div class="k-meta" style="margin-top:3px;">💬 WhatsApp sent</div></div>
+        </div>
+        <div class="k-col">
+          <div class="k-col-hdr"><div class="k-col-title">Viewing Booked</div><div class="k-count">1</div></div>
+          <div class="k-card"><div class="k-name">Ahmad Fauzi</div><div class="k-meta"><span class="k-tag biz">Business</span>Medium · WD</div><div class="k-meta" style="margin-top:3px;">📅 1 Aug 2pm</div></div>
+        </div>
+        <div class="k-col">
+          <div class="k-col-hdr"><div class="k-col-title">Proposal Sent</div><div class="k-count">1</div></div>
+          <div class="k-card"><div class="k-name">TechFlow Pte Ltd</div><div class="k-meta"><span class="k-tag biz">Business</span>XL ×2 · UB</div><div class="k-meta" style="margin-top:3px;">💰 $1,280/mo</div></div>
+        </div>
+        <div class="k-col">
+          <div class="k-col-hdr"><div class="k-col-title">Won 🎉</div><div class="k-count">1</div></div>
+          <div class="k-card"><div class="k-name">Priya Nair</div><div class="k-meta"><span class="k-tag biz">Business</span>Small · BM</div><div class="k-meta" style="margin-top:3px;">✅ May 2025</div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ACTION REQUIRED -->
+    <div class="tbl-card">
+      <div class="sec-hdr">
+        <div class="sec-title">Action Required</div>
+        <div class="sec-sub">5 items need your attention today</div>
+      </div>
+      <div class="alert-list">
+        <div class="alert-item">
+          <div class="alert-icon red">🚨</div>
+          <div class="alert-body">
+            <div class="alert-title">Mr & Mrs Tan — BM-01-06 — 30 days overdue</div>
+            <div class="alert-desc">$138 outstanding since 1 Jul. 2 reminders sent, no response. Consider access restriction.</div>
+          </div>
+          <div class="alert-time">Today</div>
+          <button class="alert-act">Send Final Notice</button>
+        </div>
+        <div class="alert-item">
+          <div class="alert-icon amber">⏰</div>
+          <div class="alert-body">
+            <div class="alert-title">3 payments due tomorrow — Aisha & Farid, Wei Ming, Ravi Kumar</div>
+            <div class="alert-desc">Total $1,360 due 1 Aug. All on auto-debit — confirm bank details are valid.</div>
+          </div>
+          <div class="alert-time">Tomorrow</div>
+          <button class="alert-act">Review</button>
+        </div>
+        <div class="alert-item">
+          <div class="alert-icon olive">🔑</div>
+          <div class="alert-body">
+            <div class="alert-title">3 move-ins scheduled today</div>
+            <div class="alert-desc">Ahmad Fauzi (11am), Sarah Lim (2pm), James Koh (4pm). Units prepped, PINs ready.</div>
+          </div>
+          <div class="alert-time">Today</div>
+          <button class="alert-act">View Schedule</button>
+        </div>
+        <div class="alert-item">
+          <div class="alert-icon terra">📈</div>
+          <div class="alert-body">
+            <div class="alert-title">Rate review due — 8 units at below-market PSF</div>
+            <div class="alert-desc">Units BM-01-07, BM-01-08, WD-02-01 and 5 others are 8–12% below current market rate.</div>
+          </div>
+          <div class="alert-time">This week</div>
+          <button class="alert-act">Review Rates</button>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</main>
+
+<script>
+// Revenue chart
+const rCtx = document.getElementById('revenueChart').getContext('2d');
+new Chart(rCtx, {
+  type: 'bar',
+  data: {
+    labels: ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul'],
+    datasets: [
+      { label: 'Actual', data: [36200,37800,38500,39200,40100,41600,42860], backgroundColor: (ctx) => ctx.dataIndex===6?'#B86A4A':'#E9E1D0', borderRadius: 5, borderSkipped: false },
+      { label: 'Target', data: [38000,38000,39000,39000,40000,41000,42000], type: 'line', borderColor: '#5A7A60', borderWidth: 1.5, borderDash: [4,3], pointRadius: 0, fill: false, tension: 0.3 }
+    ]
+  },
+  options: { responsive: true, plugins: { legend: { display: false } }, scales: { x: { grid: { display: false }, ticks: { font: { family: 'Manrope', size: 10 }, color: '#9C948D' } }, y: { grid: { color: '#F3EEE6' }, ticks: { font: { family: 'Manrope', size: 10 }, color: '#9C948D', callback: v => '$'+(v/1000).toFixed(0)+'k' } } } }
+});
+
+// Branch chart
+const bCtx = document.getElementById('branchChart').getContext('2d');
+new Chart(bCtx, {
+  type: 'bar',
+  data: { labels: ['Bukit Merah', 'Woodlands', 'Ubi'], datasets: [{ data: [87.5,91.2,82.0], backgroundColor: ['#B86A4A','#5A7A60','#0B4F5E'], borderRadius: 7, borderSkipped: false }] },
+  options: { indexAxis: 'y', responsive: true, plugins: { legend: { display: false } }, scales: { x: { grid: { color: '#F3EEE6' }, ticks: { font: { family: 'Manrope', size: 10 }, color: '#9C948D', callback: v => v+'%' }, max: 100 }, y: { grid: { display: false }, ticks: { font: { family: 'Manrope', size: 10 }, color: '#6B6560' } } } }
+});
+
+// PSF scatter
+const pCtx = document.getElementById('psfChart').getContext('2d');
+new Chart(pCtx, {
+  type: 'scatter',
+  data: { datasets: [
+    { label: 'Locker', data: [{x:12,y:5.20},{x:15,y:5.10},{x:18,y:5.30},{x:10,y:5.40},{x:20,y:5.00}], backgroundColor: '#B86A4A', pointRadius: 5 },
+    { label: 'Small', data: [{x:30,y:4.80},{x:35,y:4.70},{x:28,y:4.90},{x:40,y:4.60},{x:32,y:4.80}], backgroundColor: '#5A7A60', pointRadius: 5 },
+    { label: 'Medium', data: [{x:60,y:4.40},{x:65,y:4.30},{x:70,y:4.50},{x:55,y:4.45}], backgroundColor: '#0B4F5E', pointRadius: 5 },
+    { label: 'Large', data: [{x:120,y:3.80},{x:130,y:3.70},{x:110,y:3.90}], backgroundColor: '#D4860A', pointRadius: 5 },
+    { label: 'XL Biz', data: [{x:200,y:3.20},{x:220,y:3.10},{x:180,y:3.30}], backgroundColor: '#9C948D', pointRadius: 5 }
+  ]},
+  options: { responsive: true, plugins: { legend: { display: false } }, scales: { x: { grid: { color: '#F3EEE6' }, ticks: { font: { family: 'Manrope', size: 10 }, color: '#9C948D', callback: v => v+' sqft' } }, y: { grid: { color: '#F3EEE6' }, ticks: { font: { family: 'Manrope', size: 10 }, color: '#9C948D', callback: v => '$'+v } } } }
+});
+
+function selectUnit(el, id) {
+  document.querySelectorAll('.u-cell').forEach(c => c.classList.remove('selected'));
+  el.classList.add('selected');
+  document.getElementById('unitDetail').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+</script>
+
+<!-- StoreLah CMS data layer (live bindings; does not touch layout/CSS) -->
+<script src="/data-layer.js"></script>
+</body>
+</html>

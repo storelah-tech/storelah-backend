@@ -1,0 +1,118 @@
+import { Router, Request, Response } from 'express';
+import { z } from 'zod';
+import { ok, created, fail } from '../lib/http';
+import { requireCustomerAuth } from '../middleware/auth';
+import {
+  registerCustomer,
+  loginCustomer,
+  getCustomerProfile,
+  createCustomerBooking,
+  listCustomerBookings,
+  getCustomerPortal,
+  submitCustomerRequest,
+  submitCustomerNotice,
+} from '../core/customers';
+
+const router = Router();
+
+const registerSchema = z.object({
+  name: z.string().min(1),
+  email: z.string().email(),
+  mobile: z.string().optional(),
+  password: z.string().min(6),
+  type: z.enum(['PERSONAL', 'BUSINESS']).default('PERSONAL'),
+  companyName: z.string().optional(),
+  uen: z.string().optional(),
+});
+
+const loginSchema = z.object({
+  email: z.string().email(),
+  password: z.string().min(1),
+});
+
+const createBookingSchema = z.object({
+  unitCode: z.string().min(1),
+  moveInDate: z.string().datetime(),
+  durationMonths: z.number().int().positive(),
+  protectionPlan: z.object({ tier: z.string(), cost: z.number().nonnegative() }).optional(),
+  addons: z
+    .array(z.object({ name: z.string(), qty: z.number().int().nonnegative(), price: z.number().nonnegative() }))
+    .optional(),
+  promoCode: z.string().optional(),
+  movingService: z.boolean().optional(),
+  totalDueToday: z.number().nonnegative().optional(),
+});
+
+const requestSchema = z.object({
+  type: z.enum(['UPSIZE', 'DOWNSIZE', 'TRANSFER']),
+  notes: z.string().optional(),
+  preferredDate: z.string().optional(),
+});
+
+const noticeSchema = z.object({
+  unitId: z.string().min(1),
+  lastDay: z.string().datetime(),
+});
+
+function customerFrom(req: Request) {
+  return (req as any).customer;
+}
+
+router.post('/register', async (req: Request, res: Response) => {
+  const parsed = registerSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid registration payload', parsed.error.flatten());
+    return;
+  }
+  created(res, await registerCustomer(parsed.data));
+});
+
+router.post('/login', async (req: Request, res: Response) => {
+  const parsed = loginSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 401, 'UNAUTHORIZED', 'Invalid email or password');
+    return;
+  }
+  ok(res, await loginCustomer(parsed.data));
+});
+
+router.get('/me', requireCustomerAuth, async (req: Request, res: Response) => {
+  ok(res, await getCustomerProfile(customerFrom(req)));
+});
+
+router.post('/bookings', requireCustomerAuth, async (req: Request, res: Response) => {
+  const parsed = createBookingSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid booking payload', parsed.error.flatten());
+    return;
+  }
+  created(res, await createCustomerBooking(customerFrom(req), parsed.data));
+});
+
+router.get('/bookings', requireCustomerAuth, async (req: Request, res: Response) => {
+  ok(res, await listCustomerBookings(customerFrom(req)));
+});
+
+router.get('/portal', requireCustomerAuth, async (req: Request, res: Response) => {
+  ok(res, await getCustomerPortal(customerFrom(req)));
+});
+
+router.post('/requests', requireCustomerAuth, async (req: Request, res: Response) => {
+  const parsed = requestSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid request payload', parsed.error.flatten());
+    return;
+  }
+  created(res, await submitCustomerRequest(customerFrom(req), parsed.data));
+});
+
+router.post('/notice', requireCustomerAuth, async (req: Request, res: Response) => {
+  const parsed = noticeSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid notice payload', parsed.error.flatten());
+    return;
+  }
+  ok(res, await submitCustomerNotice(customerFrom(req), parsed.data));
+});
+
+export default router;

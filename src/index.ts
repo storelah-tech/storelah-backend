@@ -28,6 +28,11 @@ app.use('/api/v1/public', publicRoutes);
 app.use('/api/v1/customer', customerRoutes);
 
 // CMS UI (frozen dashboard.html served statically)
+// NB: the /admin route must be registered BEFORE the static mount — otherwise
+// express.static sees the src/cms/admin/ directory and 301-redirects /admin → /admin/.
+app.get('/admin', (_req, res) => {
+  res.sendFile(path.join(__dirname, 'cms', 'admin', 'dashboard.html'));
+});
 app.use(express.static(path.join(__dirname, 'cms')));
 app.get('/', (_req, res) => {
   res.sendFile(path.join(__dirname, 'cms', 'dashboard.html'));

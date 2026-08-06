@@ -107,8 +107,18 @@ export async function createUnit(input: CreateUnitInput) {
   if (!floor) throw new AppError(400, 'VALIDATION', `Floor ${input.floorId} not found`);
   if (!size) throw new AppError(400, 'VALIDATION', `Unit size ${input.sizeId} not found`);
 
-  const existing = await prisma.unit.count({ where: { branchId: input.branchId, floorId: input.floorId } });
-  const seq = String(existing + 1).padStart(2, '0');
+  // Derive the next unitCode from the MAX existing numeric suffix on this branch+floor,
+  // not the row count — counts collide when the floor's numbering has gaps (e.g. seed gaps).
+  const existingCodes = await prisma.unit.findMany({
+    where: { branchId: input.branchId, floorId: input.floorId },
+    select: { unitCode: true },
+  });
+  let maxSeq = 0;
+  for (const u of existingCodes) {
+    const m = u.unitCode.match(/-(\d+)$/);
+    if (m) maxSeq = Math.max(maxSeq, Number(m[1]));
+  }
+  const seq = String(maxSeq + 1).padStart(2, '0');
   const unitCode = `${branch.code}-${String(floor.level).padStart(2, '0')}-${seq}`;
 
   const unit = await prisma.unit.create({
@@ -191,6 +201,34 @@ export async function getUnitMap(branchCode: string, level: number, opts?: { pub
       ...(isPublic ? {} : { tenant: u.tenant?.name ?? null }),
     })),
   };
+}
+
+// Reference data for the admin units UI: all distinct floors (with branch info).
+export async function listFloors() {
+  const floors = await prisma.floor.findMany({
+    include: { branch: { select: { code: true, name: true } } },
+    orderBy: [{ branch: { code: 'asc' } }, { level: 'asc' }],
+  });
+  return floors.map((f) => ({
+    id: f.id,
+    branchId: f.branchId,
+    branch: f.branch,
+    level: f.level,
+    name: f.name,
+  }));
+}
+
+// Reference data for the admin units UI: all UnitSize rows.
+export async function listSizes() {
+  const sizes = await prisma.unitSize.findMany({ orderBy: { sortOrder: 'asc' } });
+  return sizes.map((s) => ({
+    id: s.id,
+    code: s.code,
+    name: s.name,
+    sqftFrom: s.sqftFrom,
+    sqftTo: s.sqftTo,
+    sortOrder: s.sortOrder,
+  }));
 }
 
 export async function getUnitDetail(code: string) {

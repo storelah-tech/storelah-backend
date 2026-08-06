@@ -5,7 +5,16 @@ import { prisma } from '../lib/prisma';
 import { ok, created, fail } from '../lib/http';
 import { requireAuth, signToken } from '../middleware/auth';
 import { getSummary } from '../core/summary';
-import { getUnitMap, getUnitDetail, listUnits, createUnit, updateUnit, deactivateUnit } from '../core/units';
+import {
+  getUnitMap,
+  getUnitDetail,
+  listUnits,
+  createUnit,
+  updateUnit,
+  deactivateUnit,
+  listFloors,
+  listSizes,
+} from '../core/units';
 import { listTenants, createTenant, updateTenant, deactivateTenant } from '../core/tenants';
 import { listLeads } from '../core/leads';
 import { getActionItems } from '../core/actionCenter';
@@ -215,6 +224,16 @@ router.get('/invoices', requireAuth, async (req: Request, res: Response) => {
 
 router.get('/branches', requireAuth, async (_req: Request, res: Response) => {
   ok(res, await listBranches());
+});
+
+router.get('/floors', requireAuth, async (_req: Request, res: Response) => {
+  const rows = await listFloors();
+  ok(res, rows, { count: rows.length });
+});
+
+router.get('/sizes', requireAuth, async (_req: Request, res: Response) => {
+  const rows = await listSizes();
+  ok(res, rows, { count: rows.length });
 });
 
 router.get('/move-ins', requireAuth, async (_req: Request, res: Response) => {

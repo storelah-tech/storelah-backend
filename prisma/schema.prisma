@@ -156,6 +156,7 @@ model Unit {
   monthlyRate    Decimal    @default(0) @db.Decimal(10, 2)
   status         UnitStatus @default(AVAILABLE)
   climateControl String? // e.g. "Ambient climate"
+  deletedAt      DateTime? // soft-delete lifecycle marker: null = active; set = hidden from all reads
   createdAt      DateTime   @default(now())
   updatedAt      DateTime   @updatedAt
 

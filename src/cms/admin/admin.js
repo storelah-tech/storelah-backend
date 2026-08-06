@@ -759,7 +759,7 @@
       }
       return;
     }
-    if (!window.confirm(`Delete unit ${code}? This soft-deactivates it (status → INACTIVE).`)) return;
+    if (!window.confirm(`Delete unit ${code}? This soft-deletes it (removes it from the map and lists).`)) return;
     try {
       await request(`/units/${encodeURIComponent(code)}`, { method: 'DELETE' });
       showBanner(`Deleted ${code}`, true);

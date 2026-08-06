@@ -11,7 +11,7 @@ export interface AdjustRateInput {
 
 export async function adjustRate(code: string, input: AdjustRateInput) {
   const unit = await prisma.unit.findUnique({
-    where: { unitCode: code },
+    where: { unitCode: code, deletedAt: null },
     include: { tenant: true },
   });
   if (!unit) throw new AppError(404, 'NOT_FOUND', `Unit ${code} not found`);

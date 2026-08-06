@@ -3,6 +3,7 @@ import { toNum, pct } from '../lib/format';
 
 export async function getSummary() {
   const units = await prisma.unit.findMany({
+    where: { deletedAt: null },
     include: { size: true, tenant: true, branch: true },
   });
 

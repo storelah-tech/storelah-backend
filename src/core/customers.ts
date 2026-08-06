@@ -141,7 +141,7 @@ export async function getCustomerPortal(payload: CustomerJwtPayload) {
   if (tenant) {
     const current = tenant.unitId
       ? await prisma.unit.findUnique({
-          where: { id: tenant.unitId },
+          where: { id: tenant.unitId, deletedAt: null },
           include: { size: true, branch: true, floor: true },
         })
       : null;

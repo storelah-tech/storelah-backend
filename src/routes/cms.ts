@@ -11,7 +11,7 @@ import {
   listUnits,
   createUnit,
   updateUnit,
-  deactivateUnit,
+  softDeleteUnit,
   listFloors,
   listSizes,
   getUnitActivity,
@@ -193,7 +193,7 @@ router.put('/units/:code', requireAuth, async (req: Request, res: Response) => {
 });
 
 router.delete('/units/:code', requireAuth, async (req: Request, res: Response) => {
-  ok(res, await deactivateUnit(String(req.params.code)));
+  ok(res, await softDeleteUnit(String(req.params.code)));
 });
 
 router.get('/units/:code', requireAuth, async (req: Request, res: Response) => {

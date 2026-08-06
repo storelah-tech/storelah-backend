@@ -38,6 +38,7 @@ function serializeUnit(u: UnitWithRelations) {
     psf: u.sqft ? rate / u.sqft : 0,
     status: u.status,
     climateControl: u.climateControl,
+    deletedAt: u.deletedAt,
     branchId: u.branchId,
     floorId: u.floorId,
     sizeId: u.sizeId,
@@ -52,6 +53,7 @@ export async function listUnits(query: UnitListQuery = {}) {
   const page = Math.max(1, query.page ?? 1);
   const perPage = Math.min(200, Math.max(1, query.perPage ?? 25));
   const where: Prisma.UnitWhereInput = {
+    deletedAt: null,
     ...(query.status ? { status: query.status as UnitStatus } : {}),
     ...(query.branch ? { branch: { code: query.branch } } : {}),
     ...(query.level != null ? { floor: { level: query.level } } : {}),
@@ -99,6 +101,7 @@ export async function listPublicUnits(query: PublicUnitsQuery = {}) {
   const statuses = query.status ? [query.status] : BROWSEABLE_STATUSES;
   const units = await prisma.unit.findMany({
     where: {
+      deletedAt: null,
       status: { in: statuses },
       ...(query.branch ? { branch: { code: query.branch } } : {}),
       ...(query.level != null ? { floor: { level: query.level } } : {}),
@@ -119,6 +122,7 @@ export async function listPublicUnits(query: PublicUnitsQuery = {}) {
       psf: u.sqft ? rate / u.sqft : 0,
       status: u.status,
       climateControl: u.climateControl,
+      deletedAt: u.deletedAt,
       size: { code: u.size.code, name: u.size.name },
       branch: { code: u.branch.code, name: u.branch.name },
       floor: { level: u.floor.level },
@@ -143,6 +147,8 @@ export async function createUnit(input: CreateUnitInput) {
 
   // Derive the next unitCode from the MAX existing numeric suffix on this branch+floor,
   // not the row count — counts collide when the floor's numbering has gaps (e.g. seed gaps).
+  // IMPORTANT: deliberately does NOT filter deletedAt — codes of soft-deleted units are never
+  // reused, keeping the sequence monotonic so codes with history are never re-assigned.
   const existingCodes = await prisma.unit.findMany({
     where: { branchId: input.branchId, floorId: input.floorId },
     select: { unitCode: true },
@@ -173,7 +179,9 @@ export async function createUnit(input: CreateUnitInput) {
 }
 
 export async function updateUnit(code: string, input: UpdateUnitInput) {
-  const unit = await prisma.unit.findUnique({ where: { unitCode: code } });
+  const unit = await prisma.unit.findUnique({
+    where: { unitCode: code, deletedAt: null },
+  });
   if (!unit) throw new AppError(404, 'NOT_FOUND', `Unit ${code} not found`);
 
   // name is optional display label only: undefined = not provided (leave unchanged),
@@ -196,15 +204,18 @@ export async function updateUnit(code: string, input: UpdateUnitInput) {
   return serializeUnit(updated);
 }
 
-export async function deactivateUnit(code: string) {
+export async function softDeleteUnit(code: string) {
   const unit = await prisma.unit.findUnique({ where: { unitCode: code } });
   if (!unit) throw new AppError(404, 'NOT_FOUND', `Unit ${code} not found`);
+  if (unit.deletedAt) throw new AppError(404, 'NOT_FOUND', `Unit ${code} not found`);
   if (unit.status === 'OCCUPIED' || unit.status === 'OVERDUE') {
-    throw new AppError(409, 'CONFLICT', `Unit ${code} is ${unit.status} and cannot be deactivated`);
+    throw new AppError(409, 'CONFLICT', `Unit ${code} is ${unit.status} and cannot be deleted`);
   }
   const updated = await prisma.unit.update({
     where: { id: unit.id },
-    data: { status: 'INACTIVE' },
+    // Soft-delete: deletedAt is the only deletion marker. status is a pure business
+    // state and is never touched by deletion (INACTIVE remains a valid status).
+    data: { deletedAt: new Date() },
     include: { size: true, branch: true, floor: true, tenant: true },
   });
   return serializeUnit(updated);
@@ -213,7 +224,7 @@ export async function deactivateUnit(code: string) {
 export async function getUnitMap(branchCode: string, level: number, opts?: { public?: boolean }) {
   const isPublic = opts?.public ?? false;
   const units = await prisma.unit.findMany({
-    where: { branch: { code: branchCode }, floor: { level } },
+    where: { deletedAt: null, branch: { code: branchCode }, floor: { level } },
     include: { size: true, tenant: true },
     orderBy: { unitCode: 'asc' },
   });
@@ -275,7 +286,8 @@ export async function listSizes() {
 
 export async function getUnitDetail(code: string) {
   const unit = await prisma.unit.findUnique({
-    where: { unitCode: code },
+    // deletedAt: null → a deleted unit is not addressable (404 below).
+    where: { unitCode: code, deletedAt: null },
     include: {
       size: true,
       branch: true,
@@ -350,19 +362,22 @@ export async function getUnitActivity(limit = 20) {
   const capped = Math.min(100, Math.max(1, limit));
   const [units, rateChanges, moveIns, bookings] = await Promise.all([
     prisma.unit.findMany({
+      where: { deletedAt: null },
       include: { size: true, branch: true },
       orderBy: { unitCode: 'asc' },
     }),
     prisma.rateChange.findMany({
+      where: { unit: { deletedAt: null } },
       include: { unit: { include: { size: true, branch: true } } },
       orderBy: { date: 'desc' },
     }),
     prisma.tenant.findMany({
-      where: { moveInDate: { not: null } },
+      where: { moveInDate: { not: null }, unit: { deletedAt: null } },
       include: { unit: { include: { size: true, branch: true } } },
       orderBy: { moveInDate: 'desc' },
     }),
     prisma.booking.findMany({
+      where: { unit: { deletedAt: null } },
       include: { tenant: true, unit: { include: { size: true, branch: true } } },
       orderBy: { moveInDate: 'desc' },
     }),

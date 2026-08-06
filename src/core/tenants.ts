@@ -52,7 +52,9 @@ function serializeTenant(t: TenantWithUnit) {
 export async function createTenant(input: CreateTenantInput) {
   let sqft = input.sqft;
   if (input.unitId) {
-    const unit = await prisma.unit.findUnique({ where: { id: input.unitId } });
+    const unit = await prisma.unit.findUnique({
+      where: { id: input.unitId, deletedAt: null },
+    });
     if (!unit) throw new AppError(400, 'VALIDATION', `Unit ${input.unitId} not found`);
     sqft = unit.sqft;
   }
@@ -80,7 +82,9 @@ export async function updateTenant(id: string, input: UpdateTenantInput) {
   const tenant = await prisma.tenant.findUnique({ where: { id } });
   if (!tenant) throw new AppError(404, 'NOT_FOUND', `Tenant ${id} not found`);
 
-  const unit = tenant.unitId ? await prisma.unit.findUnique({ where: { id: tenant.unitId } }) : null;
+  const unit = tenant.unitId
+    ? await prisma.unit.findUnique({ where: { id: tenant.unitId, deletedAt: null } })
+    : null;
   const sqft = unit?.sqft ?? null;
 
   const updated = await prisma.tenant.update({

@@ -31,4 +31,5 @@ StoreLah operator CMS backend & dashboard. Express 5 + Prisma 6 + PostgreSQL, Ty
 - Decimal columns come back as `Prisma.Decimal`; pass them through `toNum` from `src/lib/format.ts` before returning in an API response (JSON.stringify of a Decimal throws).
 - Schema enums (Role, UnitStatus, TenantStatus, etc.) are Prisma enums (see `prisma/schema.prisma`). Keep them as enums; do not reinterpret as string unions.
 - **Unit codes vs display names**: every Unit has an immutable auto-generated `unitCode` (unique key) plus an optional display `name` that falls back to the code when null/empty. See `docs/UNIT_CODE_AND_NAME.md` — always follow it when touching units.
+- **Unit deletion = soft-delete**: `Unit.deletedAt` is the only deletion marker (set by `DELETE /units/:code`, never touches `status`); every read path must filter `deletedAt: null`, a deleted unit 404s on direct access, and codegen never reuses its code. `INACTIVE` remains a normal business status. See `docs/UNIT_DELETION.md` — always follow it when touching units.
 - `pnpm db:seed` wipes and recreates all tables before seeding, so it is destructive by design.

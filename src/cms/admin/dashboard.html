@@ -268,6 +268,24 @@ body { font-family: 'Manrope', sans-serif; background: var(--cream); color: var(
 .unit-actions { display: flex; gap: 5px; justify-content: flex-end; }
 .unit-actions .act-btn { padding: 4px 9px; font-size: 10px; }
 
+/* SIDEBAR-NAVIGATED VIEWS */
+.view[hidden] { display: none; }
+
+/* UNITS SECTION — table toolbar + pager */
+.tbl-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.tbl-select { border: 1.5px solid var(--border); border-radius: 7px; padding: 6px 10px; font-family: 'Manrope', sans-serif; font-size: 11px; font-weight: 700; color: var(--charcoal); outline: none; background: var(--white); cursor: pointer; }
+.tbl-select:focus { border-color: var(--terra); }
+.tbl-pager { display: flex; align-items: center; justify-content: space-between; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border2); }
+.tbl-pager-info { font-size: 11px; font-weight: 700; color: var(--mid); }
+.tbl-pager-btns { display: flex; gap: 7px; }
+.tbl-pager .tb-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* ACTIVITY FEED tones + tenant-history placeholder */
+.alert-icon.teal { background: var(--teal-light); }
+.ud-history { border-top: 1px solid var(--border2); padding-top: 14px; }
+.ud-history-title { font-size: 11px; font-weight: 700; color: var(--mid); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
+.ud-history-empty { font-size: 11px; color: var(--light); font-style: italic; }
+
 ::-webkit-scrollbar { width: 4px; height: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--sand); border-radius: 2px; }
@@ -281,7 +299,7 @@ body { font-family: 'Manrope', sans-serif; background: var(--cream); color: var(
     <div class="sb-logo-mark">SL</div>
     <div class="sb-logo-text">Store<span>Lah</span></div>
   </div>
-  <div class="sb-branch">
+  <div class="sb-branch" id="sbBranch" title="Click to switch branch">
     <div>
       <div class="sb-branch-name">Bukit Merah</div>
       <div class="sb-branch-sub">3 branches · All active</div>
@@ -290,30 +308,30 @@ body { font-family: 'Manrope', sans-serif; background: var(--cream); color: var(
   </div>
   <div class="sb-section">
     <div class="sb-section-lbl">Overview</div>
-    <div class="nav-item active"><span class="nav-icon">▦</span> Dashboard</div>
-    <div class="nav-item"><span class="nav-icon">⚡</span> Action Centre <span class="nav-badge red">5</span></div>
+    <div class="nav-item active" data-view="dashboard"><span class="nav-icon">▦</span> Dashboard</div>
+    <div class="nav-item" title="Coming soon"><span class="nav-icon">⚡</span> Action Centre <span class="nav-badge red">5</span></div>
   </div>
   <div class="sb-section">
     <div class="sb-section-lbl">Operations</div>
-    <div class="nav-item"><span class="nav-icon">⬛</span> Unit Map</div>
-    <div class="nav-item"><span class="nav-icon">👥</span> Tenants <span class="nav-badge">2</span></div>
-    <div class="nav-item"><span class="nav-icon">📋</span> Bookings</div>
-    <div class="nav-item"><span class="nav-icon">🔑</span> Move-ins Today <span class="nav-badge">3</span></div>
+    <div class="nav-item" data-view="units"><span class="nav-icon">⬛</span> Units</div>
+    <div class="nav-item" title="Coming soon"><span class="nav-icon">👥</span> Tenants <span class="nav-badge">2</span></div>
+    <div class="nav-item" title="Coming soon"><span class="nav-icon">📋</span> Bookings</div>
+    <div class="nav-item" title="Coming soon"><span class="nav-icon">🔑</span> Move-ins Today <span class="nav-badge">3</span></div>
   </div>
   <div class="sb-section">
     <div class="sb-section-lbl">Revenue</div>
-    <div class="nav-item"><span class="nav-icon">💰</span> Payments</div>
-    <div class="nav-item"><span class="nav-icon">📈</span> Rate Management</div>
-    <div class="nav-item"><span class="nav-icon">🏷️</span> Promos & Offers</div>
+    <div class="nav-item" title="Coming soon"><span class="nav-icon">💰</span> Payments</div>
+    <div class="nav-item" title="Coming soon"><span class="nav-icon">📈</span> Rate Management</div>
+    <div class="nav-item" title="Coming soon"><span class="nav-icon">🏷️</span> Promos & Offers</div>
   </div>
   <div class="sb-section">
     <div class="sb-section-lbl">Growth</div>
-    <div class="nav-item"><span class="nav-icon">🎯</span> Leads CRM <span class="nav-badge">8</span></div>
-    <div class="nav-item"><span class="nav-icon">📊</span> Reports</div>
+    <div class="nav-item" title="Coming soon"><span class="nav-icon">🎯</span> Leads CRM <span class="nav-badge">8</span></div>
+    <div class="nav-item" title="Coming soon"><span class="nav-icon">📊</span> Reports</div>
   </div>
   <div class="sb-section">
     <div class="sb-section-lbl">System</div>
-    <div class="nav-item"><span class="nav-icon">⚙️</span> Settings</div>
+    <div class="nav-item" title="Coming soon"><span class="nav-icon">⚙️</span> Settings</div>
   </div>
   <div class="sb-footer">
     <div class="sb-user">
@@ -343,6 +361,8 @@ body { font-family: 'Manrope', sans-serif; background: var(--cream); color: var(
   </div>
 
   <div class="content">
+
+    <div class="view" id="view-dashboard">
 
     <!-- KPI STRIP -->
     <div class="kpi-strip">
@@ -400,161 +420,15 @@ body { font-family: 'Manrope', sans-serif; background: var(--cream); color: var(
       </div>
     </div>
 
-    <!-- UNIT MAP -->
-    <div class="unit-map-card">
-      <div class="sec-hdr">
-        <div>
-          <div class="sec-title">Unit Map — Bukit Merah · Level 1</div>
-          <div class="sec-sub">Click any unit to view details, adjust rate, or manage tenancy</div>
-        </div>
-        <div style="display:flex;gap:8px;">
-          <button class="tb-btn ghost" style="font-size:10px;">⬇ Export Floor Plan</button>
-        </div>
-      </div>
-
-      <div class="unit-legend">
-        <div class="u-leg"><div class="u-leg-dot" style="background:var(--teal);"></div>Occupied (56)</div>
-        <div class="u-leg"><div class="u-leg-dot" style="background:var(--olive);"></div>Available (10)</div>
-        <div class="u-leg"><div class="u-leg-dot" style="background:var(--amber);"></div>Reserved (3)</div>
-        <div class="u-leg"><div class="u-leg-dot" style="background:var(--red);"></div>Overdue (4)</div>
-        <div class="u-leg"><div class="u-leg-dot" style="background:var(--light);"></div>Maintenance (7)</div>
-      </div>
-
-      <div class="floor-tabs">
-        <button class="floor-tab active">Level 1</button>
-        <button class="floor-tab">Level 2</button>
-        <button class="floor-tab">Level 3</button>
-        <button class="floor-tab">Level 4</button>
-      </div>
-
-      <div class="unit-filter-row">
-        <button class="f-pill active">All (80)</button>
-        <button class="f-pill avail">Available (10)</button>
-        <button class="f-pill res">Reserved (3)</button>
-        <button class="f-pill over">Overdue (4)</button>
-        <button class="f-pill">Locker</button>
-        <button class="f-pill">Small</button>
-        <button class="f-pill">Medium</button>
-        <button class="f-pill">Large</button>
-        <button class="f-pill">XL Biz</button>
-        <div class="f-search">🔍 <input type="text" placeholder="Search unit or tenant…"></div>
-      </div>
-
-      <div class="unit-grid" id="unitGrid">
-        <div class="u-cell occupied selected" onclick="selectUnit(this,'BM-01-01')"><div class="u-dot"></div><div class="u-id">01-01</div><div class="u-size">Small</div><div class="u-psf">$4.80</div></div>
-        <div class="u-cell occupied" onclick="selectUnit(this,'BM-01-02')"><div class="u-dot"></div><div class="u-id">01-02</div><div class="u-size">Small</div><div class="u-psf">$4.80</div></div>
-        <div class="u-cell occupied" onclick="selectUnit(this,'BM-01-03')"><div class="u-dot"></div><div class="u-id">01-03</div><div class="u-size">Locker</div><div class="u-psf">$5.20</div></div>
-        <div class="u-cell available" onclick="selectUnit(this,'BM-01-04')"><div class="u-dot"></div><div class="u-id">01-04</div><div class="u-size">Locker</div><div class="u-psf">$5.20</div></div>
-        <div class="u-cell occupied" onclick="selectUnit(this,'BM-01-05')"><div class="u-dot"></div><div class="u-id">01-05</div><div class="u-size">Medium</div><div class="u-psf">$4.40</div></div>
-        <div class="u-cell overdue" onclick="selectUnit(this,'BM-01-06')"><div class="u-dot"></div><div class="u-id">01-06</div><div class="u-size">Small</div><div class="u-psf">$4.60</div></div>
-        <div class="u-cell occupied" onclick="selectUnit(this,'BM-01-07')"><div class="u-dot"></div><div class="u-id">01-07</div><div class="u-size">Large</div><div class="u-psf">$3.80</div></div>
-        <div class="u-cell available" onclick="selectUnit(this,'BM-01-08')"><div class="u-dot"></div><div class="u-id">01-08</div><div class="u-size">Large</div><div class="u-psf">$3.80</div></div>
-        <div class="u-cell reserved" onclick="selectUnit(this,'BM-01-09')"><div class="u-dot"></div><div class="u-id">01-09</div><div class="u-size">Small</div><div class="u-psf">$4.80</div></div>
-        <div class="u-cell occupied" onclick="selectUnit(this,'BM-01-10')"><div class="u-dot"></div><div class="u-id">01-10</div><div class="u-size">Medium</div><div class="u-psf">$4.50</div></div>
-        <div class="u-cell occupied" onclick="selectUnit(this,'BM-01-11')"><div class="u-dot"></div><div class="u-id">01-11</div><div class="u-size">XL Biz</div><div class="u-psf">$3.20</div></div>
-        <div class="u-cell overdue" onclick="selectUnit(this,'BM-01-12')"><div class="u-dot"></div><div class="u-id">01-12</div><div class="u-size">Small</div><div class="u-psf">$4.80</div></div>
-        <div class="u-cell available" onclick="selectUnit(this,'BM-01-13')"><div class="u-dot"></div><div class="u-id">01-13</div><div class="u-size">Locker</div><div class="u-psf">$5.20</div></div>
-        <div class="u-cell occupied" onclick="selectUnit(this,'BM-01-14')"><div class="u-dot"></div><div class="u-id">01-14</div><div class="u-size">Medium</div><div class="u-psf">$4.40</div></div>
-        <div class="u-cell occupied" onclick="selectUnit(this,'BM-01-15')"><div class="u-dot"></div><div class="u-id">01-15</div><div class="u-size">Small</div><div class="u-psf">$4.80</div></div>
-        <div class="u-cell reserved" onclick="selectUnit(this,'BM-01-16')"><div class="u-dot"></div><div class="u-id">01-16</div><div class="u-size">Large</div><div class="u-psf">$3.90</div></div>
-        <div class="u-cell occupied" onclick="selectUnit(this,'BM-01-17')"><div class="u-dot"></div><div class="u-id">01-17</div><div class="u-size">XL Biz</div><div class="u-psf">$3.20</div></div>
-        <div class="u-cell available" onclick="selectUnit(this,'BM-01-18')"><div class="u-dot"></div><div class="u-id">01-18</div><div class="u-size">Small</div><div class="u-psf">$4.80</div></div>
-        <div class="u-cell overdue" onclick="selectUnit(this,'BM-01-19')"><div class="u-dot"></div><div class="u-id">01-19</div><div class="u-size">Medium</div><div class="u-psf">$4.40</div></div>
-        <div class="u-cell occupied" onclick="selectUnit(this,'BM-01-20')"><div class="u-dot"></div><div class="u-id">01-20</div><div class="u-size">Locker</div><div class="u-psf">$5.20</div></div>
-        <div class="u-cell maintenance" onclick="selectUnit(this,'BM-01-21')"><div class="u-dot" style="background:var(--light);"></div><div class="u-id">01-21</div><div class="u-size">Small</div><div class="u-psf" style="color:var(--light);">Maint.</div></div>
-        <div class="u-cell occupied" onclick="selectUnit(this,'BM-01-22')"><div class="u-dot"></div><div class="u-id">01-22</div><div class="u-size">Small</div><div class="u-psf">$4.80</div></div>
-        <div class="u-cell available" onclick="selectUnit(this,'BM-01-23')"><div class="u-dot"></div><div class="u-id">01-23</div><div class="u-size">Medium</div><div class="u-psf">$4.40</div></div>
-        <div class="u-cell occupied" onclick="selectUnit(this,'BM-01-24')"><div class="u-dot"></div><div class="u-id">01-24</div><div class="u-size">Large</div><div class="u-psf">$3.80</div></div>
-        <div class="u-cell reserved" onclick="selectUnit(this,'BM-01-25')"><div class="u-dot"></div><div class="u-id">01-25</div><div class="u-size">Locker</div><div class="u-psf">$5.10</div></div>
-      </div>
-    </div>
-
-    <!-- UNIT DETAIL PANEL -->
-    <div class="unit-detail" id="unitDetail">
-      <div class="ud-hdr">
-        <div>
-          <div class="ud-id" id="udId">BM-01-01 · Small Unit</div>
-          <div class="ud-badges" id="udBadges">
-            <span class="badge occ">● Occupied</span>
-            <span class="badge terra">30 sq ft</span>
-            <span class="badge neutral">Level 1 · Bukit Merah</span>
-            <span class="badge neutral">Ambient climate</span>
-          </div>
-        </div>
-        <div class="ud-actions">
-          <button class="act-btn" id="viewHistoryBtn">📋 History</button>
-          <button class="act-btn">📧 Message</button>
-          <button class="act-btn">🔑 Override PIN</button>
-          <button class="act-btn" id="editUnitBtn">✏️ Edit</button>
-          <button class="act-btn primary" id="adjustRateBtn">⚡ Adjust Rate</button>
-          <button class="act-btn danger" id="deleteUnitBtn">🗑 Delete</button>
-        </div>
-      </div>
-
-      <div class="ud-stats">
-        <div class="ud-stat">
-          <div class="ud-stat-lbl">Current Tenant</div>
-          <div class="ud-stat-val" id="udTenant" style="font-size:14px;">Priya Nair</div>
-          <div class="ud-stat-sub" id="udTenantSub">Business · E-commerce</div>
-        </div>
-        <div class="ud-stat">
-          <div class="ud-stat-lbl">Monthly Rate</div>
-          <div class="ud-stat-val" id="udRate">$144</div>
-          <div class="ud-stat-sub" id="udRateSub">$4.80/sq ft</div>
-        </div>
-        <div class="ud-stat">
-          <div class="ud-stat-lbl">Status</div>
-          <div class="ud-stat-val" id="udStatus" style="font-size:16px;">Occupied</div>
-          <div class="ud-stat-sub" id="udStatusSub">—</div>
-        </div>
-        <div class="ud-stat">
-          <div class="ud-stat-lbl">Branch · Level</div>
-          <div class="ud-stat-val" id="udBranch" style="font-size:14px;">Bukit Merah</div>
-          <div class="ud-stat-sub" id="udLevel">Level 1</div>
-        </div>
-        <div class="ud-stat">
-          <div class="ud-stat-lbl">Size</div>
-          <div class="ud-stat-val" id="udSize" style="font-size:14px;">Small</div>
-          <div class="ud-stat-sub" id="udSizeSub">SMALL · 30 sq ft</div>
-        </div>
-        <div class="ud-stat">
-          <div class="ud-stat-lbl">PSF</div>
-          <div class="ud-stat-val" id="udPsf">$4.80</div>
-          <div class="ud-stat-sub" id="udPsfSub">—</div>
-        </div>
-        <div class="ud-stat">
-          <div class="ud-stat-lbl">Rate History</div>
-          <div class="ud-stat-val" id="udRateHistCount" style="font-size:16px;">2</div>
-          <div class="ud-stat-sub" id="udRateHistSub">entries</div>
-        </div>
-        <div class="ud-stat">
-          <div class="ud-stat-lbl">Last Rate Change</div>
-          <div class="ud-stat-val" id="udLastChange" style="font-size:14px;">+5.9%</div>
-          <div class="ud-stat-sub" id="udLastChangeSub">01 Jul 2026 · Annual review</div>
-        </div>
-      </div>
-    </div>
-
-    <!-- UNITS MANAGEMENT (CRUD) -->
+    <!-- LATEST UNIT ACTIVITY (replaces the units management card) -->
     <div class="tbl-card">
       <div class="sec-hdr">
         <div>
-          <div class="sec-title">Units Management</div>
-          <div class="sec-sub" id="unitsSub">All units across branches</div>
-        </div>
-        <div style="display:flex;gap:7px;">
-          <button class="tb-btn primary" id="addUnitBtn">+ Add Unit</button>
+          <div class="sec-title">Latest Unit Activity</div>
+          <div class="sec-sub">Recent additions, rate changes & move-ins</div>
         </div>
       </div>
-      <div class="modal-alert" id="unitsBanner" hidden></div>
-      <table class="data-tbl" id="unitsTable">
-        <thead>
-          <tr>
-            <th>Code</th><th>Size</th><th>Branch</th><th>Floor</th><th>Sqft</th><th>Rate/mo</th><th>PSF</th><th>Status</th><th>Tenant</th><th></th>
-          </tr>
-        </thead>
-        <tbody></tbody>
-      </table>
+      <div class="alert-list" id="activityFeed"></div>
     </div>
 
     <!-- TENANTS TABLE -->
@@ -635,6 +509,180 @@ body { font-family: 'Manrope', sans-serif; background: var(--cream); color: var(
       <div class="alert-list" id="alertList"></div>
     </div>
 
+    </div>
+
+    <!-- UNITS SECTION (sidebar-navigated) -->
+    <div class="view" id="view-units" hidden>
+
+      <!-- UNIT MAP -->
+      <div class="unit-map-card">
+        <div class="sec-hdr">
+          <div>
+            <div class="sec-title" id="unitMapTitle">Unit Map — Bukit Merah · Level 1</div>
+            <div class="sec-sub">Click any unit to view details, adjust rate, or manage tenancy</div>
+          </div>
+          <div style="display:flex;gap:8px;">
+            <button class="tb-btn ghost" style="font-size:10px;">⬇ Export Floor Plan</button>
+          </div>
+        </div>
+
+        <div class="unit-legend" id="mapLegend">
+          <div class="u-leg"><div class="u-leg-dot" style="background:var(--teal);"></div>Occupied (56)</div>
+          <div class="u-leg"><div class="u-leg-dot" style="background:var(--olive);"></div>Available (10)</div>
+          <div class="u-leg"><div class="u-leg-dot" style="background:var(--amber);"></div>Reserved (3)</div>
+          <div class="u-leg"><div class="u-leg-dot" style="background:var(--red);"></div>Overdue (4)</div>
+          <div class="u-leg"><div class="u-leg-dot" style="background:var(--light);"></div>Maintenance (7)</div>
+        </div>
+
+        <div class="floor-tabs" id="floorTabs">
+          <button class="floor-tab active" data-level="1">Level 1</button>
+          <button class="floor-tab" data-level="2">Level 2</button>
+          <button class="floor-tab" data-level="3">Level 3</button>
+          <button class="floor-tab" data-level="4">Level 4</button>
+        </div>
+
+        <div class="unit-grid" id="unitGrid">
+          <div class="u-cell occupied selected" onclick="selectUnit(this,'BM-01-01')"><div class="u-dot"></div><div class="u-id">01-01</div><div class="u-size">Small</div><div class="u-psf">$4.80</div></div>
+          <div class="u-cell occupied" onclick="selectUnit(this,'BM-01-02')"><div class="u-dot"></div><div class="u-id">01-02</div><div class="u-size">Small</div><div class="u-psf">$4.80</div></div>
+          <div class="u-cell occupied" onclick="selectUnit(this,'BM-01-03')"><div class="u-dot"></div><div class="u-id">01-03</div><div class="u-size">Locker</div><div class="u-psf">$5.20</div></div>
+          <div class="u-cell available" onclick="selectUnit(this,'BM-01-04')"><div class="u-dot"></div><div class="u-id">01-04</div><div class="u-size">Locker</div><div class="u-psf">$5.20</div></div>
+          <div class="u-cell occupied" onclick="selectUnit(this,'BM-01-05')"><div class="u-dot"></div><div class="u-id">01-05</div><div class="u-size">Medium</div><div class="u-psf">$4.40</div></div>
+          <div class="u-cell overdue" onclick="selectUnit(this,'BM-01-06')"><div class="u-dot"></div><div class="u-id">01-06</div><div class="u-size">Small</div><div class="u-psf">$4.60</div></div>
+          <div class="u-cell occupied" onclick="selectUnit(this,'BM-01-07')"><div class="u-dot"></div><div class="u-id">01-07</div><div class="u-size">Large</div><div class="u-psf">$3.80</div></div>
+          <div class="u-cell available" onclick="selectUnit(this,'BM-01-08')"><div class="u-dot"></div><div class="u-id">01-08</div><div class="u-size">Large</div><div class="u-psf">$3.80</div></div>
+          <div class="u-cell reserved" onclick="selectUnit(this,'BM-01-09')"><div class="u-dot"></div><div class="u-id">01-09</div><div class="u-size">Small</div><div class="u-psf">$4.80</div></div>
+          <div class="u-cell occupied" onclick="selectUnit(this,'BM-01-10')"><div class="u-dot"></div><div class="u-id">01-10</div><div class="u-size">Medium</div><div class="u-psf">$4.50</div></div>
+          <div class="u-cell occupied" onclick="selectUnit(this,'BM-01-11')"><div class="u-dot"></div><div class="u-id">01-11</div><div class="u-size">XL Biz</div><div class="u-psf">$3.20</div></div>
+          <div class="u-cell overdue" onclick="selectUnit(this,'BM-01-12')"><div class="u-dot"></div><div class="u-id">01-12</div><div class="u-size">Small</div><div class="u-psf">$4.80</div></div>
+          <div class="u-cell available" onclick="selectUnit(this,'BM-01-13')"><div class="u-dot"></div><div class="u-id">01-13</div><div class="u-size">Locker</div><div class="u-psf">$5.20</div></div>
+          <div class="u-cell occupied" onclick="selectUnit(this,'BM-01-14')"><div class="u-dot"></div><div class="u-id">01-14</div><div class="u-size">Medium</div><div class="u-psf">$4.40</div></div>
+          <div class="u-cell occupied" onclick="selectUnit(this,'BM-01-15')"><div class="u-dot"></div><div class="u-id">01-15</div><div class="u-size">Small</div><div class="u-psf">$4.80</div></div>
+          <div class="u-cell reserved" onclick="selectUnit(this,'BM-01-16')"><div class="u-dot"></div><div class="u-id">01-16</div><div class="u-size">Large</div><div class="u-psf">$3.90</div></div>
+          <div class="u-cell occupied" onclick="selectUnit(this,'BM-01-17')"><div class="u-dot"></div><div class="u-id">01-17</div><div class="u-size">XL Biz</div><div class="u-psf">$3.20</div></div>
+          <div class="u-cell available" onclick="selectUnit(this,'BM-01-18')"><div class="u-dot"></div><div class="u-id">01-18</div><div class="u-size">Small</div><div class="u-psf">$4.80</div></div>
+          <div class="u-cell overdue" onclick="selectUnit(this,'BM-01-19')"><div class="u-dot"></div><div class="u-id">01-19</div><div class="u-size">Medium</div><div class="u-psf">$4.40</div></div>
+          <div class="u-cell occupied" onclick="selectUnit(this,'BM-01-20')"><div class="u-dot"></div><div class="u-id">01-20</div><div class="u-size">Locker</div><div class="u-psf">$5.20</div></div>
+          <div class="u-cell maintenance" onclick="selectUnit(this,'BM-01-21')"><div class="u-dot" style="background:var(--light);"></div><div class="u-id">01-21</div><div class="u-size">Small</div><div class="u-psf" style="color:var(--light);">Maint.</div></div>
+          <div class="u-cell occupied" onclick="selectUnit(this,'BM-01-22')"><div class="u-dot"></div><div class="u-id">01-22</div><div class="u-size">Small</div><div class="u-psf">$4.80</div></div>
+          <div class="u-cell available" onclick="selectUnit(this,'BM-01-23')"><div class="u-dot"></div><div class="u-id">01-23</div><div class="u-size">Medium</div><div class="u-psf">$4.40</div></div>
+          <div class="u-cell occupied" onclick="selectUnit(this,'BM-01-24')"><div class="u-dot"></div><div class="u-id">01-24</div><div class="u-size">Large</div><div class="u-psf">$3.80</div></div>
+          <div class="u-cell reserved" onclick="selectUnit(this,'BM-01-25')"><div class="u-dot"></div><div class="u-id">01-25</div><div class="u-size">Locker</div><div class="u-psf">$5.10</div></div>
+        </div>
+      </div>
+
+      <!-- UNIT DETAIL PANEL (opens on map-cell click or table View) -->
+      <div class="unit-detail" id="unitDetail">
+        <div class="ud-hdr">
+          <div>
+            <div class="ud-id" id="udId">BM-01-01 · Small Unit</div>
+            <div class="ud-badges" id="udBadges">
+              <span class="badge occ">● Occupied</span>
+              <span class="badge terra">30 sq ft</span>
+              <span class="badge neutral">Level 1 · Bukit Merah</span>
+              <span class="badge neutral">Ambient climate</span>
+            </div>
+          </div>
+          <div class="ud-actions">
+            <button class="act-btn" id="viewHistoryBtn">📋 History</button>
+            <button class="act-btn">📧 Message</button>
+            <button class="act-btn">🔑 Override PIN</button>
+            <button class="act-btn" id="editUnitBtn">✏️ Edit</button>
+            <button class="act-btn primary" id="adjustRateBtn">⚡ Adjust Rate</button>
+            <button class="act-btn danger" id="deleteUnitBtn">🗑 Delete</button>
+          </div>
+        </div>
+
+        <div class="ud-stats">
+          <div class="ud-stat">
+            <div class="ud-stat-lbl">Current Tenant</div>
+            <div class="ud-stat-val" id="udTenant" style="font-size:14px;">Priya Nair</div>
+            <div class="ud-stat-sub" id="udTenantSub">Business · E-commerce</div>
+          </div>
+          <div class="ud-stat">
+            <div class="ud-stat-lbl">Monthly Rate</div>
+            <div class="ud-stat-val" id="udRate">$144</div>
+            <div class="ud-stat-sub" id="udRateSub">$4.80/sq ft</div>
+          </div>
+          <div class="ud-stat">
+            <div class="ud-stat-lbl">Status</div>
+            <div class="ud-stat-val" id="udStatus" style="font-size:16px;">Occupied</div>
+            <div class="ud-stat-sub" id="udStatusSub">—</div>
+          </div>
+          <div class="ud-stat">
+            <div class="ud-stat-lbl">Branch · Level</div>
+            <div class="ud-stat-val" id="udBranch" style="font-size:14px;">Bukit Merah</div>
+            <div class="ud-stat-sub" id="udLevel">Level 1</div>
+          </div>
+          <div class="ud-stat">
+            <div class="ud-stat-lbl">Size</div>
+            <div class="ud-stat-val" id="udSize" style="font-size:14px;">Small</div>
+            <div class="ud-stat-sub" id="udSizeSub">SMALL · 30 sq ft</div>
+          </div>
+          <div class="ud-stat">
+            <div class="ud-stat-lbl">PSF</div>
+            <div class="ud-stat-val" id="udPsf">$4.80</div>
+            <div class="ud-stat-sub" id="udPsfSub">—</div>
+          </div>
+          <div class="ud-stat">
+            <div class="ud-stat-lbl">Rate History</div>
+            <div class="ud-stat-val" id="udRateHistCount" style="font-size:16px;">2</div>
+            <div class="ud-stat-sub" id="udRateHistSub">entries</div>
+          </div>
+          <div class="ud-stat">
+            <div class="ud-stat-lbl">Last Rate Change</div>
+            <div class="ud-stat-val" id="udLastChange" style="font-size:14px;">+5.9%</div>
+            <div class="ud-stat-sub" id="udLastChangeSub">01 Jul 2026 · Annual review</div>
+          </div>
+        </div>
+
+        <!-- Extensible placeholder — no fabricated data (filled in a later phase). -->
+        <div class="ud-history">
+          <div class="ud-history-title">Tenant History</div>
+          <div class="ud-history-empty" id="tenantHistoryEmpty">No tenant history recorded for this unit yet.</div>
+        </div>
+      </div>
+
+      <!-- UNITS TABLE (server-side paginated CRUD) -->
+      <div class="tbl-card">
+        <div class="sec-hdr">
+          <div>
+            <div class="sec-title">Units</div>
+            <div class="sec-sub" id="unitsSub">All units across branches</div>
+          </div>
+          <div style="display:flex;gap:7px;">
+            <button class="tb-btn primary" id="addUnitBtn">+ Add Unit</button>
+          </div>
+        </div>
+        <div class="tbl-toolbar">
+          <select id="statusFilter" class="tbl-select" title="Filter by status (map branch/level also apply)">
+            <option value="">All statuses</option>
+            <option value="OCCUPIED">Occupied</option>
+            <option value="AVAILABLE">Available</option>
+            <option value="RESERVED">Reserved</option>
+            <option value="OVERDUE">Overdue</option>
+            <option value="MAINTENANCE">Maintenance</option>
+            <option value="INACTIVE">Inactive</option>
+          </select>
+        </div>
+        <div class="modal-alert" id="unitsBanner" hidden></div>
+        <table class="data-tbl" id="unitsTable">
+          <thead>
+            <tr>
+              <th>Code</th><th>Size</th><th>Branch</th><th>Floor</th><th>Sqft</th><th>Rate/mo</th><th>PSF</th><th>Status</th><th>Tenant</th><th></th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+        <div class="tbl-pager">
+          <div class="tbl-pager-info" id="pageInfo">Page 1 of 1</div>
+          <div class="tbl-pager-btns">
+            <button class="tb-btn ghost" id="pagePrev">‹ Prev</button>
+            <button class="tb-btn ghost" id="pageNext">Next ›</button>
+          </div>
+        </div>
+      </div>
+
+    </div>
   </div>
 </main>
 

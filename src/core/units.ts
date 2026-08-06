@@ -45,12 +45,42 @@ function serializeUnit(u: UnitWithRelations) {
   };
 }
 
-export async function listUnits() {
-  const units = await prisma.unit.findMany({
-    include: { size: true, branch: true, floor: true, tenant: true },
-    orderBy: { unitCode: 'asc' },
-  });
-  return units.map(serializeUnit);
+export async function listUnits(query: UnitListQuery = {}) {
+  const page = Math.max(1, query.page ?? 1);
+  const perPage = Math.min(200, Math.max(1, query.perPage ?? 25));
+  const where: Prisma.UnitWhereInput = {
+    ...(query.status ? { status: query.status as UnitStatus } : {}),
+    ...(query.branch ? { branch: { code: query.branch } } : {}),
+    ...(query.level != null ? { floor: { level: query.level } } : {}),
+  };
+  const [units, total] = await Promise.all([
+    prisma.unit.findMany({
+      where,
+      include: { size: true, branch: true, floor: true, tenant: true },
+      orderBy: { unitCode: 'asc' },
+      skip: (page - 1) * perPage,
+      take: perPage,
+    }),
+    prisma.unit.count({ where }),
+  ]);
+  return {
+    rows: units.map(serializeUnit),
+    meta: {
+      count: units.length,
+      page,
+      perPage,
+      totalPages: Math.max(1, Math.ceil(total / perPage)),
+      total,
+    },
+  };
+}
+
+export interface UnitListQuery {
+  page?: number;
+  perPage?: number;
+  status?: string;
+  branch?: string;
+  level?: number;
 }
 
 export interface PublicUnitsQuery {
@@ -281,4 +311,104 @@ export async function getUnitDetail(code: string) {
       by: r.appliedBy,
     })),
   };
+}
+
+// ---------- unit activity feed (dashboard "Latest Unit Activity") ----------
+
+export interface UnitActivityItem {
+  type: 'unit_created' | 'unit_updated' | 'rate_change' | 'move_in' | 'booking';
+  unitCode: string;
+  at: Date;
+  message: string;
+  unit?: { code: string; size?: string; branch?: string };
+  actor?: string;
+}
+
+const fmtDollars = (n: number) =>
+  '$' + n.toLocaleString('en-US', { maximumFractionDigits: n % 1 === 0 ? 0 : 2 });
+
+// Merges unit-related events (additions, non-rate updates, rate changes, move-ins,
+// scheduled move-in bookings) sorted newest-first. Requires Unit.createdAt/updatedAt,
+// which the add_crud_timestamps migration backfilled for pre-existing rows.
+export async function getUnitActivity(limit = 20) {
+  const capped = Math.min(100, Math.max(1, limit));
+  const [units, rateChanges, moveIns, bookings] = await Promise.all([
+    prisma.unit.findMany({
+      include: { size: true, branch: true },
+      orderBy: { unitCode: 'asc' },
+    }),
+    prisma.rateChange.findMany({
+      include: { unit: { include: { size: true, branch: true } } },
+      orderBy: { date: 'desc' },
+    }),
+    prisma.tenant.findMany({
+      where: { moveInDate: { not: null } },
+      include: { unit: { include: { size: true, branch: true } } },
+      orderBy: { moveInDate: 'desc' },
+    }),
+    prisma.booking.findMany({
+      include: { tenant: true, unit: { include: { size: true, branch: true } } },
+      orderBy: { moveInDate: 'desc' },
+    }),
+  ]);
+
+  const events: UnitActivityItem[] = [];
+
+  for (const u of units) {
+    const unit = { code: u.unitCode, size: u.size.name, branch: u.branch.code };
+    events.push({
+      type: 'unit_created',
+      unitCode: u.unitCode,
+      at: u.createdAt,
+      message: `New unit ${u.unitCode} added`,
+      unit,
+    });
+    // Non-rate updates only: skip backfilled rows where updatedAt == createdAt.
+    if (u.updatedAt && u.createdAt && u.updatedAt.getTime() > u.createdAt.getTime()) {
+      events.push({
+        type: 'unit_updated',
+        unitCode: u.unitCode,
+        at: u.updatedAt,
+        message: `Unit ${u.unitCode} updated`,
+        unit,
+      });
+    }
+  }
+
+  for (const rc of rateChanges) {
+    const u = rc.unit;
+    events.push({
+      type: 'rate_change',
+      unitCode: u.unitCode,
+      at: rc.date,
+      message: `Rate for ${u.unitCode} changed ${fmtDollars(toNum(rc.previous))} → ${fmtDollars(toNum(rc.current))}`,
+      actor: rc.appliedBy,
+      unit: { code: u.unitCode, size: u.size.name, branch: u.branch.code },
+    });
+  }
+
+  for (const t of moveIns) {
+    if (!t.unit || !t.moveInDate) continue;
+    events.push({
+      type: 'move_in',
+      unitCode: t.unit.unitCode,
+      at: t.moveInDate,
+      message: `Tenant ${t.name} moved into ${t.unit.unitCode}`,
+      unit: { code: t.unit.unitCode, size: t.unit.size.name, branch: t.unit.branch.code },
+    });
+  }
+
+  for (const b of bookings) {
+    if (!b.unit) continue;
+    events.push({
+      type: 'booking',
+      unitCode: b.unit.unitCode,
+      at: b.moveInDate,
+      message: `Move-in booked for ${b.tenant.name} at ${b.unit.unitCode}`,
+      unit: { code: b.unit.unitCode, size: b.unit.size.name, branch: b.unit.branch.code },
+    });
+  }
+
+  events.sort((a, b) => b.at.getTime() - a.at.getTime() || a.unitCode.localeCompare(b.unitCode));
+  return events.slice(0, capped);
 }

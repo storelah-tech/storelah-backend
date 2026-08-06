@@ -12,10 +12,20 @@
   let rateTargetCode = null;
 
   const state = {
-    units: [], // normalized units (list shape)
+    units: [], // normalized units (current page only)
     branches: [],
     floors: [],
     sizes: [],
+    // units-section view state
+    view: 'dashboard', // 'dashboard' | 'units'
+    page: 1,
+    perPage: 10,
+    total: 0,
+    totalPages: 1,
+    branchCode: 'BM', // drives map + table filter (sidebar branch switcher)
+    level: 1, // drives map + table filter (floor tabs)
+    statusFilter: '',
+    selectedCode: null,
   };
 
   const $ = (s) => document.querySelector(s);
@@ -170,6 +180,38 @@
   };
   const fmtMoney = (n) => '$' + Number(n).toLocaleString('en-US', { maximumFractionDigits: 2 });
 
+  // ---------- small helpers ----------
+  function escapeHtml(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, (c) =>
+      ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]),
+    );
+  }
+
+  function timeAgo(d) {
+    const diff = Date.now() - new Date(d).getTime();
+    const s = Math.floor(diff / 1000);
+    if (s < 45) return 'just now';
+    const m = Math.floor(s / 60);
+    if (m < 60) return m + 'm ago';
+    const h = Math.floor(m / 60);
+    if (h < 24) return h + 'h ago';
+    const days = Math.floor(h / 24);
+    if (days < 7) return days + 'd ago';
+    if (days < 30) return Math.floor(days / 7) + 'w ago';
+    const mo = Math.floor(days / 30);
+    if (mo < 12) return mo + 'mo ago';
+    return Math.floor(mo / 12) + 'y ago';
+  }
+
+  function branchByCode(code) {
+    return state.branches.find((b) => b.code === code);
+  }
+
+  function branchFloors(code) {
+    const b = branchByCode(code);
+    return state.floors.filter((f) => f.branchId === b?.id).sort((a, c) => a.level - c.level);
+  }
+
   // ---------- dashboard bindings (mirror frozen data-layer.js) ----------
   const kpiVal = (i) => $$('.kpi-strip .kpi')[i]?.querySelector('.kpi-val');
   const kpiDelta = (i) => $$('.kpi-strip .kpi')[i]?.querySelector('.kpi-delta');
@@ -211,23 +253,56 @@
     }
   }
 
-  function bindUnitMap(map) {
-    if (!map || !map.units || !document.querySelector('.u-cell')) return;
-    const byShort = new Map(map.units.map((u) => [u.short, u]));
-    document.querySelectorAll('.u-cell').forEach((el) => {
-      const short = el.querySelector('.u-id')?.textContent;
-      const data = byShort.get(short);
-      if (!data) return;
-      el.className = 'u-cell ' + (MAP_TONE[data.status.toUpperCase()] || 'available');
-      const size = el.querySelector('.u-size');
-      const psf = el.querySelector('.u-psf');
-      if (size) size.textContent = data.size;
-      if (psf) {
-        psf.textContent = data.psf ? '$' + data.psf.toFixed(2) : 'Maint.';
-        psf.removeAttribute('style');
-      }
-      el.onclick = () => selectUnit(el, data.code);
-    });
+  // ---------- unit map (data-driven; the 25-cell shell is the no-JS fallback) ----------
+  function renderFloorTabs() {
+    const tabs = $('#floorTabs');
+    if (!tabs) return;
+    const floors = branchFloors(state.branchCode);
+    if (!floors.length) return;
+    tabs.innerHTML = floors
+      .map(
+        (f) =>
+          `<button class="floor-tab ${f.level === state.level ? 'active' : ''}" data-level="${f.level}">Level ${f.level}</button>`,
+      )
+      .join('');
+  }
+
+  function renderUnitMap(map) {
+    const title = $('#unitMapTitle');
+    const legend = $('#mapLegend');
+    const grid = $('#unitGrid');
+    const b = branchByCode(state.branchCode);
+    if (title) title.textContent = `Unit Map — ${b ? b.name : state.branchCode} · Level ${state.level}`;
+    if (legend && map && map.legend) {
+      const L = map.legend;
+      const items = [
+        ['Occupied', L.occupied, 'var(--teal)'],
+        ['Available', L.available, 'var(--olive)'],
+        ['Reserved', L.reserved, 'var(--amber)'],
+        ['Overdue', L.overdue, 'var(--red)'],
+        ['Maintenance', L.maintenance, 'var(--light)'],
+      ];
+      legend.innerHTML = items
+        .map(
+          ([label, count, color]) =>
+            `<div class="u-leg"><div class="u-leg-dot" style="background:${color};"></div>${label} (${count})</div>`,
+        )
+        .join('');
+    }
+    renderFloorTabs();
+    if (!grid || !map || !map.units) return;
+    grid.innerHTML = map.units
+      .map((u) => {
+        const tone = MAP_TONE[u.status.toUpperCase()] || 'available';
+        const psf = u.psf ? '$' + Number(u.psf).toFixed(2) : 'Maint.';
+        return `<div class="u-cell ${tone}" onclick="selectUnit(this,'${escapeHtml(u.code)}')"><div class="u-dot"></div><div class="u-id">${escapeHtml(u.short)}</div><div class="u-size">${escapeHtml(u.size)}</div><div class="u-psf">${psf}</div></div>`;
+      })
+      .join('');
+  }
+
+  async function fetchUnitMap() {
+    const map = await get(`/units/map?branch=${encodeURIComponent(state.branchCode)}&level=${state.level}`);
+    renderUnitMap(map);
   }
 
   function bindTenants(rows) {
@@ -298,6 +373,39 @@
     if (badge) badge.textContent = data ? data.length : 0;
   }
 
+  // ---------- latest unit activity feed ----------
+  const ACT_META = {
+    unit_created: { icon: '🆕', tone: 'olive' },
+    unit_updated: { icon: '✏️', tone: 'terra' },
+    rate_change: { icon: '💱', tone: 'amber' },
+    move_in: { icon: '🔑', tone: 'teal' },
+    booking: { icon: '📅', tone: 'olive' },
+  };
+
+  function bindActivity(items) {
+    const list = $('#activityFeed');
+    if (!list) return;
+    if (!items || !items.length) {
+      list.innerHTML = '<div class="alert-desc" style="padding:10px 0;">No unit activity yet.</div>';
+      return;
+    }
+    list.innerHTML = (items || [])
+      .map((it) => {
+        const meta = ACT_META[it.type] || { icon: '•', tone: '' };
+        const desc = it.actor
+          ? `by ${escapeHtml(it.actor)}`
+          : it.unit && it.unit.branch
+            ? `· ${escapeHtml(it.unit.branch)}`
+            : '';
+        return `<div class="alert-item">
+          <div class="alert-icon ${meta.tone}">${meta.icon}</div>
+          <div class="alert-body"><div class="alert-title">${escapeHtml(it.message)}</div><div class="alert-desc">${desc}</div></div>
+          <div class="alert-time">${timeAgo(it.at)}</div>
+        </div>`;
+      })
+      .join('');
+  }
+
   // ---------- units table ----------
   function renderUnitsTable() {
     const tbody = $('#unitsTable tbody');
@@ -327,8 +435,39 @@
       .join('');
     const sub = $('#unitsSub');
     if (sub) {
-      sub.textContent = `${state.units.length} units · ${state.units.filter((u) => u.status === 'AVAILABLE').length} available`;
+      const start = state.total === 0 ? 0 : (state.page - 1) * state.perPage + 1;
+      const end = Math.min(state.page * state.perPage, state.total);
+      sub.textContent = `${state.total} unit${state.total === 1 ? '' : 's'} · showing ${start}–${end}`;
     }
+  }
+
+  // ---------- server-side pagination ----------
+  async function fetchUnitsPage() {
+    const qs = new URLSearchParams({ page: String(state.page), perPage: String(state.perPage) });
+    if (state.statusFilter) qs.set('status', state.statusFilter);
+    if (state.branchCode) qs.set('branch', state.branchCode);
+    if (state.level) qs.set('level', String(state.level));
+    const body = await request(`/units?${qs}`);
+    state.units = (body.data || []).map(normalizeUnit);
+    const m = body.meta || {};
+    state.total = m.total != null ? m.total : state.units.length;
+    state.totalPages = m.totalPages != null ? m.totalPages : 1;
+    // Last row deleted off the final page -> clamp to the real last page.
+    if (state.units.length === 0 && state.page > 1 && state.total > 0 && state.page > state.totalPages) {
+      state.page = state.totalPages;
+      return fetchUnitsPage();
+    }
+    renderUnitsTable();
+    renderPager();
+  }
+
+  function renderPager() {
+    const info = $('#pageInfo');
+    const prev = $('#pagePrev');
+    const next = $('#pageNext');
+    if (info) info.textContent = `Page ${state.page} of ${state.totalPages} · ${state.total} units`;
+    if (prev) prev.disabled = state.page <= 1;
+    if (next) next.disabled = state.page >= state.totalPages;
   }
 
   function setUnitsBanner(msg, tone) {
@@ -389,6 +528,7 @@
       setVal('#udLastChange', last ? (last.changePct >= 0 ? '+' : '') + last.changePct + '%' : '—');
       setVal('#udLastChangeSub', last ? new Date(last.date).toLocaleDateString('en-SG', { day: '2-digit', month: 'short', year: 'numeric' }) + ' · ' + (last.reason || '') : '—');
       currentEditCode = u.code;
+      state.selectedCode = u.code;
       setUnitsBanner('');
     } catch (err) {
       showBanner('Detail: ' + describeError(err));
@@ -401,6 +541,13 @@
     state.branches = branches;
     state.floors = floors;
     state.sizes = sizes;
+    // Sync the sidebar branch switcher with real data.
+    const el = $('#sbBranch');
+    const name = el?.querySelector('.sb-branch-name');
+    const sub = el?.querySelector('.sb-branch-sub');
+    const b = branchByCode(state.branchCode);
+    if (name && b) name.textContent = b.name;
+    if (sub && b) sub.textContent = `${b.code} · ${b.floors.length} floors · All active`;
   }
 
   function populateBranchSelect(selected) {
@@ -669,23 +816,58 @@
   }
 
   // ---------- refresh ----------
+  async function refreshUnitsView() {
+    await Promise.all([
+      fetchUnitsPage().catch(() => {}),
+      fetchUnitMap().catch(() => {}),
+    ]);
+  }
+
   async function refreshAll() {
-    const [units, summary, map, tenants, leads, actions] = await Promise.all([
-      get('/units').catch(() => []),
+    const [summary, activity, tenants, leads, actions] = await Promise.all([
       get('/summary').catch(() => null),
-      get('/units/map?branch=BM&level=1').catch(() => null),
+      get('/units/activity?limit=20').catch(() => []),
       get('/tenants').catch(() => []),
       get('/leads').catch(() => []),
       get('/action-items').catch(() => []),
     ]);
-    state.units = units.map(normalizeUnit);
-    renderUnitsTable();
     bindKpis(summary);
     bindCharts(summary);
-    bindUnitMap(map);
+    bindActivity(activity);
     bindTenants(tenants);
     bindLeads(leads);
     bindActions(actions);
+    if (state.view === 'units') await refreshUnitsView();
+  }
+
+  // ---------- sidebar navigation ----------
+  function switchView(view) {
+    state.view = view;
+    const dash = $('#view-dashboard');
+    const units = $('#view-units');
+    if (dash) dash.hidden = view !== 'dashboard';
+    if (units) units.hidden = view !== 'units';
+    $$('.nav-item[data-view]').forEach((el) => el.classList.toggle('active', el.dataset.view === view));
+    try {
+      history.replaceState(null, '', view === 'units' ? '#units' : '#');
+    } catch (e) {
+      /* file:// or sandboxed contexts may reject replaceState */
+    }
+    if (view === 'units') refreshUnitsView();
+  }
+
+  function cycleBranch() {
+    if (!state.branches.length) return;
+    const idx = state.branches.findIndex((b) => b.code === state.branchCode);
+    const next = state.branches[(idx + 1) % state.branches.length];
+    state.branchCode = next.code;
+    const el = $('#sbBranch');
+    const name = el?.querySelector('.sb-branch-name');
+    const sub = el?.querySelector('.sb-branch-sub');
+    if (name) name.textContent = next.name;
+    if (sub) sub.textContent = `${next.code} · ${next.floors.length} floors · All active`;
+    state.page = 1;
+    refreshUnitsView();
   }
 
   // ---------- charts (frozen configs) ----------
@@ -732,6 +914,37 @@
 
   // ---------- events ----------
   function wireEvents() {
+    // sidebar navigation
+    $$('.nav-item[data-view]').forEach((el) =>
+      el.addEventListener('click', () => switchView(el.dataset.view)),
+    );
+    $('#sbBranch').addEventListener('click', cycleBranch);
+    // units section: floor tabs, filters, pager
+    $('#floorTabs').addEventListener('click', (e) => {
+      const btn = e.target.closest('.floor-tab[data-level]');
+      if (!btn) return;
+      const level = Number(btn.dataset.level);
+      if (level === state.level) return;
+      state.level = level;
+      state.page = 1;
+      refreshUnitsView();
+    });
+    $('#statusFilter').addEventListener('change', (e) => {
+      state.statusFilter = e.target.value;
+      state.page = 1;
+      fetchUnitsPage().catch(() => {});
+    });
+    $('#pagePrev').addEventListener('click', () => {
+      if (state.page <= 1) return;
+      state.page -= 1;
+      fetchUnitsPage().catch(() => {});
+    });
+    $('#pageNext').addEventListener('click', () => {
+      if (state.page >= state.totalPages) return;
+      state.page += 1;
+      fetchUnitsPage().catch(() => {});
+    });
+    // units CRUD
     $('#addUnitBtn').addEventListener('click', openCreateForm);
     $('#unitModalClose').addEventListener('click', closeUnitModal);
     $('#unitFormCancel').addEventListener('click', closeUnitModal);
@@ -785,6 +998,7 @@
       await login();
       initCharts();
       await Promise.all([loadRefs(), refreshAll()]);
+      if (location.hash === '#units') switchView('units');
     } catch (e) {
       console.error('[storelah admin] data layer failed', e);
       showBanner('Data layer error: ' + (e && e.message ? e.message : e));

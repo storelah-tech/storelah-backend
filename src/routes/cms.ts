@@ -14,6 +14,7 @@ import {
   deactivateUnit,
   listFloors,
   listSizes,
+  getUnitActivity,
 } from '../core/units';
 import { listTenants, createTenant, updateTenant, deactivateTenant } from '../core/tenants';
 import { listLeads } from '../core/leads';
@@ -60,6 +61,20 @@ const updateUnitSchema = z.object({
     .enum(['OCCUPIED', 'AVAILABLE', 'RESERVED', 'OVERDUE', 'MAINTENANCE', 'INACTIVE'])
     .optional(),
   climateControl: z.string().nullable().optional(),
+});
+
+const unitListQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  perPage: z.coerce.number().int().min(1).max(200).default(25),
+  status: z
+    .enum(['OCCUPIED', 'AVAILABLE', 'RESERVED', 'OVERDUE', 'MAINTENANCE', 'INACTIVE'])
+    .optional(),
+  branch: z.string().trim().min(1).optional(),
+  level: z.coerce.number().int().min(1).optional(),
+});
+
+const unitActivityQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(100).default(20),
 });
 
 const createTenantSchema = z.object({
@@ -136,9 +151,25 @@ router.get('/units/map', requireAuth, async (req: Request, res: Response) => {
   ok(res, await getUnitMap(branch, level));
 });
 
-router.get('/units', requireAuth, async (_req: Request, res: Response) => {
-  const rows = await listUnits();
-  ok(res, rows, { count: rows.length });
+router.get('/units', requireAuth, async (req: Request, res: Response) => {
+  const parsed = unitListQuerySchema.safeParse(req.query);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid unit query', parsed.error.flatten());
+    return;
+  }
+  const { rows, meta } = await listUnits(parsed.data);
+  ok(res, rows, meta);
+});
+
+// NOTE: must be registered before GET /units/:code so "activity" isn't parsed as a unit code.
+router.get('/units/activity', requireAuth, async (req: Request, res: Response) => {
+  const parsed = unitActivityQuerySchema.safeParse(req.query);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid activity query', parsed.error.flatten());
+    return;
+  }
+  const items = await getUnitActivity(parsed.data.limit);
+  ok(res, items, { count: items.length });
 });
 
 router.post('/units', requireAuth, async (req: Request, res: Response) => {

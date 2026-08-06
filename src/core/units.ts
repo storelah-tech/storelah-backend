@@ -15,6 +15,7 @@ export interface CreateUnitInput {
   monthlyRate: number;
   status?: UnitStatus;
   climateControl?: string;
+  name?: string;
 }
 
 export interface UpdateUnitInput {
@@ -22,6 +23,7 @@ export interface UpdateUnitInput {
   monthlyRate?: number;
   status?: UnitStatus;
   climateControl?: string | null;
+  name?: string | null;
 }
 
 function serializeUnit(u: UnitWithRelations) {
@@ -30,6 +32,7 @@ function serializeUnit(u: UnitWithRelations) {
     id: u.id,
     code: u.unitCode,
     unitCode: u.unitCode,
+    name: u.name ?? u.unitCode,
     sqft: u.sqft,
     rate,
     psf: u.sqft ? rate / u.sqft : 0,
@@ -110,6 +113,7 @@ export async function listPublicUnits(query: PublicUnitsQuery = {}) {
       id: u.id,
       code: u.unitCode,
       unitCode: u.unitCode,
+      name: u.name ?? u.unitCode,
       sqft: u.sqft,
       rate,
       psf: u.sqft ? rate / u.sqft : 0,
@@ -157,6 +161,7 @@ export async function createUnit(input: CreateUnitInput) {
       floorId: input.floorId,
       sizeId: input.sizeId,
       unitCode,
+      name: input.name?.trim() || null,
       sqft: input.sqft,
       monthlyRate: input.monthlyRate,
       status: input.status ?? 'AVAILABLE',
@@ -171,14 +176,21 @@ export async function updateUnit(code: string, input: UpdateUnitInput) {
   const unit = await prisma.unit.findUnique({ where: { unitCode: code } });
   if (!unit) throw new AppError(404, 'NOT_FOUND', `Unit ${code} not found`);
 
+  // name is optional display label only: undefined = not provided (leave unchanged),
+  // null or empty string = explicit clear (display name falls back to unitCode).
+  const data: Prisma.UnitUpdateInput = {
+    sqft: input.sqft,
+    monthlyRate: input.monthlyRate,
+    status: input.status,
+    climateControl: input.climateControl,
+    ...(input.name !== undefined
+      ? { name: input.name === null ? null : input.name.trim() || null }
+      : {}),
+  };
+
   const updated = await prisma.unit.update({
     where: { id: unit.id },
-    data: {
-      sqft: input.sqft,
-      monthlyRate: input.monthlyRate,
-      status: input.status,
-      climateControl: input.climateControl,
-    },
+    data,
     include: { size: true, branch: true, floor: true, tenant: true },
   });
   return serializeUnit(updated);
@@ -277,6 +289,7 @@ export async function getUnitDetail(code: string) {
   return {
     id: unit.unitCode,
     code: unit.unitCode,
+    name: unit.name ?? unit.unitCode,
     size: unit.size.name,
     sizeCode: unit.size.code,
     sqft: unit.sqft,

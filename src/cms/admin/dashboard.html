@@ -668,7 +668,7 @@ body { font-family: 'Manrope', sans-serif; background: var(--cream); color: var(
         <table class="data-tbl" id="unitsTable">
           <thead>
             <tr>
-              <th>Code</th><th>Size</th><th>Branch</th><th>Floor</th><th>Sqft</th><th>Rate/mo</th><th>PSF</th><th>Status</th><th>Tenant</th><th></th>
+              <th>Code</th><th>Name</th><th>Size</th><th>Branch</th><th>Floor</th><th>Sqft</th><th>Rate/mo</th><th>PSF</th><th>Status</th><th>Tenant</th><th></th>
             </tr>
           </thead>
           <tbody></tbody>
@@ -716,6 +716,11 @@ body { font-family: 'Manrope', sans-serif; background: var(--cream); color: var(
           <label for="f-status">Status</label>
           <select id="f-status" name="status"></select>
           <div class="field-err" id="e-status"></div>
+        </div>
+        <div class="field full">
+          <label for="f-name">Name (optional)</label>
+          <input type="text" id="f-name" name="name" maxlength="80" placeholder="Defaults to unit code, e.g. BM-01-29">
+          <div class="field-err" id="e-name"></div>
         </div>
         <div class="field">
           <label for="f-sqft">Sq Ft</label>

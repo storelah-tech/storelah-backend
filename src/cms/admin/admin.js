@@ -135,6 +135,7 @@
     return {
       id: u.id,
       code: u.code || u.unitCode,
+      name: u.name ?? (u.code || u.unitCode),
       sqft: u.sqft,
       rate: u.rate,
       psf: u.psf,
@@ -416,6 +417,7 @@
         const guarded = u.status === 'OCCUPIED' || u.status === 'OVERDUE';
         return `<tr data-code="${u.code}" class="${blocked ? 'row-blocked' : ''}">
           <td><strong>${u.code}</strong></td>
+          <td>${escapeHtml(u.name)}</td>
           <td>${u.sizeName || '—'}${u.sizeCode ? `<div class="t-type">${u.sizeCode}</div>` : ''}</td>
           <td>${u.branchCode || '—'}</td>
           <td>${u.level ? 'Level ' + u.level : '—'}</td>
@@ -497,11 +499,12 @@
       const d = await get(`/units/${encodeURIComponent(code)}`);
       const u = normalizeUnit(d);
       const id = $('#udId');
-      if (id) id.textContent = `${u.code}${u.sizeName ? ' · ' + u.sizeName + ' Unit' : ''}`;
+      if (id) id.textContent = `${u.name}${u.sizeName ? ' · ' + u.sizeName + ' Unit' : ''}`;
       const badges = $('#udBadges');
       if (badges) {
         badges.innerHTML = `
           <span class="badge ${STATUS_TONE[u.status] || 'neutral'}">● ${STATUS_LABEL[u.status] || u.status}</span>
+          ${u.name !== u.code ? `<span class="badge neutral">${escapeHtml(u.code)}</span>` : ''}
           ${u.sqft ? `<span class="badge terra">${u.sqft} sq ft</span>` : ''}
           ${u.branchName && u.level ? `<span class="badge neutral">Level ${u.level} · ${u.branchName}</span>` : ''}
           ${u.climateControl ? `<span class="badge neutral">${u.climateControl}</span>` : ''}`;
@@ -635,6 +638,7 @@
     $('#f-sqft').value = '';
     $('#f-monthlyRate').value = '';
     $('#f-climateControl').value = 'Ambient climate';
+    $('#f-name').value = '';
     $('#unitFormSubmit').textContent = 'Save Unit';
     clearFieldErrors();
     $('#unitModal').hidden = false;
@@ -656,6 +660,7 @@
       $('#f-sqft').value = u.sqft ?? '';
       $('#f-monthlyRate').value = u.rate ?? '';
       $('#f-climateControl').value = u.climateControl ?? '';
+      $('#f-name').value = u.name && u.name !== u.code ? u.name : '';
       $('#f-branch').disabled = true;
       $('#f-floor').disabled = true;
       $('#f-size').disabled = true;
@@ -688,6 +693,8 @@
     };
     const cc = $('#f-climateControl').value.trim();
     if (cc) body.climateControl = cc;
+    const nm = $('#f-name').value.trim();
+    if (nm) body.name = nm;
 
     // client-side pre-checks (mirror zod)
     if (!body.branchId || !body.floorId || !body.sizeId) {
@@ -712,12 +719,14 @@
         const res = await request('/units', { method: 'POST', body: JSON.stringify(body) });
         showBanner(`Created ${res.data.code}`, true);
       } else {
-        // PUT /units/:code only accepts sqft / monthlyRate / status / climateControl
+        // PUT /units/:code accepts sqft / monthlyRate / status / climateControl / name.
+        // Name: non-empty → set it; empty → name: null (clears back to the unit code).
         const patch = {
           sqft: body.sqft,
           monthlyRate: body.monthlyRate,
           status: body.status,
           climateControl: body.climateControl,
+          name: nm ? nm : null,
         };
         await request(`/units/${encodeURIComponent(currentEditCode)}`, { method: 'PUT', body: JSON.stringify(patch) });
         showBanner(`Updated ${currentEditCode}`, true);

@@ -52,6 +52,7 @@ const createUnitSchema = z.object({
   monthlyRate: z.number().nonnegative(),
   status: z.enum(['AVAILABLE', 'RESERVED', 'MAINTENANCE', 'INACTIVE']).optional(),
   climateControl: z.string().optional(),
+  name: z.string().trim().max(80).optional(),
 });
 
 const updateUnitSchema = z.object({
@@ -61,6 +62,7 @@ const updateUnitSchema = z.object({
     .enum(['OCCUPIED', 'AVAILABLE', 'RESERVED', 'OVERDUE', 'MAINTENANCE', 'INACTIVE'])
     .optional(),
   climateControl: z.string().nullable().optional(),
+  name: z.string().trim().max(80).nullable().optional(),
 });
 
 const unitListQuerySchema = z.object({

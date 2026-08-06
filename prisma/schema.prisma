@@ -151,6 +151,7 @@ model Unit {
   sizeId         String
   size           UnitSize   @relation(fields: [sizeId], references: [id])
   unitCode       String     @unique // e.g. BM-01-01
+  name           String? // optional display label; null/empty => display name falls back to unitCode
   sqft           Int
   monthlyRate    Decimal    @default(0) @db.Decimal(10, 2)
   status         UnitStatus @default(AVAILABLE)

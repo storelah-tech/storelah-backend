@@ -30,4 +30,5 @@ StoreLah operator CMS backend & dashboard. Express 5 + Prisma 6 + PostgreSQL, Ty
 - The dashboard `src/cms/dashboard.html` layout/CSS is **frozen and immutable** — only add data bindings in `src/cms/data-layer.js`. Do not restyle or restructure the HTML.
 - Decimal columns come back as `Prisma.Decimal`; pass them through `toNum` from `src/lib/format.ts` before returning in an API response (JSON.stringify of a Decimal throws).
 - Schema enums (Role, UnitStatus, TenantStatus, etc.) are Prisma enums (see `prisma/schema.prisma`). Keep them as enums; do not reinterpret as string unions.
+- **Unit codes vs display names**: every Unit has an immutable auto-generated `unitCode` (unique key) plus an optional display `name` that falls back to the code when null/empty. See `docs/UNIT_CODE_AND_NAME.md` — always follow it when touching units.
 - `pnpm db:seed` wipes and recreates all tables before seeding, so it is destructive by design.

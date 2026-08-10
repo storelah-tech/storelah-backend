@@ -99,6 +99,7 @@ const updateTenantSchema = z.object({
   segment: z.string().nullable().optional(),
   email: z.string().email().optional(),
   mobile: z.string().nullable().optional(),
+  unitId: z.string().nullable().optional(),
   monthlyRate: z.number().nonnegative().optional(),
   status: z.enum(['ACTIVE', 'DUE_SOON', 'OVERDUE', 'NOTICE']).optional(),
   autoDebit: z.boolean().optional(),

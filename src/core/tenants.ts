@@ -27,6 +27,7 @@ export interface UpdateTenantInput {
   segment?: string | null;
   email?: string;
   mobile?: string | null;
+  unitId?: string | null;
   monthlyRate?: number;
   status?: TenantStatus;
   autoDebit?: boolean;
@@ -38,6 +39,8 @@ function serializeTenant(t: TenantWithUnit) {
     name: t.name,
     type: t.type,
     segment: t.segment,
+    email: t.email,
+    mobile: t.mobile,
     unit: t.unit?.unitCode ?? null,
     size: t.unit?.size?.name ?? null,
     sqft: t.unit?.sqft ?? null,
@@ -46,16 +49,36 @@ function serializeTenant(t: TenantWithUnit) {
     since: t.moveInDate,
     nextPayment: t.nextPayment,
     status: t.status,
+    autoDebit: t.autoDebit,
   };
+}
+
+function isOccupiedStatus(status: string) {
+  return status === 'OCCUPIED' || status === 'OVERDUE';
+}
+
+// Guard shared by create + reassignment: a unit is assignable only when it is not
+// already pointed at by any tenant (matches the unitId @unique DB backstop) and is
+// not in a business-occupied status.
+async function assertUnitAssignable(unitId: string, opts?: { selfId?: string }) {
+  const unit = await prisma.unit.findUnique({
+    where: { id: unitId, deletedAt: null },
+    include: { tenant: true },
+  });
+  if (!unit) throw new AppError(400, 'VALIDATION', `Unit ${unitId} not found`);
+  if (unit.tenant && unit.tenant.id !== opts?.selfId) {
+    throw new AppError(400, 'VALIDATION', `Unit ${unit.unitCode} is already assigned to another tenant`);
+  }
+  if (isOccupiedStatus(unit.status)) {
+    throw new AppError(400, 'VALIDATION', `Unit ${unit.unitCode} is ${unit.status.toLowerCase()} and cannot be assigned`);
+  }
+  return unit;
 }
 
 export async function createTenant(input: CreateTenantInput) {
   let sqft = input.sqft;
   if (input.unitId) {
-    const unit = await prisma.unit.findUnique({
-      where: { id: input.unitId, deletedAt: null },
-    });
-    if (!unit) throw new AppError(400, 'VALIDATION', `Unit ${input.unitId} not found`);
+    const unit = await assertUnitAssignable(input.unitId);
     sqft = unit.sqft;
   }
 
@@ -79,30 +102,64 @@ export async function createTenant(input: CreateTenantInput) {
 }
 
 export async function updateTenant(id: string, input: UpdateTenantInput) {
-  const tenant = await prisma.tenant.findUnique({ where: { id } });
+  const tenant = await prisma.tenant.findUnique({
+    where: { id },
+    include: { unit: true },
+  });
   if (!tenant) throw new AppError(404, 'NOT_FOUND', `Tenant ${id} not found`);
 
-  const unit = tenant.unitId
-    ? await prisma.unit.findUnique({ where: { id: tenant.unitId, deletedAt: null } })
-    : null;
-  const sqft = unit?.sqft ?? null;
+  // unitId is tri-state on update: undefined = leave the assignment untouched,
+  // null = release the current unit, string = (re)assign to that unit.
+  const hasUnitChange = input.unitId !== undefined;
+  let nextUnitId = tenant.unitId;
+  let releaseUnitId: string | null = null;
+  let sqft: number | null = tenant.unit?.sqft ?? null;
 
-  const updated = await prisma.tenant.update({
-    where: { id },
-    data: {
-      name: input.name,
-      type: input.type,
-      segment: input.segment,
-      email: input.email,
-      mobile: input.mobile,
-      monthlyRate: input.monthlyRate,
-      psf: input.monthlyRate && sqft ? input.monthlyRate / sqft : undefined,
-      status: input.status,
-      autoDebit: input.autoDebit,
-    },
-    include: { unit: { include: { size: true } } },
+  if (hasUnitChange) {
+    const targetUnitId = input.unitId;
+    if (targetUnitId === null) {
+      if (tenant.unitId) {
+        releaseUnitId = tenant.unitId;
+        nextUnitId = null;
+        sqft = null;
+      }
+    } else if (targetUnitId != null && targetUnitId !== tenant.unitId) {
+      const target = await assertUnitAssignable(targetUnitId, { selfId: id });
+      if (tenant.unitId) releaseUnitId = tenant.unitId;
+      nextUnitId = targetUnitId;
+      sqft = target.sqft;
+    }
+  }
+
+  const rate = input.monthlyRate != null ? input.monthlyRate : toNum(tenant.monthlyRate);
+
+  const updated = await prisma.$transaction(async (tx) => {
+    await tx.tenant.update({
+      where: { id },
+      data: {
+        name: input.name,
+        type: input.type,
+        segment: input.segment,
+        email: input.email,
+        mobile: input.mobile,
+        monthlyRate: input.monthlyRate,
+        unitId: nextUnitId,
+        psf: sqft != null ? rate / sqft : undefined,
+        status: input.status,
+        autoDebit: input.autoDebit,
+      },
+    });
+    // Release the tenant's previous unit back to AVAILABLE (consistent with deactivateTenant).
+    if (releaseUnitId) {
+      await tx.unit.update({ where: { id: releaseUnitId }, data: { status: 'AVAILABLE' } });
+    }
+    return tx.tenant.findUnique({
+      where: { id },
+      include: { unit: { include: { size: true } } },
+    });
   });
-  return serializeTenant(updated);
+
+  return serializeTenant(updated!);
 }
 
 export async function deactivateTenant(id: string) {
@@ -131,6 +188,8 @@ export async function listTenants() {
     name: t.name,
     type: t.type,
     segment: t.segment,
+    email: t.email,
+    mobile: t.mobile,
     unit: t.unit?.unitCode ?? null,
     size: t.unit?.size?.name ?? null,
     sqft: t.unit?.sqft ?? null,
@@ -139,6 +198,7 @@ export async function listTenants() {
     since: t.moveInDate,
     nextPayment: t.nextPayment,
     status: t.status,
+    autoDebit: t.autoDebit,
   }));
 
   return rows;

@@ -141,6 +141,7 @@ body { font-family: 'Manrope', sans-serif; background: var(--cream); color: var(
 .badge.avail { background: var(--olive-light); color: var(--olive); }
 .badge.over { background: var(--red-light); color: var(--red); }
 .badge.res { background: var(--amber-light); color: var(--amber); }
+.badge.amber { background: var(--amber-light); color: var(--amber); }
 .badge.terra { background: var(--terra-light); color: var(--terra); }
 .badge.neutral { background: var(--cream2); color: var(--mid); }
 .ud-actions { display: flex; gap: 7px; }
@@ -275,6 +276,8 @@ body { font-family: 'Manrope', sans-serif; background: var(--cream); color: var(
 .tbl-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
 .tbl-select { border: 1.5px solid var(--border); border-radius: 7px; padding: 6px 10px; font-family: 'Manrope', sans-serif; font-size: 11px; font-weight: 700; color: var(--charcoal); outline: none; background: var(--white); cursor: pointer; }
 .tbl-select:focus { border-color: var(--terra); }
+.tbl-search { border: 1.5px solid var(--border); border-radius: 7px; padding: 6px 10px; font-family: 'Manrope', sans-serif; font-size: 11px; font-weight: 700; color: var(--charcoal); outline: none; background: var(--white); width: 220px; }
+.tbl-search:focus { border-color: var(--terra); }
 .tbl-pager { display: flex; align-items: center; justify-content: space-between; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border2); }
 .tbl-pager-info { font-size: 11px; font-weight: 700; color: var(--mid); }
 .tbl-pager-btns { display: flex; gap: 7px; }
@@ -314,7 +317,7 @@ body { font-family: 'Manrope', sans-serif; background: var(--cream); color: var(
   <div class="sb-section">
     <div class="sb-section-lbl">Operations</div>
     <div class="nav-item" data-view="units"><span class="nav-icon">⬛</span> Units</div>
-    <div class="nav-item" title="Coming soon"><span class="nav-icon">👥</span> Tenants <span class="nav-badge">2</span></div>
+    <div class="nav-item" data-view="tenants"><span class="nav-icon">👤</span> Tenants</div>
     <div class="nav-item" title="Coming soon"><span class="nav-icon">📋</span> Bookings</div>
     <div class="nav-item" title="Coming soon"><span class="nav-icon">🔑</span> Move-ins Today <span class="nav-badge">3</span></div>
   </div>
@@ -683,6 +686,50 @@ body { font-family: 'Manrope', sans-serif; background: var(--cream); color: var(
       </div>
 
     </div>
+
+    <!-- TENANTS SECTION (sidebar-navigated, mirrors Units) -->
+    <div class="view" id="view-tenants" hidden>
+
+      <div class="tbl-card">
+        <div class="sec-hdr">
+          <div>
+            <div class="sec-title">Tenants</div>
+            <div class="sec-sub" id="tenantsViewSub">All tenants across branches</div>
+          </div>
+          <div style="display:flex;gap:7px;">
+            <button class="tb-btn primary" id="addTenantBtn">+ New Tenant</button>
+          </div>
+        </div>
+        <div class="tbl-toolbar">
+          <input type="text" id="tenantSearch" class="tbl-search" placeholder="Search name, segment, unit…">
+          <select id="tenantStatusFilter" class="tbl-select" title="Filter by status">
+            <option value="">All statuses</option>
+            <option value="ACTIVE">Active</option>
+            <option value="DUE_SOON">Due Soon</option>
+            <option value="OVERDUE">Overdue</option>
+            <option value="NOTICE">Notice</option>
+            <option value="INACTIVE">Inactive</option>
+          </select>
+        </div>
+        <div class="modal-alert" id="tenantsBanner" hidden></div>
+        <table class="data-tbl" id="tenantsViewTable">
+          <thead>
+            <tr>
+              <th>Name</th><th>Type/Segment</th><th>Unit</th><th>Size/sqft</th><th>Rate</th><th>Status</th><th>Next Payment</th><th></th>
+            </tr>
+          </thead>
+          <tbody id="tenantsViewBody"></tbody>
+        </table>
+        <div class="tbl-pager">
+          <div class="tbl-pager-info" id="tenantsPageInfo">Page 1 of 1</div>
+          <div class="tbl-pager-btns">
+            <button class="tb-btn ghost" id="tenantsPagePrev">‹ Prev</button>
+            <button class="tb-btn ghost" id="tenantsPageNext">Next ›</button>
+          </div>
+        </div>
+      </div>
+
+    </div>
   </div>
 </main>
 
@@ -770,6 +817,82 @@ body { font-family: 'Manrope', sans-serif; background: var(--cream); color: var(
       <div class="modal-foot">
         <button class="act-btn" type="button" id="rateFormCancel">Cancel</button>
         <button class="act-btn primary" type="submit" id="rateFormSubmit">Apply Rate</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- TENANT MODAL (create / edit) -->
+<div class="modal-overlay" id="tenantModal" hidden>
+  <div class="modal">
+    <div class="modal-hdr">
+      <div class="modal-title" id="tenantModalTitle">Add Tenant</div>
+      <button class="modal-x" id="tenantModalClose" type="button">✕</button>
+    </div>
+    <div class="modal-alert" id="tenantModalAlert" hidden></div>
+    <div class="modal-hint" id="tenantModalHint" hidden>Unit size and PSF are derived from the assigned unit — they are set server-side, not edited here.</div>
+    <form id="tenantForm" novalidate>
+      <div class="form-grid">
+        <div class="field full">
+          <label for="tf-name">Name</label>
+          <input type="text" id="tf-name" name="name" maxlength="80" placeholder="Tenant name">
+          <div class="field-err" id="te-name"></div>
+        </div>
+        <div class="field">
+          <label for="tf-type">Type</label>
+          <select id="tf-type" name="type">
+            <option value="PERSONAL">Personal</option>
+            <option value="BUSINESS">Business</option>
+          </select>
+          <div class="field-err" id="te-type"></div>
+        </div>
+        <div class="field">
+          <label for="tf-segment">Segment</label>
+          <input type="text" id="tf-segment" name="segment" placeholder="E.g. E-commerce">
+          <div class="field-err" id="te-segment"></div>
+        </div>
+        <div class="field">
+          <label for="tf-email">Email</label>
+          <input type="email" id="tf-email" name="email" placeholder="name@example.com">
+          <div class="field-err" id="te-email"></div>
+        </div>
+        <div class="field">
+          <label for="tf-mobile">Mobile</label>
+          <input type="text" id="tf-mobile" name="mobile" placeholder="+65 9xxx xxxx">
+          <div class="field-err" id="te-mobile"></div>
+        </div>
+        <div class="field full">
+          <label for="tf-unit">Unit</label>
+          <select id="tf-unit" name="unit"></select>
+          <div class="field-err" id="te-unit"></div>
+        </div>
+        <div class="field">
+          <label for="tf-moveInDate">Move-in Date</label>
+          <input type="date" id="tf-moveInDate" name="moveInDate">
+          <div class="field-err" id="te-moveInDate"></div>
+        </div>
+        <div class="field">
+          <label for="tf-rate">Monthly Rate ($)</label>
+          <input type="number" id="tf-rate" name="monthlyRate" min="0" step="0.01" placeholder="150.00">
+          <div class="field-err" id="te-monthlyRate"></div>
+        </div>
+        <div class="field">
+          <label for="tf-status">Status</label>
+          <select id="tf-status" name="status"></select>
+          <div class="field-err" id="te-status"></div>
+        </div>
+        <div class="field">
+          <label for="tf-autoDebit">Auto Debit</label>
+          <select id="tf-autoDebit" name="autoDebit">
+            <option value="false">No</option>
+            <option value="true">Yes</option>
+          </select>
+          <div class="field-err" id="te-autoDebit"></div>
+        </div>
+      </div>
+      <div class="modal-foot">
+        <button class="act-btn" type="button" id="tenantFormCancel">Cancel</button>
+        <button class="act-btn primary" type="submit" id="tenantFormSubmit">Save Tenant</button>
       </div>
     </form>
   </div>

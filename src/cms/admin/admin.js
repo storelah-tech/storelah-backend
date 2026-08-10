@@ -10,14 +10,24 @@
   let mode = 'create'; // 'create' | 'edit'
   let currentEditCode = null;
   let rateTargetCode = null;
+  let currentEditTenantId = null;
 
   const state = {
     units: [], // normalized units (current page only)
     branches: [],
     floors: [],
     sizes: [],
+    // tenants-view state
+    tenants: [], // normalized tenants (full list; filtered/paged client-side)
+    tenantPage: 1,
+    tenantPerPage: 10,
+    tenantTotal: 0,
+    tenantTotalPages: 1,
+    tenantQuery: '',
+    tenantStatusFilter: '',
+    tenantUnits: [], // assignable units for the tenant unit dropdown
     // units-section view state
-    view: 'dashboard', // 'dashboard' | 'units'
+    view: 'dashboard', // 'dashboard' | 'units' | 'tenants'
     page: 1,
     perPage: 10,
     total: 0,
@@ -154,6 +164,27 @@
     };
   }
 
+  // GET /tenants rows are flat: { id, name, type, segment, unit, size, sqft, rate, psf, since, nextPayment, status, ... }.
+  function normalizeTenant(t) {
+    return {
+      id: t.id,
+      name: t.name,
+      type: t.type,
+      segment: t.segment,
+      email: t.email,
+      mobile: t.mobile,
+      unit: t.unit, // unitCode or null
+      size: t.size,
+      sqft: t.sqft,
+      rate: t.rate,
+      psf: t.psf,
+      since: t.since,
+      nextPayment: t.nextPayment,
+      status: String(t.status || 'ACTIVE'),
+      autoDebit: !!t.autoDebit,
+    };
+  }
+
   // ---------- status tones (frozen badge tones) ----------
   const STATUS_TONE = {
     OCCUPIED: 'occ',
@@ -178,6 +209,20 @@
     OVERDUE: 'overdue',
     MAINTENANCE: 'maintenance',
     INACTIVE: 'maintenance',
+  };
+  const TENANT_STATUS_TONE = {
+    ACTIVE: 'occ',
+    DUE_SOON: 'res',
+    OVERDUE: 'over',
+    NOTICE: 'amber',
+    INACTIVE: 'neutral',
+  };
+  const TENANT_STATUS_LABEL = {
+    ACTIVE: 'Active',
+    DUE_SOON: 'Due Soon',
+    OVERDUE: 'Overdue',
+    NOTICE: 'Notice',
+    INACTIVE: 'Inactive',
   };
   const fmtMoney = (n) => '$' + Number(n).toLocaleString('en-US', { maximumFractionDigits: 2 });
 
@@ -324,6 +369,292 @@
         </tr>`;
       })
       .join('');
+  }
+
+  // ---------- tenants view (sidebar, mirrors Units) ----------
+  function renderTenantRow(t) {
+    const size = t.size ? escapeHtml(t.size) + (t.sqft ? ` · ${t.sqft} sqft` : '') : '—';
+    const since = t.since ? new Date(t.since).toLocaleString('en-SG', { month: 'short', year: 'numeric' }) : '—';
+    const next = t.nextPayment ? new Date(t.nextPayment).toLocaleDateString('en-SG', { day: '2-digit', month: 'short' }) : '—';
+    const rate = t.rate != null ? fmtMoney(t.rate) : '—';
+    const psf = t.psf != null ? '$' + Number(t.psf).toFixed(2) + '/sf' : '—';
+    const tone = TENANT_STATUS_TONE[t.status] || 'neutral';
+    const label = TENANT_STATUS_LABEL[t.status] || t.status;
+    const typeLbl = t.type === 'BUSINESS' ? 'Business' : 'Personal';
+    return `<tr data-tid="${escapeHtml(t.id)}">
+      <td><div class="t-name">${escapeHtml(t.name)}</div></td>
+      <td><div class="t-type">${typeLbl}${t.segment ? ' · ' + escapeHtml(t.segment) : ''}</div></td>
+      <td><strong>${escapeHtml(t.unit || '—')}</strong></td>
+      <td>${size}</td>
+      <td><strong>${rate}</strong><div class="t-type">${psf}</div></td>
+      <td><span class="badge ${tone}">${label}</span></td>
+      <td>${next}</td>
+      <td class="unit-actions">
+        <button class="act-btn" data-act="view" data-tid="${escapeHtml(t.id)}">View</button>
+        <button class="act-btn" data-act="edit" data-tid="${escapeHtml(t.id)}">Edit</button>
+        <button class="act-btn danger" data-act="deactivate" data-tid="${escapeHtml(t.id)}" ${t.status === 'INACTIVE' ? 'disabled' : ''}>Deactivate</button>
+      </td>
+    </tr>`;
+  }
+
+  function applyTenantFilter(rows) {
+    const q = (state.tenantQuery || '').toLowerCase().trim();
+    const st = state.tenantStatusFilter;
+    return (rows || []).filter((t) => {
+      if (st && t.status !== st) return false;
+      if (!q) return true;
+      const hay = [t.name, t.segment, t.unit, t.size, t.status, TENANT_STATUS_LABEL[t.status]]
+        .filter(Boolean).join(' ').toLowerCase();
+      return hay.includes(q);
+    });
+  }
+
+  function bindTenantsView() {
+    const tbody = $('#tenantsViewBody');
+    if (!tbody) return;
+    const filtered = applyTenantFilter(state.tenants);
+    state.tenantTotal = filtered.length;
+    state.tenantTotalPages = Math.max(1, Math.ceil(filtered.length / state.tenantPerPage));
+    if (state.tenantPage > state.tenantTotalPages) state.tenantPage = state.tenantTotalPages;
+    const start = (state.tenantPage - 1) * state.tenantPerPage;
+    const rows = filtered.slice(start, start + state.tenantPerPage);
+
+    if (!rows.length) {
+      tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;color:var(--light);padding:26px;">${
+        state.tenants.length ? 'No tenants match — adjust your search or filters.' : 'No tenants yet — create your first tenant.'
+      }</td></tr>`;
+    } else {
+      tbody.innerHTML = rows.map(renderTenantRow).join('');
+    }
+    const sub = $('#tenantsViewSub');
+    if (sub) {
+      sub.textContent = `${state.tenantTotal} tenant${state.tenantTotal === 1 ? '' : 's'}${filtered.length !== state.tenants.length ? ' · ' + filtered.length + ' shown' : ''}`;
+    }
+    renderTenantPager();
+  }
+
+  function renderTenantPager() {
+    const info = $('#tenantsPageInfo');
+    const prev = $('#tenantsPagePrev');
+    const next = $('#tenantsPageNext');
+    if (info) info.textContent = `Page ${state.tenantPage} of ${state.tenantTotalPages} · ${state.tenantTotal} tenants`;
+    if (prev) prev.disabled = state.tenantPage <= 1;
+    if (next) next.disabled = state.tenantPage >= state.tenantTotalPages;
+  }
+
+  async function refreshTenantsView() {
+    try {
+      const rows = await get('/tenants');
+      state.tenants = (rows || []).map(normalizeTenant);
+      state.tenantPage = 1;
+      bindTenantsView();
+    } catch (err) {
+      showBanner('Tenants: ' + describeError(err));
+    }
+  }
+
+  // ---------- tenant form (create / edit) ----------
+  function clearTenantFieldErrors() {
+    $$('#tenantModal .field-err').forEach((el) => (el.textContent = ''));
+    $$('#tenantModal .field input.err, #tenantModal .field select.err').forEach((el) => el.classList.remove('err'));
+    const a = $('#tenantModalAlert');
+    if (a) a.hidden = true;
+  }
+
+  function showTenantFormAlert(msg) {
+    const a = $('#tenantModalAlert');
+    a.textContent = msg;
+    a.hidden = false;
+  }
+
+  // zod fieldErrors keys (payload property names) → tenant form element keys
+  const TENANT_FIELD_ID = {
+    name: 'name',
+    type: 'type',
+    segment: 'segment',
+    email: 'email',
+    mobile: 'mobile',
+    unitId: 'unit',
+    moveInDate: 'moveInDate',
+    monthlyRate: 'rate',
+    status: 'status',
+    autoDebit: 'autoDebit',
+  };
+
+  function renderTenantFieldErrors(err) {
+    if (!(err instanceof ApiError) || !err.details || !err.details.fieldErrors) return;
+    const fe = err.details.fieldErrors;
+    for (const [field, msgs] of Object.entries(fe)) {
+      if (!msgs || !msgs.length) continue;
+      const key = TENANT_FIELD_ID[field];
+      if (!key) continue;
+      const errEl = $(`#te-${key}`);
+      if (errEl) errEl.textContent = msgs.join('; ');
+      const input = $(`#tf-${key}`);
+      if (input) input.classList.add('err');
+    }
+  }
+
+  function toDateInputValue(iso) {
+    if (!iso) return '';
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return '';
+    return d.toISOString().slice(0, 10);
+  }
+
+  // Assignable units for the dropdown: AVAILABLE list (perPage 200) + the tenant's
+  // current unit (may be OCCUPIED by them / non-AVAILABLE). Shows unitCode.
+  async function populateTenantUnitSelect(currentUnitCode) {
+    const body = await request('/units?status=AVAILABLE&perPage=200');
+    let units = (body.data || []).map((u) => ({
+      id: u.id,
+      code: u.code || u.unitCode,
+      sqft: u.sqft,
+      size: u.size && u.size.name,
+    }));
+    if (currentUnitCode && !units.some((u) => u.code === currentUnitCode)) {
+      try {
+        const cur = await get(`/units/${encodeURIComponent(currentUnitCode)}`);
+        units.unshift({ id: cur.id, code: cur.code, sqft: cur.sqft, size: cur.size });
+      } catch (e) {
+        /* current unit may be deleted — leave it out */
+      }
+    }
+    state.tenantUnits = units;
+    const sel = $('#tf-unit');
+    const currentId = units.find((u) => u.code === currentUnitCode)?.id || '';
+    sel.innerHTML =
+      '<option value="">— No unit —</option>' +
+      units
+        .map(
+          (u) =>
+            `<option value="${escapeHtml(u.id)}">${escapeHtml(u.code)}${u.size ? ' · ' + escapeHtml(u.size) + (u.sqft ? ' (' + u.sqft + ' sqft)' : '') : ''}</option>`,
+        )
+        .join('');
+    sel.value = currentId;
+  }
+
+  async function openCreateTenant() {
+    mode = 'create';
+    currentEditTenantId = null;
+    $('#tenantModalTitle').textContent = 'Add Tenant';
+    $('#tenantModalHint').hidden = true;
+    $('#tenantForm').reset();
+    $('#tf-type').value = 'PERSONAL';
+    $('#tf-status').value = 'ACTIVE';
+    $('#tf-autoDebit').value = 'false';
+    $('#tf-moveInDate').value = '';
+    $('#tenantFormSubmit').textContent = 'Save Tenant';
+    clearTenantFieldErrors();
+    try {
+      await populateTenantUnitSelect(null);
+    } catch (err) {
+      showTenantFormAlert(describeError(err));
+    }
+    $('#tenantModal').hidden = false;
+  }
+
+  async function openEditTenant(id) {
+    const t = state.tenants.find((x) => x.id === id);
+    if (!t) {
+      showBanner('Tenant not found in list.');
+      return;
+    }
+    mode = 'edit';
+    currentEditTenantId = id;
+    $('#tenantModalTitle').textContent = `Edit Tenant — ${t.name}`;
+    $('#tenantModalHint').hidden = false;
+    $('#tf-name').value = t.name;
+    $('#tf-type').value = t.type || 'PERSONAL';
+    $('#tf-segment').value = t.segment || '';
+    $('#tf-email').value = t.email || '';
+    $('#tf-mobile').value = t.mobile || '';
+    $('#tf-rate').value = t.rate != null ? t.rate : '';
+    $('#tf-status').value = t.status;
+    $('#tf-autoDebit').value = t.autoDebit ? 'true' : 'false';
+    $('#tf-moveInDate').value = toDateInputValue(t.since);
+    $('#tenantFormSubmit').textContent = 'Save Changes';
+    clearTenantFieldErrors();
+    try {
+      await populateTenantUnitSelect(t.unit || null);
+    } catch (err) {
+      showTenantFormAlert(describeError(err));
+    }
+    $('#tenantModal').hidden = false;
+  }
+
+  function closeTenantModal() {
+    $('#tenantModal').hidden = true;
+    currentEditTenantId = null;
+    clearTenantFieldErrors();
+  }
+
+  async function submitTenantForm(e) {
+    e.preventDefault();
+    clearTenantFieldErrors();
+    const name = $('#tf-name').value.trim();
+    const monthlyRate = Number($('#tf-rate').value);
+    const body = {
+      name,
+      type: $('#tf-type').value,
+      monthlyRate,
+      status: $('#tf-status').value,
+      autoDebit: $('#tf-autoDebit').value === 'true',
+    };
+    const segment = $('#tf-segment').value.trim();
+    if (segment) body.segment = segment;
+    const email = $('#tf-email').value.trim();
+    if (email) body.email = email;
+    const mobile = $('#tf-mobile').value.trim();
+    if (mobile) body.mobile = mobile;
+    const unitId = $('#tf-unit').value;
+    if (unitId) body.unitId = unitId;
+    else if (mode === 'edit') body.unitId = null; // cleared → release the current unit
+    const moveIn = $('#tf-moveInDate').value;
+    if (moveIn) body.moveInDate = new Date(moveIn + 'T00:00:00.000Z').toISOString();
+
+    if (!name) {
+      const el = $('#te-name');
+      if (el) el.textContent = 'Name is required';
+      $('#tf-name').classList.add('err');
+      return;
+    }
+    if (!(monthlyRate >= 0)) {
+      const el = $('#te-rate');
+      if (el) el.textContent = 'Must be 0 or greater';
+      $('#tf-rate').classList.add('err');
+      return;
+    }
+
+    try {
+      if (mode === 'create') {
+        await request('/tenants', { method: 'POST', body: JSON.stringify(body) });
+        showBanner(`Created ${name}`, true);
+      } else {
+        await request(`/tenants/${encodeURIComponent(currentEditTenantId)}`, { method: 'PUT', body: JSON.stringify(body) });
+        showBanner(`Updated ${name}`, true);
+      }
+      closeTenantModal();
+      await refreshAll();
+    } catch (err) {
+      renderTenantFieldErrors(err);
+      if (!(err instanceof ApiError && err.details && err.details.fieldErrors)) {
+        showTenantFormAlert(describeError(err));
+      }
+    }
+  }
+
+  async function deactivateTenant(id) {
+    const t = state.tenants.find((x) => x.id === id);
+    if (!t) return;
+    if (!window.confirm(`Deactivate ${t.name}?${t.unit ? ` Their unit (${t.unit}) is released back to AVAILABLE.` : ''}`)) return;
+    try {
+      const res = await request(`/tenants/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      showBanner(`Deactivated ${t.name}${res.data && res.data.unitReleased ? ` — unit ${t.unit} released` : ''}`, true);
+      await refreshAll();
+    } catch (err) {
+      showBanner('Deactivate: ' + describeError(err));
+    }
   }
 
   function bindLeads(data) {
@@ -847,22 +1178,24 @@
     bindLeads(leads);
     bindActions(actions);
     if (state.view === 'units') await refreshUnitsView();
+    else if (state.view === 'tenants') await refreshTenantsView();
   }
 
   // ---------- sidebar navigation ----------
   function switchView(view) {
     state.view = view;
-    const dash = $('#view-dashboard');
-    const units = $('#view-units');
-    if (dash) dash.hidden = view !== 'dashboard';
-    if (units) units.hidden = view !== 'units';
+    ['dashboard', 'units', 'tenants'].forEach((v) => {
+      const el = $(`#view-${v}`);
+      if (el) el.hidden = view !== v;
+    });
     $$('.nav-item[data-view]').forEach((el) => el.classList.toggle('active', el.dataset.view === view));
     try {
-      history.replaceState(null, '', view === 'units' ? '#units' : '#');
+      history.replaceState(null, '', view === 'dashboard' ? '#' : `#${view}`);
     } catch (e) {
       /* file:// or sandboxed contexts may reject replaceState */
     }
     if (view === 'units') refreshUnitsView();
+    else if (view === 'tenants') refreshTenantsView();
   }
 
   function cycleBranch() {
@@ -990,12 +1323,45 @@
       else if (act === 'rate') openRateForm(code);
       else if (act === 'delete') deleteUnit(code);
     });
+    // tenants CRUD
+    $('#addTenantBtn').addEventListener('click', openCreateTenant);
+    $('#tenantModalClose').addEventListener('click', closeTenantModal);
+    $('#tenantFormCancel').addEventListener('click', closeTenantModal);
+    $('#tenantForm').addEventListener('submit', submitTenantForm);
+    $('#tenantSearch').addEventListener('input', (e) => {
+      state.tenantQuery = e.target.value;
+      state.tenantPage = 1;
+      bindTenantsView();
+    });
+    $('#tenantStatusFilter').addEventListener('change', (e) => {
+      state.tenantStatusFilter = e.target.value;
+      state.tenantPage = 1;
+      bindTenantsView();
+    });
+    $('#tenantsPagePrev').addEventListener('click', () => {
+      if (state.tenantPage <= 1) return;
+      state.tenantPage -= 1;
+      bindTenantsView();
+    });
+    $('#tenantsPageNext').addEventListener('click', () => {
+      if (state.tenantPage >= state.tenantTotalPages) return;
+      state.tenantPage += 1;
+      bindTenantsView();
+    });
+    $('#tenantsViewTable').addEventListener('click', (e) => {
+      const btn = e.target.closest('button[data-act]');
+      if (!btn) return;
+      const { act, tid } = btn.dataset;
+      if (act === 'view' || act === 'edit') openEditTenant(tid);
+      else if (act === 'deactivate') deactivateTenant(tid);
+    });
     // close modals on overlay click
     $$('.modal-overlay').forEach((ov) => {
       ov.addEventListener('click', (e) => {
         if (e.target === ov) {
           if (ov.id === 'unitModal') closeUnitModal();
           else if (ov.id === 'rateModal') closeRateModal();
+          else if (ov.id === 'tenantModal') closeTenantModal();
         }
       });
     });
@@ -1008,6 +1374,7 @@
       initCharts();
       await Promise.all([loadRefs(), refreshAll()]);
       if (location.hash === '#units') switchView('units');
+      else if (location.hash === '#tenants') switchView('tenants');
     } catch (e) {
       console.error('[storelah admin] data layer failed', e);
       showBanner('Data layer error: ' + (e && e.message ? e.message : e));

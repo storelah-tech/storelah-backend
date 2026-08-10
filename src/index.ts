@@ -8,6 +8,7 @@ import customerRoutes from './routes/customer';
 import { errorHandler } from './lib/http';
 import { AppError } from './lib/http';
 import { config } from './lib/config';
+import serverless from 'serverless-http';
 
 const app = express();
 
@@ -44,6 +45,11 @@ app.use((_req, _res) => {
 
 app.use(errorHandler);
 
-app.listen(config.port, () => {
-  console.log(`StoreLah CMS listening on http://localhost:${config.port}`);
-});
+export const handler = serverless(app);
+
+// Local dev only — Lambda does not bind a port (the handler is the entry).
+if (!process.env.AWS_LAMBDA_FUNCTION_NAME) {
+  app.listen(config.port, () => {
+    console.log(`StoreLah CMS listening on http://localhost:${config.port}`);
+  });
+}

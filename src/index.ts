@@ -8,6 +8,7 @@ import customerRoutes from './routes/customer';
 import { errorHandler } from './lib/http';
 import { AppError } from './lib/http';
 import { config } from './lib/config';
+import { resolveHostKind } from './lib/host';
 import serverless from 'serverless-http';
 
 const app = express();
@@ -31,11 +32,26 @@ app.use('/api/v1/customer', customerRoutes);
 // CMS UI (frozen dashboard.html served statically)
 // NB: the /admin route must be registered BEFORE the static mount — otherwise
 // express.static sees the src/cms/admin/ directory and 301-redirects /admin → /admin/.
-app.get('/admin', (_req, res) => {
+// The API host serves the UI only while the API_HOST_SERVES_UI migration flag is
+// on; once ops flip it off after the cms.storelah.sg cutover, the API host 404s
+// the UI routes (the CMS host always serves its dashboard). API routes never gate.
+app.get('/admin', (req, res) => {
+  if (resolveHostKind(req) === 'api' && !config.apiHostServesUi) {
+    throw new AppError(404, 'NOT_FOUND', 'Route not found');
+  }
   res.sendFile(path.join(__dirname, 'cms', 'admin', 'dashboard.html'));
 });
 app.use(express.static(path.join(__dirname, 'cms')));
-app.get('/', (_req, res) => {
+app.get('/', (req, res) => {
+  // cms.storelah.sg → CMS admin dashboard at the root; api.storelah.sg keeps the
+  // legacy terminal dashboard (gated by API_HOST_SERVES_UI during migration).
+  if (resolveHostKind(req) === 'cms') {
+    res.sendFile(path.join(__dirname, 'cms', 'admin', 'dashboard.html'));
+    return;
+  }
+  if (!config.apiHostServesUi) {
+    throw new AppError(404, 'NOT_FOUND', 'Route not found');
+  }
   res.sendFile(path.join(__dirname, 'cms', 'dashboard.html'));
 });
 

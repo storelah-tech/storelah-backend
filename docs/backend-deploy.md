@@ -70,7 +70,7 @@ code changes marked `[backend-agent]`). Landing is done; booking is waiting on T
 | Entry | **serverless-http adapter** (`export const handler = serverless(app)`) | Standard Express-on-Lambda bridge; framework-agnostic (works with Express 5). **Code change owned by backend-agent** (Phase 0 step 2) — devops does NOT edit `src/`. |
 | Front door | **API Gateway — HTTP API** (recommended) | Cheapest API Gateway flavor (~$1.00/M req after free tier vs REST API ~$3.50/M); has Lambda proxy + custom domains + CORS. The whole Express app mounts under one route. |
 | Database | **Neon Free** (serverless Postgres, primary region `aws-ap-southeast-1`) — RESOLVED 2026-08-10 | External SaaS; Lambda reaches it over public internet (pooled URL, TLS); no VPC needed. `localhost:5433` is dev-only. |
-| DNS | `api.storelah.sg` CNAME in the existing `storelah-dns` stack | Same zone as landing/booking; exact-match record shadows the `*.storelah.sg` wildcard (same rule as booking). |
+| DNS | `api.storelah.sg` CNAME in the existing `storelah-dns` stack | Same zone as landing/booking; the exact CNAME record is now the sole resolution — the `*.storelah.sg` wildcard has been deleted, so there is no wildcard to shadow and no fallback. |
 | CI/CD | **None for MVP** | Deploy via CLI (landing's manual-flow style). A CloudFormation template `infra/backend-stack.yaml` is a recommended future devops deliverable (Phase 0 step 3). |
 
 ## Target architecture (approved)
@@ -352,8 +352,9 @@ ApiCname:
 
 - API Gateway **regional** endpoints accept a plain CNAME (no ALIAS needed — ALIAS would
   require the API Gateway hosted-zone ID per region; CNAME is simpler and correct here).
-- DNS precedence: exact `api.storelah.sg` CNAME shadows the legacy `*.storelah.sg` wildcard
-  (same rule as booking — leave the wildcard untouched).
+- The legacy `*.storelah.sg` wildcard has been **deleted** from the zone — there is no
+  wildcard left to shadow, so `api.storelah.sg` resolves **solely** through its exact CNAME
+  record (which is unchanged and live). Do not recreate the wildcard.
 - Redeploy **in place** (never delete/recreate; `HostedZoneId` is kept on update):
   ```bash
   aws cloudformation deploy \
@@ -443,7 +444,8 @@ landing/booking).
 - **API Gateway:** stateless config — redeploy the previous stack/template or delete the API;
   the Lambda keeps working standalone.
 - **DNS:** remove the `ApiCname` record set from the `storelah-dns` stack + redeploy —
-  `api.storelah.sg` falls back to the `*.storelah.sg` wildcard (parked placeholder), the
+  `api.storelah.sg` stops resolving (the `*.storelah.sg` wildcard fallback at the old
+  `103.11.189.189` placeholder has been deleted, so there is no fallback record left), the
   `execute-api...amazonaws.com` invoke URL keeps working meanwhile.
 - **Database:** Neon Free has **no point-in-time restore** — before any risky
   migration/seed, export a backup: `pg_dump "$NEON_DIRECT_URL" > backup.sql`. Rollback =

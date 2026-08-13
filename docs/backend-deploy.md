@@ -9,21 +9,77 @@ runbook is the handoff for the next session — devops-agent executes Phase 0–
 code changes marked `[backend-agent]`). Landing is done; booking is waiting on THIS session
 (Option A — backend first, then booking).
 
-## STATUS: BACKEND DEPLOYMENT PENDING — landing DONE (2026-08-10); booking WAITS on this (Option A)
+## STATUS: BACKEND IS LIVE (verified 2026-08-13) — booking gate CLEARED; ONE security discrepancy remains
 
 - **Landing is LIVE:** `https://storelah.sg` + `https://www.storelah.sg` via CloudFront +
   Route 53 (zone `storelah-dns`). Cross-ref: `storelah-landing/docs/DEPLOYMENT.md`.
-- **Backend: NOT deployed.** The deploy-session prerequisites that are CODE work are DONE and
-  committed to `origin/main` (8299551 = latest): Lambda adapter (`serverless-http` + guarded
-  `app.listen`, commit e7a1d34), Prisma linux engine target (`rhel-openssl-3.0.x` for Lambda
-  Node 20 / AL2023), and — added 2026-08-13, commit below — the `/config` credential-gate fix
-  (Phase 0 step 4) and env-driven admin seed. **Nothing has been deployed to AWS yet.**
+- **Backend: DEPLOYED and LIVE (re-verified 2026-08-13 from public DNS/curl — no AWS creds
+  available for console checks).** `api.storelah.sg` and `cms.storelah.sg` both resolve to
+  API Gateway regional endpoints in ap-southeast-1 and serve HTTPS with valid ACM certs:
+  - `https://api.storelah.sg/health` → `{ ok: true, service: 'storelah-cms', time }`
+  - `https://api.storelah.sg/api/v1/public/branches` → seeded Neon rows (BM/UB/WD) —
+    **confirms Prisma reached Neon through the pooled URL and the cloud DB was seeded**
+  - `https://api.storelah.sg/` and `/admin` → 200 CMS dashboard; `cms.storelah.sg/` → 200
+  - `POST /api/v1/cms/login` with the env-configured admin pair → 200 (admin user exists in Neon)
+  - All four ACM validation CNAMEs (apex, www, api, cms) resolve in DNS; MX/NS intact.
+  **A full Phase C admin-flow re-run with a Bearer token remains pending (blocked on AWS
+  creds), and the item below must be fixed first.**
+- **⚠ SECURITY DISCREPANCY — FIX READY (2026-08-13):** `GET https://api.storelah.sg/api/v1/
+  cms/config` was returning **HTTP 200 with the admin email + plaintext password** on the
+  PUBLIC api host — the original Phase 0 step 4 gate (404 on the api host when
+  `NODE_ENV=production`, added in commit `294f4da`) was NOT active on the live function
+  (Lambda deployed from an earlier build and/or `NODE_ENV=production` unset at runtime).
+  **The gate is now hardened and no longer depends on `NODE_ENV`:** `/config` 404s on ANY
+  api-kind host (`api.storelah.sg`, the raw execute-api invoke URL, forged/unknown hosts) on
+  both `/api/v1/cms/config` AND the legacy `/api/cms/config`, unconditionally — only
+  `cms.storelah.sg` and local dev (`localhost`/loopback) still get the creds. A live Lambda
+  with this build can NEVER leak `/config` even if `NODE_ENV` is missing. Remediation for
+  the live deploy: rebuild from `origin/main`, set `NODE_ENV=production` +
+  `API_HOST_SERVES_UI=0`, redeploy, then re-verify `/config` 404s on the api host
+  (verification below). Because the password was publicly readable, **rotate it now**:
+  set a NEW `STORELAH_ADMIN_PASSWORD` in the Lambda env AND update the seeded AdminUser row
+  to match WITHOUT re-running `db:seed` — exact steps in the **PASSWORD ROTATION** block
+  below.
+- **🔑 PASSWORD ROTATION — devops-agent one-shot (do NOT re-run `db:seed`):** the seeded
+  AdminUser row in Neon must be re-hashed to the NEW password. Backend-agent shipped
+  `scripts/rotate-admin-password.ts` (`pnpm db:rotate-admin-password`) — a safe one-shot
+  updater that bcrypt-hashes `STORELAH_ADMIN_PASSWORD` and UPDATEs the existing AdminUser
+  row (targeted by `STORELAH_ADMIN_EMAIL`, default `admin@storelah.sg`); it never prints
+  the password, refuses placeholders/short values, and fails cleanly if no row matches.
+  1. Pick a strong NEW value (16+ random chars). Set it as the Lambda env var
+     **`STORELAH_ADMIN_PASSWORD`** (keep `STORELAH_ADMIN_EMAIL=admin@storelah.sg`).
+  2. From a deployer machine with the repo checked out, run (with the NEW value inline —
+     the **DIRECT** Neon URL, same convention as migrations/seed):
+     ```bash
+     DATABASE_URL="$NEON_DIRECT_URL" \
+       STORELAH_ADMIN_EMAIL=admin@storelah.sg \
+       STORELAH_ADMIN_PASSWORD=<NEW-VALUE> \
+       pnpm db:rotate-admin-password
+     ```
+     Expected output: `updated password hash for AdminUser "admin@storelah.sg" (1 row) — no
+     re-seed performed.` Anything else = DO NOT proceed; investigate first.
+  3. Redeploy/update the Lambda env so the new value is live, then verify:
+     - `POST /api/v1/cms/login` with email + NEW password → 200 `{ data: { token, ... } }`
+     - `POST /api/v1/cms/login` with old password → 401
+     - the old plaintext password is NOT accepted anywhere (it was public).
+  ⚠ Order note: because `/config` serves the SAME env var, the cms-host dashboard auto-login
+  keeps working automatically once the new env var is live — no dashboard change needed.
+- **Verifying the gate after redeploy:** on the production Lambda —
+  ```bash
+  curl -si https://api.storelah.sg/api/v1/cms/config | head -1          # expect HTTP/2 404
+  curl -si https://api.storelah.sg/api/cms/config  | head -1            # legacy alias: 404
+  curl -si https://cms.storelah.sg/api/cms/config  | head -1            # expect 200
+  ```
+  (the first two must 404 regardless of `NODE_ENV`; the third returns `{"email","password"}`,
+  which is the dashboard auto-login on its own host).
 - **Ordering decision RESOLVED (2026-08-10): user chose Option A — backend first, then
-  booking.** Booking's `NEXT_PUBLIC_API_URL` will be `https://api.storelah.sg` and its deploy
-  waits for this session to complete (see `storelah-booking/docs/booking-deploy.md` Phase 0).
+  booking.** Booking's `NEXT_PUBLIC_API_URL` = `https://api.storelah.sg`; the backend is live,
+  so the booking gate is CLEARED (see `storelah-booking/docs/booking-deploy.md`, updated
+  `6014c4a`). Booking now only needs its own Amplify deploy + DNS (Phases A/B).
 - **Database decision RESOLVED (2026-08-10): NEON FREE** (serverless Postgres, Phase 0 step 1)
-  — the former BLOCKING prerequisite is cleared. Lambda reaches Neon over the public internet
-  via the pooled URL (no VPC, no NAT). Local Docker DB on port 5433 remains dev-only.
+  — the former BLOCKING prerequisite is cleared and confirmed working live (seeded rows served
+  via the pooled URL). Lambda reaches Neon over the public internet (no VPC, no NAT). Local
+  Docker DB on port 5433 remains dev-only.
 
 ## Confirmed facts (orchestrator-verified, 2026-08-10)
 
@@ -59,9 +115,16 @@ code changes marked `[backend-agent]`). Landing is done; booking is waiting on T
 - **Client singleton:** `src/lib/prisma.ts` keeps one `PrismaClient` per process — correct
   for Lambda (one client per warm container; never create one per request).
 - **git: repo `storelah-tech/storelah-backend` on `main`, remote configured, fully pushed
-  (`origin/main` == `HEAD`, currently 8299551), working tree clean. `.env` is gitignored and
+  (`origin/main` == `HEAD`, currently 294f4da), working tree clean. `.env` is gitignored and
   never pushed. All prior "no remote / four uncommitted files / stale dist" notes are
   obsolete — a fresh `pnpm build` was verified passing on 2026-08-13 (see commit below).
+  NOTE: `origin/main` was at `294f4da` (the `/config` gate + env-driven seed); the live
+  Lambda behaves as if deployed from an EARLIER build / without prod env vars — see the
+  security discrepancy in the STATUS block above. **Follow-up commit (2026-08-13, live-action
+  security session):** `/config` gate hardened to be **host-kind-based and unconditional**
+  (no `NODE_ENV` dependency) + new one-shot `pnpm db:rotate-admin-password`
+  (`scripts/rotate-admin-password.ts`) for rotating the seeded AdminUser hash without
+  re-seeding — see the PASSWORD ROTATION block in the STATUS section.
 
 ## Why Lambda + API Gateway (and not Amplify / EC2 / a long-running container)
 
@@ -210,11 +273,12 @@ needs a code change; defer unless asked):
 | `PORT` | not needed under Lambda | harmless if set; adapter doesn't use it |
 
 - **✅ SECURITY FLAG — RESOLVED (2026-08-13, backend-agent commit):** `GET /api/v1/cms/config`
-  used to return **`{ email, password }` in plaintext from env** to anyone. It is now gated:
-  in production (`NODE_ENV=production`) the **api host (api.storelah.sg and the raw
-  execute-api invoke URL) returns 404** for `/config` (both `/api/v1/cms` and the legacy
-  `/api/cms`); only the **cms host (cms.storelah.sg) and local dev** still get the creds, so
-  the CMS dashboard auto-login keeps working on its own host and locally. Booking never calls
+  used to return **`{ email, password }` in plaintext from env** to anyone. It is now gated
+  **by host kind, unconditionally (not `NODE_ENV`-dependent):** the **api host
+  (api.storelah.sg and the raw execute-api invoke URL) returns 404** for `/config` (both
+  `/api/v1/cms` and the legacy `/api/cms`) in every environment; only the **cms host
+  (cms.storelah.sg) and local dev** (`localhost`/loopback) still get the creds, so the CMS
+  dashboard auto-login keeps working on its own host and locally. Booking never calls
   `/config`. ⚠ Pair with `API_HOST_SERVES_UI=0` on the api host in production — the api host
   should 404 the CMS UI entirely (it cannot log in there anymore by design).
 - **⚠ CORS flag:** `app.use(cors())` sets `Access-Control-Allow-Origin: *` on every response.
@@ -422,9 +486,9 @@ echo | openssl s_client -connect api.storelah.sg:443 -servername api.storelah.sg
   the Lambda cold start); subsequent calls are fast. If it errors with a connection/pool
   error, re-check the pooled URL + query params against Phase 0 step 1.
 - **`/api/v1/cms/config`** is the dashboard auto-login creds endpoint — **404s on the api
-  host in production** (see Phase 0 step 4) and returns creds only on the cms host / local
-  dev. When verifying admin flows, call `/login` directly with the env-configured
-  `STORELAH_ADMIN_PASSWORD` instead.
+  host unconditionally** (both `/api/v1/cms` and legacy `/api/cms`, see Phase 0 step 4) and
+  returns creds only on the cms host / local dev. When verifying admin flows, call `/login`
+  directly with the env-configured `STORELAH_ADMIN_PASSWORD` instead.
 
 ## Cross-app notes
 

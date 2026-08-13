@@ -3,7 +3,6 @@ import bcrypt from 'bcryptjs';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma';
 import { ok, created, fail, AppError } from '../lib/http';
-import { config } from '../lib/config';
 import { resolveHostKind } from '../lib/host';
 import { requireAuth, signToken } from '../middleware/auth';
 import { getSummary } from '../core/summary';
@@ -125,10 +124,18 @@ const updatePromotionSchema = createPromotionSchema.partial();
 router.get('/config', (req: Request, res: Response) => {
   // Security gate (deploy runbook "Phase 0 step 4 — SECURITY FLAG"): this endpoint
   // hands the CMS dashboard its live login credentials, so it must never be
-  // reachable from the PUBLIC api host in production. Only the cms host
-  // (cms.storelah.sg) and local dev (NODE_ENV != production / localhost) may use
-  // it — the api host 404s it once production. The booking app never calls it.
-  if (config.isProd && resolveHostKind(req) === 'api') {
+  // reachable from a PUBLIC host. It is allowed ONLY on the cms host
+  // (cms.storelah.sg) and local dev (localhost / loopback — classified 'cms').
+  // Every other host (api.storelah.sg, the raw execute-api invoke URL, any
+  // unknown/forged host) gets a 404.
+  //
+  // Deliberately host-kind-based and NOT NODE_ENV-based: the gate must not
+  // silently deactivate if NODE_ENV is missing/misconfigured at Lambda runtime
+  // (the original prod-flag version was bypassed in exactly that way on the live
+  // function). The only legitimate consumers of /config are the dashboard on its
+  // own host and local dev, neither of which ever arrive via an api-kind host.
+  // The booking app never calls it.
+  if (resolveHostKind(req) === 'api') {
     throw new AppError(404, 'NOT_FOUND', 'Not found');
   }
   const email = process.env.STORELAH_ADMIN_EMAIL;

@@ -2,7 +2,9 @@ import { Router, Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma';
-import { ok, created, fail } from '../lib/http';
+import { ok, created, fail, AppError } from '../lib/http';
+import { config } from '../lib/config';
+import { resolveHostKind } from '../lib/host';
 import { requireAuth, signToken } from '../middleware/auth';
 import { getSummary } from '../core/summary';
 import {
@@ -120,7 +122,15 @@ const createPromotionSchema = z.object({
 
 const updatePromotionSchema = createPromotionSchema.partial();
 
-router.get('/config', (_req: Request, res: Response) => {
+router.get('/config', (req: Request, res: Response) => {
+  // Security gate (deploy runbook "Phase 0 step 4 — SECURITY FLAG"): this endpoint
+  // hands the CMS dashboard its live login credentials, so it must never be
+  // reachable from the PUBLIC api host in production. Only the cms host
+  // (cms.storelah.sg) and local dev (NODE_ENV != production / localhost) may use
+  // it — the api host 404s it once production. The booking app never calls it.
+  if (config.isProd && resolveHostKind(req) === 'api') {
+    throw new AppError(404, 'NOT_FOUND', 'Not found');
+  }
   const email = process.env.STORELAH_ADMIN_EMAIL;
   const password = process.env.STORELAH_ADMIN_PASSWORD;
   if (!email || !password) {

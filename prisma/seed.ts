@@ -7,6 +7,7 @@ import {
   LeadSource,
 } from '@prisma/client';
 import bcrypt from 'bcryptjs';
+import 'dotenv/config';
 
 const prisma = new PrismaClient();
 
@@ -144,9 +145,15 @@ async function main() {
     prisma.adminUser.deleteMany(),
   ]);
 
-  const passwordHash = await bcrypt.hash('password', 10);
+  // Admin from env so a one-shot CLOUD seed (deploy runbook Phase A) creates the
+  // login the deployed Lambda actually uses; local dev falls back to the old
+  // defaults. STORELAH_ADMIN_EMAIL/PASSWORD are also the /config + Lambda env
+  // values, so seed → login stays consistent everywhere.
+  const adminEmail = process.env.STORELAH_ADMIN_EMAIL || 'admin@storelah.sg';
+  const adminPassword = process.env.STORELAH_ADMIN_PASSWORD || 'password';
+  const passwordHash = await bcrypt.hash(adminPassword, 10);
   await prisma.adminUser.create({
-    data: { email: 'admin@storelah.sg', name: 'Faisal Z.', passwordHash, role: 'MANAGER' },
+    data: { email: adminEmail, name: 'Faisal Z.', passwordHash, role: 'MANAGER' },
   });
 
   const sizeIds: Record<SizeKey, string> = {} as any;

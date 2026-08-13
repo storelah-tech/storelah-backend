@@ -13,7 +13,11 @@ code changes marked `[backend-agent]`). Landing is done; booking is waiting on T
 
 - **Landing is LIVE:** `https://storelah.sg` + `https://www.storelah.sg` via CloudFront +
   Route 53 (zone `storelah-dns`). Cross-ref: `storelah-landing/docs/DEPLOYMENT.md`.
-- **Backend: NOT deployed.** This runbook is the plan. Nothing has been executed yet.
+- **Backend: NOT deployed.** The deploy-session prerequisites that are CODE work are DONE and
+  committed to `origin/main` (8299551 = latest): Lambda adapter (`serverless-http` + guarded
+  `app.listen`, commit e7a1d34), Prisma linux engine target (`rhel-openssl-3.0.x` for Lambda
+  Node 20 / AL2023), and — added 2026-08-13, commit below — the `/config` credential-gate fix
+  (Phase 0 step 4) and env-driven admin seed. **Nothing has been deployed to AWS yet.**
 - **Ordering decision RESOLVED (2026-08-10): user chose Option A — backend first, then
   booking.** Booking's `NEXT_PUBLIC_API_URL` will be `https://api.storelah.sg` and its deploy
   waits for this session to complete (see `storelah-booking/docs/booking-deploy.md` Phase 0).
@@ -54,13 +58,10 @@ code changes marked `[backend-agent]`). Landing is done; booking is waiting on T
   `20260806150000_add_unit_name`, `20260806160000_add_unit_deleted_at`.
 - **Client singleton:** `src/lib/prisma.ts` keeps one `PrismaClient` per process — correct
   for Lambda (one client per warm container; never create one per request).
-- **git: repo on `main`, NO remote configured.** Working tree has **FOUR uncommitted
-  modifications** (not one): `src/cms/admin/admin.js`, `src/cms/admin/dashboard.html`,
-  `src/core/tenants.ts`, `src/routes/cms.ts` (+582/−31). All four must be committed before
-  the Phase 0 push. `docs/` exists (UNIT_CODE_AND_NAME.md, UNIT_DELETION.md, TENANTS_PLAN.md,
-  CMS_HANDOVER_COMPARISON.md) — no deployment doc until this file.
-- **`dist/` is STALE** (predates the admin UI: `dist/src/cms` has only `dashboard.html` +
-  `data-layer.js`, no `admin/`). A fresh `pnpm build` is required before bundling.
+- **git: repo `storelah-tech/storelah-backend` on `main`, remote configured, fully pushed
+  (`origin/main` == `HEAD`, currently 8299551), working tree clean. `.env` is gitignored and
+  never pushed. All prior "no remote / four uncommitted files / stale dist" notes are
+  obsolete — a fresh `pnpm build` was verified passing on 2026-08-13 (see commit below).
 
 ## Why Lambda + API Gateway (and not Amplify / EC2 / a long-running container)
 
@@ -208,11 +209,14 @@ needs a code change; defer unless asked):
 | `NODE_ENV` | `production` | `config.isProd` + Prisma global-cache behavior key off this |
 | `PORT` | not needed under Lambda | harmless if set; adapter doesn't use it |
 
-- **⚠ SECURITY FLAG (production gate):** `GET /api/v1/cms/config` returns **`{ email,
-  password }` in plaintext from env** for the dashboard auto-login. On a PUBLIC
-  `api.storelah.sg` that endpoint hands out the admin password to anyone. Flag to
-  orchestrator + backend-agent: gate it (require auth), remove it in production, or accept
-  it only while the whole API stays pre-launch. Decide BEFORE going public, not after.
+- **✅ SECURITY FLAG — RESOLVED (2026-08-13, backend-agent commit):** `GET /api/v1/cms/config`
+  used to return **`{ email, password }` in plaintext from env** to anyone. It is now gated:
+  in production (`NODE_ENV=production`) the **api host (api.storelah.sg and the raw
+  execute-api invoke URL) returns 404** for `/config` (both `/api/v1/cms` and the legacy
+  `/api/cms`); only the **cms host (cms.storelah.sg) and local dev** still get the creds, so
+  the CMS dashboard auto-login keeps working on its own host and locally. Booking never calls
+  `/config`. ⚠ Pair with `API_HOST_SERVES_UI=0` on the api host in production — the api host
+  should 404 the CMS UI entirely (it cannot log in there anymore by design).
 - **⚠ CORS flag:** `app.use(cors())` sets `Access-Control-Allow-Origin: *` on every response.
   Booking's `/api/units` proxy is server-side (CORS-free), but any direct browser call to the
   API is wide open. Acceptable for MVP; tighten later if needed (backend-agent).
@@ -256,6 +260,18 @@ Run from `storelah-backend/` with pnpm 10.4.1 (corepack).
    ```
    This applies the 7 migrations. Do this ONCE, before/at first deploy — never on every cold
    start. The Lambda's runtime `DATABASE_URL` is the **POOLED** URL (Phase 0 steps 1 + 4).
+4b. **Seed the CLOUD DB ONCE (contradiction resolved):** the runbook's blanket "never run
+   `db:seed` against the cloud DB" refers to ACCIDENTAL/destructive re-seeds. Phase C expects
+   **seeded rows** (`GET /api/v1/public/branches` non-empty → proves Prisma reached Neon),
+   and the CMS needs an `AdminUser` row to log in — so a **deliberate, one-shot** seed at
+   deploy time is REQUIRED:
+   ```bash
+   STORELAH_ADMIN_EMAIL=admin@storelah.sg STORELAH_ADMIN_PASSWORD=<same-as-lambda-env> \
+     DATABASE_URL="$NEON_DIRECT_URL" pnpm db:seed
+   ```
+   The seed now reads the admin pair from env (fallback `admin@storelah.sg` / `password` for
+   local dev only — committed 2026-08-13), so the admin row matches the Lambda's
+   `STORELAH_ADMIN_PASSWORD`. Never re-run it against the cloud DB after launch (wipes data).
 5. **Bundle the zip (pnpm layout gotcha):** `node_modules` is **symlink-based** under pnpm —
    a naive `zip -r node_modules` ships broken symlinks. Build a self-contained staging dir
    (guaranteed approach — this repo is NOT a pnpm workspace, so `pnpm deploy` [experimental,
@@ -405,8 +421,10 @@ echo | openssl s_client -connect api.storelah.sg:443 -servername api.storelah.sg
   to be slower**: the Neon compute wakes from scale-to-zero (adds a few hundred ms on top of
   the Lambda cold start); subsequent calls are fast. If it errors with a connection/pool
   error, re-check the pooled URL + query params against Phase 0 step 1.
-- **`/api/v1/cms/config`** returns admin creds (503 if env unset) — see the Phase 0 step 4
-  security flag; keep the endpoint in mind when verifying admin flows.
+- **`/api/v1/cms/config`** is the dashboard auto-login creds endpoint — **404s on the api
+  host in production** (see Phase 0 step 4) and returns creds only on the cms host / local
+  dev. When verifying admin flows, call `/login` directly with the env-configured
+  `STORELAH_ADMIN_PASSWORD` instead.
 
 ## Cross-app notes
 

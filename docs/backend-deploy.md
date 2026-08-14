@@ -19,7 +19,8 @@ code changes marked `[backend-agent]`). Landing is done; booking is waiting on T
   - `https://api.storelah.sg/health` → `{ ok: true, service: 'storelah-cms', time }`
   - `https://api.storelah.sg/api/v1/public/branches` → seeded Neon rows (BM/UB/WD) —
     **confirms Prisma reached Neon through the pooled URL and the cloud DB was seeded**
-  - `https://api.storelah.sg/` and `/admin` → 200 CMS dashboard; `cms.storelah.sg/` → 200
+  - `https://api.storelah.sg/` and `/docs` → Swagger UI docs for the booking API; `/admin` → 404;
+    `cms.storelah.sg/` (and `/admin`) → 200 CMS dashboard
   - `POST /api/v1/cms/login` with the env-configured admin pair → 200 (admin user exists in Neon)
   - All four ACM validation CNAMEs (apex, www, api, cms) resolve in DNS; MX/NS intact.
   **A full Phase C admin-flow re-run with a Bearer token remains pending (blocked on AWS
@@ -34,8 +35,9 @@ code changes marked `[backend-agent]`). Landing is done; booking is waiting on T
   both `/api/v1/cms/config` AND the legacy `/api/cms/config`, unconditionally — only
   `cms.storelah.sg` and local dev (`localhost`/loopback) still get the creds. A live Lambda
   with this build can NEVER leak `/config` even if `NODE_ENV` is missing. Remediation for
-  the live deploy: rebuild from `origin/main`, set `NODE_ENV=production` +
-  `API_HOST_SERVES_UI=0`, redeploy, then re-verify `/config` 404s on the api host
+  the live deploy: rebuild from `origin/main`, set `NODE_ENV=production` (the legacy
+  `API_HOST_SERVES_UI` flag is retired — the api host now always serves Swagger docs, see
+  the ui swap note), redeploy, then re-verify `/config` 404s on the api host
   (verification below). Because the password was publicly readable, **rotate it now**:
   set a NEW `STORELAH_ADMIN_PASSWORD` in the Lambda env AND update the seeded AdminUser row
   to match WITHOUT re-running `db:seed` — exact steps in the **PASSWORD ROTATION** block
@@ -279,8 +281,9 @@ needs a code change; defer unless asked):
   `/api/v1/cms` and the legacy `/api/cms`) in every environment; only the **cms host
   (cms.storelah.sg) and local dev** (`localhost`/loopback) still get the creds, so the CMS
   dashboard auto-login keeps working on its own host and locally. Booking never calls
-  `/config`. ⚠ Pair with `API_HOST_SERVES_UI=0` on the api host in production — the api host
-  should 404 the CMS UI entirely (it cannot log in there anymore by design).
+  `/config`. The api host serves Swagger UI docs for the booking API at `/` and `/docs` and
+  404s every other UI path (the legacy `API_HOST_SERVES_UI` flag is retired/ignored; the api
+  host cannot log in to the CMS by design).
 - **⚠ CORS flag:** `app.use(cors())` sets `Access-Control-Allow-Origin: *` on every response.
   Booking's `/api/units` proxy is server-side (CORS-free), but any direct browser call to the
   API is wide open. Acceptable for MVP; tighten later if needed (backend-agent).

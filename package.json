@@ -28,6 +28,7 @@
     "express": "^5.1.0",
     "jsonwebtoken": "^9.0.2",
     "serverless-http": "^4.0.0",
+    "swagger-ui-dist": "^5.20",
     "zod": "^4.1.12"
   },
   "devDependencies": {

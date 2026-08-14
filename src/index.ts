@@ -5,6 +5,7 @@ import path from 'path';
 import cmsRoutes from './routes/cms';
 import publicRoutes from './routes/public';
 import customerRoutes from './routes/customer';
+import { swaggerDocsRouter, serveSwaggerDocs } from './routes/swagger';
 import { errorHandler } from './lib/http';
 import { AppError } from './lib/http';
 import { config } from './lib/config';
@@ -29,31 +30,46 @@ app.use('/api/cms', cmsRoutes);
 app.use('/api/v1/public', publicRoutes);
 app.use('/api/v1/customer', customerRoutes);
 
-// CMS UI (frozen dashboard.html served statically)
-// NB: the /admin route must be registered BEFORE the static mount — otherwise
-// express.static sees the src/cms/admin/ directory and 301-redirects /admin → /admin/.
-// The API host serves the UI only while the API_HOST_SERVES_UI migration flag is
-// on; once ops flip it off after the cms.storelah.sg cutover, the API host 404s
-// the UI routes (the CMS host always serves its dashboard). API routes never gate.
+// Swagger UI docs for the customer-facing booking API — served on the api host
+// at /docs and / (see below). The CMS host 404s /docs. The docs surface
+// replaced the legacy terminal dashboard on api.storelah.sg (see / and /admin).
+app.use('/docs', swaggerDocsRouter);
+
+// CMS UI (frozen dashboard.html served statically) — CMS host only.
+// NB: /admin and / must be registered BEFORE the static mount — otherwise
+// express.static sees the src/cms/admin/ directory (301-redirecting /admin →
+// /admin/) and the CMS host gate below would swallow the / route.
 app.get('/admin', (req, res) => {
-  if (resolveHostKind(req) === 'api' && !config.apiHostServesUi) {
+  if (resolveHostKind(req) === 'api') {
     throw new AppError(404, 'NOT_FOUND', 'Route not found');
   }
   res.sendFile(path.join(__dirname, 'cms', 'admin', 'dashboard.html'));
 });
-app.use(express.static(path.join(__dirname, 'cms')));
+
 app.get('/', (req, res) => {
-  // cms.storelah.sg → CMS admin dashboard at the root; api.storelah.sg keeps the
-  // legacy terminal dashboard (gated by API_HOST_SERVES_UI during migration).
+  // cms.storelah.sg → CMS admin dashboard at the root; api.storelah.sg (and any
+  // other non-CMS host) → Swagger UI docs for the booking API. The legacy
+  // terminal dashboard is no longer served on the api host.
   if (resolveHostKind(req) === 'cms') {
     res.sendFile(path.join(__dirname, 'cms', 'admin', 'dashboard.html'));
     return;
   }
-  if (!config.apiHostServesUi) {
-    throw new AppError(404, 'NOT_FOUND', 'Route not found');
-  }
-  res.sendFile(path.join(__dirname, 'cms', 'dashboard.html'));
+  serveSwaggerDocs(req, res);
 });
+
+// CMS static assets (dashboard.html, data-layer.js, admin/*) are gated to the
+// CMS host so the api host cannot fetch the terminal dashboard (or its assets)
+// by any path. The /docs router and both root routes above are already mounted,
+// so this gate only ever sees non-docs, non-api requests on the api host.
+app.use(
+  (req, _res, next) => {
+    if (resolveHostKind(req) === 'api') {
+      throw new AppError(404, 'NOT_FOUND', 'Route not found');
+    }
+    next();
+  },
+  express.static(path.join(__dirname, 'cms')),
+);
 
 app.use((_req, _res) => {
   throw new AppError(404, 'NOT_FOUND', 'Route not found');

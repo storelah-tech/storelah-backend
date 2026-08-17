@@ -122,9 +122,43 @@ model Floor {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  units Unit[]
+  units      Unit[]
+  floorPlan  FloorPlan? // one-to-one: a floor has exactly one plan (see FloorPlan)
 
   @@unique([branchId, level])
+}
+
+// Floor plan for a facility's floor — the editable canvas the operator draws in
+// the CMS "facility setup" view: canvas geometry in LOGICAL GRID UNITS (not px;
+// the editor snaps to the grid and renderers scale grid→px at any zoom), plus
+// free-form decoration (walls / corridors / entrance / lift / stairs / fire
+// exit) in `structure`, plus unit placements.
+//
+// SINGLE plan per floor, enforced by `@@unique([floorId])`: a floor has one
+// physical layout, so consumers can always read THE plan for a floor without
+// resolving versions/activation. If draft/versioning is ever needed it can be
+// added additively (e.g. a `status` column).
+//
+// `structure` is a JSONB document rather than relational rows because the
+// decorations are presentational and heterogeneously shaped (walls, rooms,
+// corridors, entrance, lift, stairs, fire exit each carry different fields),
+// are only ever consumed as a whole by the renderer, and are never queried or
+// filtered individually. Postgres validates JSON at write time.
+//
+// Deleting a plan cascades to its placements (UnitPlacement) — see that model —
+// and never touches Unit rows.
+model FloorPlan {
+  id        String   @id @default(cuid())
+  floorId   String   @unique
+  floor     Floor    @relation(fields: [floorId], references: [id], onDelete: Cascade)
+  width     Int      @default(0) // canvas width in grid units
+  height    Int      @default(0) // canvas height in grid units
+  structure Json? // free-form decorations drawn by the operator: walls / corridors /
+                  // entrance / lift / stairs / fire exit (Postgres JSONB)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  placements UnitPlacement[]
 }
 
 model UnitSize {
@@ -165,10 +199,45 @@ model Unit {
   rateHistory    RateChange[]
   bookings       Booking[]
   invoices       Invoice[]
+  placement      UnitPlacement? // one-to-one: a unit appears on its floor's plan at most once
 
   @@unique([branchId, unitCode])
   @@index([branchId, floorId])
   @@index([status])
+}
+
+// Per-unit placement on a floor plan: where (x, y) and how big (width, height) a
+// unit is drawn/sized on its floor's plan canvas. Kept as a SEPARATE join model
+// rather than geometry columns on Unit so the Unit row stays clean (units predate
+// floor plans; geometry is meaningless without a plan) and a soft-deleted unit's
+// placement survives deletion (Unit.deletedAt is an UPDATE, not a DELETE).
+//
+// `@@unique([unitId])` — a unit is placed exactly once: it belongs to one floor,
+// and a floor has one plan. The unique key doubles as the upsert key for the
+// editor's save. `@@index([floorPlanId])` serves plan-scoped reads.
+//
+// Delete semantics (respecting the soft-delete lifecycle):
+//   - deleting a FloorPlan cascades its placements (geometry is subordinate to the
+//     plan; Units are untouched — the FK points from placement to unit, never back);
+//   - `onDelete: Restrict` on unit guards against a future HARD unit delete while a
+//     placement exists (the purge path must clear placements first; today the app
+//     only soft-deletes via `deletedAt`, so Restrict never fires);
+//   - reads render a plan by joining placement → unit and FILTERING OUT placements
+//     whose unit has `deletedAt != null`, so stale geometry never surfaces.
+model UnitPlacement {
+  id          String    @id @default(cuid())
+  floorPlanId String
+  floorPlan   FloorPlan @relation(fields: [floorPlanId], references: [id], onDelete: Cascade)
+  unitId      String    @unique
+  unit        Unit      @relation(fields: [unitId], references: [id], onDelete: Restrict)
+  x           Int // top-left grid-unit coordinate on the plan canvas
+  y           Int
+  width       Int // rendered bounding box in grid units (drag / resize)
+  height      Int
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([floorPlanId])
 }
 
 model Tenant {

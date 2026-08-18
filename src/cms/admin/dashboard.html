@@ -289,6 +289,38 @@ body { font-family: 'Manrope', sans-serif; background: var(--cream); color: var(
 .ud-history-title { font-size: 11px; font-weight: 700; color: var(--mid); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
 .ud-history-empty { font-size: 11px; color: var(--light); font-style: italic; }
 
+/* FLOOR PLAN EDITOR (facility setup) — same theme tokens */
+.fp-layout { display: grid; grid-template-columns: 215px 1fr; gap: 14px; margin-bottom: 12px; }
+.fp-palette { background: var(--cream); border: 1px solid var(--border); border-radius: 9px; padding: 12px; max-height: 560px; overflow-y: auto; }
+.fp-unit-list { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.fp-unit-chip { background: var(--white); border: 1.5px solid var(--border); border-radius: 7px; padding: 6px 9px; cursor: grab; font-size: 11px; font-weight: 700; transition: all 0.15s; user-select: none; touch-action: none; }
+.fp-unit-chip:hover { border-color: var(--terra); box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+.fp-unit-chip.placed { opacity: 0.4; pointer-events: none; cursor: default; }
+.fp-editor { min-width: 0; }
+.fp-toolbar { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; margin-bottom: 8px; }
+.fp-toolbar .tbl-search { width: 70px; padding: 5px 8px; font-size: 11px; }
+.fp-zoom { display: flex; align-items: center; gap: 5px; margin-left: auto; }
+.fp-zoom .tb-btn { padding: 2px 9px; font-size: 13px; line-height: 1.2; }
+.fp-sel-info { display: inline-flex; align-items: center; gap: 8px; }
+.fp-canvas-wrap { background: var(--white); border: 1px solid var(--border); border-radius: 9px; padding: 12px; overflow: auto; max-height: 640px; min-height: 360px; }
+.fp-canvas { position: relative; background-color: var(--cream); border: 1px solid var(--sand); background-image: linear-gradient(var(--sand) 1px, transparent 1px), linear-gradient(90deg, var(--sand) 1px, transparent 1px); }
+.fp-wall { position: absolute; background: var(--charcoal); z-index: 1; }
+.fp-corridor { position: absolute; background: var(--sand); z-index: 1; border-radius: 2px; }
+.fp-struct { position: absolute; background: var(--terra-light); border: 1.5px solid var(--terra); color: var(--terra); font-size: 9px; font-weight: 800; display: flex; align-items: center; justify-content: center; z-index: 1; border-radius: 4px; padding: 1px; }
+.fp-placed { position: absolute; border-radius: 6px; display: flex; flex-direction: column; align-items: center; justify-content: center; cursor: grab; border: 2px solid var(--teal); background: var(--teal-light); box-sizing: border-box; font-family: 'Plus Jakarta Sans', sans-serif; font-weight: 800; color: var(--teal); overflow: hidden; z-index: 2; touch-action: none; }
+.fp-placed .fp-code { font-size: 10px; line-height: 1.15; }
+.fp-placed .fp-size { font-size: 8.5px; color: var(--mid); font-weight: 600; line-height: 1.2; }
+.fp-placed .fp-status { position: absolute; top: 3px; right: 3px; width: 7px; height: 7px; border-radius: 50%; }
+.fp-placed.selected { border-color: var(--terra); box-shadow: 0 0 0 2px var(--terra-light); }
+.fp-placed .fp-resize { position: absolute; right: 2px; bottom: 2px; width: 11px; height: 11px; background: var(--charcoal); border-radius: 2px; cursor: nwse-resize; opacity: 0; transition: opacity 0.15s; }
+.fp-placed.selected .fp-resize { opacity: 1; }
+.fp-ghost { position: fixed; z-index: 300; pointer-events: none; display: flex; align-items: center; justify-content: center; border: 2px dashed var(--terra); background: rgba(184,106,74,0.15); color: var(--terra); font-family: 'Plus Jakarta Sans', sans-serif; font-weight: 800; font-size: 11px; border-radius: 6px; }
+.fp-hint { font-size: 10px; color: var(--light); }
+.fp-structure { margin-top: 4px; }
+.fp-structure summary { color: var(--mid); }
+.fp-structure-input { width: 100%; font-family: 'SFMono-Regular', Menlo, Consolas, monospace; font-size: 11px; border: 1.5px solid var(--border); border-radius: 7px; padding: 8px; background: var(--white); color: var(--charcoal); resize: vertical; margin-top: 6px; }
+.fp-structure-input:focus { border-color: var(--terra); outline: none; }
+
 ::-webkit-scrollbar { width: 4px; height: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--sand); border-radius: 2px; }
@@ -320,6 +352,10 @@ body { font-family: 'Manrope', sans-serif; background: var(--cream); color: var(
     <div class="nav-item" data-view="tenants"><span class="nav-icon">👤</span> Tenants</div>
     <div class="nav-item" title="Coming soon"><span class="nav-icon">📋</span> Bookings</div>
     <div class="nav-item" title="Coming soon"><span class="nav-icon">🔑</span> Move-ins Today <span class="nav-badge">3</span></div>
+  </div>
+  <div class="sb-section">
+    <div class="sb-section-lbl">Facility Setup</div>
+    <div class="nav-item" data-view="floorplans"><span class="nav-icon">🗺️</span> Floor Plans</div>
   </div>
   <div class="sb-section">
     <div class="sb-section-lbl">Revenue</div>
@@ -727,6 +763,58 @@ body { font-family: 'Manrope', sans-serif; background: var(--cream); color: var(
             <button class="tb-btn ghost" id="tenantsPageNext">Next ›</button>
           </div>
         </div>
+      </div>
+
+    </div>
+
+    <!-- FLOOR PLANS SECTION (sidebar-navigated facility-setup editor) -->
+    <div class="view" id="view-floorplans" hidden>
+
+      <div class="unit-map-card">
+        <div class="sec-hdr">
+          <div>
+            <div class="sec-title" id="fpTitle">Floor Plan Editor</div>
+            <div class="sec-sub" id="fpSub">Design the layout: drag units onto the floor, snap to grid, resize, save</div>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+            <select id="fpBranch" class="tbl-select" title="Branch"></select>
+            <select id="fpFloor" class="tbl-select" title="Floor"></select>
+            <button class="tb-btn ghost" id="fpDeletePlan" title="Delete this floor plan and all placements on it">🗑 Delete plan</button>
+            <button class="tb-btn primary" id="fpSaveCanvas">💾 Save Canvas</button>
+          </div>
+        </div>
+
+        <div class="modal-alert" id="fpBanner" hidden></div>
+
+        <div class="fp-layout">
+          <div class="fp-palette">
+            <div class="chart-title">Units</div>
+            <div class="t-type" id="fpPaletteSub">Drag a unit onto the canvas</div>
+            <div class="fp-unit-list" id="fpPalette"></div>
+          </div>
+          <div class="fp-editor">
+            <div class="fp-toolbar">
+              <span class="t-type">Canvas</span>
+              <input type="number" id="fpWidth" class="tbl-search" min="1" max="500" step="1" title="Canvas width (grid units)">
+              <span class="t-type">×</span>
+              <input type="number" id="fpHeight" class="tbl-search" min="1" max="500" step="1" title="Canvas height (grid units)">
+              <span class="fp-zoom">
+                <button class="tb-btn ghost" id="fpZoomOut" title="Zoom out">−</button>
+                <span class="t-type" id="fpZoomLbl">100%</span>
+                <button class="tb-btn ghost" id="fpZoomIn" title="Zoom in">+</button>
+              </span>
+              <span class="fp-sel-info" id="fpSelInfo"></span>
+            </div>
+            <div class="fp-canvas-wrap" id="fpCanvasWrap">
+              <div class="fp-canvas" id="fpCanvas"></div>
+            </div>
+          </div>
+        </div>
+
+        <details class="fp-structure">
+          <summary>Advanced — structure JSON <span class="t-type">(walls / corridors / entrance / lift / stairs / fireExit)</span></summary>
+          <textarea id="fpStructure" class="fp-structure-input" rows="6" spellcheck="false" placeholder='{ "walls": [ { "x1": 0, "y1": 0, "x2": 40, "y2": 0 } ] }'></textarea>
+        </details>
       </div>
 
     </div>

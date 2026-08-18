@@ -4,6 +4,7 @@ import { ok, fail } from '../lib/http';
 import { listPublicBranches } from '../core/branches';
 import { getUnitMap, listPublicUnits } from '../core/units';
 import { listActivePromotions, validatePromotion } from '../core/promotions';
+import { getPublicFloorPlan } from '../core/floorPlans';
 
 const router = Router();
 
@@ -31,6 +32,20 @@ router.get('/units/map', async (req: Request, res: Response) => {
   const branch = (req.query.branch as string) || 'BM';
   const level = Number(req.query.level) || 1;
   ok(res, await getUnitMap(branch, level, { public: true }));
+});
+
+// PUBLIC floor-plan read for the future booking renderer (see FLOOR_PLAN_MODEL.md
+// "Forward compatibility"). Additive contract: branch + floor + plan canvas
+// (width/height/structure) + placements joined to unit unitCode/name/size/status,
+// soft-deleted units filtered out. No tenant/PII anywhere.
+router.get('/floor-plans/:branchCode/:level', async (req: Request, res: Response) => {
+  const branchCode = String(req.params.branchCode).toUpperCase();
+  const level = Number(req.params.level);
+  if (!Number.isInteger(level) || level < 1) {
+    fail(res, 400, 'VALIDATION', 'Invalid floor level');
+    return;
+  }
+  ok(res, await getPublicFloorPlan(branchCode, level));
 });
 
 router.get('/promotions', async (_req: Request, res: Response) => {

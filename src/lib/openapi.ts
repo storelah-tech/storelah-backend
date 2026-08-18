@@ -224,6 +224,46 @@ export const openapiSpec = {
         },
       },
     },
+    '/public/floor-plans/{branchCode}/{level}': {
+      get: {
+        tags: ['Public'],
+        summary: 'Get a floor\'s floor plan',
+        description: [
+          'The authored layout for one branch floor, for the booking app to render real unit positions: plan canvas ',
+          '(width/height in LOGICAL GRID UNITS) + free-form `structure` decorations + placements joined to unit ',
+          '`unitCode`/`name`/`size`/`status`.',
+          '',
+          'Soft-deleted units are filtered from `plan.placements`. No tenant, PII, rates, or internal counters are ever ',
+          'returned. When no plan has been authored for the floor, `plan` is `null` and the renderer falls back to a ',
+          'synthesized grid (existing `UnitFloorPlan` behaviour). This endpoint is additive — it does not change any ',
+          'existing public response.',
+        ].join('\n'),
+        operationId: 'getPublicFloorPlan',
+        security: [],
+        parameters: [
+          {
+            name: 'branchCode',
+            in: 'path',
+            required: true,
+            description: 'Branch code, case-insensitive (e.g. BM, WD, UB).',
+            schema: { type: 'string' },
+          },
+          {
+            name: 'level',
+            in: 'path',
+            required: true,
+            description: 'Floor level (1..4).',
+            schema: { type: 'integer' },
+          },
+        ],
+        responses: {
+          '200': openapiResponse({ $ref: openapiSchemaRef('PublicFloorPlan') }),
+          '400': openapiErrorResponse('Invalid floor level.'),
+          '404': openapiErrorResponse('Branch or floor not found.'),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+    },
     '/customer/register': {
       post: {
         tags: ['Customer'],
@@ -955,6 +995,83 @@ export const openapiSpec = {
             type: 'string',
             format: 'date-time',
             description: 'Echoes the submitted last day as an ISO datetime.',
+          },
+        },
+      },
+      PublicFloorPlan: {
+        type: 'object',
+        required: ['branch', 'floor', 'plan'],
+        description:
+          'A floor\'s layout for the booking renderer: branch + floor + plan canvas (width/height in logical grid units, free-form structure JSON) + placements joined to unit code/name/size/status. Soft-deleted units are filtered out; no tenant/PII/rates.',
+        properties: {
+          branch: {
+            type: 'object',
+            required: ['id', 'code', 'name'],
+            properties: {
+              id: { type: 'string' },
+              code: { type: 'string', description: 'e.g. BM / WD / UB' },
+              name: { type: 'string' },
+            },
+          },
+          floor: {
+            type: 'object',
+            required: ['id', 'level', 'name'],
+            properties: {
+              id: { type: 'string' },
+              level: { type: 'integer' },
+              name: { type: 'string' },
+            },
+          },
+          plan: {
+            type: 'object',
+            nullable: true,
+            required: ['id', 'floorId', 'width', 'height', 'placements'],
+            description:
+              'The canvas + decorations when a plan has been authored; null when the floor has no plan yet (renderers should fall back to a synthesized grid).',
+            properties: {
+              id: { type: 'string' },
+              floorId: { type: 'string' },
+              width: { type: 'integer', description: 'Canvas width in logical grid units.' },
+              height: { type: 'integer', description: 'Canvas height in logical grid units.' },
+              structure: {
+                description:
+                  'Free-form JSONB decorations authored by the operator (walls / corridors / entrance / lift / stairs / fireExit). Optional.',
+              },
+              placements: {
+                type: 'array',
+                description: 'Units placed on the plan with their grid geometry.',
+                items: {
+                  type: 'object',
+                  required: ['id', 'x', 'y', 'width', 'height', 'unit'],
+                  properties: {
+                    id: { type: 'string' },
+                    x: { type: 'integer', description: 'Top-left grid-unit x coordinate.' },
+                    y: { type: 'integer', description: 'Top-left grid-unit y coordinate.' },
+                    width: { type: 'integer', description: 'Bounding box width in grid units.' },
+                    height: { type: 'integer', description: 'Bounding box height in grid units.' },
+                    unit: {
+                      type: 'object',
+                      required: ['id', 'unitCode', 'name', 'sqft', 'status', 'size'],
+                      properties: {
+                        id: { type: 'string' },
+                        unitCode: { type: 'string' },
+                        name: { type: 'string', description: 'Display label; falls back to unitCode.' },
+                        sqft: { type: 'integer' },
+                        status: { $ref: openapiSchemaRef('UnitStatus') },
+                        size: {
+                          type: 'object',
+                          required: ['code', 'name'],
+                          properties: {
+                            code: { type: 'string' },
+                            name: { type: 'string' },
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
           },
         },
       },

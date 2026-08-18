@@ -30,6 +30,14 @@ import {
   updatePromotion,
   deletePromotion,
 } from '../core/promotions';
+import {
+  upsertFloorPlan,
+  getFloorPlan,
+  listFloorPlans,
+  setUnitPlacement,
+  removeUnitPlacement,
+  deleteFloorPlan,
+} from '../core/floorPlans';
 
 const router = Router();
 
@@ -120,6 +128,24 @@ const createPromotionSchema = z.object({
 });
 
 const updatePromotionSchema = createPromotionSchema.partial();
+
+const floorPlanCanvasSchema = z.object({
+  width: z.number().int().min(1).max(500).optional(),
+  height: z.number().int().min(1).max(500).optional(),
+  structure: z.unknown().nullable().optional(), // arbitrary JSONB decorations
+});
+
+const floorPlanListQuerySchema = z.object({
+  branch: z.string().trim().min(1).optional(),
+  level: z.coerce.number().int().min(1).optional(),
+});
+
+const floorPlanPlacementSchema = z.object({
+  x: z.number().int().min(0),
+  y: z.number().int().min(0),
+  width: z.number().int().min(1),
+  height: z.number().int().min(1),
+});
 
 router.get('/config', (req: Request, res: Response) => {
   // Security gate (deploy runbook "Phase 0 step 4 — SECURITY FLAG"): this endpoint
@@ -336,6 +362,69 @@ router.put('/promotions/:id', requireAuth, async (req: Request, res: Response) =
 
 router.delete('/promotions/:id', requireAuth, async (req: Request, res: Response) => {
   ok(res, await deletePromotion(String(req.params.id)));
+});
+
+// --- Floor plans (facility setup editor) ---
+// All plan reads/placement writes never touch Unit rows; placement reads join
+// unit and filter deletedAt == null (soft-delete rule).
+
+// List plans across branches/floors (optionally ?branch=BM&level=1), each with
+// placements + unit summaries.
+router.get('/floor-plans', requireAuth, async (req: Request, res: Response) => {
+  const parsed = floorPlanListQuerySchema.safeParse(req.query);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid floor-plan query', parsed.error.flatten());
+    return;
+  }
+  const rows = await listFloorPlans(parsed.data);
+  ok(res, rows, { count: rows.length });
+});
+
+// The plan for a floor (floorId is the upsert key). Includes placements joined
+// to unit summaries and the floor's unplaced units. 200 with an empty scaffold
+// (plan: null) when no plan exists yet so the editor can start fresh.
+router.get('/floor-plans/:floorId', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await getFloorPlan(String(req.params.floorId)));
+});
+
+// Upsert the plan canvas (width / height / structure) — create if absent, then
+// update the provided fields. 201 (created/upserted).
+router.post('/floor-plans/:floorId', requireAuth, async (req: Request, res: Response) => {
+  const parsed = floorPlanCanvasSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid floor-plan canvas payload', parsed.error.flatten());
+    return;
+  }
+  created(
+    res,
+    await upsertFloorPlan(String(req.params.floorId), {
+      width: parsed.data.width,
+      height: parsed.data.height,
+      structure: parsed.data.structure,
+    }),
+  );
+});
+
+// Upsert one unit placement keyed by (floorPlanId, unitId): the unit must
+// belong to the plan's floor, must not be soft-deleted, and the geometry must
+// fit inside the canvas.
+router.put('/floor-plans/:floorId/units/:unitId', requireAuth, async (req: Request, res: Response) => {
+  const parsed = floorPlanPlacementSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid placement payload', parsed.error.flatten());
+    return;
+  }
+  ok(res, await setUnitPlacement(String(req.params.floorId), String(req.params.unitId), parsed.data));
+});
+
+// Remove a unit placement (geometry only — never soft-deletes the Unit).
+router.delete('/floor-plans/:floorId/units/:unitId', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await removeUnitPlacement(String(req.params.floorId), String(req.params.unitId)));
+});
+
+// Delete the floor plan (cascades its placements; Unit rows untouched).
+router.delete('/floor-plans/:floorId', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await deleteFloorPlan(String(req.params.floorId)));
 });
 
 export default router;

@@ -21,7 +21,7 @@ import { Prisma } from '@prisma/client';
 // Soft-delete rule: every plan read joins placements → unit and filters out
 // placements whose unit has deletedAt != null. Never touch Unit rows.
 
-export const CANVAS_DEFAULTS = { width: 40, height: 30 } as const;
+export const CANVAS_DEFAULTS = { width: 20, height: 20 } as const;
 const MAX_CANVAS = 500; // grid units per axis, sanity cap
 
 // Plan payload used by every read; placements exclude soft-deleted units;

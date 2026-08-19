@@ -50,7 +50,7 @@
       scale: 1, // zoom scale factor (grid units → px)
       selected: null, // selected placement unitId
       selectedBlock: null, // selected block id
-      canvasDefaults: { width: 40, height: 30 },
+      canvasDefaults: { width: 20, height: 20 },
       liveDims: null, // live-typed canvas size from the W/H inputs (local, unsaved); null = use plan/server size
     },
   };
@@ -1438,7 +1438,7 @@
     try {
       const body = await get(`/floor-plans/${encodeURIComponent(state.fp.floorId)}`);
       state.fp.plan = body.plan;
-      state.fp.canvasDefaults = body.canvasDefaults || { width: 40, height: 30 };
+      state.fp.canvasDefaults = body.canvasDefaults || { width: 20, height: 20 };
       state.fp.structure = body.plan ? body.plan.structure : null;
       state.fp.placements = fpNormalizePlacements(body.plan);
       state.fp.blocks = fpNormalizeBlocks(body.plan);

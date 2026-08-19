@@ -1776,6 +1776,10 @@
     const offsetX = e.clientX - startRect.left;
     const offsetY = e.clientY - startRect.top;
     state.fp.selected = uid;
+    // A unit interaction supersedes any block selection — otherwise the info
+    // strip would keep showing the stale block while the operator is acting on
+    // the unit (fpRenderSelInfo gives a selected block priority over a unit).
+    state.fp.selectedBlock = null;
     fpRenderCanvas();
     fpRenderSelInfo();
     const { w: cw, h: ch } = fpCanvasDims();
@@ -1801,6 +1805,7 @@
     e.stopPropagation();
     if (state.fp.selected !== pl.unitId) {
       state.fp.selected = pl.unitId;
+      state.fp.selectedBlock = null;
       fpRenderCanvas();
       fpRenderSelInfo();
     }
@@ -1847,8 +1852,34 @@
     }
   }
 
-  // Create a block via POST with a default 6×6 footprint at the origin (clamped
-  // to the canvas), then select it so the operator can drag/resize immediately.
+  // First free grid position for a size×size block (scanning top→bottom,
+  // left→right), avoiding existing blocks AND placed units so new decoration
+  // blocks never stack invisibly at the origin. Falls back to a clamped cascade
+  // just below the last occupied rect when the canvas has no free size×size
+  // area (the block is still selectable/draggable from there).
+  function fpFirstFreeSpot(size) {
+    const { w: cw, h: ch } = fpCanvasDims();
+    const occupied = state.fp.blocks.concat(state.fp.placements);
+    const collides = (x, y) =>
+      occupied.some((o) => x < o.x + o.width && o.x < x + size && y < o.y + o.height && o.y < y + size);
+    for (let y = 0; y + size <= ch; y++) {
+      for (let x = 0; x + size <= cw; x++) {
+        if (!collides(x, y)) return { x, y };
+      }
+    }
+    const last = occupied[occupied.length - 1];
+    if (last) {
+      return {
+        x: Math.min(Math.max(0, last.x), Math.max(0, cw - size)),
+        y: Math.min(last.y + last.height + 1, Math.max(0, ch - size)),
+      };
+    }
+    return { x: 0, y: 0 };
+  }
+
+  // Create a block via POST with a default 6×6 footprint placed at the first
+  // free grid spot (never stacked on another block/unit at 0,0), then select it
+  // so the operator can drag/resize immediately.
   async function fpAddBlock() {
     const input = $('#fpBlockName');
     if (!input) return;
@@ -1860,8 +1891,7 @@
     }
     const { w: cw, h: ch } = fpCanvasDims();
     const size = Math.min(6, cw, ch);
-    const x = 0;
-    const y = 0;
+    const { x, y } = fpFirstFreeSpot(size);
     try {
       const res = await request(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/blocks`, {
         method: 'POST',
@@ -1878,7 +1908,7 @@
       state.fp.selected = null;
       fpToggleBlockForm(false);
       fpRender();
-      fpToast(`Added block "${name}" (${size}×${size}) at 0,0 — drag it into place or resize from the corner.`, true);
+      fpToast(`Added block "${name}" (${size}×${size}) at ${x},${y} — drag it into place or resize from the corner.`, true);
     } catch (err) {
       fpToast('Add block: ' + describeError(err), false);
     }

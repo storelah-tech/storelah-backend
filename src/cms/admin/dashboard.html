@@ -307,6 +307,16 @@ body { font-family: 'Manrope', sans-serif; background: var(--cream); color: var(
 .fp-wall { position: absolute; background: var(--charcoal); z-index: 1; pointer-events: none; }
 .fp-corridor { position: absolute; background: var(--sand); z-index: 1; border-radius: 2px; pointer-events: none; }
 .fp-struct { position: absolute; background: var(--terra-light); border: 1.5px solid var(--terra); color: var(--terra); font-size: 9px; font-weight: 800; display: flex; align-items: center; justify-content: center; z-index: 1; border-radius: 4px; padding: 1px; pointer-events: none; }
+/* User-authored decoration blocks (lift / stairs / exit / walking area ...) —
+   name+rect primitives, rendered BELOW units (z-index 1 vs 2). Dashed neutral
+   tint by default so they are visually distinct from the solid outlined units;
+   wrapped legs (resize corner + drag) behave like units. */
+.fp-block { position: absolute; background: var(--sand); border: 1.5px dashed var(--mid); border-radius: 4px; display: flex; align-items: center; justify-content: center; cursor: grab; box-sizing: border-box; z-index: 1; touch-action: none; overflow: hidden; }
+.fp-block .fp-block-name { font-family: 'Plus Jakarta Sans', sans-serif; font-size: 10px; font-weight: 800; color: var(--mid); text-align: center; padding: 1px 4px; line-height: 1.2; overflow: hidden; }
+.fp-block.selected { border-color: var(--terra); border-style: solid; background: var(--terra-light); box-shadow: 0 0 0 2px var(--terra-light); }
+.fp-block.selected .fp-block-name { color: var(--terra); }
+.fp-block .fp-resize { position: absolute; right: 2px; bottom: 2px; width: 11px; height: 11px; background: var(--mid); border-radius: 2px; cursor: nwse-resize; opacity: 0; transition: opacity 0.15s; }
+.fp-block.selected .fp-resize { opacity: 1; }
 .fp-placed { position: absolute; border-radius: 6px; display: flex; flex-direction: column; align-items: center; justify-content: center; cursor: grab; border: 2px solid var(--teal); background: var(--teal-light); box-sizing: border-box; font-family: 'Plus Jakarta Sans', sans-serif; font-weight: 800; color: var(--teal); overflow: hidden; z-index: 2; touch-action: none; }
 .fp-placed .fp-code { font-size: 10px; line-height: 1.15; }
 .fp-placed .fp-size { font-size: 8.5px; color: var(--mid); font-weight: 600; line-height: 1.2; }
@@ -320,6 +330,9 @@ body { font-family: 'Manrope', sans-serif; background: var(--cream); color: var(
 .fp-structure summary { color: var(--mid); }
 .fp-structure-input { width: 100%; font-family: 'SFMono-Regular', Menlo, Consolas, monospace; font-size: 11px; border: 1.5px solid var(--border); border-radius: 7px; padding: 8px; background: var(--white); color: var(--charcoal); resize: vertical; margin-top: 6px; }
 .fp-structure-input:focus { border-color: var(--terra); outline: none; }
+.fp-block-form { margin-top: 10px; border-top: 1px solid var(--border); padding-top: 10px; }
+.fp-block-form input { width: 100%; box-sizing: border-box; }
+.fp-legacy-note { font-size: 10px; color: var(--amber); font-weight: 700; margin-top: 6px; }
 
 ::-webkit-scrollbar { width: 4px; height: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }
@@ -791,6 +804,14 @@ body { font-family: 'Manrope', sans-serif; background: var(--cream); color: var(
             <div class="chart-title">Units</div>
             <div class="t-type" id="fpPaletteSub">Drag a unit onto the canvas</div>
             <div class="fp-unit-list" id="fpPalette"></div>
+            <div class="fp-block-form" id="fpBlockForm" hidden>
+              <div class="chart-title" style="font-size:11px;margin-bottom:4px;">New block</div>
+              <input type="text" id="fpBlockName" maxlength="80" spellcheck="false" placeholder='Name — e.g. "Lift", "Stair", "Walking area", "Exit"'>
+              <div style="display:flex;gap:6px;margin-top:6px;">
+                <button class="act-btn primary" id="fpBlockAdd" style="flex:1;text-align:center;">Add block</button>
+                <button class="act-btn" id="fpBlockCancel" style="flex:1;text-align:center;">Cancel</button>
+              </div>
+            </div>
           </div>
           <div class="fp-editor">
             <div class="fp-toolbar">
@@ -798,6 +819,7 @@ body { font-family: 'Manrope', sans-serif; background: var(--cream); color: var(
               <input type="number" id="fpWidth" class="tbl-search" min="1" max="500" step="1" title="Canvas width (grid units)">
               <span class="t-type">×</span>
               <input type="number" id="fpHeight" class="tbl-search" min="1" max="500" step="1" title="Canvas height (grid units)">
+              <button class="tb-btn ghost" id="fpAddBlock" title="Add a decoration block (lift, stairs, exit, walking area) — sets a 6×6 block you can drag, resize and rename">＋ Block</button>
               <span class="fp-zoom">
                 <button class="tb-btn ghost" id="fpZoomOut" title="Zoom out">−</button>
                 <span class="t-type" id="fpZoomLbl">100%</span>
@@ -812,8 +834,9 @@ body { font-family: 'Manrope', sans-serif; background: var(--cream); color: var(
         </div>
 
         <details class="fp-structure">
-          <summary>Advanced — structure JSON <span class="t-type">(walls / corridors / entrance / lift / stairs / fireExit)</span></summary>
+          <summary>Advanced — legacy structure JSON <span class="t-type">(walls / corridors; author lifts, stairs, exits &amp; walking areas as blocks instead)</span></summary>
           <textarea id="fpStructure" class="fp-structure-input" rows="6" spellcheck="false" placeholder='{ "walls": [ { "x1": 0, "y1": 0, "x2": 40, "y2": 0 } ] }'></textarea>
+          <div class="fp-legacy-note" id="fpLegacyNote" hidden>This plan has a legacy structure attached — it renders as static decoration (not editable here). New decorations are authored as blocks.</div>
         </details>
       </div>
 

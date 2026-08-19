@@ -37,6 +37,9 @@ import {
   setUnitPlacement,
   removeUnitPlacement,
   deleteFloorPlan,
+  createFloorPlanBlock,
+  setFloorPlanBlock,
+  removeFloorPlanBlock,
 } from '../core/floorPlans';
 
 const router = Router();
@@ -145,6 +148,15 @@ const floorPlanPlacementSchema = z.object({
   y: z.number().int().min(0),
   width: z.number().int().min(1),
   height: z.number().int().min(1),
+});
+
+const floorPlanBlockSchema = z.object({
+  name: z.string().trim().min(1).max(80), // operator label: "Lift", "Stair", "Walking area", ...
+  x: z.number().int().min(0),
+  y: z.number().int().min(0),
+  width: z.number().int().min(1),
+  height: z.number().int().min(1),
+  color: z.string().trim().max(20).nullish(), // optional render tint (hex)
 });
 
 router.get('/config', (req: Request, res: Response) => {
@@ -420,6 +432,36 @@ router.put('/floor-plans/:floorId/units/:unitId', requireAuth, async (req: Reque
 // Remove a unit placement (geometry only — never soft-deletes the Unit).
 router.delete('/floor-plans/:floorId/units/:unitId', requireAuth, async (req: Request, res: Response) => {
   ok(res, await removeUnitPlacement(String(req.params.floorId), String(req.params.unitId)));
+});
+
+// Create a layout-decoration block (lift / stairs / exit / walking area, ...) on
+// the floor's plan — plain name+rect primitives, addressable for edit/delete.
+router.post('/floor-plans/:floorId/blocks', requireAuth, async (req: Request, res: Response) => {
+  const parsed = floorPlanBlockSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid block payload', parsed.error.flatten());
+    return;
+  }
+  const { name, x, y, width, height, color } = parsed.data;
+  created(res, await createFloorPlanBlock(String(req.params.floorId), { name, x, y, width, height, color }));
+});
+
+// Upsert a block by id, scoped to the plan: updates an existing block on this
+// plan (drag / resize / rename persistence), or creates it when the id is a
+// fresh one. Cross-plan ids are rejected.
+router.put('/floor-plans/:floorId/blocks/:blockId', requireAuth, async (req: Request, res: Response) => {
+  const parsed = floorPlanBlockSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid block payload', parsed.error.flatten());
+    return;
+  }
+  const { name, x, y, width, height, color } = parsed.data;
+  ok(res, await setFloorPlanBlock(String(req.params.floorId), String(req.params.blockId), { name, x, y, width, height, color }));
+});
+
+// Remove a layout-decoration block (scoped to the plan; cross-plan ids 404).
+router.delete('/floor-plans/:floorId/blocks/:blockId', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await removeFloorPlanBlock(String(req.params.floorId), String(req.params.blockId)));
 });
 
 // Delete the floor plan (cascades its placements; Unit rows untouched).

@@ -4,7 +4,9 @@
 // This spec is the single source of truth for clients of the customer-facing
 // API served on api.storelah.sg. It documents ONLY the public + customer
 // endpoints consumed by booking.storelah.sg and external integrators; the
-// operator CMS API (/api/v1/cms) is deliberately out of scope here.
+// operator CMS API (/api/v1/cms) is out of scope EXCEPT the floor-plan "block"
+// endpoints, which are documented under the "Operator CMS" tag as a reference
+// for the dashboard editor (they are intentionally additive to this file).
 //
 // Contract notes (matches src/lib/http.ts and the route files exactly):
 //  - Success:     200/201 → { data, meta? }   (meta is present only where the
@@ -50,6 +52,11 @@ export const openapiSpec = {
       name: 'Customer',
       description:
         'Authenticated customer endpoints (profile, bookings, portal, requests, notice).',
+    },
+    {
+      name: 'Operator CMS',
+      description:
+        'Operator CMS floor-plan endpoints (documented for reference only — served on the CMS host under /api/v1/cms with a Bearer JWT).',
     },
   ],
   paths: {
@@ -230,8 +237,8 @@ export const openapiSpec = {
         summary: 'Get a floor\'s floor plan',
         description: [
           'The authored layout for one branch floor, for the booking app to render real unit positions: plan canvas ',
-          '(width/height in LOGICAL GRID UNITS) + free-form `structure` decorations + placements joined to unit ',
-          '`unitCode`/`name`/`size`/`status`.',
+          '(width/height in LOGICAL GRID UNITS) + free-form `structure` decorations + `blocks` (name+rect ',
+          'decoration labels like Lift/Stairs/Exit) + placements joined to unit `unitCode`/`name`/`size`/`status`.',
           '',
           'Soft-deleted units are filtered from `plan.placements`. No tenant, PII, rates, or internal counters are ever ',
           'returned. When no plan has been authored for the floor, `plan` is `null` and the renderer falls back to a ',
@@ -260,6 +267,116 @@ export const openapiSpec = {
           '200': openapiResponse({ $ref: openapiSchemaRef('PublicFloorPlan') }),
           '400': openapiErrorResponse('Invalid floor level.'),
           '404': openapiErrorResponse('Branch or floor not found.'),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+    },
+    '/cms/floor-plans/{floorId}/blocks': {
+      post: {
+        tags: ['Operator CMS'],
+        summary: 'Create a floor-plan decoration block',
+        description: [
+          'Creates a user-authored layout-decoration rectangle (e.g. Lift, Stairs, Exit, Walking area) on the ',
+          'floor\'s plan. Blocks are plain name+rect primitives — the replacement for authoring the legacy ',
+          '`structure` JSON markers. The plan is lazily created at the default canvas if the floor has none yet.',
+          '',
+          'Operator CMS endpoints are documented here for reference only; they are served on the CMS host under ',
+          '`/api/v1/cms` and require a Bearer JWT issued by `/api/v1/cms/login` (auto-login via `/api/v1/cms/config`).',
+        ].join('\n'),
+        operationId: 'createFloorPlanBlock',
+        security: [{ bearerAuth: [] }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: { $ref: openapiSchemaRef('BlockInput') },
+            },
+          },
+        },
+        responses: {
+          '201': openapiCreatedResponse({ $ref: openapiSchemaRef('PlanBlock') }),
+          '400': openapiErrorResponse(
+            'Invalid block payload, or geometry exceeds the plan canvas.',
+          ),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+    },
+    '/cms/floor-plans/{floorId}/blocks/{blockId}': {
+      put: {
+        tags: ['Operator CMS'],
+        summary: 'Upsert a floor-plan decoration block',
+        description: [
+          'Set/upsert a block scoped to the floor\'s plan: updates an existing block on this plan (drag / resize / ',
+          'rename persistence), or creates it when the id is a fresh one. A block id belonging to a different plan ',
+          'is rejected.',
+          '',
+          'Operator CMS endpoints are documented here for reference only; they are served on the CMS host under ',
+          '`/api/v1/cms` and require a Bearer JWT issued by `/api/v1/cms/login` (auto-login via `/api/v1/cms/config`).',
+        ].join('\n'),
+        operationId: 'upsertFloorPlanBlock',
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          {
+            name: 'blockId',
+            in: 'path',
+            required: true,
+            description: 'Block id (cuid). A fresh id creates the block.',
+            schema: { type: 'string' },
+          },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: { $ref: openapiSchemaRef('BlockInput') },
+            },
+          },
+        },
+        responses: {
+          '200': openapiResponse({ $ref: openapiSchemaRef('PlanBlock') }),
+          '400': openapiErrorResponse(
+            'Invalid block payload, or geometry exceeds the plan canvas.',
+          ),
+          '404': openapiErrorResponse(
+            'Block belongs to a different plan (cross-plan ids are rejected).',
+          ),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+      delete: {
+        tags: ['Operator CMS'],
+        summary: 'Delete a floor-plan decoration block',
+        description: [
+          'Removes a block from the floor\'s plan. Cross-plan ids 404.',
+          '',
+          'Operator CMS endpoints are documented here for reference only; they are served on the CMS host under ',
+          '`/api/v1/cms` and require a Bearer JWT issued by `/api/v1/cms/login` (auto-login via `/api/v1/cms/config`).',
+        ].join('\n'),
+        operationId: 'deleteFloorPlanBlock',
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          {
+            name: 'blockId',
+            in: 'path',
+            required: true,
+            description: 'Block id (cuid).',
+            schema: { type: 'string' },
+          },
+        ],
+        responses: {
+          '200': openapiResponse({
+            type: 'object',
+            required: ['floorId', 'blockId', 'removed'],
+            properties: {
+              floorId: { type: 'string' },
+              blockId: { type: 'string' },
+              removed: { type: 'boolean', enum: [true] },
+            },
+          }),
+          '404': openapiErrorResponse(
+            'No plan for this floor, or block belongs to a different plan.',
+          ),
           '500': openapiErrorResponse('Unexpected server error'),
         },
       },
@@ -998,11 +1115,45 @@ export const openapiSpec = {
           },
         },
       },
+      PlanBlock: {
+        type: 'object',
+        required: ['id', 'name', 'x', 'y', 'width', 'height'],
+        description:
+          'A user-authored layout-decoration rectangle on a floor plan (e.g. Lift, Stairs, Exit, Walking area). Display only — no business behaviour. Geometry is in the same logical grid units as placements.',
+        properties: {
+          id: { type: 'string', description: 'FloorPlanBlock row id (cuid).' },
+          name: {
+            type: 'string',
+            description: 'Operator-given label (e.g. "Lift", "Stair", "Walking area").',
+          },
+          x: { type: 'integer', description: 'Top-left grid-unit x coordinate.' },
+          y: { type: 'integer', description: 'Top-left grid-unit y coordinate.' },
+          width: { type: 'integer', description: 'Bounding box width in grid units.' },
+          height: { type: 'integer', description: 'Bounding box height in grid units.' },
+          color: {
+            type: ['string', 'null'],
+            description: 'Optional render tint (hex); renderers default to a neutral tone when null.',
+          },
+        },
+      },
+      BlockInput: {
+        type: 'object',
+        required: ['name', 'x', 'y', 'width', 'height'],
+        description: 'Payload for creating/upserting a plan block.',
+        properties: {
+          name: { type: 'string', minLength: 1, maxLength: 80 },
+          x: { type: 'integer', minimum: 0 },
+          y: { type: 'integer', minimum: 0 },
+          width: { type: 'integer', minimum: 1 },
+          height: { type: 'integer', minimum: 1 },
+          color: { type: ['string', 'null'] },
+        },
+      },
       PublicFloorPlan: {
         type: 'object',
         required: ['branch', 'floor', 'plan'],
         description:
-          'A floor\'s layout for the booking renderer: branch + floor + plan canvas (width/height in logical grid units, free-form structure JSON) + placements joined to unit code/name/size/status. Soft-deleted units are filtered out; no tenant/PII/rates.',
+          'A floor\'s layout for the booking renderer: branch + floor + plan canvas (width/height in logical grid units, legacy free-form structure JSON, authored `blocks`) + placements joined to unit code/name/size/status. Soft-deleted units are filtered out; no tenant/PII/rates.',
         properties: {
           branch: {
             type: 'object',
@@ -1025,7 +1176,7 @@ export const openapiSpec = {
           plan: {
             type: 'object',
             nullable: true,
-            required: ['id', 'floorId', 'width', 'height', 'placements'],
+            required: ['id', 'floorId', 'width', 'height', 'structure', 'placements', 'blocks'],
             description:
               'The canvas + decorations when a plan has been authored; null when the floor has no plan yet (renderers should fall back to a synthesized grid).',
             properties: {
@@ -1035,7 +1186,13 @@ export const openapiSpec = {
               height: { type: 'integer', description: 'Canvas height in logical grid units.' },
               structure: {
                 description:
-                  'Free-form JSONB decorations authored by the operator (walls / corridors / entrance / lift / stairs / fireExit). Optional.',
+                  'LEGACY free-form JSONB decorations authored by the operator (walls / corridors / entrance / lift / stairs / fireExit). Kept for old clients; new decorations are authored as `blocks`. Optional.',
+              },
+              blocks: {
+                type: 'array',
+                description:
+                  'Operator-authored decoration rectangles (lift, stairs, exit, walking area, ...) as uniform name+rect primitives. Display only.',
+                items: { $ref: openapiSchemaRef('PlanBlock') },
               },
               placements: {
                 type: 'array',

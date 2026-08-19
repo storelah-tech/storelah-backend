@@ -153,12 +153,44 @@ model FloorPlan {
   floor     Floor    @relation(fields: [floorId], references: [id], onDelete: Cascade)
   width     Int      @default(0) // canvas width in grid units
   height    Int      @default(0) // canvas height in grid units
-  structure Json? // free-form decorations drawn by the operator: walls / corridors /
-                  // entrance / lift / stairs / fire exit (Postgres JSONB)
+  structure Json? // LEGACY free-form decorations (walls / corridors / entrance /
+                  // lift / stairs / fire exit) from before FloorPlanBlock existed.
+                  // Kept readable/writable for old clients; the editor authors new
+                  // decorations as FloorPlanBlock rows instead (see FloorPlanBlock).
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   placements UnitPlacement[]
+  blocks     FloorPlanBlock[]
+}
+
+// Operator-authored layout-decoration rectangles on a plan canvas — e.g. lift,
+// stairs, exits, "walking area". A block is a uniform primitive: a NAME label +
+// a grid-unit rect (x/y top-left, width/height bounding box, same coordinate
+// space as UnitPlacement). It has NO business behaviour — it is purely drawn by
+// the renderer. Blocks are the replacement for the old `structure` JSON
+// decorations: unlike the heterogeneously-shaped walls/corridors markers, every
+// block is the same shape (name + rect), so a flat relational table is clean,
+// consistent with UnitPlacement, and each block is addressable/editable/deletable
+// on its own (drag, resize, rename) — the JSON polymorphism argument that applied
+// to `structure` does not apply here.
+//
+// Delete semantics: deleting a FloorPlan cascades its blocks (geometry is
+// subordinate to the plan).
+model FloorPlanBlock {
+  id          String    @id @default(cuid())
+  floorPlanId String
+  floorPlan   FloorPlan @relation(fields: [floorPlanId], references: [id], onDelete: Cascade)
+  name        String // operator-given label ("Lift", "Stair", "Walking area", "Exit", ...)
+  x           Int // top-left grid-unit coordinate on the plan canvas
+  y           Int
+  width       Int // rendered bounding box in grid units (drag / resize)
+  height      Int
+  color       String? // optional render tint (hex); renderers default to a neutral tone when null
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([floorPlanId])
 }
 
 model UnitSize {

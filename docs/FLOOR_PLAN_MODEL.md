@@ -16,32 +16,20 @@ Two new tables, both additive (creation only — no existing column/table is alt
 | `floorId`   | FK → Floor| one plan per floor: `@@unique([floorId])`                     |
 | `width`     | `Int`     | canvas width in logical grid units (`default 0`)              |
 | `height`    | `Int`     | canvas height in logical grid units (`default 0`)             |
-| `structure` | `Json?`   | free-form decorations (walls/corridors/entrance/lift/stairs/fire exit) |
+| `structure` | `Json?`   | **LEGACY** free-form decorations (walls/corridors/entrance/lift/stairs/fire exit) |
 | timestamps  |           | `createdAt` / `updatedAt`                                      |
 
-**Grid units, not pixels.** All canvas geometry (plan `width`/`height`, placement `x`/`y`,
-`width`/`height`) is in *logical grid units*. The editor snaps to the grid and the renderer
-scales grid → px at whatever zoom it wants, so a layout is resolution-independent. The
-editor is free to introduce a zoom/scale factor; the schema deliberately stores the
-abstract grid, not screen pixels.
+**Grid units, not pixels.** All canvas geometry (plan `width`/`height`, placement/block
+`x`/`y`, `width`/`height`) is in *logical grid units*. The editor snaps to the grid and the
+renderer scales grid → px at whatever zoom it wants, so a layout is resolution-independent.
 
-**`structure` is deliberately JSONB.** Decorations are presentational, heterogeneously
-shaped (a wall has `x1/y1/x2/y2`, an entrance or lift has a position/size, a corridor has a
-path), are only ever consumed *as a whole document* by the renderer, and are never queried
-or filtered individually. Relational tables would mean polymorphic element tables,
-schema-evolution churn, and zero query benefit. Postgres validates the document at write
-time. The exact inner shape is owned by the future editor API — a suggested starting point:
-
-```json
-{
-  "walls": [{ "x1": 0, "y1": 0, "x2": 120, "y2": 0 }],
-  "corridors": [{ "pts": [{ "x": 0, "y": 40 }, { "x": 120, "y": 40 }], "w": 3 }],
-  "entrance": { "x": 60, "y": 0, "w": 4 },
-  "lift": { "x": 8, "y": 8, "w": 6, "h": 6 },
-  "stairs": { "x": 108, "y": 8, "w": 8, "h": 6 },
-  "fireExit": { "x": 60, "y": 84, "w": 4 }
-}
-```
+**`structure` is LEGACY JSONB.** It predates blocks: free-form decorations
+(walls/corridors/entrance/lift/stairs/fire exit) were authored as one polymorphic document.
+The column stays **readable/writable** so old clients and stored data keep working — the
+editor no longer authors *new* decorations into it. Rect-shaped markers authored there are
+converted to `FloorPlanBlock` rows (`scripts/backfill-floor-plan-blocks.ts`); walls and
+corridors (line/path primitives with no block equivalent) remain as static legacy
+decoration and render exactly as before.
 
 ### `UnitPlacement` — one geometry row per unit on its floor's plan
 
@@ -56,6 +44,33 @@ time. The exact inner shape is owned by the future editor API — a suggested st
 
 Unit linkage is by `Unit.id` (the cuid), never `unitCode` — consistent with every other
 relation in the schema.
+
+### `FloorPlanBlock` — one decoration rectangle per element on the plan
+
+| Field         | Type      | Meaning                                                          |
+| ------------- | --------- | ---------------------------------------------------------------- |
+| `id`          | `cuid`    | PK                                                               |
+| `floorPlanId` | FK → FloorPlan | `@@index([floorPlanId])` for plan-scoped reads; `onDelete: Cascade` |
+| `name`        | `String`  | operator-given label ("Lift", "Stair", "Walking area", "Exit", ...) |
+| `x`, `y`      | `Int`     | top-left grid-unit position (same coordinate space as placements) |
+| `width`, `height` | `Int` | rendered bounding box in grid units (drag/resize)            |
+| `color`       | `String?` | optional render tint (hex); renderers default to a neutral tone when null |
+| timestamps    |           | `createdAt` / `updatedAt`                                        |
+
+**Why relational rows and not more JSON?** Blocks are user-authored layout-decoration
+rectangles (lifts, stairs, exits, walking areas, ...) with NO behaviour other than
+displaying. Unlike the legacy `structure` markers they are all the **same uniform
+primitive** — a name label plus a rect — so the JSON polymorphism argument that justified
+`structure` (heterogeneous wall/corridor/entrance/lift/stairs/fireExit shapes, consumed
+only as a whole document) **no longer applies**. Every block is individually
+created/edited/deleted (add, rename, drag, resize) and is addressable by id, which a flat
+relational table gives us for free. The model deliberately mirrors `UnitPlacement`
+(plan-scoped FK + cascade, int grid geometry, same upsert pattern), keeping the two
+element types consistent. `color` is an optional convenience tint, deliberately minimal —
+the feature does not depend on it (NULL → neutral tone).
+
+Delete semantics mirror placements: deleting a `FloorPlan` cascades its blocks; blocks
+never reference business rows (no unit/tenant PK), so nothing else is touched.
 
 ## Decisions and tradeoffs
 
@@ -92,8 +107,8 @@ relation in the schema.
 
 | Action                    | Result                                                                    |
 | ------------------------- | ------------------------------------------------------------------------- |
-| Delete a `FloorPlan`      | Cascades its `UnitPlacement` rows; **Unit rows untouched** (FK is placement → unit, never back) |
-| Delete a `Floor`          | Cascades its plan (and so its placements); a floor with units is already undeletable (`Unit.floorId` has no cascade) |
+| Delete a `FloorPlan`      | Cascades its `UnitPlacement` **and `FloorPlanBlock`** rows; **Unit rows untouched** (FKs point placement/block → plan, never back) |
+| Delete a `Floor`          | Cascades its plan (and so its placements/blocks); a floor with units is already undeletable (`Unit.floorId` has no cascade) |
 | Soft-delete a `Unit`      | Placement row persists; visible reads filter it out                       |
 | Hard-delete a `Unit` (future) | Blocked (`Restrict`) until its placement is removed (or the decision is revisited) |
 
@@ -106,21 +121,30 @@ over a freshly replayed migration history (7 prior migrations) plus a seeded rep
 dev dataset; pre/post counts were identical (Branch 3, Floor 12, Unit 80) and both new
 tables start empty.
 
+`prisma/migrations/20260819071957_add_floor_plan_blocks/migration.sql` — additive `CREATE
+TABLE "FloorPlanBlock"` + one `CREATE INDEX` + one `ADD CONSTRAINT` (ON DELETE CASCADE).
+Applied cleanly over the existing dev data (the 2 authored plans with their placements were
+untouched; `FloorPlanBlock` starts empty).
+
 ## Forward compatibility
 
-The model is ready for a later **public read endpoint**: a renderer only needs
-`FloorPlan` (canvas + structure) and its `UnitPlacement`s with the unit's
-`unitCode`/`name`/`size` — all reachable via existing relations. Because this migration is
-purely additive, the existing public unit listing and map APIs are unaffected. When the
-endpoint lands, keep the current JSON shape additive-only so older booking clients keep
-working (they already tolerate an absent layout — `UnitFloorPlan.tsx` synthesizes a grid).
+The single plan-per-floor shape already serves the **public read endpoint** (see
+`docs`/routes): a renderer needs `FloorPlan` (canvas + legacy `structure` + blocks) and its
+`UnitPlacement`s with the unit's `unitCode`/`name`/`size` — all reachable via existing
+relations with no tenant/PII. Both migrations are purely additive, so the existing public
+unit listing and map APIs are unaffected; the public floor-plan read stayed additive too —
+it gained a `plan.blocks` array and old clients (which fall back to a synthesized grid via
+`UnitFloorPlan.tsx`) tolerate it as before.
 
 ## Reference
 
-- DB: `FloorPlan` + `UnitPlacement` in `prisma/schema.prisma` (migration
-  `add_floor_plan_layout`).
+- DB: `FloorPlan` + `UnitPlacement` + `FloorPlanBlock` in `prisma/schema.prisma`
+  (migrations `add_floor_plan_layout` and `add_floor_plan_blocks`).
+- Aggregate + CMS routes: `src/core/floorPlans.ts` and `src/routes/cms.ts`
+  (`/api/v1/cms/floor-plans/:floorId/blocks` POST/PUT/DELETE; plan GETs now include
+  `blocks`). Editor UI: `src/cms/admin/dashboard.html` + `src/cms/admin/admin.js`.
+- Data conversion (one-off, no re-seed): `scripts/backfill-floor-plan-blocks.ts`
+  (`pnpm db:backfill-blocks`) — converts rect-shaped legacy `structure` markers (lift /
+  stairs / entrance / fireExit) into `FloorPlanBlock` rows and keeps walls/corridors as
+  static legacy structure.
 - Unit soft-delete rules that placements must respect: `docs/UNIT_DELETION.md`.
-- This document is the layout persistence contract only — no `src/core` aggregate or route
-  mounts it yet. The editor dispatch will add `src/core/floorPlans.ts` (thin) and
-  `src/routes/cms.ts` endpoints under `/api/v1/cms` using the `ok`/`created`/`AppError`
-  envelope and `requireAuth`.

@@ -45,9 +45,11 @@
       floorName: '',
       structure: null,
       placements: [], // normalized placed units
+      blocks: [], // normalized decoration blocks (name+rect rectangles)
       unplaced: [], // normalized unplaced units (palette)
       scale: 1, // zoom scale factor (grid units → px)
       selected: null, // selected placement unitId
+      selectedBlock: null, // selected block id
       canvasDefaults: { width: 40, height: 30 },
     },
   };
@@ -1249,6 +1251,18 @@
     }));
   }
 
+  function fpNormalizeBlocks(plan) {
+    return (plan && plan.blocks ? plan.blocks : []).map((b) => ({
+      id: b.id,
+      name: b.name,
+      x: b.x,
+      y: b.y,
+      width: b.width,
+      height: b.height,
+      color: b.color || null,
+    }));
+  }
+
   function fpCanvasDims() {
     const p = state.fp.plan;
     if (p && p.width > 0 && p.height > 0) return { w: p.width, h: p.height };
@@ -1320,10 +1334,12 @@
       state.fp.canvasDefaults = body.canvasDefaults || { width: 40, height: 30 };
       state.fp.structure = body.plan ? body.plan.structure : null;
       state.fp.placements = fpNormalizePlacements(body.plan);
+      state.fp.blocks = fpNormalizeBlocks(body.plan);
       state.fp.unplaced = (body.unplacedUnits || []).map(fpNormalizeUnit);
       state.fp.branchName = body.branch && body.branch.name;
       state.fp.floorName = body.floor ? `Level ${body.floor.level}` : '';
       state.fp.selected = null;
+      state.fp.selectedBlock = null;
       state.fp.scale = 1;
       fpRender();
     } catch (err) {
@@ -1443,6 +1459,26 @@
     canvas.style.backgroundSize = `${u}px ${u}px`;
     canvas.innerHTML = '';
     fpRenderStructure(canvas, u);
+    // Decoration blocks — BELOW units in z-order (blocks z-index 1, units 2).
+    for (const blk of state.fp.blocks) {
+      const el = document.createElement('div');
+      el.className = 'fp-block' + (state.fp.selectedBlock === blk.id ? ' selected' : '');
+      el.dataset.blockId = blk.id;
+      el.style.left = blk.x * u + 'px';
+      el.style.top = blk.y * u + 'px';
+      el.style.width = blk.width * u + 'px';
+      el.style.height = blk.height * u + 'px';
+      if (blk.color) el.style.background = blk.color;
+      const name = document.createElement('span');
+      name.className = 'fp-block-name';
+      name.textContent = blk.name || 'Block';
+      el.appendChild(name);
+      const rs = document.createElement('div');
+      rs.className = 'fp-resize';
+      rs.title = 'Drag to resize';
+      el.appendChild(rs);
+      canvas.appendChild(el);
+    }
     const statusDot = { OCCUPIED: '#0B4F5E', AVAILABLE: '#5A7A60', RESERVED: '#D4860A', OVERDUE: '#C0392B', MAINTENANCE: '#9C948D', INACTIVE: '#9C948D' };
     for (const pl of state.fp.placements) {
       const el = document.createElement('div');
@@ -1465,6 +1501,16 @@
   function fpRenderSelInfo() {
     const info = $('#fpSelInfo');
     if (!info) return;
+    // A selected decoration block takes priority over any selected unit.
+    const blk = state.fp.blocks.find((b) => b.id === state.fp.selectedBlock);
+    if (blk) {
+      info.innerHTML =
+        `<span class="t-type">Block · ${escapeHtml(blk.name)} · ${blk.x},${blk.y} · ${blk.width}×${blk.height}</span>` +
+        `<input type="text" id="fpBlockRename" class="tbl-search" maxlength="80" value="${escapeHtml(blk.name)}" style="width:150px;padding:3px 8px;font-size:10px;" placeholder="Rename block">` +
+        `<button class="act-btn" id="fpBlockRenameBtn" style="padding:2px 9px;font-size:10px;">Rename</button>` +
+        `<button class="act-btn danger" id="fpBlockRemoveBtn" style="padding:2px 9px;font-size:10px;">Remove block</button>`;
+      return;
+    }
     const pl = state.fp.placements.find((p) => p.unitId === state.fp.selected);
     if (!pl) {
       info.innerHTML = '';
@@ -1484,8 +1530,10 @@
     }
     const sub = $('#fpSub');
     if (sub) {
+      const unitLabel = `${state.fp.placements.length} unit${state.fp.placements.length === 1 ? '' : 's'}`;
+      const blockLabel = `${state.fp.blocks.length} block${state.fp.blocks.length === 1 ? '' : 's'}`;
       sub.textContent = state.fp.plan
-        ? `${state.fp.placements.length} unit${state.fp.placements.length === 1 ? '' : 's'} placed on a ${d.w}×${d.h} grid — drag to move, corner handle to resize`
+        ? `${unitLabel} placed · ${blockLabel} on a ${d.w}×${d.h} grid — drag to move, corner handle to resize`
         : "No plan yet — set a canvas size and click Save Canvas, then drag this floor's units from the palette.";
     }
     const wEl = $('#fpWidth');
@@ -1494,6 +1542,10 @@
     if (hEl) hEl.value = d.h;
     const st = $('#fpStructure');
     if (st) st.value = state.fp.structure ? JSON.stringify(state.fp.structure, null, 2) : '';
+    const legacy = $('#fpLegacyNote');
+    if (legacy) {
+      legacy.hidden = !state.fp.structure;
+    }
     fpRenderPalette();
     fpRenderCanvas();
     fpRenderSelInfo();
@@ -1664,6 +1716,189 @@
     };
     document.addEventListener('pointermove', move);
     document.addEventListener('pointerup', up);
+  }
+
+  // ---------- decoration blocks (name+rect rectangles; see FloorPlanBlock) ----------
+  // A block is a plain name+rect primitive with no behaviour beyond display. The
+  // drag/resize machinery mirrors the placed-unit machinery (including the
+  // offset-capture-before-render fix); persistence goes to
+  // PUT /floor-plans/:floorId/blocks/:blockId.
+
+  function fpToggleBlockForm(show) {
+    const form = $('#fpBlockForm');
+    if (!form) return;
+    form.hidden = !show;
+    if (show) {
+      const input = $('#fpBlockName');
+      if (input) {
+        input.value = '';
+        input.focus();
+      }
+    }
+  }
+
+  // Create a block via POST with a default 6×6 footprint at the origin (clamped
+  // to the canvas), then select it so the operator can drag/resize immediately.
+  async function fpAddBlock() {
+    const input = $('#fpBlockName');
+    if (!input) return;
+    const name = input.value.trim();
+    if (!name) {
+      fpToast('Give the block a name — e.g. "Lift", "Stair", "Walking area", "Exit".', false);
+      input.focus();
+      return;
+    }
+    const { w: cw, h: ch } = fpCanvasDims();
+    const size = Math.min(6, cw, ch);
+    const x = 0;
+    const y = 0;
+    try {
+      const res = await request(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/blocks`, {
+        method: 'POST',
+        body: JSON.stringify({ name, x, y, width: size, height: size }),
+      });
+      const b = res.data;
+      // The plan is lazily created server-side when a floor has none yet; adopt
+      // it locally with the default canvas so the new block has a surface.
+      if (!state.fp.plan) {
+        state.fp.plan = { width: state.fp.canvasDefaults.width, height: state.fp.canvasDefaults.height };
+      }
+      state.fp.blocks.push({ id: b.id, name: b.name, x: b.x, y: b.y, width: b.width, height: b.height, color: b.color || null });
+      state.fp.selectedBlock = b.id;
+      state.fp.selected = null;
+      fpToggleBlockForm(false);
+      fpRender();
+      fpToast(`Added block "${name}" (${size}×${size}) at 0,0 — drag it into place or resize from the corner.`, true);
+    } catch (err) {
+      fpToast('Add block: ' + describeError(err), false);
+    }
+  }
+
+  // Persist a block's full rect via PUT (upsert by id); reloads fresh state on error.
+  async function fpPersistBlock(blk, verb) {
+    try {
+      await request(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/blocks/${encodeURIComponent(blk.id)}`, {
+        method: 'PUT',
+        body: JSON.stringify({ name: blk.name, x: blk.x, y: blk.y, width: blk.width, height: blk.height, color: blk.color || null }),
+      });
+      fpToast(`${verb} block "${blk.name}" → ${blk.x},${blk.y} · ${blk.width}×${blk.height}`, true);
+    } catch (err) {
+      fpToast(`${verb} block: ${describeError(err)}`, false);
+      await fpFetch(); // revert local state to what the server has
+    }
+  }
+
+  // Drag an on-canvas block (or its resize handle), grid-snapped + clamped to canvas.
+  function fpBlockStartMove(e, el) {
+    const bid = el.dataset.blockId;
+    const blk = state.fp.blocks.find((b) => b.id === bid);
+    if (!blk) return;
+    if (e.target.classList.contains('fp-resize')) {
+      fpBlockStartResize(e, blk);
+      return;
+    }
+    e.preventDefault();
+    // Capture the grab offset from the LIVE element BEFORE any re-render (same
+    // offset-capture-before-render fix as units).
+    const startRect = el.getBoundingClientRect();
+    const offsetX = e.clientX - startRect.left;
+    const offsetY = e.clientY - startRect.top;
+    state.fp.selectedBlock = bid;
+    state.fp.selected = null;
+    fpRenderCanvas();
+    fpRenderSelInfo();
+    const { w: cw, h: ch } = fpCanvasDims();
+    const move = (ev) => {
+      const cell = fpCanvasCellAt(ev.clientX - offsetX, ev.clientY - offsetY);
+      if (!cell) return;
+      blk.x = Math.min(Math.max(0, cell.gx), Math.max(0, cw - blk.width));
+      blk.y = Math.min(Math.max(0, cell.gy), Math.max(0, ch - blk.height));
+      fpRenderCanvas();
+    };
+    const up = () => {
+      document.removeEventListener('pointermove', move);
+      document.removeEventListener('pointerup', up);
+      fpPersistBlock(blk, 'Moved');
+    };
+    document.addEventListener('pointermove', move);
+    document.addEventListener('pointerup', up);
+  }
+
+  // Resize a block from its bottom-right corner; grid-snapped, min 1×1.
+  function fpBlockStartResize(e, blk) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (state.fp.selectedBlock !== blk.id) {
+      state.fp.selectedBlock = blk.id;
+      state.fp.selected = null;
+      fpRenderCanvas();
+      fpRenderSelInfo();
+    }
+    const u = fpPx();
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const origX = blk.x;
+    const origY = blk.y;
+    const origW = blk.width;
+    const origH = blk.height;
+    const { w: cw, h: ch } = fpCanvasDims();
+    const move = (ev) => {
+      const dx = Math.round((ev.clientX - startX) / u);
+      const dy = Math.round((ev.clientY - startY) / u);
+      blk.width = Math.max(1, Math.min(origW + dx, cw - origX));
+      blk.height = Math.max(1, Math.min(origH + dy, ch - origY));
+      fpRenderCanvas();
+    };
+    const up = () => {
+      document.removeEventListener('pointermove', move);
+      document.removeEventListener('pointerup', up);
+      fpPersistBlock(blk, 'Resized');
+    };
+    document.addEventListener('pointermove', move);
+    document.addEventListener('pointerup', up);
+  }
+
+  // Rename a selected block via the toolbar affinity input; persists geometry too.
+  async function fpRenameBlock() {
+    const blk = state.fp.blocks.find((b) => b.id === state.fp.selectedBlock);
+    if (!blk) return;
+    const input = $('#fpBlockRename');
+    const name = input ? input.value.trim() : '';
+    if (!name) {
+      fpToast('Block name cannot be empty.', false);
+      return;
+    }
+    if (name === blk.name) return;
+    const prev = blk.name;
+    blk.name = name;
+    try {
+      await request(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/blocks/${encodeURIComponent(blk.id)}`, {
+        method: 'PUT',
+        body: JSON.stringify({ name, x: blk.x, y: blk.y, width: blk.width, height: blk.height, color: blk.color || null }),
+      });
+      fpToast(`Renamed block to "${name}".`, true);
+      fpRenderCanvas();
+      fpRenderSelInfo();
+    } catch (err) {
+      blk.name = prev;
+      fpToast('Rename block: ' + describeError(err), false);
+    }
+  }
+
+  // Delete a selected block via DELETE /blocks/:blockId (scoped to the plan).
+  async function fpRemoveBlock() {
+    const blk = state.fp.blocks.find((b) => b.id === state.fp.selectedBlock);
+    if (!blk) return;
+    if (!window.confirm(`Remove block "${blk.name}" from the plan?`)) return;
+    try {
+      await request(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/blocks/${encodeURIComponent(blk.id)}`, {
+        method: 'DELETE',
+      });
+      fpToast(`Block "${blk.name}" removed.`, true);
+      await fpFetch();
+    } catch (err) {
+      fpToast('Remove block: ' + describeError(err), false);
+    }
   }
 
   // Save the canvas: width/height + structure JSON via POST upsert.
@@ -1928,19 +2163,44 @@
       if (!chip) return;
       fpStartPaletteDrag(e, chip);
     });
+    $('#fpAddBlock').addEventListener('click', () => fpToggleBlockForm(true));
+    $('#fpBlockAdd').addEventListener('click', fpAddBlock);
+    $('#fpBlockCancel').addEventListener('click', () => fpToggleBlockForm(false));
+    $('#fpBlockName').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        fpAddBlock();
+      } else if (e.key === 'Escape') {
+        fpToggleBlockForm(false);
+      }
+    });
     $('#fpCanvasWrap').addEventListener('pointerdown', (e) => {
       const placed = e.target.closest('.fp-placed');
       if (placed) {
         fpStartMove(e, placed);
         return;
       }
+      const blk = e.target.closest('.fp-block');
+      if (blk) {
+        fpBlockStartMove(e, blk);
+        return;
+      }
       // click on empty canvas → deselect
       state.fp.selected = null;
+      state.fp.selectedBlock = null;
       fpRenderCanvas();
       fpRenderSelInfo();
     });
     $('#fpSelInfo').addEventListener('click', (e) => {
       if (e.target && e.target.id === 'fpRemoveBtn') fpRemovePlacement();
+      else if (e.target && e.target.id === 'fpBlockRemoveBtn') fpRemoveBlock();
+      else if (e.target && e.target.id === 'fpBlockRenameBtn') fpRenameBlock();
+    });
+    $('#fpSelInfo').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && e.target && e.target.id === 'fpBlockRename') {
+        e.preventDefault();
+        fpRenameBlock();
+      }
     });
     // close modals on overlay click
     $$('.modal-overlay').forEach((ov) => {

@@ -5,11 +5,18 @@ import { Prisma } from '@prisma/client';
 // Floor-plan layout aggregate (see docs/FLOOR_PLAN_MODEL.md).
 //
 // All geometry is in LOGICAL GRID UNITS (not px): plan width/height and
-// placement x/y/width/height are abstract grid coordinates; renderers scale
-// grid → px at whatever zoom they want.
+// placement/block x/y/width/height are abstract grid coordinates; renderers
+// scale grid → px at whatever zoom they want.
 //
 // Single plan per floor (FloorPlan.floorId is @unique). The upsert key for the
 // operator editor save is therefore the floorId itself.
+//
+// Two element types, both subordinate to the plan:
+//   - placements (UnitPlacement): real units on the layout;
+//   - blocks (FloorPlanBlock): user-authored name+rect decoration rectangles
+//     (lifts, stairs, exits, walking areas, ...) — display only, no behaviour.
+//     They REPLACE authoring the legacy `structure` JSON markers, which stays
+//     readable/writable for old clients and renders statically.
 //
 // Soft-delete rule: every plan read joins placements → unit and filters out
 // placements whose unit has deletedAt != null. Never touch Unit rows.
@@ -17,12 +24,16 @@ import { Prisma } from '@prisma/client';
 export const CANVAS_DEFAULTS = { width: 40, height: 30 } as const;
 const MAX_CANVAS = 500; // grid units per axis, sanity cap
 
-// Plan payload used by every read; placements exclude soft-deleted units.
+// Plan payload used by every read; placements exclude soft-deleted units;
+// blocks are plain name+rect rows in authored order (stable for the editor).
 const planInclude = {
   floor: { include: { branch: true } },
   placements: {
     where: { unit: { deletedAt: null } },
     include: { unit: { include: { size: true } } },
+    orderBy: { createdAt: 'asc' },
+  },
+  blocks: {
     orderBy: { createdAt: 'asc' },
   },
 } satisfies Prisma.FloorPlanInclude;
@@ -63,6 +74,20 @@ function serializePlacement(p: { id: string; x: number; y: number; width: number
   };
 }
 
+type BlockRow = { id: string; name: string; x: number; y: number; width: number; height: number; color: string | null };
+
+function serializeBlock(b: BlockRow) {
+  return {
+    id: b.id,
+    name: b.name,
+    x: b.x,
+    y: b.y,
+    width: b.width,
+    height: b.height,
+    color: b.color,
+  };
+}
+
 // Public-safe: branch/floor/unit summaries only — no tenant, no PII, no rates.
 function serializePlan(p: PlanPayload) {
   return {
@@ -74,6 +99,7 @@ function serializePlan(p: PlanPayload) {
     branch: { id: p.floor.branchId, code: p.floor.branch.code, name: p.floor.branch.name },
     floor: { id: p.floor.id, level: p.floor.level, name: p.floor.name },
     placements: p.placements.map(serializePlacement),
+    blocks: p.blocks.map(serializeBlock),
   };
 }
 
@@ -101,6 +127,14 @@ function checkGeometry(g: PlacementGeometry): void {
   check(g.y, 'y', 0);
   check(g.width, 'width', 1);
   check(g.height, 'height', 1);
+}
+
+function checkBlockName(name: string): string {
+  const trimmed = name.trim();
+  if (!trimmed || trimmed.length > 80) {
+    throw new AppError(400, 'VALIDATION', 'Block name must be a non-empty string of at most 80 characters');
+  }
+  return trimmed;
 }
 
 // ---------- API ----------
@@ -192,6 +226,27 @@ export interface PlacementGeometry {
   height: number;
 }
 
+// Lazy-initialize the plan for a floor if an operator drops the first unit/block
+// before ever saving a canvas: create it at the default canvas size so geometry
+// always has a surface to land on (the editor snap-clamps; the canvas can be
+// resized afterwards via POST /floor-plans/:floorId). Also promotes a plan whose
+// canvas is still at the zero-size schema default to a renderable size.
+async function ensureCanvasPlan(floorId: string) {
+  await assertFloor(floorId);
+  let plan = await prisma.floorPlan.findUnique({ where: { floorId } });
+  if (!plan) {
+    plan = await prisma.floorPlan.create({
+      data: { floorId, width: CANVAS_DEFAULTS.width, height: CANVAS_DEFAULTS.height, structure: Prisma.JsonNull },
+    });
+  } else if (plan.width <= 0 || plan.height <= 0) {
+    plan = await prisma.floorPlan.update({
+      where: { id: plan.id },
+      data: { width: CANVAS_DEFAULTS.width, height: CANVAS_DEFAULTS.height },
+    });
+  }
+  return plan;
+}
+
 /**
  * Upsert one unit placement keyed by unitId + floorPlanId. Validates the unit
  * belongs to the plan's floor and is not soft-deleted, and that the geometry
@@ -208,24 +263,8 @@ export async function setUnitPlacement(floorId: string, unitId: string, geom: Pl
   if (unit.floorId !== floorId) {
     throw new AppError(400, 'VALIDATION', `Unit ${unit.unitCode} does not belong to floor ${floorId}`);
   }
-  await assertFloor(floorId);
 
-  // Lazy-initialize the plan if an operator drops the first unit before ever
-  // saving a canvas: create it at the default canvas size so geometry always
-  // has a surface to land on (the editor snap-clamps; the canvas can be
-  // resized afterwards via POST /floor-plans/:floorId).
-  let plan = await prisma.floorPlan.findUnique({ where: { floorId } });
-  if (!plan) {
-    plan = await prisma.floorPlan.create({
-      data: { floorId, width: CANVAS_DEFAULTS.width, height: CANVAS_DEFAULTS.height, structure: Prisma.JsonNull },
-    });
-  } else if (plan.width <= 0 || plan.height <= 0) {
-    // A plan with zero-size canvas (schema default) is not renderable; promote it.
-    plan = await prisma.floorPlan.update({
-      where: { id: plan.id },
-      data: { width: CANVAS_DEFAULTS.width, height: CANVAS_DEFAULTS.height },
-    });
-  }
+  const plan = await ensureCanvasPlan(floorId);
 
   if (geom.x + geom.width > plan.width || geom.y + geom.height > plan.height) {
     throw new AppError(
@@ -256,6 +295,109 @@ export async function removeUnitPlacement(floorId: string, unitId: string) {
   return { floorId, unitId, removed: true };
 }
 
+export interface BlockInput {
+  name: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  color?: string | null; // optional render tint (hex); renderers default when null
+}
+
+/**
+ * Create a layout-decoration block on a floor's plan. Blocks are plain name+rect
+ * primitives (no polymorphism like the legacy `structure` markers), so each one
+ * is its own row — addressable for drag/resize/rename/delete.
+ */
+export async function createFloorPlanBlock(floorId: string, input: BlockInput) {
+  checkBlockName(input.name);
+  checkGeometry(input);
+  const plan = await ensureCanvasPlan(floorId);
+  if (input.x + input.width > plan.width || input.y + input.height > plan.height) {
+    throw new AppError(
+      400,
+      'VALIDATION',
+      `Block ${input.x},${input.y} ${input.width}×${input.height} exceeds the ${plan.width}×${plan.height} canvas for floor ${floorId} — enlarge the canvas first`,
+    );
+  }
+  const block = await prisma.floorPlanBlock.create({
+    data: {
+      floorPlanId: plan.id,
+      name: input.name.trim(),
+      x: input.x,
+      y: input.y,
+      width: input.width,
+      height: input.height,
+      color: input.color ?? null,
+    },
+  });
+  return serializeBlock(block);
+}
+
+/**
+ * Set/upsert a block scoped to a floor's plan: if a block with the given id
+ * exists ON THIS plan it is updated (drag / resize / rename persistence); a
+ * fresh client-chosen id for a block that does not exist creates it. A block id
+ * belonging to a DIFFERENT plan is rejected (never touched cross-plan).
+ */
+export async function setFloorPlanBlock(floorId: string, blockId: string, input: BlockInput) {
+  checkBlockName(input.name);
+  checkGeometry(input);
+  const plan = await ensureCanvasPlan(floorId);
+  if (input.x + input.width > plan.width || input.y + input.height > plan.height) {
+    throw new AppError(
+      400,
+      'VALIDATION',
+      `Block ${input.x},${input.y} ${input.width}×${input.height} exceeds the ${plan.width}×${plan.height} canvas for floor ${floorId} — enlarge the canvas first`,
+    );
+  }
+
+  const existing = await prisma.floorPlanBlock.findUnique({ where: { id: blockId } });
+  if (existing) {
+    if (existing.floorPlanId !== plan.id) {
+      throw new AppError(404, 'NOT_FOUND', `Block ${blockId} does not belong to floor ${floorId}'s plan`);
+    }
+    const block = await prisma.floorPlanBlock.update({
+      where: { id: blockId },
+      data: {
+        name: input.name.trim(),
+        x: input.x,
+        y: input.y,
+        width: input.width,
+        height: input.height,
+        color: input.color ?? null,
+      },
+    });
+    return serializeBlock(block);
+  }
+
+  const block = await prisma.floorPlanBlock.create({
+    data: {
+      id: blockId,
+      floorPlanId: plan.id,
+      name: input.name.trim(),
+      x: input.x,
+      y: input.y,
+      width: input.width,
+      height: input.height,
+      color: input.color ?? null,
+    },
+  });
+  return serializeBlock(block);
+}
+
+/** Remove a layout-decoration block (scoped to the plan; cross-plan ids 404). */
+export async function removeFloorPlanBlock(floorId: string, blockId: string) {
+  const plan = await prisma.floorPlan.findUnique({ where: { floorId } });
+  if (!plan) throw new AppError(404, 'NOT_FOUND', `No floor plan exists for floor ${floorId}`);
+  const block = await prisma.floorPlanBlock.findUnique({ where: { id: blockId } });
+  if (!block || block.floorPlanId !== plan.id) {
+    throw new AppError(404, 'NOT_FOUND', `Block ${blockId} does not belong to floor ${floorId}'s plan`);
+  }
+  await prisma.floorPlanBlock.delete({ where: { id: blockId } });
+  return { floorId, blockId, removed: true };
+}
+
 /** Delete the plan for a floor (cascades its placements; Unit rows untouched). */
 export async function deleteFloorPlan(floorId: string) {
   const plan = await prisma.floorPlan.findUnique({ where: { floorId } });
@@ -267,9 +409,10 @@ export async function deleteFloorPlan(floorId: string) {
 // ---------- public read (forward compatibility, see FLOOR_PLAN_MODEL.md) ----------
 
 /**
- * PUBLIC read of a floor's plan for the booking renderer: canvas + structure +
- * placements joined to unit unitCode/name/size/status, soft-deleted units
- * filtered out. No tenant/PII/rates anywhere (serializePlan is public-safe).
+ * PUBLIC read of a floor's plan for the booking renderer: canvas + legacy
+ * structure + blocks (name+rect) + placements joined to unit
+ * unitCode/name/size/status, soft-deleted units filtered out. No tenant/PII/rates
+ * anywhere (serializePlan is public-safe).
  */
 export async function getPublicFloorPlan(branchCode: string, level: number) {
   const floor = await prisma.floor.findFirst({

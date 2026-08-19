@@ -334,6 +334,15 @@ body { font-family: 'Manrope', sans-serif; background: var(--cream); color: var(
 .fp-block-form input { width: 100%; box-sizing: border-box; }
 .fp-legacy-note { font-size: 10px; color: var(--amber); font-weight: 700; margin-top: 6px; }
 
+/* FLOOR PLAN READ-ONLY MODAL (Units → Show Floor Plan) — reuses fp-canvas
+   geometry/colors but nothing in the modal is draggable or selectable. */
+.modal-wide { width: 860px; max-width: 100%; }
+.fp-view-wrap { display: flex; flex-direction: column; }
+.fp-view-wrap .fp-canvas-wrap { min-height: 0; max-height: 62vh; }
+.fp-view-canvas .fp-canvas { margin: 0 auto; }
+.fp-view-canvas .fp-block, .fp-view-canvas .fp-placed, .fp-view-canvas .fp-resize { pointer-events: none; cursor: default; }
+.fp-view-empty { font-size: 12px; font-weight: 700; color: var(--mid); text-align: center; background: var(--cream); border: 1.5px dashed var(--sand); border-radius: 9px; padding: 44px 16px; }
+
 ::-webkit-scrollbar { width: 4px; height: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--sand); border-radius: 2px; }
@@ -574,7 +583,7 @@ body { font-family: 'Manrope', sans-serif; background: var(--cream); color: var(
             <div class="sec-sub">Click any unit to view details, adjust rate, or manage tenancy</div>
           </div>
           <div style="display:flex;gap:8px;">
-            <button class="tb-btn ghost" style="font-size:10px;">⬇ Export Floor Plan</button>
+            <button class="tb-btn ghost" style="font-size:10px;" id="unitShowFloorPlan" type="button">👁 Show Floor Plan</button>
           </div>
         </div>
 
@@ -1006,6 +1015,26 @@ body { font-family: 'Manrope', sans-serif; background: var(--cream); color: var(
         <button class="act-btn primary" type="submit" id="tenantFormSubmit">Save Tenant</button>
       </div>
     </form>
+  </div>
+</div>
+
+<!-- FLOOR PLAN VIEW MODAL (read-only preview; Units → Show Floor Plan) -->
+<div class="modal-overlay" id="fpViewModal" hidden>
+  <div class="modal modal-wide" role="dialog" aria-modal="true" aria-label="Floor plan preview">
+    <div class="modal-hdr">
+      <div class="modal-title" id="fpViewTitle">Floor Plan</div>
+      <button class="modal-x" id="fpViewClose" type="button" aria-label="Close floor plan">✕</button>
+    </div>
+    <div class="fp-view-wrap">
+      <div class="fp-view-empty" id="fpViewEmpty" hidden></div>
+      <div class="fp-canvas-wrap fp-view-canvas" id="fpViewCanvasWrap" hidden>
+        <div class="fp-canvas" id="fpViewCanvas"></div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="act-btn" type="button" id="fpViewCloseBtn">Close</button>
+      <button class="act-btn primary" type="button" id="fpViewEdit">Edit</button>
+    </div>
   </div>
 </div>
 

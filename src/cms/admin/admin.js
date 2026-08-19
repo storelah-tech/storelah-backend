@@ -1498,8 +1498,10 @@
   }
 
   // Renders the structure JSON decorations (walls / corridors / markers).
-  function fpRenderStructure(canvas, u) {
-    const s = state.fp.structure;
+  // The structure is read from state.fp by default (editor); a read-only view
+  // may pass its own snapshot so it never depends on shared editor state.
+  function fpRenderStructure(canvas, u, structure) {
+    const s = structure === undefined ? state.fp.structure : structure;
     if (!s || typeof s !== 'object' || Array.isArray(s)) return;
     const add = (cls, style, label) => {
       const el = document.createElement('div');
@@ -2102,6 +2104,146 @@
     }
   }
 
+  // ---------- floor plan read-only preview (Units → Show Floor Plan) ----------
+  // Local snapshot of the fetched plan, deliberately separate from state.fp so
+  // viewing never mutates the interactive editor's shared scale/selection/state.
+  const fpView = {
+    plan: null,
+    structure: null,
+    placements: [], // normalized placed units
+    blocks: [], // normalized decoration blocks
+    dims: { w: 20, h: 20 }, // plan grid size (plan dims, else canvas defaults)
+    floorId: null, // floor whose level === state.level (for the current branch)
+  };
+
+  // The floor row matching the Units view's current branch + level.
+  function fpViewFloor() {
+    return branchFloors(state.branchCode).find((f) => f.level === state.level) || null;
+  }
+
+  function fpViewSetMessage(msg) {
+    const empty = $('#fpViewEmpty');
+    const wrap = $('#fpViewCanvasWrap');
+    const canvas = $('#fpViewCanvas');
+    if (empty) {
+      empty.textContent = msg || '';
+      empty.hidden = !msg;
+    }
+    if (wrap) wrap.hidden = true;
+    if (canvas) canvas.innerHTML = '';
+  }
+
+  function fpViewOpen() {
+    const b = branchByCode(state.branchCode);
+    const title = $('#fpViewTitle');
+    if (title) title.textContent = `Floor Plan — ${b ? b.name : state.branchCode} · Level ${state.level}`;
+    const floor = fpViewFloor();
+    fpView.floorId = floor ? floor.id : null;
+    const overlay = $('#fpViewModal');
+    if (!overlay) return;
+    overlay.hidden = false;
+    if (!floor) {
+      fpViewSetMessage('No floor on this level for this branch — pick a level from the floor tabs.');
+      return;
+    }
+    fpViewSetMessage('Loading floor plan…');
+    fpViewFetch(floor.id).catch((err) => {
+      fpViewSetMessage('Could not load the floor plan: ' + describeError(err));
+    });
+  }
+
+  async function fpViewFetch(floorId) {
+    const body = await get(`/floor-plans/${encodeURIComponent(floorId)}`);
+    fpView.plan = body.plan;
+    fpView.structure = body.plan ? body.plan.structure : null;
+    fpView.placements = fpNormalizePlacements(body.plan);
+    fpView.blocks = fpNormalizeBlocks(body.plan);
+    const defs = body.canvasDefaults || { width: 20, height: 20 };
+    fpView.dims = {
+      w: body.plan && body.plan.width > 0 ? body.plan.width : defs.width,
+      h: body.plan && body.plan.height > 0 ? body.plan.height : defs.height,
+    };
+    if (!body.plan) {
+      fpViewSetMessage('No floor plan authored yet — click Edit to create one.');
+      return;
+    }
+    const empty = $('#fpViewEmpty');
+    if (empty) empty.hidden = true;
+    const wrap = $('#fpViewCanvasWrap');
+    if (wrap) wrap.hidden = false;
+    fpViewRender();
+  }
+
+  // Px per grid unit for the modal canvas: fit the plan into the modal's canvas
+  // area (capped like the editor's zoom range). Never touches state.fp.scale.
+  // Falls back to a static width when the wrap isn't measurable (hidden DOM).
+  function fpViewUnit() {
+    const { w, h } = fpView.dims;
+    const wrap = $('#fpViewCanvasWrap');
+    const availW = Math.max(160, (wrap && wrap.clientWidth ? wrap.clientWidth : 800) - 26);
+    const availH = 480;
+    const fit = Math.floor(Math.min(availW / w, availH / h));
+    return Math.min(Math.max(fit, 8), 64);
+  }
+
+  // Read-only canvas: same geometry/colors as the editor (fp-block below
+  // fp-placed, structure decorations) but no drag/resize/palette/selection.
+  function fpViewRender() {
+    const canvas = $('#fpViewCanvas');
+    if (!canvas) return;
+    const { w, h } = fpView.dims;
+    const u = fpViewUnit();
+    canvas.style.width = w * u + 'px';
+    canvas.style.height = h * u + 'px';
+    canvas.style.backgroundSize = `${u}px ${u}px`;
+    canvas.innerHTML = '';
+    fpRenderStructure(canvas, u, fpView.structure);
+    for (const blk of fpView.blocks) {
+      const el = document.createElement('div');
+      el.className = 'fp-block';
+      el.dataset.blockId = blk.id;
+      el.style.left = blk.x * u + 'px';
+      el.style.top = blk.y * u + 'px';
+      el.style.width = blk.width * u + 'px';
+      el.style.height = blk.height * u + 'px';
+      if (blk.color) el.style.background = blk.color;
+      const name = document.createElement('span');
+      name.className = 'fp-block-name';
+      name.textContent = blk.name || 'Block';
+      el.appendChild(name);
+      canvas.appendChild(el);
+    }
+    const statusDot = { OCCUPIED: '#0B4F5E', AVAILABLE: '#5A7A60', RESERVED: '#D4860A', OVERDUE: '#C0392B', MAINTENANCE: '#9C948D', INACTIVE: '#9C948D' };
+    for (const pl of fpView.placements) {
+      const el = document.createElement('div');
+      el.className = 'fp-placed';
+      el.dataset.unitId = pl.unitId;
+      el.style.left = pl.x * u + 'px';
+      el.style.top = pl.y * u + 'px';
+      el.style.width = pl.width * u + 'px';
+      el.style.height = pl.height * u + 'px';
+      el.innerHTML =
+        `<div class="fp-status" style="background:${statusDot[pl.status] || '#9C948D'};"></div>` +
+        `<div class="fp-code">${escapeHtml(pl.unitCode)}</div>` +
+        (pl.height * u > 34 ? `<div class="fp-size">${escapeHtml(pl.sizeName)}</div>` : '') +
+        `<div class="fp-resize" title="Drag to resize"></div>`;
+      canvas.appendChild(el);
+    }
+  }
+
+  function fpViewClose() {
+    const overlay = $('#fpViewModal');
+    if (overlay) overlay.hidden = true;
+  }
+
+  // Hand the same branch + level to the Floor Plans editor and navigate there.
+  function fpViewEdit() {
+    state.fp.branchCode = state.branchCode;
+    state.fp.floorId = fpView.floorId || null;
+    fpViewClose();
+    switchView('floorplans');
+  }
+
   // ---------- sidebar navigation ----------
   function switchView(view) {
     state.view = view;
@@ -2245,6 +2387,11 @@
       else if (act === 'rate') openRateForm(code);
       else if (act === 'delete') deleteUnit(code);
     });
+    // floor plan read-only preview (Units view)
+    $('#unitShowFloorPlan').addEventListener('click', fpViewOpen);
+    $('#fpViewClose').addEventListener('click', fpViewClose);
+    $('#fpViewCloseBtn').addEventListener('click', fpViewClose);
+    $('#fpViewEdit').addEventListener('click', fpViewEdit);
     // tenants CRUD
     $('#addTenantBtn').addEventListener('click', openCreateTenant);
     $('#tenantModalClose').addEventListener('click', closeTenantModal);
@@ -2357,8 +2504,18 @@
           if (ov.id === 'unitModal') closeUnitModal();
           else if (ov.id === 'rateModal') closeRateModal();
           else if (ov.id === 'tenantModal') closeTenantModal();
+          else if (ov.id === 'fpViewModal') fpViewClose();
         }
       });
+    });
+    // Escape dismisses whichever modal is open (read-only preview included).
+    document.addEventListener('keydown', (e) => {
+      if (e.key !== 'Escape') return;
+      const fpViewOv = $('#fpViewModal');
+      if (fpViewOv && !fpViewOv.hidden) fpViewClose();
+      else if (!$('#unitModal').hidden) closeUnitModal();
+      else if (!$('#rateModal').hidden) closeRateModal();
+      else if (!$('#tenantModal').hidden) closeTenantModal();
     });
   }
 

@@ -1,0 +1,195 @@
+# =============================================================================
+# storelah-cms-gate — Basic Auth gate for cms.storelah.sg via CloudFront
+#
+# Stack: storelah-cms-gate
+# Region: ap-southeast-1 (CloudFront is global; API Gateway origin is regional
+# ap-southeast-1). Deploys in the same region as the other StoreLah stacks.
+#
+# WHY
+#   cms.storelah.sg and api.storelah.sg are BOTH custom domains on the SAME
+#   API Gateway HTTP API (azzp4x84e6), each with an api-mapping to the SAME
+#   `$default` stage with an EMPTY basepath (api-mapping vmq0z9 -> api,
+#   0cbu6r -> cms), forwarding full paths to the same Express Lambda
+#   (storelah-backend, handler dist/src/index.handler). A stage-level or
+#   authorizer-level gate would break the PUBLIC api.storelah.sg
+#   (/api/v1/public, /api/v1/customer, /health, /docs). This stack therefore
+#   gates ONLY the cms host at the edge:
+#
+#     cms.storelah.sg (Route 53 CNAME)
+#       -> CloudFront distribution (Basic Auth CloudFront Function, viewer-request)
+#       -> API Gateway regional custom-domain endpoint d-6tru2pvxpl.execute-api...
+#          (origin; Host header forwarded = cms.storelah.sg so host-kind routing
+#          still classifies the request as 'cms')
+#
+#   api.storelah.sg stays on its own API Gateway endpoint (d-97vd3bxp86...) and
+#   is NOT behind this distribution — fully public, unchanged.
+#
+# CRITICAL ORIGIN GOTCHAS (verified empirically 2026-08-19)
+#   1. Host header: CloudFront rewrites Host to the origin domain by default.
+#      API Gateway's custom-domain regional endpoint returns 200 ONLY for a
+#      registered custom domain Host (cms.storelah.sg -> 200; endpoint host or
+#      unknown host -> 404/403). The behavior therefore uses the MANAGED
+#      AllViewer origin request policy (forwards ALL viewer headers incl. Host
+#      and Authorization) so API Gateway sees Host: cms.storelah.sg and
+#      requestContext.domainName = cms.storelah.sg (host-kind = 'cms').
+#   2. Origin domain must be the cms ENDPOINT (d-6tru2pvxpl...), NOT the api
+#      endpoint (d-97vd3bxp86...) and NOT cms.storelah.sg itself (the CNAME
+#      would loop back to CloudFront). Must match the Route 53 CmsCname value
+#      used BEFORE the gate cutover.
+#   3. CachingDisabled cache policy: the CMS UI + API are dynamic/auth-gated;
+#      never cache.
+#   4. AllowedMethods must include the full CRUD set + POST (dashboard login +
+#      CMS CRUD), not just GET/HEAD.
+#
+# GATE REMOVAL
+#   Delete the FunctionAssociations block in DefaultCacheBehavior (no app
+#   change), or delete the whole stack + point CmsCname back at the API Gateway
+#   endpoint. The dashboard/app code never needs to change.
+#
+# CERTIFICATE (us-east-1)
+#   CloudFront only accepts certs in us-east-1 (the API Gateway cert for
+#   cms.storelah.sg lives in ap-southeast-1 and cannot be reused here). Request
+#   it OUTSIDE this stack (CloudFormation cannot create cross-region certs),
+#   pass the ARN via AcmCertificateArn. The DNS validation CNAME for
+#   cms.storelah.sg already exists in the storelah-dns zone (shared with the
+#   ap-southeast-1 cert), so issuance is near-instant.
+#
+# PASSWORD -> base64 (macOS) — pass ONLY the base64 to CmsAuthB64 (NoEcho);
+# never the raw password. Base64 can never contain a quote, backslash, or
+# newline, so it cannot break the CloudFront Function JS:
+#   echo -n 'cms:YOUR_PASSWORD' | base64
+# The raw password lives in /tmp/storelah-cms-gate.cred (mode 600) on the
+# deployer machine. Note: this gate is a pre-launch standing decision (mirror
+# of the landing Basic Auth gate). Remove it before public CMS launch unless
+# the operator workflow intends to keep it.
+#
+# Manual deploy (CLI):
+#   aws cloudformation deploy \
+#     --stack-name storelah-cms-gate \
+#     --template-file infra/cms-gate-stack.yaml \
+#     --parameter-overrides \
+#       CmsAuthB64=<base64-of-cms:password> \
+#       AcmCertificateArn=arn:aws:acm:us-east-1:... \
+#     --capabilities CAPABILITY_NAMED_IAM \
+#     --region ap-southeast-1
+# =============================================================================
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "StoreLah CMS edge gate: CloudFront distribution in front of the cms.storelah.sg API Gateway endpoint with a Basic Auth CloudFront Function (viewer-request). api.storelah.sg is NOT routed through this distribution and stays public."
+
+Parameters:
+  CmsAuthB64:
+    Type: String
+    NoEcho: true
+    Description: "Base64 of 'cms:<password>' (the credentials for the CMS Basic Auth gate). Compute on macOS: echo -n 'cms:YOUR_PASSWORD' | base64 — paste ONLY the base64 output. Never commit the raw password."
+  AcmCertificateArn:
+    Type: String
+    Description: "ARN of a DNS-validated ACM certificate in us-east-1 (N. Virginia) for cms.storelah.sg. CloudFront only accepts us-east-1 certificates, so this cert MUST be created manually outside this stack (CloudFormation cannot create resources in another region). The DNS validation CNAME for cms.storelah.sg already exists in the storelah-dns zone."
+  CmsOriginDomainName:
+    Type: String
+    Default: d-6tru2pvxpl.execute-api.ap-southeast-1.amazonaws.com
+    Description: "API Gateway REGIONAL custom-domain endpoint for cms.storelah.sg (value of ApiGatewayDomainName from apigatewayv2 create-domain-name — d-6tru2pvxpl.execute-api.ap-southeast-1.amazonaws.com). NOT the api.storelah.sg endpoint and NOT cms.storelah.sg itself (would loop)."
+
+Resources:
+  # --- Basic Auth gate (viewer-request) -------------------------------------
+  CmsBasicAuthFunction:
+    Type: AWS::CloudFront::Function
+    Properties:
+      Name: cms-basic-auth
+      AutoPublish: true
+      FunctionConfig:
+        Comment: Basic Auth gate for the StoreLah CMS admin UI (cms.storelah.sg, pre-launch standing decision)
+        Runtime: cloudfront-js-2.0
+      FunctionCode: !Sub |
+        function handler(event) {
+          var request = event.request;
+          var headers = request.headers;
+          var uri = request.uri;
+          // Gate policy (verified with the live dashboard 2026-08-19):
+          //  - "Basic <creds>" passes on EVERY path (the password gate; browsers
+          //    send this automatically for same-origin requests that do NOT set
+          //    an explicit Authorization header — the dashboard's /config and
+          //    /login calls rely on this).
+          //  - "Bearer <jwt>" passes ONLY on /api/* paths (the dashboard sets the
+          //    Authorization header explicitly to Bearer for authenticated API
+          //    calls, which REPLACES the browser's automatic Basic header — so a
+          //    strict Basic-only gate would break the CMS data layer). The app
+          //    still validates the JWT (requireAuth), so this is NOT a bypass:
+          //    the HTML/JS UI remains password-only and unauthenticated API
+          //    requests are still rejected.
+          var expected = "Basic ${CmsAuthB64}";
+          var ok = false;
+          if (typeof headers.authorization !== "undefined") {
+            var value = headers.authorization.value;
+            if (value === expected) {
+              ok = true;
+            } else if (uri.indexOf("/api/") === 0 && value.indexOf("Bearer ") === 0) {
+              ok = true;
+            }
+          }
+          if (!ok) {
+            return {
+              statusCode: 401,
+              statusDescription: "Unauthorized",
+              headers: { "www-authenticate": { value: "Basic" } },
+            };
+          }
+          return request;
+        }
+
+  # --- CloudFront distribution (cms host only) ------------------------------
+  CmsGateDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Aliases:
+          - cms.storelah.sg
+        Origins:
+          - Id: CmsGatewayOrigin
+            DomainName: !Ref CmsOriginDomainName
+            CustomOriginConfig:
+              OriginProtocolPolicy: https-only
+              OriginSSLProtocols:
+                - TLSv1.2
+              OriginReadTimeout: 30
+              OriginKeepaliveTimeout: 5
+        DefaultCacheBehavior:
+          TargetOriginId: CmsGatewayOrigin
+          ViewerProtocolPolicy: redirect-to-https
+          # CMS dashboard + API: full CRUD + POST login, never cached.
+          AllowedMethods:
+            - GET
+            - HEAD
+            - OPTIONS
+            - PUT
+            - POST
+            - PATCH
+            - DELETE
+          CachedMethods:
+            - GET
+            - HEAD
+            - OPTIONS
+          CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad # Managed-CachingDisabled
+          # Managed-AllViewer: forwards ALL viewer headers (incl. Host and
+          # Authorization) — REQUIRED so API Gateway routes to the cms custom
+          # domain (Host: cms.storelah.sg) and the Lambda sees the JWT.
+          OriginRequestPolicyId: 216adef6-5c7f-47e4-b989-5492eafa07d3
+          FunctionAssociations:
+            - EventType: viewer-request
+              FunctionARN: !GetAtt CmsBasicAuthFunction.FunctionMetadata.FunctionARN
+        PriceClass: PriceClass_200 # Asia+ (Singapore POP) for a snappy admin UI; CMS traffic is tiny
+        ViewerCertificate:
+          AcmCertificateArn: !Ref AcmCertificateArn
+          SslSupportMethod: sni-only
+          MinimumProtocolVersion: TLSv1.2_2021
+        Enabled: true
+
+Outputs:
+  CmsGateDistributionDomainName:
+    Description: CloudFront distribution domain name (e.g. dxxxxxxxxxxxx.cloudfront.net) — target for the cms.storelah.sg CNAME in the storelah-dns stack
+    Value: !GetAtt CmsGateDistribution.DomainName
+  CmsGateDistributionId:
+    Description: CloudFront distribution ID for the cms.storelah.sg gate
+    Value: !Ref CmsGateDistribution
+  CmsBasicAuthFunctionArn:
+    Description: CloudFront Function ARN for the CMS gate (for reference/invalidation)
+    Value: !GetAtt CmsBasicAuthFunction.FunctionMetadata.FunctionARN

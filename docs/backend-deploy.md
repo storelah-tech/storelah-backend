@@ -11,6 +11,15 @@ code changes marked `[backend-agent]`). Landing is done; booking is waiting on T
 
 ## STATUS: BACKEND IS LIVE (verified 2026-08-13) — booking gate CLEARED; ONE security discrepancy remains
 
+- **CMS GATE + LATEST CODE DEPLOYED (2026-08-19):** `cms.storelah.sg` is now behind a
+  **Basic Auth gate at the edge** (CloudFront distribution `d16ho6mw9yl78o.cloudfront.net` +
+  CloudFront Function `cms-basic-auth`, stack `storelah-cms-gate`, `infra/cms-gate-stack.yaml`
+  in this repo). `api.storelah.sg` is NOT routed through it and stays fully public. The
+  Lambda was simultaneously rebuilt from `origin/main` (`8b2c647`, floor-plan features) and
+  redeployed (CodeSha256 `erEr/lhl68WKGG7/...`, 20 MB zip, no CLI packages; both floor-plan
+  migrations `20260817140819_add_floor_plan_layout` and `20260819071957_add_floor_plan_blocks`
+  applied to the cloud Neon DB via the DIRECT URL). See the **CMS GATE (Basic Auth) section**
+  below for architecture, the exact gate policy, verification, and rollback.
 - **Landing is LIVE:** `https://storelah.sg` + `https://www.storelah.sg` via CloudFront +
   Route 53 (zone `storelah-dns`). Cross-ref: `storelah-landing/docs/DEPLOYMENT.md`.
 - **Backend: DEPLOYED and LIVE (re-verified 2026-08-13 from public DNS/curl — no AWS creds
@@ -83,6 +92,115 @@ code changes marked `[backend-agent]`). Landing is done; booking is waiting on T
   via the pooled URL). Lambda reaches Neon over the public internet (no VPC, no NAT). Local
   Docker DB on port 5433 remains dev-only.
 
+## CMS GATE (Basic Auth on cms.storelah.sg) — deployed 2026-08-19
+
+### Problem
+
+`cms.storelah.sg` and `api.storelah.sg` are BOTH custom domains on the SAME API Gateway
+HTTP API (`azzp4x84e6`) with api-mappings to the SAME `$default` stage with an EMPTY basepath
+(`vmq0z9` → api, `0cbu6r` → cms). A stage-level or authorizer-level gate would break the
+public api host (`/api/v1/public`, `/api/v1/customer`, `/health`, `/docs`). The served CMS
+dashboard (`dashboard.html` at cms root + `/admin`) was reachable WITHOUT any gate — the
+standing pre-launch Basic Auth decision from the landing was never applied to the CMS host.
+
+### Solution (infra-layer only — NO src/ change)
+
+Mirror the proven landing pattern: a CloudFront distribution in front of ONLY the cms API
+Gateway endpoint with a Basic Auth CloudFront Function at `viewer-request`:
+
+```
+cms.storelah.sg  (Route 53 CNAME -> d16ho6mw9yl78o.cloudfront.net, stack storelah-dns)
+  -> CloudFront dist (storelah-cms-gate stack, infra/cms-gate-stack.yaml)
+       -> viewer-request CloudFront Function `cms-basic-auth`  (the gate)
+       -> origin d-6tru2pvxpl.execute-api.ap-southeast-1.amazonaws.com  (API GW, cms endpoint)
+            -> $default stage -> Express Lambda (host-kind = 'cms' because the Host header
+               is forwarded = cms.storelah.sg)
+```
+
+- **Origin request policy = Managed-AllViewer** (`216adef6-...`): forwards ALL viewer headers
+  incl. `Host` and `Authorization`. CloudFront rewrites Host to the origin domain by default —
+  API Gateway's regional custom-domain endpoint serves 200 only for a registered custom-domain
+  Host (cms.storelah.sg → 200; endpoint host/unknown → 404/403, verified empirically). This
+  also keeps `requestContext.domainName = cms.storelah.sg`, so the app's host-kind routing
+  still classifies the request as `cms` (`/config` keeps working, dashboard serves).
+- **Cache policy = Managed-CachingDisabled** (never cache the gated UI or the API).
+- **AllowedMethods = GET/HEAD/OPTIONS/PUT/POST/PATCH/DELETE** (dashboard CRUD + login).
+- **Cert: us-east-1 ACM cert for cms.storelah.sg** (CloudFront only accepts us-east-1 certs;
+  the ap-southeast-1 API GW cert cannot be reused). The DNS validation CNAME is shared with
+  the ap-southeast-1 cert (`_705dc6d02d0735a01b6dabd41191f67b.cms.storelah.sg` already in the
+  zone), so issuance was instant.
+- **Gate policy (IMPORTANT — Bearer/Basic collision):** the dashboard's `data-layer.js` and
+  `admin.js` call `/config` and `/login` WITHOUT an explicit `Authorization` header (the
+  browser attaches the stored Basic creds automatically), but send `Authorization: Bearer
+  <jwt>` on every authenticated API call — and an explicit Authorization header REPLACES the
+  browser's Basic header. The function therefore allows:
+  - `Authorization: Basic <creds>` on EVERY path (the password gate), and
+  - `Authorization: Bearer <jwt>` on `/api/*` paths ONLY (the app still validates the JWT via
+    `requireAuth` — NOT a bypass; unauthenticated or invalid-JWT API calls return 401).
+- **Deployment:**
+  ```bash
+  # 1. cert (US-EAST-1 — CloudFront requirement):
+  aws acm request-certificate --region us-east-1 --domain-name cms.storelah.sg --validation-method DNS
+  # 2. stack (function + distribution; base64 of 'cms:<password>', NEVER the raw password):
+  echo -n 'cms:YOUR_PASSWORD' | base64   # -> CmsAuthB64
+  aws cloudformation deploy \
+    --stack-name storelah-cms-gate \
+    --template-file infra/cms-gate-stack.yaml \
+    --parameter-overrides CmsAuthB64=<b64> AcmCertificateArn=<us-east-1-arn> \
+    --capabilities CAPABILITY_NAMED_IAM --region ap-southeast-1
+  # 3. DNS cutover (storelah-dns stack, ap-southeast-1): CmsCname now references
+  #    CmsCloudFrontDomainName (d16ho6mw9yl78o.cloudfront.net); redeploy:
+  aws cloudformation deploy --stack-name storelah-dns \
+    --template-file ../../storelah-landing/infra/route53-stack.yaml \
+    --parameter-overrides HostedZoneId=<zone> CloudFrontDomainName=d2amdxo2lw1m9e.cloudfront.net \
+      ApiGatewayDomainName=d-97vd3bxp86.execute-api.ap-southeast-1.amazonaws.com \
+      CmsCloudFrontDomainName=d16ho6mw9yl78o.cloudfront.net \
+    --region ap-southeast-1
+  ```
+- **Credentials:** gate user is `cms` with a random 24-char alphanumeric password. The raw
+  value is stored on the deployer machine at `/tmp/storelah-cms-gate.cred` (mode 600); the
+  base64 is at `/tmp/storelah-cms-gate.b64` (mode 600). NEVER print either in logs/reports.
+  This mirrors the landing gate (`storelah:<password>`) and is a pre-launch standing decision.
+
+### Verify (all PASSED, 2026-08-19, public DNS)
+
+```bash
+curl -s -D - -o /dev/null https://cms.storelah.sg/            # 401 + Www-Authenticate: Basic
+curl -s -o /dev/null -w '%{http_code}\n' https://cms.storelah.sg/ -u cms:<pw>   # 200 (dashboard)
+curl -s -o /dev/null -w '%{http_code}\n' https://cms.storelah.sg/admin -u cms:<pw>  # 200
+# dashboard flow (exactly as the browser does it):
+curl -s -u cms:<pw> https://cms.storelah.sg/api/cms/config    # 200  (no explicit auth -> Basic rides along)
+curl -s -u cms:<pw> -X POST https://cms.storelah.sg/api/cms/login -H 'content-type: application/json' \
+  -d '{"email":"admin@storelah.sg","password":"<STORELAH_ADMIN_PASSWORD>"}'  # 200 -> token
+curl -s https://cms.storelah.sg/api/v1/cms/floor-plans -H "Authorization: Bearer <token>"  # 200 (NEW code)
+curl -s -o /dev/null -w '%{http_code}\n' https://cms.storelah.sg/api/cms/summary  # 401 (no auth)
+curl -s -o /dev/null -w '%{http_code}\n' https://cms.storelah.sg/ -H "Authorization: Bearer junk"  # 401 (UI is Basic-only)
+# public api unchanged (NOT behind the gate):
+curl -s https://api.storelah.sg/health                          # 200
+curl -s https://api.storelah.sg/api/v1/public/branches          # 200 seeded rows
+curl -s -o /dev/null -w '%{http_code}\n' https://api.storelah.sg/docs  # 200
+curl -s -o /dev/null -w '%{http_code}\n' https://api.storelah.sg/api/v1/cms/config  # 404 (app gate intact)
+```
+
+### Rollback (gate removal)
+
+1. Repoint `CmsCname` in `storelah-landing/infra/route53-stack.yaml` back to
+   `d-6tru2pvxpl.execute-api.ap-southeast-1.amazonaws.com` (re-add the `CmsGatewayDomainName`
+   parameter) and redeploy the storelah-dns stack; DNS resumes pointing directly at the API
+   Gateway in ≤300 s (TTL).
+2. Delete the gate stack: `aws cloudformation delete-stack --stack-name storelah-cms-gate`.
+3. No app change needed. The us-east-1 cert can be left (renewal-free until expiry) or deleted.
+
+### Residual risk (flag for backend-agent / future hardening)
+
+The raw API Gateway endpoint `d-6tru2pvxpl.execute-api.ap-southeast-1.amazonaws.com` remains
+directly reachable; the app's host-kind routing serves the dashboard and `/config` creds to
+ANY request whose Host header is `cms.storelah.sg` (forged Host, e.g. curl). The edge gate
+closes the public DNS surface (browsers cannot forge Host), but a determined caller can still
+reach the CMS API/creds via the endpoint + forged Host. Closing this requires an app-layer
+change (backend-agent): e.g. require a shared-secret header injected by the CloudFront
+function, or gate `/config` additionally on a per-request secret — dispatch separately.
+
 ## Confirmed facts (orchestrator-verified, 2026-08-10)
 
 - **Stack:** Express `5.1.0`, Prisma `6.5.0` (`@prisma/client` + `prisma` CLI), TypeScript
@@ -117,16 +235,23 @@ code changes marked `[backend-agent]`). Landing is done; booking is waiting on T
 - **Client singleton:** `src/lib/prisma.ts` keeps one `PrismaClient` per process — correct
   for Lambda (one client per warm container; never create one per request).
 - **git: repo `storelah-tech/storelah-backend` on `main`, remote configured, fully pushed
-  (`origin/main` == `HEAD`, currently 294f4da), working tree clean. `.env` is gitignored and
-  never pushed. All prior "no remote / four uncommitted files / stale dist" notes are
-  obsolete — a fresh `pnpm build` was verified passing on 2026-08-13 (see commit below).
+  (`origin/main` == `HEAD`, currently `8b2c647` as of the 2026-08-19 gate+redeploy session),
+  working tree clean. `.env` is gitignored and never pushed. All prior "no remote / four
+  uncommitted files / stale dist" notes are obsolete — a fresh `pnpm build` was verified
+  passing on 2026-08-13 and again on 2026-08-19 (see commits below).
   NOTE: `origin/main` was at `294f4da` (the `/config` gate + env-driven seed); the live
-  Lambda behaves as if deployed from an EARLIER build / without prod env vars — see the
+  Lambda behaved as if deployed from an EARLIER build / without prod env vars — see the
   security discrepancy in the STATUS block above. **Follow-up commit (2026-08-13, live-action
   security session):** `/config` gate hardened to be **host-kind-based and unconditional**
   (no `NODE_ENV` dependency) + new one-shot `pnpm db:rotate-admin-password`
   (`scripts/rotate-admin-password.ts`) for rotating the seeded AdminUser hash without
-  re-seeding — see the PASSWORD ROTATION block in the STATUS section.
+  re-seeding — see the PASSWORD ROTATION block in the STATUS section. **Since then
+  (2026-08-13 → 2026-08-19):** floor-plan feature work (`3364259`…`8b2c647`, migrations
+  `20260817140819_add_floor_plan_layout` + `20260819071957_add_floor_plan_blocks`, applied to
+  the cloud Neon DB 2026-08-19). The 2026-08-19 session rebuilt from `origin/main`, slimmed
+  the bundle (see Phase A step 5 notes: strip prisma CLI + non-postgres WASM engines + source
+  maps → 20 MB zip; keep `.prisma/client` w/ only the rhel engine at
+  `node_modules/.pnpm/@prisma+client@…/node_modules/.prisma/client`) and redeployed.
 
 ## Why Lambda + API Gateway (and not Amplify / EC2 / a long-running container)
 
@@ -339,27 +464,55 @@ Run from `storelah-backend/` with pnpm 10.4.1 (corepack).
    The seed now reads the admin pair from env (fallback `admin@storelah.sg` / `password` for
    local dev only — committed 2026-08-13), so the admin row matches the Lambda's
    `STORELAH_ADMIN_PASSWORD`. Never re-run it against the cloud DB after launch (wipes data).
-5. **Bundle the zip (pnpm layout gotcha):** `node_modules` is **symlink-based** under pnpm —
-   a naive `zip -r node_modules` ships broken symlinks. Build a self-contained staging dir
-   (guaranteed approach — this repo is NOT a pnpm workspace, so `pnpm deploy` [experimental,
-   workspace-oriented] is optional; `--legacy` mode + manual copy both work, manual is safest):
+5. **Bundle the zip (pnpm layout gotcha — VERIFIED PROCEDURE 2026-08-19):** `node_modules`
+   is **symlink-based** under pnpm. The staging-dir prod install creates RELATIVE symlinks
+   into `.pnpm/` (safe — resolve after unzip on Lambda, so `zip -r -y` PRESERVING symlinks is
+   correct, not broken). Three real gotchas that the 2026-08-19 build hit and fixed:
+   1. **`--frozen-lockfile` needs the lockfile** — copy `pnpm-lock.yaml` too, or the install
+      fails.
+   2. **The prod install pulls the prisma CLI + its heavy deps in as transitive peers**
+      (`prisma`, `typescript`, `effect`, `fast-check`, `@prisma/engines`, …) — a raw staging
+      is **292 MB unzipped (over the 250 MB limit)** and 101 MB zipped (over the 50 MB
+      limit). Strip them before zipping (see below) → 20 MB zip / 57 MB unzipped.
+   3. **The generated Prisma client is NOT produced by the staging install** (no
+      `prisma/schema.prisma` there) — copy it from the repo build into
+      `node_modules/.pnpm/@prisma+client@…/node_modules/.prisma` (SIBLING of `@prisma/`,
+      i.e. the pkg top-level `node_modules/.prisma`; that is where Node's relative-require
+      walk lands for `@prisma/client/default.js` → `.prisma/client/default`). Keep ONLY the
+      **rhel** engine (`libquery_engine-rhel-openssl-3.0.x.so.node`) — delete the darwin one.
+   4. Strip `@prisma/client/runtime/*` WASM engines for every provider EXCEPT postgresql,
+      plus all `*.map` source maps and `generator-build`/`scripts` (CLI-only).
    ```bash
-   rm -rf /tmp/storelah-backend-zip
-   mkdir -p /tmp/storelah-backend-zip
-   cp -R dist package.json /tmp/storelah-backend-zip/
+   rm -rf /tmp/storelah-backend-zip && mkdir -p /tmp/storelah-backend-zip
+   cp -R dist package.json pnpm-lock.yaml /tmp/storelah-backend-zip/
    cd /tmp/storelah-backend-zip && pnpm install --prod --frozen-lockfile
-   #   ^ installs prod deps with REAL files (no symlinks); if the lockfile
-   #     misbehaves outside the repo, fall back to: pnpm deploy --prod --legacy /tmp/storelah-backend-zip
-   cd /tmp/storelah-backend-zip && zip -qr ../backend.zip .   # zip root = dist/ + node_modules/ + package.json
+   # copy generated client + engines from the repo build (rhel engine only):
+   REPO=.pnpm/@prisma+client@*/node_modules/.prisma   # resolve from repo node_modules
+   STAGE=node_modules/.pnpm/@prisma+client@*/node_modules
+   cp -R <repo>/$REPO/.prisma <staging>/$STAGE/.prisma
+   rm -f <staging>/$STAGE/.prisma/client/libquery_engine-darwin-*.node
+   # strip CLI + fat (see gotcha 2/4):
+   rm -rf node_modules/.pnpm/prisma@* node_modules/.pnpm/typescript@* \
+          node_modules/.pnpm/effect@* node_modules/.pnpm/fast-check@* \
+          node_modules/.pnpm/@prisma+config@* node_modules/.pnpm/@prisma+fetch-engine@* \
+          node_modules/.pnpm/@prisma+engines@*
+   RT=node_modules/.pnpm/@prisma+client@*/node_modules/@prisma/client/runtime
+   (cd $RT && rm -f *cockroachdb* *mysql* *sqlite* *sqlserver*)
+   find . -name '*.map' -delete
+   cd /tmp/storelah-backend-zip && zip -qr -y /tmp/backend.zip .   # -y preserves symlinks
    ```
    - Layout matters for `__dirname`: `dist/src/index.js` must sit beside `dist/src/cms/`.
-   - **Must include** (prod deps): `@prisma/client` + `.prisma/client` (generated) +
-     `@prisma/engines` (linux engine), `serverless-http`, `express`, `cors`,
-     `cookie-parser`, `dotenv`, `jsonwebtoken`, `bcryptjs`, `zod`. **Exclude** devDeps
+   - **Must include** (prod deps): `@prisma/client` + generated `.prisma/client` (rhel engine)
+     + `@prisma/engines-version`, `serverless-http`, `express`, `cors`, `cookie-parser`,
+     `dotenv`, `jsonwebtoken`, `bcryptjs`, `zod`, `swagger-ui-dist`. **Exclude** devDeps
      (`typescript`, `tsx`, `@types/*`, `prettier`, and the `prisma` CLI — not needed at
-     runtime).
-   - **Limits:** Lambda zip ≤ **50 MB** for console direct upload / ≤ 250 MB unzipped
-     (larger zips go via S3). Express + Prisma ≈ 20–40 MB zipped — comfortable.
+     runtime) AND the transitive CLI peers listed above.
+   - **Limits:** Lambda zip ≤ **50 MB** for direct upload / ≤ 250 MB unzipped. The slim build
+     is ~20 MB zipped / ~57 MB unzipped. Smoke-test before upload: unzip to a temp dir and
+     `node -e "require('./node_modules/@prisma/client')"` + invoke the handler with a
+     synthetic API GW event (`/health` + `/api/v1/cms/config` work locally; a Prisma query
+     FAILS locally by design — the darwin engine is intentionally absent — the rhel engine is
+     proven by the live `/api/v1/public/branches` curl after deploy).
 6. **Create / update the function:**
    ```bash
    aws lambda create-function \

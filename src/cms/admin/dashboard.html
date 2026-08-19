@@ -304,9 +304,9 @@ body { font-family: 'Manrope', sans-serif; background: var(--cream); color: var(
 .fp-sel-info { display: inline-flex; align-items: center; gap: 8px; }
 .fp-canvas-wrap { background: var(--white); border: 1px solid var(--border); border-radius: 9px; padding: 12px; overflow: auto; max-height: 640px; min-height: 360px; }
 .fp-canvas { position: relative; background-color: var(--cream); border: 1px solid var(--sand); background-image: linear-gradient(var(--sand) 1px, transparent 1px), linear-gradient(90deg, var(--sand) 1px, transparent 1px); }
-.fp-wall { position: absolute; background: var(--charcoal); z-index: 1; }
-.fp-corridor { position: absolute; background: var(--sand); z-index: 1; border-radius: 2px; }
-.fp-struct { position: absolute; background: var(--terra-light); border: 1.5px solid var(--terra); color: var(--terra); font-size: 9px; font-weight: 800; display: flex; align-items: center; justify-content: center; z-index: 1; border-radius: 4px; padding: 1px; }
+.fp-wall { position: absolute; background: var(--charcoal); z-index: 1; pointer-events: none; }
+.fp-corridor { position: absolute; background: var(--sand); z-index: 1; border-radius: 2px; pointer-events: none; }
+.fp-struct { position: absolute; background: var(--terra-light); border: 1.5px solid var(--terra); color: var(--terra); font-size: 9px; font-weight: 800; display: flex; align-items: center; justify-content: center; z-index: 1; border-radius: 4px; padding: 1px; pointer-events: none; }
 .fp-placed { position: absolute; border-radius: 6px; display: flex; flex-direction: column; align-items: center; justify-content: center; cursor: grab; border: 2px solid var(--teal); background: var(--teal-light); box-sizing: border-box; font-family: 'Plus Jakarta Sans', sans-serif; font-weight: 800; color: var(--teal); overflow: hidden; z-index: 2; touch-action: none; }
 .fp-placed .fp-code { font-size: 10px; line-height: 1.15; }
 .fp-placed .fp-size { font-size: 8.5px; color: var(--mid); font-weight: 600; line-height: 1.2; }

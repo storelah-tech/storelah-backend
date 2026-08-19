@@ -1606,13 +1606,16 @@
       fpStartResize(e, pl);
       return;
     }
-    state.fp.selected = uid;
-    fpRenderCanvas();
-    fpRenderSelInfo();
     e.preventDefault();
+    // Capture the grab offset from the LIVE element BEFORE any re-render. The
+    // fpRenderCanvas() call below rebuilds canvas.innerHTML, which detaches `el`;
+    // reading its geometry afterwards would return all-zeros and break dragging.
     const startRect = el.getBoundingClientRect();
     const offsetX = e.clientX - startRect.left;
     const offsetY = e.clientY - startRect.top;
+    state.fp.selected = uid;
+    fpRenderCanvas();
+    fpRenderSelInfo();
     const { w: cw, h: ch } = fpCanvasDims();
     const move = (ev) => {
       const cell = fpCanvasCellAt(ev.clientX - offsetX, ev.clientY - offsetY);

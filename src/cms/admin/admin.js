@@ -51,6 +51,7 @@
       selected: null, // selected placement unitId
       selectedBlock: null, // selected block id
       canvasDefaults: { width: 40, height: 30 },
+      liveDims: null, // live-typed canvas size from the W/H inputs (local, unsaved); null = use plan/server size
     },
   };
 
@@ -1264,9 +1265,115 @@
   }
 
   function fpCanvasDims() {
+    // A live-typed size (unsaved W/H input edits) wins while the operator is
+    // editing; "Save Canvas" is the explicit commit that persists it.
+    const live = state.fp.liveDims;
+    if (live && live.w > 0 && live.h > 0) return { w: live.w, h: live.h };
     const p = state.fp.plan;
     if (p && p.width > 0 && p.height > 0) return { w: p.width, h: p.height };
     return { w: state.fp.canvasDefaults.width, h: state.fp.canvasDefaults.height };
+  }
+
+  // ---------- reactive canvas sizing (live W/H edits) ----------
+  // Editing the Canvas Width/Height inputs re-sizes the visible canvas in real
+  // time (debounced while typing, committed on change/blur) instead of waiting
+  // for Save Canvas. This update is LOCAL and unsaved — fpSaveCanvas remains
+  // the only commit that persists width/height/structure to the server.
+
+  let fpDimsTimer = null;
+
+  function fpParseDim(v) {
+    const n = Number(v);
+    return Number.isInteger(n) && n >= 1 && n <= 500 ? n : null;
+  }
+
+  function fpReadInputDims() {
+    const wEl = $('#fpWidth');
+    const hEl = $('#fpHeight');
+    if (!wEl || !hEl) return null;
+    const w = fpParseDim(wEl.value);
+    const h = fpParseDim(hEl.value);
+    if (w === null || h === null) return null;
+    return { w, h };
+  }
+
+  // Write the effective canvas size into the W/H fields — but never clobber a
+  // live edit: while the operator is focused on either field, leave the input
+  // text alone (fpOnDimCommit reconciles the value on change/blur).
+  function fpSyncDimInputs(d) {
+    const wEl = $('#fpWidth');
+    const hEl = $('#fpHeight');
+    if (!wEl || !hEl) return;
+    if (document.activeElement === wEl || document.activeElement === hEl) return;
+    wEl.value = d.w;
+    hEl.value = d.h;
+  }
+
+  // Shrink-fit every placement/block into the given grid bounds (LOCAL state
+  // only — nothing persisted): width/height capped at the canvas, top-left
+  // pinned back inside. Keeps content from visually overflowing a shrunken
+  // canvas, and makes the next drag/resize persist valid (in-bounds) geometry.
+  function fpClampCanvasContent(w, h) {
+    const clampItem = (item) => {
+      item.width = Math.max(1, Math.min(item.width, w));
+      item.height = Math.max(1, Math.min(item.height, h));
+      item.x = Math.min(Math.max(0, item.x), Math.max(0, w - item.width));
+      item.y = Math.min(Math.max(0, item.y), Math.max(0, h - item.height));
+    };
+    state.fp.placements.forEach(clampItem);
+    state.fp.blocks.forEach(clampItem);
+  }
+
+  // Re-render the visible canvas at the current effective size after clamping
+  // content into it. A full fpRender keeps title/subtitle, W/H fields (guarded
+  // in fpSyncDimInputs), palette, selection info and zoom label coherent.
+  function fpApplyLiveDims() {
+    const { w, h } = fpCanvasDims();
+    fpClampCanvasContent(w, h);
+    fpRender();
+  }
+
+  // Debounced live update while typing (smooth; no resize per keystroke).
+  function fpOnDimInput() {
+    const dims = fpReadInputDims();
+    // Track the typed size synchronously so any concurrent re-render races
+    // with it instead of snapping the canvas back to the server value, and so
+    // the debounced apply always works on the newest value.
+    state.fp.liveDims = dims ? { w: dims.w, h: dims.h } : state.fp.liveDims;
+    clearTimeout(fpDimsTimer);
+    if (dims) fpDimsTimer = setTimeout(fpApplyLiveDims, 200);
+  }
+
+  // Immediate commit on change/blur/enter: apply the typed size at once, or
+  // revert an invalid value back to the effective size (matches the 1–500
+  // integer bounds fpSaveCanvas enforces). Fields are written unconditionally
+  // AFTER the re-render so they never fight the focus guard mid-edit.
+  function fpOnDimCommit() {
+    clearTimeout(fpDimsTimer);
+    const wEl = $('#fpWidth');
+    const hEl = $('#fpHeight');
+    const dims = fpReadInputDims();
+    if (dims) {
+      state.fp.liveDims = { w: dims.w, h: dims.h };
+      fpApplyLiveDims();
+      if (wEl) wEl.value = dims.w;
+      if (hEl) hEl.value = dims.h;
+      return;
+    }
+    state.fp.liveDims = null;
+    const { w, h } = fpCanvasDims();
+    fpApplyLiveDims();
+    if (wEl) wEl.value = w;
+    if (hEl) hEl.value = h;
+    fpToast('Canvas size must be a whole number between 1 and 500 grid units.', false);
+  }
+
+  function fpOnDimEnter(e) {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      fpOnDimCommit();
+      e.target.blur();
+    }
   }
 
   function fpToast(msg, ok) {
@@ -1341,6 +1448,12 @@
       state.fp.selected = null;
       state.fp.selectedBlock = null;
       state.fp.scale = 1;
+      // A (re)load resets the live-typed canvas size back to server state, and
+      // shrink-fits any placements/blocks the server may hold beyond a (possibly
+      // just-saved, smaller) canvas so nothing renders off-grid.
+      state.fp.liveDims = null;
+      const d = fpCanvasDims();
+      fpClampCanvasContent(d.w, d.h);
       fpRender();
     } catch (err) {
       fpToast('Load floor plan: ' + describeError(err), false);
@@ -1536,10 +1649,7 @@
         ? `${unitLabel} placed · ${blockLabel} on a ${d.w}×${d.h} grid — drag to move, corner handle to resize`
         : "No plan yet — set a canvas size and click Save Canvas, then drag this floor's units from the palette.";
     }
-    const wEl = $('#fpWidth');
-    const hEl = $('#fpHeight');
-    if (wEl) wEl.value = d.w;
-    if (hEl) hEl.value = d.h;
+    fpSyncDimInputs(d);
     const st = $('#fpStructure');
     if (st) st.value = state.fp.structure ? JSON.stringify(state.fp.structure, null, 2) : '';
     const legacy = $('#fpLegacyNote');
@@ -2150,6 +2260,14 @@
     });
     $('#fpSaveCanvas').addEventListener('click', fpSaveCanvas);
     $('#fpDeletePlan').addEventListener('click', fpDeletePlan);
+    // Live canvas resizing: W/H edits re-render the canvas immediately (debounced
+    // while typing); change/blur commits the typed value or reverts an invalid one.
+    $('#fpWidth').addEventListener('input', fpOnDimInput);
+    $('#fpHeight').addEventListener('input', fpOnDimInput);
+    $('#fpWidth').addEventListener('change', fpOnDimCommit);
+    $('#fpHeight').addEventListener('change', fpOnDimCommit);
+    $('#fpWidth').addEventListener('keydown', fpOnDimEnter);
+    $('#fpHeight').addEventListener('keydown', fpOnDimEnter);
     $('#fpZoomIn').addEventListener('click', () => {
       state.fp.scale = Math.min(3, state.fp.scale * 1.25);
       fpRenderCanvas();

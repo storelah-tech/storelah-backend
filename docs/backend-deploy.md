@@ -655,7 +655,7 @@ echo | openssl s_client -connect api.storelah.sg:443 -servername api.storelah.sg
 - **Landing:** unaffected. `BOOKING_URL` / gate / `PriceClass` decisions stay with
   `storelah-landing/docs/DEPLOYMENT.md`.
 - **`storelah-dns` stack:** hosts the zone for all three hostnames (storelah.sg apex+www,
-  booking.storelah.sg, api.storelah.sg). All record-set edits go through the stack — never
+  app.storelah.sg [renamed from booking.storelah.sg 2026-08-19], api.storelah.sg). All record-set edits go through the stack — never
   the console.
 
 ## Cost & free-tier watch

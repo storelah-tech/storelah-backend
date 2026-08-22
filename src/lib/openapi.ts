@@ -461,10 +461,15 @@ export const openapiSpec = {
           'Books a unit and returns the created booking. On success the unit is marked RESERVED and a DUE invoice is ',
           'raised for `totalDueToday` (or the unit monthly rate when omitted).',
           '',
-          'Errors: `404 NOT_FOUND` when the unit code is unknown, `409 CONFLICT` when the unit is not AVAILABLE/RESERVED.',
+          'Auth: dual-mode. WITH a bearer token, books for the authenticated customer (invalid token = 401). ',
+          'WITHOUT any Authorization header, performs guest checkout: the body must include `email`, and the customer ',
+          'record is found-or-created by it (new customers get type GUEST and a bcrypt-hashed default password).',
+          '',
+          'Errors: `404 NOT_FOUND` when the unit code is unknown, `409 CONFLICT` when the unit is not AVAILABLE/RESERVED, ',
+          '`400 VALIDATION` when unauthenticated and `email` is missing/invalid.',
         ].join('\n'),
         operationId: 'createCustomerBooking',
-        security: [{ bearerAuth: [] }],
+        security: [{ bearerAuth: [] }, []],
         requestBody: {
           required: true,
           content: {
@@ -480,7 +485,9 @@ export const openapiSpec = {
           '400': openapiErrorResponse(
             'Invalid booking payload, or `moveInDate` is not a valid date.',
           ),
-          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '401': openapiErrorResponse(
+            'Bearer token was supplied but is invalid/expired. (No header at all → guest checkout instead of 401.)',
+          ),
           '404': openapiErrorResponse('Unit not found.'),
           '409': openapiErrorResponse(
             'Unit is not AVAILABLE/RESERVED and cannot be booked.',
@@ -967,6 +974,20 @@ export const openapiSpec = {
             minimum: 0,
             description:
               'Amount invoiced on booking. Defaults to the unit monthly rate when omitted.',
+          },
+          email: {
+            type: 'string',
+            format: 'email',
+            description:
+              'Guest checkout only (no Authorization header): the booker is found-or-created by this email — new customers are saved with type GUEST and a bcrypt-hashed default password. Required when unauthenticated.',
+          },
+          name: {
+            type: 'string',
+            description: 'Guest checkout only. Used when creating a new guest customer; existing accounts are never overwritten.',
+          },
+          mobile: {
+            type: 'string',
+            description: 'Guest checkout only. Same find-or-create rules as name.',
           },
         },
       },

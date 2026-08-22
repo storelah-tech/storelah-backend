@@ -1,6 +1,6 @@
 import { NextFunction, Request, Response } from 'express';
 import jwt from 'jsonwebtoken';
-import { fail } from '../lib/http';
+import { AppError, fail } from '../lib/http';
 
 export interface AdminJwt {
   sub: string;
@@ -65,4 +65,33 @@ export function requireCustomerAuth(req: Request, res: Response, next: NextFunct
   } catch {
     fail(res, 401, 'UNAUTHORIZED', 'Unauthorized');
   }
+}
+
+/**
+ * Returns the verified customer payload when a VALID bearer token is present,
+ * null when NO Authorization header is supplied. A header that is present but
+ * malformed/expired/invalid throws — callers must treat that as a hard 401 so
+ * stale sessions are never silently downgraded to guest checkout.
+ */
+export function extractCustomerPayload(req: Request): CustomerJwtPayload {
+  const header = req.headers.authorization;
+  if (!header || !header.startsWith('Bearer ')) {
+    throw new AppError(401, 'UNAUTHORIZED', 'Unauthorized');
+  }
+  let payload: CustomerJwtPayload;
+  try {
+    payload = jwt.verify(header.slice(7), SECRET) as CustomerJwtPayload;
+  } catch {
+    // Malformed/expired/garbage token must surface as 401 UNAUTHORIZED,
+    // never leak into the global handler as a 500.
+    throw new AppError(401, 'UNAUTHORIZED', 'Unauthorized');
+  }
+  if (payload.kind !== 'customer' || !payload.sub) {
+    throw new AppError(401, 'UNAUTHORIZED', 'Unauthorized');
+  }
+  return payload;
+}
+
+export function hasAuthorizationHeader(req: Request): boolean {
+  return !!req.headers.authorization;
 }

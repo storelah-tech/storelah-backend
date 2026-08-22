@@ -44,7 +44,7 @@ function serializeCustomer(c: Customer) {
   };
 }
 
-async function loadCustomer(payload: CustomerJwtPayload): Promise<Customer> {
+export async function loadCustomer(payload: CustomerJwtPayload): Promise<Customer> {
   const customer = await prisma.customer.findUnique({ where: { id: payload.sub } });
   if (!customer) throw new AppError(401, 'UNAUTHORIZED', 'Customer not found');
   return customer;
@@ -78,6 +78,38 @@ export async function loginCustomer(input: { email: string; password: string }) 
     throw new AppError(401, 'UNAUTHORIZED', 'Invalid email or password');
   }
   return { token: signCustomerToken(customer), customer: serializeCustomer(customer) };
+}
+
+// --- Guest checkout -------------------------------------------------------
+
+// Default password for auto-provisioned guest accounts. Configurable via env;
+// always stored bcrypt-hashed and never returned by any API response.
+const GUEST_DEFAULT_PASSWORD = process.env.STORELAH_GUEST_DEFAULT_PASSWORD || 'storelah-guest-default';
+
+/**
+ * Find-or-create a Customer by email for unauthenticated (guest) booking.
+ * Existing customers are returned untouched — their password/type/name are
+ * NEVER overwritten. New customers are created with type GUEST and the
+ * default password (bcrypt-hashed).
+ */
+export async function findOrCreateGuestCustomer(input: {
+  email: string;
+  name?: string;
+  mobile?: string;
+}): Promise<Customer> {
+  const existing = await prisma.customer.findUnique({ where: { email: input.email } });
+  if (existing) return existing;
+
+  const passwordHash = await bcrypt.hash(GUEST_DEFAULT_PASSWORD, 10);
+  return prisma.customer.create({
+    data: {
+      name: input.name?.trim() || 'Guest',
+      email: input.email,
+      mobile: input.mobile?.trim() || null,
+      passwordHash,
+      type: AccountType.GUEST,
+    },
+  });
 }
 
 // --- Profile & bookings --------------------------------------------------
@@ -195,8 +227,7 @@ async function uniqueRef(db: Prisma.TransactionClient, kind: 'booking' | 'invoic
   throw new AppError(500, 'INTERNAL', `Could not generate a unique ${kind} reference`);
 }
 
-export async function createCustomerBooking(payload: CustomerJwtPayload, input: CreateBookingInput) {
-  const customer = await loadCustomer(payload);
+export async function createCustomerBooking(customer: Customer, input: CreateBookingInput) {
   const moveInDate = new Date(input.moveInDate);
   if (Number.isNaN(moveInDate.getTime())) {
     throw new AppError(400, 'VALIDATION', 'Invalid moveInDate');
@@ -213,6 +244,13 @@ export async function createCustomerBooking(payload: CustomerJwtPayload, input: 
       ? await tx.tenant.findFirst({ where: { email: customer.email } })
       : null;
     if (!tenant) {
+      // Tenant.unitId is UNIQUE (one active tenancy per unit). A RESERVED unit
+      // may already belong to a different customer — reject cleanly with 409
+      // instead of letting tenant.create blow up with a raw unique violation.
+      const unitTenant = await tx.tenant.findFirst({ where: { unitId: unit.id } });
+      if (unitTenant) {
+        throw new AppError(409, 'CONFLICT', `Unit ${input.unitCode} is already booked`);
+      }
       tenant = await tx.tenant.create({
         data: {
           name: customer.name,

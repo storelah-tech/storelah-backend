@@ -1,11 +1,17 @@
 import { Router, Request, Response } from 'express';
 import { z } from 'zod';
 import { ok, created, fail } from '../lib/http';
-import { requireCustomerAuth } from '../middleware/auth';
+import {
+  requireCustomerAuth,
+  extractCustomerPayload,
+  hasAuthorizationHeader,
+} from '../middleware/auth';
 import {
   registerCustomer,
   loginCustomer,
   getCustomerProfile,
+  loadCustomer,
+  findOrCreateGuestCustomer,
   createCustomerBooking,
   listCustomerBookings,
   getCustomerPortal,
@@ -41,6 +47,11 @@ const createBookingSchema = z.object({
   promoCode: z.string().optional(),
   movingService: z.boolean().optional(),
   totalDueToday: z.number().nonnegative().optional(),
+  // Guest checkout (flat fields, sent by the booking frontend on every submit):
+  // required only when the request carries NO Authorization header.
+  email: z.string().email().optional(),
+  name: z.string().optional(),
+  mobile: z.string().optional(),
 });
 
 const requestSchema = z.object({
@@ -80,13 +91,36 @@ router.get('/me', requireCustomerAuth, async (req: Request, res: Response) => {
   ok(res, await getCustomerProfile(customerFrom(req)));
 });
 
-router.post('/bookings', requireCustomerAuth, async (req: Request, res: Response) => {
+// Dual-mode booking creation:
+//  - WITH Authorization header → authenticated customer (unchanged behavior;
+//    a present-but-invalid token is a hard 401, never downgraded to guest).
+//  - WITHOUT any header → guest checkout: body must include a valid `email`;
+//    the customer record is found-or-created (new ones saved as GUEST with a
+//    bcrypt-hashed default password) and the booking linked to it.
+router.post('/bookings', async (req: Request, res: Response) => {
   const parsed = createBookingSchema.safeParse(req.body);
   if (!parsed.success) {
     fail(res, 400, 'VALIDATION', 'Invalid booking payload', parsed.error.flatten());
     return;
   }
-  created(res, await createCustomerBooking(customerFrom(req), parsed.data));
+
+  if (hasAuthorizationHeader(req)) {
+    const payload = extractCustomerPayload(req);
+    const customer = await loadCustomer(payload);
+    created(res, await createCustomerBooking(customer, parsed.data));
+    return;
+  }
+
+  if (!parsed.data.email) {
+    fail(res, 400, 'VALIDATION', 'A valid email is required to complete your booking');
+    return;
+  }
+  const guest = await findOrCreateGuestCustomer({
+    email: parsed.data.email,
+    name: parsed.data.name,
+    mobile: parsed.data.mobile,
+  });
+  created(res, await createCustomerBooking(guest, parsed.data));
 });
 
 router.get('/bookings', requireCustomerAuth, async (req: Request, res: Response) => {

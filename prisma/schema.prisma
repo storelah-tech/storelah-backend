@@ -43,6 +43,10 @@ enum TenantStatus {
 enum AccountType {
   PERSONAL
   BUSINESS
+  // Auto-provisioned during unauthenticated (guest) booking checkout.
+  // Guests hold a bcrypt-hashed default password (STORELAH_GUEST_DEFAULT_PASSWORD)
+  // until they register or log in with a real credential.
+  GUEST
 }
 
 enum BookingStatus {

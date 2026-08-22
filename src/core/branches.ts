@@ -1,4 +1,5 @@
 import { prisma } from '../lib/prisma';
+import { serializeBookings } from './finance';
 
 export async function listBranches() {
   const branches = await prisma.branch.findMany({
@@ -51,15 +52,9 @@ export async function getMoveIns() {
 
   const bookings = await prisma.booking.findMany({
     where: { moveInDate: { gte: startToday, lt: startTomorrow } },
-    include: { tenant: true, unit: true },
+    include: { tenant: true, unit: { include: { size: true, branch: true } } },
   });
 
-  return bookings.map((b) => ({
-    ref: b.bookingRef,
-    tenant: b.tenant.name,
-    unit: b.unit.unitCode,
-    moveInDate: b.moveInDate,
-    duration: b.duration,
-    status: b.status,
-  }));
+  // Same enriched shape as GET /bookings (shared serializer in core/finance.ts).
+  return serializeBookings(bookings);
 }

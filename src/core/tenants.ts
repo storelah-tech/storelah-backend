@@ -179,7 +179,7 @@ export async function deactivateTenant(id: string) {
 
 export async function listTenants() {
   const tenants = await prisma.tenant.findMany({
-    include: { unit: { include: { size: true } } },
+    include: { unit: { include: { size: true, branch: true } } },
     orderBy: { name: 'asc' },
   });
 
@@ -193,6 +193,9 @@ export async function listTenants() {
     unit: t.unit?.unitCode ?? null,
     size: t.unit?.size?.name ?? null,
     sqft: t.unit?.sqft ?? null,
+    // Facility attribution for the CMS sidebar facility filter ("All Facilities").
+    branchCode: t.unit?.branch?.code ?? null,
+    branchName: t.unit?.branch?.name ?? null,
     rate: toNum(t.monthlyRate),
     psf: toNum(t.psf),
     since: t.moveInDate,

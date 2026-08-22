@@ -9,6 +9,7 @@ import {
 import {
   registerCustomer,
   loginCustomer,
+  claimGuestAccount,
   getCustomerProfile,
   loadCustomer,
   findOrCreateGuestCustomer,
@@ -34,6 +35,16 @@ const registerSchema = z.object({
 const loginSchema = z.object({
   email: z.string().email(),
   password: z.string().min(1),
+});
+
+// Guest portal-password setup: public on purpose (no requireCustomerAuth) —
+// identity is proven by the bookingRef delivered on confirmation + email +
+// mobile, not by a session.
+const claimSchema = z.object({
+  email: z.string().trim().email(),
+  bookingRef: z.string().trim().min(1),
+  mobile: z.string().trim().min(6),
+  password: z.string().trim().min(6),
 });
 
 const createBookingSchema = z.object({
@@ -85,6 +96,16 @@ router.post('/login', async (req: Request, res: Response) => {
     return;
   }
   ok(res, await loginCustomer(parsed.data));
+});
+
+// Public: rotates a GUEST account's shared default password to a real one.
+router.post('/claim', async (req: Request, res: Response) => {
+  const parsed = claimSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid claim payload', parsed.error.flatten());
+    return;
+  }
+  ok(res, await claimGuestAccount(parsed.data, req.ip ?? 'unknown'));
 });
 
 router.get('/me', requireCustomerAuth, async (req: Request, res: Response) => {

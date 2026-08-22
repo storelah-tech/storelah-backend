@@ -112,6 +112,125 @@ export async function findOrCreateGuestCustomer(input: {
   });
 }
 
+// --- Guest claim (portal password setup) ----------------------------------
+//
+// POST /customer/claim: a guest who booked with email+mobile receives their
+// bookingRef on confirmation and calls this to set their portal password.
+// Success rotates away the shared GUEST default password and moves the
+// account off type GUEST onto PERSONAL.
+
+export interface ClaimGuestAccountInput {
+  email: string;
+  bookingRef: string;
+  mobile: string;
+  password: string;
+}
+
+// Uniform failure message for every claim mismatch below — never reveal WHICH
+// factor failed (bookingRef / email / mobile / account state).
+const CLAIM_MISMATCH_MESSAGE = "We couldn't match those details to a recent booking.";
+
+function digitsOnly(value: string): string {
+  return value.replace(/\D/g, '');
+}
+
+// Minimal fixed-window rate limit for FAILED claim attempts only (successes
+// never burn the window). Keyed by `${ip}|${lowercasedEmail}`, max
+// CLAIM_ATTEMPT_LIMIT failures per rolling CLAIM_WINDOW_MS. NB: the app is
+// exported through serverless-http (index.ts `export const handler`), so each
+// warm Lambda instance keeps its OWN copy of this Map — the cap is per
+// instance, not global. Swap in Redis/DynamoDB if a hard cross-instance limit
+// is ever required. Malformed payloads rejected by zod at the route layer do
+// not reach this counter by design.
+const CLAIM_ATTEMPT_LIMIT = 5;
+const CLAIM_WINDOW_MS = 60_000;
+const claimFailures = new Map<string, { windowStart: number; count: number }>();
+
+function assertClaimNotRateLimited(key: string): void {
+  const entry = claimFailures.get(key);
+  if (!entry) return;
+  if (Date.now() - entry.windowStart >= CLAIM_WINDOW_MS) {
+    claimFailures.delete(key); // expired windows clear themselves
+    return;
+  }
+  if (entry.count >= CLAIM_ATTEMPT_LIMIT) {
+    throw new AppError(429, 'TOO_MANY_REQUESTS', 'Too many attempts. Please try again shortly.');
+  }
+}
+
+function recordClaimFailure(key: string): void {
+  const now = Date.now();
+  const entry = claimFailures.get(key);
+  if (!entry || now - entry.windowStart >= CLAIM_WINDOW_MS) {
+    claimFailures.set(key, { windowStart: now, count: 1 });
+    return;
+  }
+  entry.count += 1;
+}
+
+/**
+ * Set a portal password for a GUEST customer, proving identity with the
+ * bookingRef + email + mobile triple from their confirmation.
+ *
+ * v1 control = exact triple match; no recency or booking-status filter on
+ * purpose — the bookingRef is delivered out-of-band on confirmation and any
+ * booking linked to the tenant proves the same identity. Revisit only if refs
+ * ever become guessable.
+ */
+export async function claimGuestAccount(
+  input: ClaimGuestAccountInput,
+  ip: string,
+): Promise<{ token: string; customer: ReturnType<typeof serializeCustomer> }> {
+  const key = `${ip}|${input.email.toLowerCase()}`;
+  assertClaimNotRateLimited(key);
+
+  const booking = await prisma.booking.findUnique({
+    where: { bookingRef: input.bookingRef },
+    include: { tenant: true },
+  });
+
+  // Mobile numbers are stored raw-trimmed (findOrCreateGuestCustomer above),
+  // so both sides are normalized to digits-only before comparing; a result of
+  // fewer than 6 digits is treated as no-match (too weak to identify anyone).
+  const tenantDigits = digitsOnly(booking?.tenant.mobile ?? '');
+  const matched =
+    !!booking &&
+    !!booking.tenant.email &&
+    booking.tenant.email.toLowerCase() === input.email.toLowerCase() &&
+    tenantDigits.length >= 6 &&
+    tenantDigits === digitsOnly(input.mobile);
+
+  if (!matched) {
+    recordClaimFailure(key);
+    throw new AppError(401, 'UNAUTHORIZED', CLAIM_MISMATCH_MESSAGE);
+  }
+
+  // Exact-match lookup on the lowercased address, per the customers.ts pattern.
+  const customer = await prisma.customer.findUnique({ where: { email: input.email.toLowerCase() } });
+  if (!customer) {
+    recordClaimFailure(key);
+    throw new AppError(401, 'UNAUTHORIZED', CLAIM_MISMATCH_MESSAGE);
+  }
+  // Type GUEST is only ever set by findOrCreateGuestCustomer above, so any
+  // non-GUEST value reliably means the portal access was already claimed or
+  // the account was properly registered.
+  if (customer.type !== AccountType.GUEST) {
+    recordClaimFailure(key);
+    throw new AppError(409, 'CONFLICT', 'Portal access already set up. Please sign in.');
+  }
+
+  const passwordHash = await bcrypt.hash(input.password, 10);
+  const updated = await prisma.$transaction(async (tx) =>
+    tx.customer.update({
+      where: { id: customer.id },
+      data: { passwordHash, type: AccountType.PERSONAL },
+    }),
+  );
+
+  // Identical shape to loginCustomer's response.
+  return { token: signCustomerToken(updated), customer: serializeCustomer(updated) };
+}
+
 // --- Profile & bookings --------------------------------------------------
 
 export async function getCustomerProfile(payload: CustomerJwtPayload) {

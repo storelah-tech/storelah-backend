@@ -434,6 +434,47 @@ export const openapiSpec = {
         },
       },
     },
+    '/customer/claim': {
+      post: {
+        tags: ['Customer'],
+        summary: 'Set up portal access from a guest booking',
+        description: [
+          'For guests who booked with just an email + mobile: proves identity with their bookingRef ',
+          '(delivered on booking confirmation) plus that email + mobile, then sets a real portal password — ',
+          'replacing the shared guest default password and converting the account from GUEST to PERSONAL.',
+          '',
+          'Returns the same `{ token, customer }` shape as login. Every mismatch (unknown bookingRef, wrong email, ',
+          'wrong mobile, no such account) returns one uniform `401 UNAUTHORIZED`; an already-claimed or registered ',
+          'account returns `409 CONFLICT`. Failed attempts are rate-limited to 5 per rolling minute per IP+email.',
+        ].join('\n'),
+        operationId: 'claimGuestAccount',
+        security: [],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: { $ref: openapiSchemaRef('ClaimRequest') },
+            },
+          },
+        },
+        responses: {
+          '200': openapiResponse({ $ref: openapiSchemaRef('AuthResponse') }),
+          '400': openapiErrorResponse(
+            'Invalid claim payload (zod-flattened details).',
+          ),
+          '401': openapiErrorResponse(
+            "Uniform failure for any mismatch: we couldn't match those details to a recent booking.",
+          ),
+          '409': openapiErrorResponse(
+            'Portal access was already set up (account is no longer type GUEST) — sign in instead.',
+          ),
+          '429': openapiErrorResponse(
+            'Too many failed attempts: 5 per rolling minute per IP+email. Successes do not count.',
+          ),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+    },
     '/customer/me': {
       get: {
         tags: ['Customer'],
@@ -586,7 +627,7 @@ export const openapiSpec = {
         scheme: 'bearer',
         bearerFormat: 'JWT',
         description:
-          'JWT returned by POST /customer/register or POST /customer/login.',
+          'JWT returned by POST /customer/register, POST /customer/login or POST /customer/claim.',
       },
     },
     schemas: {
@@ -868,6 +909,36 @@ export const openapiSpec = {
         properties: {
           email: { type: 'string', format: 'email' },
           password: { type: 'string', minLength: 1, format: 'password' },
+        },
+      },
+      ClaimRequest: {
+        type: 'object',
+        required: ['email', 'bookingRef', 'mobile', 'password'],
+        description:
+          'Guest portal-password setup. The bookingRef acts as the out-of-band secret; email + mobile must match the booking.',
+        properties: {
+          email: {
+            type: 'string',
+            format: 'email',
+            description: 'Email the booking was made with (case-insensitive).',
+          },
+          bookingRef: {
+            type: 'string',
+            minLength: 1,
+            description: 'Booking reference from the confirmation, e.g. SL-2026-0912.',
+          },
+          mobile: {
+            type: 'string',
+            minLength: 6,
+            description:
+              'Mobile the booking was made with; compared digit-for-digit (formatting/spaces ignored).',
+          },
+          password: {
+            type: 'string',
+            minLength: 6,
+            format: 'password',
+            description: 'New portal password; replaces the shared guest default.',
+          },
         },
       },
       Customer: {

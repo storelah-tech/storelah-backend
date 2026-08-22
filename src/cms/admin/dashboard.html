@@ -31,6 +31,8 @@ body { font-family: 'Manrope', sans-serif; background: var(--cream); color: var(
 .sb-branch { margin: 10px 10px 0; background: rgba(255,255,255,0.07); border-radius: 8px; padding: 8px 10px; display: flex; align-items: center; justify-content: space-between; cursor: pointer; border: 1px solid rgba(255,255,255,0.1); }
 .sb-branch-name { font-size: 11px; font-weight: 700; color: rgba(255,255,255,0.9); text-transform: uppercase; letter-spacing: 0.5px; }
 .sb-branch-sub { font-size: 10px; color: rgba(255,255,255,0.45); margin-top: 1px; }
+.sb-branch-select { flex: 1; background: transparent; border: none; outline: none; color: rgba(255,255,255,0.9); font-family: 'Manrope', sans-serif; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; cursor: pointer; appearance: none; -webkit-appearance: none; padding-right: 4px; }
+.sb-branch-select option { background: #0B4F5E; color: #fff; text-transform: none; letter-spacing: normal; font-weight: 600; }
 .sb-section { padding: 14px 10px 3px; }
 .sb-section-lbl { font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; color: rgba(255,255,255,0.3); padding: 0 8px; margin-bottom: 3px; }
 .nav-item { display: flex; align-items: center; gap: 9px; padding: 8px 10px; border-radius: 7px; cursor: pointer; color: rgba(255,255,255,0.6); font-size: 12.5px; font-weight: 500; transition: all 0.15s; margin-bottom: 1px; }
@@ -356,11 +358,8 @@ body { font-family: 'Manrope', sans-serif; background: var(--cream); color: var(
     <div class="sb-logo-mark">SL</div>
     <div class="sb-logo-text">Store<span>Lah</span></div>
   </div>
-  <div class="sb-branch" id="sbBranch" title="Click to switch branch">
-    <div>
-      <div class="sb-branch-name">Bukit Merah</div>
-      <div class="sb-branch-sub">3 branches · All active</div>
-    </div>
+  <div class="sb-branch" id="sbBranch" title="Filter everything by facility">
+    <select id="sbBranchSelect" class="sb-branch-select" aria-label="Facility filter"></select>
     <span style="color:rgba(255,255,255,0.4);font-size:10px;">▾</span>
   </div>
   <div class="sb-section">
@@ -372,8 +371,8 @@ body { font-family: 'Manrope', sans-serif; background: var(--cream); color: var(
     <div class="sb-section-lbl">Operations</div>
     <div class="nav-item" data-view="units"><span class="nav-icon">⬛</span> Units</div>
     <div class="nav-item" data-view="tenants"><span class="nav-icon">👤</span> Tenants</div>
-    <div class="nav-item" title="Coming soon"><span class="nav-icon">📋</span> Bookings</div>
-    <div class="nav-item" title="Coming soon"><span class="nav-icon">🔑</span> Move-ins Today <span class="nav-badge">3</span></div>
+    <div class="nav-item" data-view="bookings"><span class="nav-icon">📋</span> Bookings <span class="nav-badge" id="navBookingsBadge" hidden></span></div>
+    <div class="nav-item" data-view="moveins"><span class="nav-icon">🔑</span> Move-ins Today <span class="nav-badge" id="navMoveinsBadge" hidden></span></div>
   </div>
   <div class="sb-section">
     <div class="sb-section-lbl">Facility Setup</div>
@@ -789,6 +788,60 @@ body { font-family: 'Manrope', sans-serif; background: var(--cream); color: var(
 
     </div>
 
+    <!-- BOOKINGS SECTION (sidebar-navigated live booking list) -->
+    <div class="view" id="view-bookings" hidden>
+
+      <div class="tbl-card">
+        <div class="sec-hdr">
+          <div>
+            <div class="sec-title">Bookings</div>
+            <div class="sec-sub" id="bookingsViewSub">All bookings across branches · live from checkout</div>
+          </div>
+        </div>
+        <div class="tbl-toolbar">
+          <input type="text" id="bookingSearch" class="tbl-search" placeholder="Search ref, customer, unit…">
+          <select id="bookingStatusFilter" class="tbl-select" title="Filter by status">
+            <option value="">All statuses</option>
+            <option value="PENDING_PAYMENT">Pending Payment</option>
+            <option value="CONFIRMED">Confirmed</option>
+            <option value="ACTIVE">Active</option>
+            <option value="CANCELLED">Cancelled</option>
+          </select>
+        </div>
+        <table class="data-tbl" id="bookingsViewTable">
+          <thead>
+            <tr>
+              <th>Ref</th><th>Customer</th><th>Unit</th><th>Move-in</th><th>Duration</th><th>$/mo</th><th>Paid/Due</th><th>Status</th>
+            </tr>
+          </thead>
+          <tbody id="bookingsViewBody"></tbody>
+        </table>
+      </div>
+
+    </div>
+
+    <!-- MOVE-INS TODAY SECTION (sidebar-navigated today's move-ins) -->
+    <div class="view" id="view-moveins" hidden>
+
+      <div class="tbl-card">
+        <div class="sec-hdr">
+          <div>
+            <div class="sec-title">Move-ins Today</div>
+            <div class="sec-sub" id="moveinsViewSub">Bookings with a move-in date of today</div>
+          </div>
+        </div>
+        <table class="data-tbl" id="moveinsViewTable">
+          <thead>
+            <tr>
+              <th>Ref</th><th>Customer</th><th>Unit</th><th>Move-in</th><th>Duration</th><th>$/mo</th><th>Paid/Due</th><th>Status</th>
+            </tr>
+          </thead>
+          <tbody id="moveinsViewBody"></tbody>
+        </table>
+      </div>
+
+    </div>
+
     <!-- FLOOR PLANS SECTION (sidebar-navigated facility-setup editor) -->
     <div class="view" id="view-floorplans" hidden>
 
@@ -1051,6 +1104,6 @@ function selectUnit(el, id) {
 </script>
 
 <!-- StoreLah CMS admin data layer (units CRUD + dashboard bindings) -->
-<script src="/admin/admin.js"></script>
+<script type="module" src="/admin/admin.js"></script>
 </body>
 </html>

@@ -33,6 +33,12 @@
   const kpiVal = (i) => document.querySelectorAll('.kpi-strip .kpi')[i]?.querySelector('.kpi-val');
   const kpiDelta = (i) => document.querySelectorAll('.kpi-strip .kpi')[i]?.querySelector('.kpi-delta');
   const fmtMoney = (n) => '$' + n.toLocaleString('en-US');
+  // Customer name/email/mobile come from public booking input — escape before
+  // they enter any template-literal HTML.
+  const esc = (v) =>
+    String(v ?? '').replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+  const fmtDay = (d) =>
+    d ? new Date(d).toLocaleDateString('en-SG', { day: '2-digit', month: 'short', year: 'numeric' }) : '—';
 
   function bindKpis(s) {
     const k = s.kpis;
@@ -177,13 +183,109 @@
     if (badge) badge.textContent = data.length;
   }
 
+  // ---------- Bookings / Move-ins (live tables, injected without touching the frozen HTML) ----------
+
+  const BOOKING_TONE = { PENDING_PAYMENT: 'res', CONFIRMED: 'occ', ACTIVE: 'occ', CANCELLED: 'over' };
+  const INVOICE_TONE = { PAID: 'occ', DUE: 'res', OVERDUE: 'over' };
+
+  function syncNavBadge(label, count) {
+    const item = [...document.querySelectorAll('.nav-item')].find((n) => n.textContent.includes(label));
+    if (!item) return;
+    let badge = item.querySelector('.nav-badge');
+    if (!badge) {
+      badge = document.createElement('span');
+      badge.className = 'nav-badge';
+      item.appendChild(badge);
+    }
+    badge.textContent = count;
+  }
+
+  function bookingRowsHtml(rows) {
+    if (!rows.length) return `<tr><td colspan="8"><div class="t-type">— none scheduled</div></td></tr>`;
+    return rows
+      .map((r) => {
+        const invBadge = r.invoiceStatus
+          ? `<span class="badge ${INVOICE_TONE[r.invoiceStatus] || 'res'}">${r.invoiceStatus}</span>`
+          : `<span class="t-type">—</span>`;
+        const payLine = [
+          fmtMoney(r.paidAmount || 0) + ' paid',
+          r.amountDue ? fmtMoney(r.amountDue) + ' due' : '',
+          r.method ? esc(r.method) : '',
+        ]
+          .filter(Boolean)
+          .join(' · ');
+        return `<tr>
+          <td><strong>${esc(r.ref)}</strong></td>
+          <td><div class="t-name">${esc(r.tenant)}</div><div class="t-type">${esc(r.tenantType)}${r.tenantEmail ? ' · ' + esc(r.tenantEmail) : ''}${r.tenantMobile ? ' · ' + esc(r.tenantMobile) : ''}</div></td>
+          <td><strong>${esc(r.unit)}</strong><div class="t-type">${esc(r.size || '—')}${r.sqft ? ' · ' + r.sqft + ' sqft' : ''}${r.branch ? ' · ' + esc(r.branch) : ''}</div></td>
+          <td>${fmtDay(r.moveInDate)}</td>
+          <td>${esc(r.duration)}</td>
+          <td><strong>${fmtMoney(r.amount)}</strong></td>
+          <td>${invBadge}<div class="t-type">${payLine || '—'}</div></td>
+          <td><span class="badge ${BOOKING_TONE[r.status] || 'res'}">${esc(String(r.status).replace('_', ' '))}</span></td>
+        </tr>`;
+      })
+      .join('');
+  }
+
+  // Build/find a .tbl-card titled `title` and place it after the given anchor
+  // card (or, as fallback, right after All Tenants). Reuses only frozen classes.
+  function ensureBookingCard(title, sub, anchorCard) {
+    let card = [...document.querySelectorAll('.tbl-card')].find(
+      (c) => c.querySelector('.sec-title')?.textContent === title,
+    );
+    if (card) return card;
+    card = document.createElement('div');
+    card.className = 'tbl-card';
+    card.innerHTML = `
+      <div class="sec-hdr"><div>
+        <div class="sec-title">${title}</div>
+        <div class="sec-sub">${sub}</div>
+      </div></div>
+      <table class="data-tbl">
+        <thead><tr><th>Ref</th><th>Customer</th><th>Unit</th><th>Move-in</th><th>Duration</th><th>$/mo</th><th>Paid/Due</th><th>Status</th></tr></thead>
+        <tbody></tbody>
+      </table>`;
+    anchorCard.insertAdjacentElement('afterend', card);
+    return card;
+  }
+
+  function tenantsCardOr(fallbackTitle) {
+    return (
+      [...document.querySelectorAll('.tbl-card')].find((c) => c.querySelector('.sec-title')?.textContent === fallbackTitle) ||
+      [...document.querySelectorAll('.tbl-card')].find((c) => c.querySelector('.sec-title')?.textContent === 'All Tenants')
+    );
+  }
+
+  async function bindBookings() {
+    const rows = await get('/bookings');
+    const anchor = tenantsCardOr('Move-ins Today');
+    if (!anchor) return;
+    const card = ensureBookingCard('Bookings', `${rows.length} booking${rows.length === 1 ? '' : 's'} · live from checkout`, anchor);
+    const tbody = card.querySelector('tbody');
+    if (!tbody) return;
+    tbody.innerHTML = bookingRowsHtml(rows);
+    syncNavBadge('Bookings', rows.length);
+  }
+
+  async function bindMoveIns() {
+    const rows = await get('/move-ins');
+    const anchor = tenantsCardOr('Bookings');
+    if (!anchor) return;
+    const card = ensureBookingCard('Move-ins Today', `${rows.length} move-in${rows.length === 1 ? '' : 's'} scheduled today`, anchor);
+    const tbody = card.querySelector('tbody');
+    if (!tbody) return;
+    tbody.innerHTML = bookingRowsHtml(rows);
+    syncNavBadge('Move-ins Today', rows.length);
+  }
+
   async function boot() {
     try {
       await login();
       const summary = await get('/summary');
       bindKpis(summary);
       bindCharts(summary);
-      await Promise.all([bindUnitMap(), bindTenants(), bindLeads(), bindActions()]);
+      await Promise.all([bindUnitMap(), bindTenants(), bindLeads(), bindActions(), bindBookings(), bindMoveIns()]);
     } catch (e) {
       console.error('[storelah] data layer failed', e);
       // hint the operator to configure admin credentials

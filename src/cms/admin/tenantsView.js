@@ -40,27 +40,6 @@ function normalizeTenant(t) {
   };
 }
 
-// Legacy dashboard "Tenants" board lister (kept verbatim; still fed by refreshAll).
-export function bindTenants(rows) {
-  const tbody = $('#tenantsBody');
-  if (!tbody) return;
-  const statusClass = { ACTIVE: 'occ', DUE_SOON: 'res', OVERDUE: 'over', NOTICE: 'amber' };
-  tbody.innerHTML = (rows || [])
-    .map((t) => {
-      const since = t.since ? new Date(t.since).toLocaleString('en-SG', { month: 'short', year: 'numeric' }) : '—';
-      const next = t.nextPayment ? new Date(t.nextPayment).toLocaleDateString('en-SG', { day: '2-digit', month: 'short' }) : '—';
-      return `<tr>
-        <td><div class="t-name">${t.name}</div><div class="t-type">${(t.type || '').toLowerCase()}${t.segment ? ' · ' + t.segment : ''}</div></td>
-        <td><strong>${t.unit || '—'}</strong></td><td>${t.size || '—'}${t.sqft ? ' · ' + t.sqft + ' sqft' : ''}</td>
-        <td><strong>${fmtMoney(t.rate)}</strong></td><td><span class="psf-val">$${Number(t.psf).toFixed(2)}</span></td>
-        <td>${since}</td><td>${next}</td>
-        <td><span class="badge ${statusClass[t.status] || 'occ'}">${String(t.status || '').replace('_', ' ')}</span></td>
-        <td><button class="act-btn" style="font-size:10px;padding:3px 8px;">Manage</button></td>
-      </tr>`;
-    })
-    .join('');
-}
-
 // ---------- tenants view (sidebar, mirrors Units) ----------
 function renderTenantRow(t) {
   const size = t.size ? escapeHtml(t.size) + (t.sqft ? ` · ${t.sqft} sqft` : '') : '—';

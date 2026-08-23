@@ -23,7 +23,6 @@ import {
 } from './dashboardView.js';
 import {
   setRefreshAll as tenantsSetRefreshAll,
-  bindTenants,
   bindTenantsView,
   refreshTenantsView,
   openCreateTenant,
@@ -151,17 +150,15 @@ import { setRefsLoader as fpSetRefsLoader, fpInitEvents, fpOpen, fpViewClose, ge
   }
 
   async function refreshAll() {
-    const [summary, activity, tenants, leads, actions] = await Promise.all([
+    const [summary, activity, leads, actions] = await Promise.all([
       get('/summary').catch(() => null),
-      get('/units/activity?limit=20').catch(() => []),
-      get('/tenants').catch(() => []),
+      get('/units/activity?limit=5').catch(() => []),
       get('/leads').catch(() => []),
       get('/action-items').catch(() => []),
     ]);
     bindKpis(summary);
     bindCharts(summary);
     bindActivity(activity);
-    bindTenants(tenants);
     bindLeads(leads);
     bindActions(actions);
     if (state.view === 'units') await refreshUnitsView();

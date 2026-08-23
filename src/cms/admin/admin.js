@@ -249,12 +249,42 @@ import { setRefsLoader as fpSetRefsLoader, fpInitEvents, fpOpen, fpViewClose, ge
     refreshForFacility();
   }
 
+  // ---------- responsive sidebar drawer (<=768px) ----------
+  // On small screens the sidebar is off-canvas (CSS: transform translateX(-100%));
+  // body.sb-open slides it over the content behind a dimmed backdrop. All visual
+  // behaviour lives in dashboard.html's responsive layer; this only toggles state.
+  function setDrawer(open) {
+    document.body.classList.toggle('sb-open', open);
+    $('#navToggle')?.setAttribute('aria-expanded', open ? 'true' : 'false');
+  }
+
+  function wireDrawer() {
+    const toggle = $('#navToggle');
+    const backdrop = $('#sbBackdrop');
+    if (!toggle || !backdrop) return;
+    toggle.addEventListener('click', () => setDrawer(!document.body.classList.contains('sb-open')));
+    backdrop.addEventListener('click', () => setDrawer(false));
+    // Any sidebar nav tap dismisses the drawer. The facility <select> is NOT a
+    // .nav-item, so users can still switch facility with the drawer open.
+    $('#sidebarNav')?.addEventListener('click', (e) => {
+      if (e.target.closest('.nav-item')) setDrawer(false);
+    });
+    // Leaving mobile widths always resets the drawer state.
+    const mq = window.matchMedia('(min-width: 769px)');
+    const onChange = (e) => {
+      if (e.matches) setDrawer(false);
+    };
+    if (typeof mq.addEventListener === 'function') mq.addEventListener('change', onChange);
+    else mq.addListener(onChange); // legacy Safari / older mobile WebKit
+  }
+
   // ---------- events ----------
   function wireEvents() {
     // sidebar navigation
     $$('.nav-item[data-view]').forEach((el) =>
       el.addEventListener('click', () => switchView(el.dataset.view)),
     );
+    wireDrawer();
     // bookings view: search + status filter (client-side, mirrors tenants)
     $('#bookingSearch')?.addEventListener('input', bindBookingsTable);
     $('#bookingStatusFilter')?.addEventListener('change', bindBookingsTable);
@@ -370,6 +400,7 @@ import { setRefsLoader as fpSetRefsLoader, fpInitEvents, fpOpen, fpViewClose, ge
       else if (!$('#unitModal').hidden) closeUnitModal();
       else if (!$('#rateModal').hidden) closeRateModal();
       else if (!$('#tenantModal').hidden) closeTenantModal();
+      else setDrawer(false); // nothing modal open → dismiss the mobile drawer if it's up
     });
   }
 

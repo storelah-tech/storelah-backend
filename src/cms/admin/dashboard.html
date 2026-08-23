@@ -348,12 +348,128 @@ body { font-family: 'Manrope', sans-serif; background: var(--cream); color: var(
 ::-webkit-scrollbar { width: 4px; height: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--sand); border-radius: 2px; }
+
+/* ============================================================
+   RESPONSIVE LAYER (admin)
+   Breakpoints: <=1024 tablet · <=768 mobile · <=600 forms · <=480 small phone.
+   Desktop (>1024) renders identically — every rule below is additive and
+   scoped inside these media queries, except the two inert defaults
+   (.nav-toggle hidden, .sb-backdrop invisible/non-interactive).
+   ============================================================ */
+.nav-toggle { display: none; }
+.sb-backdrop {
+  position: fixed; inset: 0; z-index: 90;
+  background: rgba(31,31,31,0.45);
+  opacity: 0; visibility: hidden; pointer-events: none;
+  transition: opacity 0.2s ease, visibility 0.2s ease;
+}
+
+/* ---- Tablet 769–1024px: keep the full sidebar (chosen option — simplest,
+   no usability loss vs an icon rail). Relax dense grids; contain wide
+   tables/kanban inside their cards; stack the floorplan palette+canvas. ---- */
+@media (max-width: 1024px) {
+  /* Topbar wraps to two rows (title row + actions row) instead of clipping */
+  .topbar { height: auto; min-height: 54px; flex-wrap: wrap; row-gap: 8px; padding: 8px 16px; }
+  .topbar-left { flex: 1 1 100%; min-width: 0; }
+  .topbar-right { flex-wrap: wrap; }
+  .topbar-title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .topbar-sub { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  .kpi-strip { grid-template-columns: repeat(3, 1fr); }
+
+  /* Wide content scrolls within its card — never the page */
+  .data-tbl { display: block; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .kanban-board {
+    display: flex; overflow-x: auto; -webkit-overflow-scrolling: touch;
+    scroll-snap-type: x proximity; padding-bottom: 6px;
+  }
+  .k-col { flex: 0 0 215px; scroll-snap-align: start; }
+
+  /* Floorplan editor: palette above canvas so the canvas gets full width */
+  .fp-layout { grid-template-columns: 1fr; }
+  .fp-palette { max-height: 200px; }
+}
+
+/* ---- Mobile <=768px: off-canvas sidebar + single-column reflow ---- */
+@media (max-width: 768px) {
+  /* Off-canvas sidebar (slides over content; backdrop dims the page).
+     Negative translate never creates left-side page overflow. z-order:
+     sidebar 100 > backdrop 90 > topbar 50 < modals 200 (modals stay on top). */
+  .sidebar { transform: translateX(-100%); transition: transform 0.25s ease; }
+  body.sb-open .sidebar { transform: translateX(0); box-shadow: 0 10px 40px rgba(0,0,0,0.28); }
+  body.sb-open .sb-backdrop { opacity: 1; visibility: visible; pointer-events: auto; }
+  .main { margin-left: 0; }
+
+  /* Hamburger — hidden >768px */
+  .nav-toggle {
+    display: flex; align-items: center; justify-content: center;
+    width: 40px; height: 40px; margin-right: 10px; flex-shrink: 0;
+    background: var(--cream); border: 1px solid var(--border); border-radius: 8px;
+    color: var(--charcoal); font-size: 17px; cursor: pointer;
+  }
+
+  /* Compact topbar (title row + actions row) */
+  .topbar { padding: 8px 12px; row-gap: 8px; }
+  .topbar-right { gap: 6px; }
+  .tb-btn { padding: 9px 11px; font-size: 11px; }
+  .tb-notif { width: 38px; height: 38px; }
+
+  /* Tighter page/card rhythm */
+  .content { padding: 14px 12px; }
+  .chart-card, .tbl-card, .unit-map-card, .unit-detail { padding: 14px; }
+
+  /* Grids reflow: KPIs 3→2→1 across breakpoints */
+  .kpi-strip { grid-template-columns: repeat(2, 1fr); }
+  .charts-row, .two-col, .three-col { grid-template-columns: 1fr; }
+  .ud-stats { grid-template-columns: repeat(2, 1fr); }
+  .rate-grid { grid-template-columns: 1fr; }
+
+  /* Headers/toolbars/action rows wrap instead of overflowing */
+  .sec-hdr, .chart-hdr { flex-wrap: wrap; gap: 8px 10px; }
+  .tbl-toolbar { flex-wrap: wrap; }
+  .floor-tabs { flex-wrap: wrap; }
+  .ud-hdr { flex-direction: column; align-items: stretch; gap: 10px; }
+  .ud-actions, .rate-actions { flex-wrap: wrap; }
+
+  /* Alert rows: button drops below the text when tight */
+  .alert-item { flex-wrap: wrap; row-gap: 8px; }
+  .alert-body { min-width: 170px; }
+  .alert-act { margin-left: 40px; padding: 8px 11px; }
+
+  /* Touch-friendly tap targets (~40px where feasible) */
+  .nav-item { padding: 12px; }
+  .f-pill { padding: 8px 13px; }
+  .c-tab, .floor-tab { padding: 8px 11px; }
+  .act-btn { padding: 9px 12px; }
+
+  /* Modals fit small screens; bigger close target */
+  .modal-overlay { padding: 4vh 10px 12px; }
+  .modal-x { width: 32px; height: 32px; }
+}
+
+/* ---- Narrow phones <=600px: single-column form fields ---- */
+@media (max-width: 600px) {
+  .form-grid { grid-template-columns: 1fr; }
+}
+
+/* ---- Small phones <=480px ---- */
+@media (max-width: 480px) {
+  .kpi-strip { grid-template-columns: 1fr; }
+  .topbar-right .tb-btn { padding: 9px 9px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar, .sb-backdrop { transition: none; }
+}
 </style>
 </head>
 <body>
 
+<!-- MOBILE NAV BACKDROP (inert on desktop) -->
+<div class="sb-backdrop" id="sbBackdrop" aria-hidden="true"></div>
+
 <!-- SIDEBAR -->
-<nav class="sidebar">
+<nav class="sidebar" id="sidebarNav" aria-label="Admin navigation">
   <div class="sb-logo">
     <div class="sb-logo-mark">SL</div>
     <div class="sb-logo-text">Store<span>Lah</span></div>
@@ -407,7 +523,8 @@ body { font-family: 'Manrope', sans-serif; background: var(--cream); color: var(
 <!-- MAIN -->
 <main class="main">
   <div class="topbar">
-    <div style="display:flex;align-items:center;">
+    <div class="topbar-left" style="display:flex;align-items:center;">
+      <button type="button" class="nav-toggle" id="navToggle" aria-label="Open navigation menu" aria-expanded="false" aria-controls="sidebarNav">☰</button>
       <div class="topbar-title">Good morning, Faisal 👋</div>
       <div class="topbar-sub">Thu 31 Jul 2026 · Bukit Merah</div>
       <div id="errorBanner"></div>

@@ -25,7 +25,7 @@ export const openapiSpec = {
   openapi: '3.0.3',
   info: {
     title: 'StoreLah Booking API',
-    version: '1.0.0',
+    version: '1.1.0',
     description: [
       'Customer-facing booking API for the StoreLah self-storage business.',
       '',
@@ -37,6 +37,10 @@ export const openapiSpec = {
       '**Envelope:** successful responses are `{ data, meta? }`; errors are ',
       '`{ error: { code, message, details? } }`. Codes seen below: `VALIDATION`, `UNAUTHORIZED`, ',
       '`NOT_FOUND`, `CONFLICT`, `INTERNAL`.',
+      '',
+      'v1.1.0 is ADDITIVE-ONLY over 1.0.0 (no removals/renames/retypes): move-out notices are now ' +
+        'persisted and readable via `GET /customer/portal` (`data.notice`), the portal snapshot gains ' +
+        'a `data.tenancy` object, and portal units gain `climateControl`, `sizeCode` and `branch` details.',
     ].join('\n'),
   },
   servers: [
@@ -557,8 +561,13 @@ export const openapiSpec = {
       get: {
         tags: ['Customer'],
         summary: 'Customer portal snapshot',
-        description:
+        description: [
           'Consolidated portal data: customer, their current unit (or the most recently booked one), invoices, and bookings.',
+          '',
+          'Additive since 1.1.0: `data.notice` echoes the latest persisted move-out notice (null when none was ' +
+            'submitted — previously notices were not persisted at all) and `data.tenancy` carries the tenancy ' +
+            'move-in and next-billing dates (null when the customer has no tenant record).',
+        ].join('\n'),
         operationId: 'getCustomerPortal',
         security: [{ bearerAuth: [] }],
         responses: {
@@ -598,8 +607,13 @@ export const openapiSpec = {
       post: {
         tags: ['Customer'],
         summary: 'Submit move-out notice',
-        description:
+        description: [
           "Registers the customer's move-out notice for a unit. The unit must belong to the customer (`404` otherwise).",
+          '',
+          'Additive since 1.1.0: the notice is PERSISTED (one row per submission; the portal reads the latest via ' +
+            '`GET /customer/portal` → `data.notice`), and the response additionally echoes `id`, `unitId`, ' +
+            '`unitCode` and `submittedAt`. The pre-existing `status`/`lastDay` fields are unchanged.',
+        ].join('\n'),
         operationId: 'submitCustomerNotice',
         security: [{ bearerAuth: [] }],
         requestBody: {
@@ -1111,6 +1125,24 @@ export const openapiSpec = {
           status: { $ref: openapiSchemaRef('UnitStatus') },
           branchName: { type: 'string' },
           level: { type: 'integer' },
+          climateControl: {
+            type: ['string', 'null'],
+            description:
+              "Free-text climate note (e.g. \"Ambient climate\"); null when unset.",
+          },
+          sizeCode: {
+            type: 'string',
+            description: 'Size code (e.g. LOCKER / SMALL / MEDIUM / LARGE / XL).',
+          },
+          branch: {
+            type: 'object',
+            required: ['address', 'operatingHours'],
+            description: 'The unit branch location details (additive since 1.1.0).',
+            properties: {
+              address: { type: 'string' },
+              operatingHours: { type: 'string' },
+            },
+          },
         },
       },
       InvoiceStatus: {
@@ -1155,6 +1187,56 @@ export const openapiSpec = {
           bookings: {
             type: 'array',
             items: { $ref: openapiSchemaRef('BookingSummary') },
+          },
+          notice: {
+            nullable: true,
+            description:
+              'Latest persisted move-out notice, or null when none was ever submitted (additive since 1.1.0).',
+            allOf: [{ $ref: openapiSchemaRef('PortalNotice') }],
+          },
+          tenancy: {
+            type: 'object',
+            nullable: true,
+            required: ['moveInDate', 'nextPayment'],
+            description:
+              'The tenancy record dates for this customer; null when the customer has no tenant row (additive since 1.1.0).',
+            properties: {
+              moveInDate: {
+                type: ['string', 'null'],
+                format: 'date-time',
+                description: 'Tenancy start / move-in date.',
+              },
+              nextPayment: {
+                type: ['string', 'null'],
+                format: 'date-time',
+                description: 'Next billing date.',
+              },
+            },
+          },
+        },
+      },
+      PortalNotice: {
+        type: 'object',
+        required: ['id', 'unitId', 'unitCode', 'status', 'lastDay', 'submittedAt'],
+        properties: {
+          id: { type: 'string', description: 'Notice row id (cuid).' },
+          unitId: { type: 'string', description: "Noticed unit's database id." },
+          unitCode: { type: 'string', description: "Noticed unit's code, e.g. BM-01-01." },
+          status: {
+            type: 'string',
+            enum: ['SUBMITTED'],
+            description:
+              'Always SUBMITTED while a notice exists — no workflow state machine yet.',
+          },
+          lastDay: {
+            type: 'string',
+            format: 'date-time',
+            description: 'Customer-declared final day of tenancy.',
+          },
+          submittedAt: {
+            type: 'string',
+            format: 'date-time',
+            description: 'When the notice was submitted.',
           },
         },
       },
@@ -1204,6 +1286,23 @@ export const openapiSpec = {
             type: 'string',
             format: 'date-time',
             description: 'Echoes the submitted last day as an ISO datetime.',
+          },
+          id: {
+            type: 'string',
+            description: 'Persisted notice row id (cuid). Additive since 1.1.0.',
+          },
+          unitId: {
+            type: 'string',
+            description: "Noticed unit's database id. Additive since 1.1.0.",
+          },
+          unitCode: {
+            type: 'string',
+            description: "Noticed unit's code, e.g. BM-01-01. Additive since 1.1.0.",
+          },
+          submittedAt: {
+            type: 'string',
+            format: 'date-time',
+            description: 'When the notice was persisted. Additive since 1.1.0.',
           },
         },
       },

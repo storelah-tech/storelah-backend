@@ -268,6 +268,9 @@ type PortalUnit = Prisma.UnitGetPayload<{
   include: { size: true; branch: true; floor: true };
 }>;
 
+// Additive-only enrichment (audit 2026-08): every pre-existing key keeps its
+// name/type/order — new keys are appended so deployed portal clients that read
+// the old shape continue to work untouched.
 function serializePortalUnit(u: PortalUnit) {
   return {
     id: u.unitCode,
@@ -279,6 +282,28 @@ function serializePortalUnit(u: PortalUnit) {
     status: u.status,
     branchName: u.branch.name,
     level: u.floor.level,
+    // --- appended (additive) ---
+    climateControl: u.climateControl,
+    sizeCode: u.size.code,
+    branch: { address: u.branch.address, operatingHours: u.branch.operatingHours },
+  };
+}
+
+// Latest customer-submitted move-out notice, read back inside GET /portal so
+// the booking app can restore its timeline after refresh (there is no separate
+// GET /notice endpoint by design — one round-trip preferred).
+type PortalNotice = Prisma.NoticeGetPayload<{ include: { unit: true } }>;
+
+function serializePortalNotice(n: PortalNotice) {
+  return {
+    id: n.id,
+    unitId: n.unitId,
+    unitCode: n.unit.unitCode,
+    // No workflow state machine exists yet: a persisted row means SUBMITTED.
+    // TenantStatus.NOTICE stays operator-managed in the CMS.
+    status: 'SUBMITTED' as const,
+    lastDay: n.lastDay,
+    submittedAt: n.createdAt,
   };
 }
 
@@ -327,7 +352,26 @@ export async function getCustomerPortal(payload: CustomerJwtPayload) {
 
   const bookings = await listCustomerBookings(payload);
 
-  return { customer: serializeCustomer(customer), unit, invoices, bookings };
+  // Latest submitted move-out notice (null when none was ever persisted).
+  const notice = tenant
+    ? await prisma.notice.findFirst({
+        where: { tenantId: tenant.id },
+        orderBy: { createdAt: 'desc' },
+        include: { unit: true },
+      })
+    : null;
+
+  return {
+    customer: serializeCustomer(customer),
+    unit,
+    invoices,
+    bookings,
+    // --- appended (additive) ---
+    notice: notice ? serializePortalNotice(notice) : null,
+    tenancy: tenant
+      ? { moveInDate: tenant.moveInDate, nextPayment: tenant.nextPayment }
+      : null,
+  };
 }
 
 // --- Booking creation ----------------------------------------------------
@@ -453,9 +497,33 @@ export async function submitCustomerNotice(payload: CustomerJwtPayload, input: {
     (tenant.unitId === input.unitId ||
       !!(await prisma.booking.findFirst({ where: { tenantId: tenant.id, unitId: input.unitId } })));
 
-  if (!belongsToCustomer) {
+  if (!belongsToCustomer || !tenant) {
     throw new AppError(404, 'NOT_FOUND', 'Unit not found for this customer');
   }
 
-  return { status: 'SUBMITTED', lastDay: new Date(input.lastDay) };
+  const lastDay = new Date(input.lastDay);
+  if (Number.isNaN(lastDay.getTime())) {
+    throw new AppError(400, 'VALIDATION', 'Invalid lastDay');
+  }
+
+  // Persist one row per submission (history preserved); the portal reads the
+  // latest by createdAt. Ownership rules above are unchanged.
+  const notice = await prisma.notice.create({
+    data: {
+      tenantId: tenant.id,
+      unitId: input.unitId,
+      lastDay,
+    },
+    include: { unit: true },
+  });
+
+  return {
+    status: 'SUBMITTED' as const,
+    lastDay: notice.lastDay,
+    // --- appended (additive) ---
+    id: notice.id,
+    unitId: notice.unitId,
+    unitCode: notice.unit.unitCode,
+    submittedAt: notice.createdAt,
+  };
 }

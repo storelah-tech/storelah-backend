@@ -235,6 +235,7 @@ model Unit {
   rateHistory    RateChange[]
   bookings       Booking[]
   invoices       Invoice[]
+  notices        Notice[]
   placement      UnitPlacement? // one-to-one: a unit appears on its floor's plan at most once
 
   @@unique([branchId, unitCode])
@@ -301,8 +302,27 @@ model Tenant {
 
   bookings  Booking[]
   invoices  Invoice[]
+  notices   Notice[]
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
+}
+
+// Customer-submitted move-out notice (POST /api/v1/customer/notice). One row
+// per submission — resubmitting supersedes (the portal reads the LATEST by
+// createdAt); history is preserved for the operator. No workflow state machine
+// exists yet: presence of a row == the notice was submitted; TenantStatus.NOTICE
+// remains an operator-managed CMS status and is intentionally NOT auto-flipped.
+model Notice {
+  id        String   @id @default(cuid())
+  tenantId  String
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  unitId    String
+  unit      Unit     @relation(fields: [unitId], references: [id])
+  lastDay   DateTime // the customer-declared final day of tenancy
+  createdAt DateTime @default(now()) // submission time
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId])
 }
 
 model Booking {

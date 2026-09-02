@@ -10,6 +10,8 @@ import {
   registerCustomer,
   loginCustomer,
   claimGuestAccount,
+  forgotPassword,
+  resetPassword,
   getCustomerProfile,
   loadCustomer,
   findOrCreateGuestCustomer,
@@ -98,6 +100,15 @@ router.post('/login', async (req: Request, res: Response) => {
   ok(res, await loginCustomer(parsed.data));
 });
 
+const forgotPasswordSchema = z.object({
+  email: z.string().email(),
+});
+
+const resetPasswordSchema = z.object({
+  token: z.string().min(1),
+  password: z.string().min(6),
+});
+
 // Public: rotates a GUEST account's shared default password to a real one.
 router.post('/claim', async (req: Request, res: Response) => {
   const parsed = claimSchema.safeParse(req.body);
@@ -106,6 +117,24 @@ router.post('/claim', async (req: Request, res: Response) => {
     return;
   }
   ok(res, await claimGuestAccount(parsed.data, req.ip ?? 'unknown'));
+});
+
+router.post('/forgot-password', async (req: Request, res: Response) => {
+  const parsed = forgotPasswordSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid request', parsed.error.flatten());
+    return;
+  }
+  ok(res, await forgotPassword(parsed.data));
+});
+
+router.post('/reset-password', async (req: Request, res: Response) => {
+  const parsed = resetPasswordSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid request', parsed.error.flatten());
+    return;
+  }
+  ok(res, await resetPassword(parsed.data));
 });
 
 router.get('/me', requireCustomerAuth, async (req: Request, res: Response) => {

@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import { AccountType, Customer, Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma';
@@ -229,6 +230,51 @@ export async function claimGuestAccount(
 
   // Identical shape to loginCustomer's response.
   return { token: signCustomerToken(updated), customer: serializeCustomer(updated) };
+}
+
+// --- Forgot / Reset password --------------------------------------------------
+
+export async function forgotPassword(input: { email: string }) {
+  // Always return the same message to avoid revealing whether the account exists.
+  const message = 'If an account with that email exists, a reset token has been generated.';
+
+  const customer = await prisma.customer.findUnique({ where: { email: input.email } });
+  if (!customer) {
+    return { message, token: null };
+  }
+
+  const rawToken = crypto.randomBytes(32).toString('hex');
+  const hashedToken = await bcrypt.hash(rawToken, 6);
+  const resetTokenExpiry = new Date(Date.now() + 60 * 60 * 1000);
+
+  await prisma.customer.update({
+    where: { id: customer.id },
+    data: { resetToken: hashedToken, resetTokenExpiry },
+  });
+
+  return { message, token: rawToken };
+}
+
+export async function resetPassword(input: { token: string; password: string }) {
+  const candidates = await prisma.customer.findMany({
+    where: { resetTokenExpiry: { gt: new Date() } },
+  });
+
+  for (const customer of candidates) {
+    if (!customer.resetToken) continue;
+    const match = await bcrypt.compare(input.token, customer.resetToken);
+    if (!match) continue;
+
+    const passwordHash = await bcrypt.hash(input.password, 10);
+    await prisma.customer.update({
+      where: { id: customer.id },
+      data: { passwordHash, resetToken: null, resetTokenExpiry: null },
+    });
+
+    return { message: 'Password reset successful.' };
+  }
+
+  throw new AppError(400, 'INVALID_TOKEN', 'Invalid or expired reset token.');
 }
 
 // --- Profile & bookings --------------------------------------------------

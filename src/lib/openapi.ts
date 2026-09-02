@@ -479,6 +479,58 @@ export const openapiSpec = {
         },
       },
     },
+    '/customer/forgot-password': {
+      post: {
+        tags: ['Customer'],
+        summary: 'Request password reset',
+        description:
+          'Generates a one-time reset token for the given email. Returns the token directly (no email sending in development).',
+        operationId: 'forgotPassword',
+        security: [],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: { $ref: openapiSchemaRef('ForgotPasswordRequest') },
+            },
+          },
+        },
+        responses: {
+          '200': openapiResponse({
+            $ref: openapiSchemaRef('ForgotPasswordResponse'),
+          }),
+          '400': openapiErrorResponse('Invalid request.'),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+    },
+    '/customer/reset-password': {
+      post: {
+        tags: ['Customer'],
+        summary: 'Reset password with token',
+        description:
+          'Validates the one-time reset token and sets a new password.',
+        operationId: 'resetPassword',
+        security: [],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: { $ref: openapiSchemaRef('ResetPasswordRequest') },
+            },
+          },
+        },
+        responses: {
+          '200': openapiResponse({
+            $ref: openapiSchemaRef('ResetPasswordResponse'),
+          }),
+          '400': openapiErrorResponse(
+            'Invalid or expired reset token.',
+          ),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+    },
     '/customer/me': {
       get: {
         tags: ['Customer'],
@@ -1304,6 +1356,36 @@ export const openapiSpec = {
             format: 'date-time',
             description: 'When the notice was persisted. Additive since 1.1.0.',
           },
+        },
+      },
+      ForgotPasswordRequest: {
+        type: 'object',
+        required: ['email'],
+        properties: {
+          email: { type: 'string', format: 'email' },
+        },
+      },
+      ForgotPasswordResponse: {
+        type: 'object',
+        required: ['message', 'token'],
+        properties: {
+          message: { type: 'string' },
+          token: { type: 'string' },
+        },
+      },
+      ResetPasswordRequest: {
+        type: 'object',
+        required: ['token', 'password'],
+        properties: {
+          token: { type: 'string' },
+          password: { type: 'string', minLength: 6, format: 'password' },
+        },
+      },
+      ResetPasswordResponse: {
+        type: 'object',
+        required: ['message'],
+        properties: {
+          message: { type: 'string' },
         },
       },
       PlanBlock: {

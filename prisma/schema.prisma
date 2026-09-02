@@ -89,16 +89,18 @@ model AdminUser {
 }
 
 model Customer {
-  id           String      @id @default(cuid())
-  email        String      @unique
-  name         String
-  mobile       String?
-  passwordHash String
-  type         AccountType @default(PERSONAL)
-  companyName  String?
-  uen          String?
-  createdAt    DateTime    @default(now())
-  updatedAt    DateTime    @updatedAt
+  id               String      @id @default(cuid())
+  email            String      @unique
+  name             String
+  mobile           String?
+  passwordHash     String
+  type             AccountType @default(PERSONAL)
+  companyName      String?
+  uen              String?
+  resetToken       String?     @unique
+  resetTokenExpiry DateTime?
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @updatedAt
 }
 
 model Branch {

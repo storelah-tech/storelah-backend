@@ -16,7 +16,6 @@ const SIZES = {
   SMALL: { name: 'Small', sqft: 30, psf: 4.8, sort: 2 },
   MEDIUM: { name: 'Medium', sqft: 60, psf: 4.4, sort: 3 },
   LARGE: { name: 'Large', sqft: 120, psf: 3.8, sort: 4 },
-  XLBIZ: { name: 'XL Biz', sqft: 200, psf: 3.2, sort: 5 },
 } as const;
 type SizeKey = keyof typeof SIZES;
 
@@ -36,47 +35,27 @@ interface Selector {
   status: UnitStatus;
 }
 
-// Bukit Merah Level 1 — verbatim from the original dashboard.html unit map.
-const BM_L1: U[] = [
-  { n:1, size:'SMALL', psf:4.8, status:'OCCUPIED' }, { n:2, size:'SMALL', psf:4.8, status:'OCCUPIED' },
-  { n:3, size:'LOCKER', psf:5.2, status:'OCCUPIED' }, { n:4, size:'LOCKER', psf:5.2, status:'AVAILABLE' },
-  { n:5, size:'MEDIUM', psf:4.4, status:'OCCUPIED' }, { n:6, size:'SMALL', psf:4.1, status:'OVERDUE' },
-  { n:7, size:'LARGE', psf:3.8, status:'OCCUPIED' }, { n:8, size:'LARGE', psf:3.8, status:'AVAILABLE' },
-  { n:9, size:'SMALL', psf:4.8, status:'RESERVED' }, { n:10, size:'MEDIUM', psf:4.5, status:'OCCUPIED' },
-  { n:11, size:'XLBIZ', psf:3.2, status:'OCCUPIED' }, { n:12, size:'SMALL', psf:4.8, status:'OVERDUE' },
-  { n:13, size:'LOCKER', psf:5.2, status:'AVAILABLE' }, { n:14, size:'MEDIUM', psf:4.4, status:'OCCUPIED' },
-  { n:15, size:'SMALL', psf:4.8, status:'OCCUPIED' }, { n:16, size:'LARGE', psf:3.9, status:'RESERVED' },
-  { n:17, size:'XLBIZ', psf:3.2, status:'OCCUPIED' }, { n:18, size:'SMALL', psf:4.8, status:'AVAILABLE' },
-  { n:19, size:'MEDIUM', psf:4.4, status:'OVERDUE' }, { n:20, size:'LOCKER', psf:5.2, status:'OCCUPIED' },
-  { n:21, size:'SMALL', psf:0, status:'MAINTENANCE' }, { n:22, size:'SMALL', psf:4.8, status:'OCCUPIED' },
-  { n:23, size:'MEDIUM', psf:4.4, status:'AVAILABLE' }, { n:24, size:'LARGE', psf:3.8, status:'OCCUPIED' },
-  { n:25, size:'LOCKER', psf:5.1, status:'RESERVED' },
-];
+// Bukit Merah Level 1 — mix of legacy dashboard units and synthetic seeds
+// (generated via genSeeds to match the same density as other branches).
+// BM L1 gets the same 60-unit layout as every other floor.
+const BM_L1: U[] = ((s: Record<number, U[]>) => s[1] ?? [])(genSeeds('BM'));
 
 function genSeeds(branch: string): Record<number, U[]> {
-  const counts =
-    branch === 'BM'
-      ? { 1:0, 2:5, 3:0, 4:0 }
-      : branch === 'WD'
-      ? { 1:10, 2:8, 3:6, 4:6 }
-      : { 1:6, 2:6, 3:4, 4:4 };
-  const sizeOrder: SizeKey[] = ['SMALL', 'MEDIUM', 'LOCKER', 'LARGE', 'SMALL', 'XLBIZ'];
+  // 60 units per level for every branch → rich floor plan with X+Y scroll
   const out: Record<number, U[]> = {};
-  let overdueDone = false;
-  for (const [lv, count] of Object.entries(counts)) {
+  for (const lv of [1, 2, 3, 4]) {
     const level = Number(lv);
     const arr: U[] = [];
-    for (let i = 0; i < count; i++) {
+    for (let i = 0; i < 60; i++) {
+      const sizeOrder: SizeKey[] = ['SMALL', 'MEDIUM', 'SMALL', 'LOCKER', 'LARGE', 'MEDIUM', 'SMALL', 'LOCKER', 'MEDIUM', 'SMALL'];
       const size = sizeOrder[i % sizeOrder.length];
-      const psf = Math.round((SIZES[size].psf + 0.05 * Math.sin(i)) * 100) / 100;
-      let status: UnitStatus = 'OCCUPIED';
-      // Keep the portfolio mostly leased with only a handful of non-occupied units.
-      if (i === 0 && level === 1) status = 'AVAILABLE';
-      if (i === 1 && level === 1) status = 'RESERVED';
-      if (i === 2 && !overdueDone && branch !== 'BM') {
-        status = 'OVERDUE';
-        overdueDone = true;
-      }
+      const psf = Math.round((SIZES[size].psf + 0.08 * Math.sin(i * 1.5)) * 100) / 100;
+      // Status distribution: ~60% AVAILABLE, ~20% RESERVED, ~20% OCCUPIED
+      let status: UnitStatus;
+      const r = (level * 13 + i * 7) % 20;
+      if (r < 12) status = 'AVAILABLE';
+      else if (r < 16) status = 'RESERVED';
+      else status = 'OCCUPIED';
       arr.push({ n: i + 1, size, psf, status });
     }
     out[level] = arr;
@@ -92,17 +71,17 @@ const REAL_TENANTS: Array<{
   { name:'Aisha & Farid', unit:'BM-01-05', type:'PERSONAL', segment:'Renovation', rate:264, sinceMonths:5, payInDays:1, status:'DUE_SOON', pay:5, missed:0, ltv:1320 },
   { name:'Mr & Mrs Tan', unit:'BM-01-06', type:'PERSONAL', segment:'Downsizing', rate:138, sinceMonths:21, payInDays:-30, status:'OVERDUE', pay:20, missed:2, ltv:2760 },
   { name:'Wei Ming Lim', unit:'WD-02-03', type:'PERSONAL', segment:'Between homes', rate:456, sinceMonths:2, payInDays:1, status:'ACTIVE', pay:2, missed:0, ltv:912 },
-  { name:'Ravi Kumar', unit:'UB-03-01', type:'BUSINESS', segment:'SME inventory', rate:640, sinceMonths:7, payInDays:1, status:'ACTIVE', pay:7, missed:0, ltv:4480 },
+  { name:'Ravi Kumar', unit:'UB-03-01', type:'BUSINESS', segment:'SME inventory', rate:480, sinceMonths:7, payInDays:1, status:'ACTIVE', pay:7, missed:0, ltv:4480 },
 ];
 
 const LEADS: Array<{ name: string; type: AccountType; size: SizeKey; branch: string; stage: LeadStage; source: LeadSource }> = [
   { name:'Sarah Lim', type:'PERSONAL', size:'SMALL', branch:'BM', stage:'NEW_ENQUIRY', source:'WEBSITE' },
   { name:'James Koh', type:'PERSONAL', size:'MEDIUM', branch:'WD', stage:'NEW_ENQUIRY', source:'WEBSITE' },
   { name:'Mei Ling', type:'PERSONAL', size:'LARGE', branch:'UB', stage:'NEW_ENQUIRY', source:'REFERRAL' },
-  { name:'David Ng', type:'BUSINESS', size:'XLBIZ', branch:'UB', stage:'CONTACTED', source:'GOOGLE' },
+  { name:'David Ng', type:'BUSINESS', size:'LARGE', branch:'UB', stage:'CONTACTED', source:'GOOGLE' },
   { name:'Siti Rahman', type:'PERSONAL', size:'SMALL', branch:'BM', stage:'CONTACTED', source:'WHATSAPP' },
   { name:'Ahmad Fauzi', type:'BUSINESS', size:'MEDIUM', branch:'WD', stage:'VIEWING_BOOKED', source:'WHATSAPP' },
-  { name:'TechFlow Pte Ltd', type:'BUSINESS', size:'XLBIZ', branch:'UB', stage:'PROPOSAL_SENT', source:'GOOGLE' },
+  { name:'TechFlow Pte Ltd', type:'BUSINESS', size:'LARGE', branch:'UB', stage:'PROPOSAL_SENT', source:'GOOGLE' },
   { name:'Priya Nair', type:'BUSINESS', size:'SMALL', branch:'BM', stage:'WON', source:'WEBSITE' },
 ];
 
@@ -129,6 +108,24 @@ function monthAgo(n: number): Date {
   return d;
 }
 
+/** Generate placement geometry for N units on a 40×40 floor plan grid.
+ *  Units sit in 6 rows of 10, with a central corridor. Each unit is 3×3 grid
+ *  units, with varying column spans to create visual variety. */
+function getPlacementPositions(count: number): Array<{ x: number; y: number; width: number; height: number }> {
+  const positions: Array<{ x: number; y: number; width: number; height: number }> = [];
+  // 10 columns per row, unit width varies but fits in 3-4 spaces
+  const colStarts = [1, 4, 7, 10, 13, 16, 19, 22, 25, 28];
+  const rows = [1, 5, 9, 16, 20, 24];
+  for (const y of rows) {
+    for (const x of colStarts) {
+      if (positions.length >= count) break;
+      positions.push({ x, y, width: 2, height: 3 });
+    }
+    if (positions.length >= count) break;
+  }
+  return positions;
+}
+
 async function main() {
   console.log('Seeding StoreLah CMS…');
 
@@ -138,6 +135,9 @@ async function main() {
     prisma.rateChange.deleteMany(),
     prisma.tenant.deleteMany(),
     prisma.lead.deleteMany(),
+    prisma.floorPlanBlock.deleteMany(),
+    prisma.unitPlacement.deleteMany(),
+    prisma.floorPlan.deleteMany(),
     prisma.unit.deleteMany(),
     prisma.floor.deleteMany(),
     prisma.branch.deleteMany(),
@@ -210,7 +210,7 @@ async function main() {
   };
 
   for (const s of BM_L1) await mkUnit('BM', 1, s.n, s.size, s.psf, s.status);
-  let next = 26;
+  let next = 61;
   for (const lv of [2, 3, 4]) {
     const seeds = genSeeds('BM')[lv] ?? [];
     for (const u of seeds) await mkUnit('BM', lv, next++, u.size, u.psf, u.status);
@@ -222,6 +222,57 @@ async function main() {
       for (const u of seeds) await mkUnit(code, lv, start++, u.size, u.psf, u.status);
     }
   }
+
+  // ── Publish floor plans for every floor ──
+  console.log('Publishing floor plans…');
+  // Build a unit map per floor for placement
+  const unitsByFloor = new Map<string, { code: string; id: string }[]>();
+  for (const [code, sel] of unitByCode) {
+    const branchCode = code.split('-')[0];
+    const level = Number(code.split('-')[1]);
+    const branchMapEntry = branchMap.get(branchCode);
+    if (!branchMapEntry) continue;
+    const fId = branchMapEntry.floorId(level);
+    if (!unitsByFloor.has(fId)) unitsByFloor.set(fId, []);
+    unitsByFloor.get(fId)!.push({ code, id: sel.id });
+  }
+
+  for (const [floorId, floorUnits] of unitsByFloor) {
+     // Upsert floor plan (40×30 canvas)
+     const plan = await prisma.floorPlan.upsert({
+       where: { floorId },
+       create: { floorId, width: 40, height: 30 },
+       update: { width: 40, height: 30 },
+     });
+     // Delete stale placements/blocks (on re-seed)
+     await prisma.unitPlacement.deleteMany({ where: { floorPlanId: plan.id } });
+     await prisma.floorPlanBlock.deleteMany({ where: { floorPlanId: plan.id } });
+
+     // Create blocks: corridor, lift, stairs, entrance
+     await prisma.floorPlanBlock.createMany({
+       data: [
+{ floorPlanId: plan.id, name: 'Corridor', x: 0, y: 13, width: 40, height: 2, color: '#E9E1D0' },
+          { floorPlanId: plan.id, name: 'Lift', x: 32, y: 1, width: 4, height: 5, color: '#D4C9B8' },
+          { floorPlanId: plan.id, name: 'Stairs', x: 32, y: 18, width: 4, height: 5, color: '#D4C9B8' },
+          { floorPlanId: plan.id, name: 'Entrance', x: 17, y: 0, width: 3, height: 1, color: '#C5E0B4' },
+       ],
+     });
+
+     // Create placements in a grid layout
+     const positions = getPlacementPositions(floorUnits.length);
+     await prisma.unitPlacement.createMany({
+       data: floorUnits.slice(0, positions.length).map((u, i) => ({
+         floorPlanId: plan.id,
+         unitId: u.id,
+         x: positions[i].x,
+         y: positions[i].y,
+         width: positions[i].width,
+         height: positions[i].height,
+       })),
+     });
+  }
+  const planCount = await prisma.floorPlan.count();
+  console.log(`Floor plans: ${planCount}`);
 
   const occupied = [...unitByCode.values()].filter((u) =>
     u.status === 'OCCUPIED' || u.status === 'OVERDUE' || u.status === 'RESERVED');

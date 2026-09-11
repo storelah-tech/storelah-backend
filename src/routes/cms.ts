@@ -18,7 +18,7 @@ import {
   getUnitActivity,
 } from '../core/units';
 import { listTenants, createTenant, updateTenant, deactivateTenant } from '../core/tenants';
-import { listLeads } from '../core/leads';
+import { listLeads, getLeadStats } from '../core/leads';
 import { getActionItems } from '../core/actionCenter';
 import { listBookings, listInvoices } from '../core/finance';
 import { listBranches, getMoveIns } from '../core/branches';
@@ -30,6 +30,7 @@ import {
   updatePromotion,
   deletePromotion,
 } from '../core/promotions';
+import { listAppointments } from '../core/appointments';
 import {
   upsertFloorPlan,
   getFloorPlan,
@@ -301,6 +302,11 @@ router.get('/leads', requireAuth, async (_req: Request, res: Response) => {
   ok(res, await listLeads());
 });
 
+// Lead funnel / source stats for the command centre and pipeline header.
+router.get('/leads/stats', requireAuth, async (_req: Request, res: Response) => {
+  ok(res, await getLeadStats());
+});
+
 router.get('/bookings', requireAuth, async (_req: Request, res: Response) => {
   const rows = await listBookings();
   ok(res, rows, { count: rows.length });
@@ -374,6 +380,12 @@ router.put('/promotions/:id', requireAuth, async (req: Request, res: Response) =
 
 router.delete('/promotions/:id', requireAuth, async (req: Request, res: Response) => {
   ok(res, await deletePromotion(String(req.params.id)));
+});
+
+// --- Appointments ---
+router.get('/appointments', requireAuth, async (_req: Request, res: Response) => {
+  const rows = await listAppointments();
+  ok(res, rows, { count: rows.length });
 });
 
 // --- Floor plans (facility setup editor) ---

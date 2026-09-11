@@ -78,6 +78,20 @@ enum LeadSource {
   GOOGLE
 }
 
+enum AppointmentType {
+  VIEWING
+  CALLBACK
+  VIDEO_CONSULT
+  MOVE_IN
+}
+
+enum AppointmentStatus {
+  PENDING
+  CONFIRMED
+  DONE
+  CANCELLED
+}
+
 model AdminUser {
   id           String   @id @default(cuid())
   email        String   @unique
@@ -115,6 +129,7 @@ model Branch {
   units           Unit[]
   tenants         Tenant[]
   leads           Lead[]
+  appointments    Appointment[]
   createdAt       DateTime     @default(now())
   updatedAt       DateTime     @updatedAt
 }
@@ -374,6 +389,29 @@ model Lead {
   note          String?
   createdAt     DateTime   @default(now())
   updatedAt     DateTime   @updatedAt
+
+  appointments Appointment[]
+}
+
+model Appointment {
+  id         String            @id @default(cuid())
+  title      String
+  personName String
+  type       AppointmentType
+  branchId   String?
+  branch     Branch?           @relation(fields: [branchId], references: [id])
+  leadId     String?
+  lead       Lead?             @relation(fields: [leadId], references: [id])
+  startAt    DateTime
+  endAt      DateTime?
+  status     AppointmentStatus @default(PENDING)
+  note       String?
+  createdAt  DateTime          @default(now())
+  updatedAt  DateTime          @updatedAt
+
+  @@index([startAt])
+  @@index([branchId])
+  @@index([leadId])
 }
 
 model RateChange {

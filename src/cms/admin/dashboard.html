@@ -1,1204 +1,837 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>StoreLah — Operator Admin</title>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<meta name="theme-color" content="#334437" />
+<title>StoreLah — Operating Platform</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800;900&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <style>
-*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+/* =============================================
+   StoreLah v8 Design System
+   Palette + base + components + responsive
+   ============================================= */
 :root {
-  --cream: #FAF7F2; --cream2: #F3EEE6; --sand: #E9E1D0;
-  --terra: #B86A4A; --terra-light: #F5EDE8; --terra-mid: #C97A5A;
-  --olive: #5A7A60; --olive-light: #EAF4EF;
-  --teal: #0B4F5E; --teal-mid: #1A6B7C; --teal-light: #E8F4F7;
-  --charcoal: #1F1F1F; --mid: #6B6560; --light: #9C948D;
-  --border: #E5DDD5; --border2: #EDE8E2; --white: #FFFFFF;
-  --red: #C0392B; --red-light: #FDECEA;
-  --amber: #D4860A; --amber-light: #FEF3E2;
-  --sidebar-w: 232px;
+  --cream:#f7f3ec; --paper:#fffdfa; --white:#fff; --ink:#20241f; --muted:#6f746d;
+  --line:#e6e0d7; --olive:#334437; --olive2:#526557; --sage:#dfe7dd;
+  --terra:#c97952; --terra2:#aa5d3c; --amber:#e5a84b; --red:#c9574e; --blue:#547b8d;
+  --shadow:0 10px 30px rgba(46,47,40,.08); --r:16px; --side:232px;
+  /* Admin-legacy aliases (map to v8 palette for existing admin JS) */
+  --teal:var(--olive); --teal-light:var(--sage); --teal-mid:var(--olive2);
+  --charcoal:var(--ink); --mid:var(--muted); --light:#a0a59c; --sand:var(--line);
+  --border:var(--line); --border2:#ede8e2; --cream2:#ede8e2;
+  --red-light:#f8dfdc; --amber-light:#faebcf; --olive-light:var(--sage);
+  --terra-light:#f7e2d7;
+  --sidebar-w:var(--side);
 }
-body { font-family: 'Manrope', sans-serif; background: var(--cream); color: var(--charcoal); display: flex; min-height: 100vh; font-size: 13px; line-height: 1.5; }
+*{box-sizing:border-box;margin:0;padding:0}
+body{margin:0;font:14px/1.45 Manrope,system-ui,sans-serif;color:var(--ink);background:var(--cream);display:block;min-height:100vh}
+button,input,select,textarea{font:inherit}button{cursor:pointer}
 
-/* SIDEBAR */
-.sidebar { width: var(--sidebar-w); background: var(--teal); min-height: 100vh; display: flex; flex-direction: column; position: fixed; top: 0; left: 0; z-index: 100; overflow-y: auto; }
-.sb-logo { padding: 18px 16px 14px; border-bottom: 1px solid rgba(255,255,255,0.1); display: flex; align-items: center; gap: 10px; }
-.sb-logo-mark { width: 32px; height: 32px; background: var(--terra); border-radius: 8px; display: flex; align-items: center; justify-content: center; font-family: 'Plus Jakarta Sans', sans-serif; font-weight: 900; font-size: 13px; color: white; flex-shrink: 0; }
-.sb-logo-text { font-family: 'Plus Jakarta Sans', sans-serif; font-weight: 800; font-size: 15px; color: white; }
-.sb-logo-text span { color: var(--terra-mid); }
-.sb-branch { margin: 10px 10px 0; background: rgba(255,255,255,0.07); border-radius: 8px; padding: 8px 10px; display: flex; align-items: center; justify-content: space-between; cursor: pointer; border: 1px solid rgba(255,255,255,0.1); }
-.sb-branch-name { font-size: 11px; font-weight: 700; color: rgba(255,255,255,0.9); text-transform: uppercase; letter-spacing: 0.5px; }
-.sb-branch-sub { font-size: 10px; color: rgba(255,255,255,0.45); margin-top: 1px; }
-.sb-branch-select { flex: 1; background: transparent; border: none; outline: none; color: rgba(255,255,255,0.9); font-family: 'Manrope', sans-serif; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; cursor: pointer; appearance: none; -webkit-appearance: none; padding-right: 4px; }
-.sb-branch-select option { background: #0B4F5E; color: #fff; text-transform: none; letter-spacing: normal; font-weight: 600; }
-.sb-section { padding: 14px 10px 3px; }
-.sb-section-lbl { font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; color: rgba(255,255,255,0.3); padding: 0 8px; margin-bottom: 3px; }
-.nav-item { display: flex; align-items: center; gap: 9px; padding: 8px 10px; border-radius: 7px; cursor: pointer; color: rgba(255,255,255,0.6); font-size: 12.5px; font-weight: 500; transition: all 0.15s; margin-bottom: 1px; }
-.nav-item:hover { background: rgba(255,255,255,0.08); color: white; }
-.nav-item.active { background: var(--terra); color: white; font-weight: 700; }
-.nav-icon { width: 16px; text-align: center; font-size: 13px; flex-shrink: 0; }
-.nav-badge { margin-left: auto; background: rgba(255,255,255,0.18); color: white; font-size: 9px; font-weight: 700; padding: 1px 6px; border-radius: 10px; }
-.nav-item.active .nav-badge { background: rgba(255,255,255,0.25); }
-.nav-badge.red { background: var(--red); }
-.sb-footer { margin-top: auto; padding: 10px; border-top: 1px solid rgba(255,255,255,0.1); }
-.sb-user { display: flex; align-items: center; gap: 9px; padding: 8px 10px; border-radius: 7px; cursor: pointer; }
-.sb-user:hover { background: rgba(255,255,255,0.07); }
-.sb-avatar { width: 28px; height: 28px; background: var(--terra); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 800; color: white; flex-shrink: 0; }
-.sb-user-name { font-size: 12px; font-weight: 700; color: white; }
-.sb-user-role { font-size: 10px; color: rgba(255,255,255,0.4); }
+/* ============ APP GRID ============ */
+.app{min-height:100vh;display:grid;grid-template-columns:var(--side) 1fr;width:100%}
 
-/* MAIN */
-.main { margin-left: var(--sidebar-w); flex: 1; display: flex; flex-direction: column; min-height: 100vh; }
-.topbar { background: var(--white); border-bottom: 1px solid var(--border); padding: 0 24px; height: 54px; display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 50; }
-.topbar-title { font-family: 'Plus Jakarta Sans', sans-serif; font-size: 15px; font-weight: 800; color: var(--charcoal); }
-.topbar-sub { font-size: 11px; color: var(--light); margin-left: 6px; }
-.topbar-right { display: flex; align-items: center; gap: 8px; }
-#errorBanner { font-size: 11px; font-weight: 700; margin-left: 12px; }
-#errorBanner:empty { display: none; }
-.tb-btn { display: flex; align-items: center; gap: 5px; padding: 6px 12px; border-radius: 7px; font-size: 11px; font-weight: 700; cursor: pointer; border: none; font-family: 'Manrope', sans-serif; transition: all 0.15s; }
-.tb-btn.primary { background: var(--terra); color: white; }
-.tb-btn.primary:hover { background: var(--terra-mid); }
-.tb-btn.ghost { background: var(--cream); color: var(--charcoal); border: 1px solid var(--border); }
-.tb-btn.ghost:hover { background: var(--cream2); }
-.tb-notif { width: 32px; height: 32px; border-radius: 7px; background: var(--cream); border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; cursor: pointer; position: relative; font-size: 14px; }
-.notif-dot { position: absolute; top: 5px; right: 5px; width: 6px; height: 6px; background: var(--terra); border-radius: 50%; border: 1.5px solid white; }
+/* ============ SIDEBAR (olive, v8) ============ */
+.side{position:sticky;top:0;height:100vh;background:var(--olive);color:white;padding:22px 14px;display:flex;flex-direction:column;z-index:20;overflow-y:auto;scrollbar-width:thin;scrollbar-color:#ffffff33 transparent}
+.brand{font-size:23px;font-weight:800;letter-spacing:.2px;padding:0 10px 24px}.brand span{color:#efb18f}
+.workspace{display:flex;gap:9px;align-items:center;padding:10px;border:1px solid rgba(255,255,255,.13);border-radius:12px;margin-bottom:18px}
+.workspace .mark{width:32px;height:32px;border-radius:9px;background:var(--terra);display:grid;place-items:center;font-weight:800}
+.workspace small{opacity:.65}
+.nav-group{font-size:11px;text-transform:uppercase;letter-spacing:.11em;opacity:.48;padding:16px 10px 7px}
+.nav{display:flex;align-items:center;gap:11px;padding:10px 11px;border-radius:10px;color:rgba(255,255,255,.75);text-decoration:none;font-weight:600;margin:2px 0;cursor:pointer;border:0;background:transparent;width:100%;text-align:left}
+.nav:hover,.nav.active{background:rgba(255,255,255,.1);color:white}
+.nav svg{width:18px;height:18px}.badge{margin-left:auto;background:var(--terra);color:white;border-radius:99px;padding:1px 7px;font-size:11px}
+.side-foot{margin-top:auto;border-top:1px solid rgba(255,255,255,.12);padding-top:14px}
+.user{display:flex;align-items:center;gap:10px;padding:9px}
+.avatar{width:34px;height:34px;border-radius:50%;display:grid;place-items:center;font-weight:700;background:#efe1d2;color:var(--olive)}
+.nav.has-children{position:relative;padding-right:30px}
+.nav.has-children:after{content:'›';position:absolute;right:13px;top:50%;transform:translateY(-50%);font-size:18px;color:#9aa194;transition:.18s}
+.nav.has-children.expanded:after{transform:translateY(-50%) rotate(90deg)}
+.nav-submenu{display:none;margin:1px 8px 7px 23px;padding:3px 0 3px 12px;border-left:1px solid #ffffff26}
+.nav.has-children.expanded+.nav-submenu{display:grid;gap:1px}
+.nav-subitem{display:flex;align-items:center;gap:8px;border:0;background:transparent;color:#c7cec1;text-align:left;padding:7px 9px;border-radius:7px;font-size:12px;line-height:1.25;cursor:pointer;width:100%}
+.nav-subitem:before{content:'';width:5px;height:5px;border-radius:50%;background:#7e8878;flex:none}
+.nav-subitem:hover{background:#ffffff0c;color:#fff}
+.nav-subitem.active{background:#ffffff16;color:#fff;font-weight:750}
+.nav-subitem.active:before{background:var(--terra)}
 
-/* CONTENT */
-.content { padding: 22px 24px; flex: 1; }
+/* ============ MAIN / TOPBAR ============ */
+main{min-width:0;display:flex;flex-direction:column;min-height:100vh}
+.top{height:66px;border-bottom:1px solid var(--line);background:rgba(255,253,250,.92);display:flex;align-items:center;padding:0 28px;gap:16px;position:sticky;top:0;z-index:15;backdrop-filter:blur(10px)}
+.search{max-width:520px;flex:1;position:relative}
+.search input{width:100%;padding:10px 42px 10px 38px;border:1px solid var(--line);border-radius:11px;background:white;outline:none}
+.search svg{position:absolute;left:12px;top:11px;width:17px;color:var(--muted)}
+.shortcut{position:absolute;right:8px;top:8px;color:#999;border:1px solid var(--line);border-radius:6px;padding:2px 6px;font-size:11px}
+.top-actions{display:flex;align-items:center;gap:8px;margin-left:auto}
+.iconbtn{border:1px solid var(--line);background:white;width:38px;height:38px;border-radius:10px;display:grid;place-items:center;color:var(--olive);cursor:pointer}
+.primary{border:0;background:var(--terra);color:white;border-radius:10px;padding:10px 15px;font-weight:700}.primary:hover{background:var(--terra2)}
+.content{padding:28px;max-width:1720px;margin:auto;width:100%;flex:1}
 
-/* SECTION HEADER */
-.sec-hdr { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
-.sec-title { font-family: 'Plus Jakarta Sans', sans-serif; font-size: 14px; font-weight: 800; color: var(--charcoal); }
-.sec-sub { font-size: 11px; color: var(--light); margin-top: 2px; }
+/* ============ PAGES ============ */
+.page{display:none}.page.active{display:block}
+.head{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;margin-bottom:22px}
+.head h1{font-size:26px;margin:0 0 4px;letter-spacing:-.03em}.head p{margin:0;color:var(--muted)}
+.actions{display:flex;gap:8px;flex-wrap:wrap}
+.btn{border:1px solid var(--line);background:var(--white);border-radius:10px;padding:9px 13px;font-weight:650;color:var(--ink);cursor:pointer;font-family:Manrope,system-ui,sans-serif}
+.btn:hover{border-color:#c7bbae}.btn.olive{background:var(--olive);color:white;border-color:var(--olive)}
 
-/* KPI STRIP */
-.kpi-strip { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin-bottom: 18px; }
-.kpi { background: var(--white); border: 1px solid var(--border); border-radius: 11px; padding: 14px 16px; position: relative; overflow: hidden; }
-.kpi::after { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px; background: var(--terra); border-radius: 11px 11px 0 0; }
-.kpi.olive::after { background: var(--olive); }
-.kpi.teal::after { background: var(--teal); }
-.kpi.red::after { background: var(--red); }
-.kpi.amber::after { background: var(--amber); }
-.kpi-lbl { font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.6px; color: var(--light); margin-bottom: 7px; }
-.kpi-val { font-family: 'Plus Jakarta Sans', sans-serif; font-size: 24px; font-weight: 900; color: var(--charcoal); line-height: 1; margin-bottom: 5px; }
-.kpi-val .unit { font-size: 12px; font-weight: 600; color: var(--mid); }
-.kpi-delta { display: inline-flex; align-items: center; gap: 3px; font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 20px; }
-.kpi-delta.up { background: var(--olive-light); color: var(--olive); }
-.kpi-delta.down { background: var(--red-light); color: var(--red); }
-.kpi-delta.flat { background: var(--cream2); color: var(--mid); }
+/* ============ STATS ROW ============ */
+.stats{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:18px}
+.stat{background:var(--paper);border:1px solid var(--line);border-radius:14px;padding:16px}
+.stat .label{color:var(--muted);font-size:12px;font-weight:600}.stat .val{font-size:26px;font-weight:800;letter-spacing:-.03em;margin:5px 0}
+.trend{font-size:12px;color:var(--olive2)}.trend.bad{color:var(--red)}
 
-/* CHARTS ROW */
-.charts-row { display: grid; grid-template-columns: 1.5fr 1fr; gap: 14px; margin-bottom: 18px; }
-.chart-card { background: var(--white); border: 1px solid var(--border); border-radius: 11px; padding: 18px; }
-.chart-hdr { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 14px; }
-.chart-title { font-family: 'Plus Jakarta Sans', sans-serif; font-size: 13px; font-weight: 800; color: var(--charcoal); }
-.chart-sub { font-size: 10px; color: var(--light); margin-top: 2px; }
-.chart-tabs { display: flex; gap: 3px; }
-.c-tab { padding: 4px 9px; border-radius: 6px; font-size: 10px; font-weight: 700; cursor: pointer; border: 1px solid var(--border); background: transparent; color: var(--mid); transition: all 0.15s; }
-.c-tab.active { background: var(--terra); color: white; border-color: var(--terra); }
+/* ============ GRID / CARDS ============ */
+.grid{display:grid;grid-template-columns:1.65fr 1fr;gap:16px}
+.card{background:var(--paper);border:1px solid var(--line);border-radius:var(--r);box-shadow:0 1px 0 rgba(30,30,20,.02)}
+.card-head{padding:17px 18px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:10px}
+.card-head h3{font-size:15px;margin:0}.card-body{padding:18px}
+.mini-tabs{display:flex;gap:4px;background:#eee8df;padding:3px;border-radius:9px}
+.mini-tab{border:0;background:transparent;padding:6px 10px;border-radius:7px;color:var(--muted);font-weight:600;cursor:pointer}
+.mini-tab.active{background:white;color:var(--ink);box-shadow:0 1px 3px #0001}
 
-/* UNIT MAP */
-.unit-map-card { background: var(--white); border: 1px solid var(--border); border-radius: 11px; padding: 18px; margin-bottom: 18px; }
-.floor-tabs { display: flex; gap: 4px; margin-bottom: 12px; border-bottom: 1px solid var(--border2); padding-bottom: 10px; }
-.floor-tab { padding: 5px 13px; border-radius: 6px; font-size: 11px; font-weight: 700; cursor: pointer; color: var(--mid); background: transparent; border: none; transition: all 0.15s; }
-.floor-tab.active { background: var(--teal); color: white; }
-.unit-filter-row { display: flex; align-items: center; gap: 7px; margin-bottom: 12px; flex-wrap: wrap; }
-.f-pill { padding: 4px 11px; border-radius: 20px; font-size: 10px; font-weight: 700; cursor: pointer; border: 1.5px solid var(--border); background: transparent; color: var(--mid); transition: all 0.15s; }
-.f-pill.active { background: var(--charcoal); color: white; border-color: var(--charcoal); }
-.f-pill.avail.active { background: var(--olive); border-color: var(--olive); color: white; }
-.f-pill.res.active { background: var(--amber); border-color: var(--amber); color: white; }
-.f-pill.over.active { background: var(--red); border-color: var(--red); color: white; }
-.f-search { margin-left: auto; display: flex; align-items: center; gap: 6px; background: var(--cream); border: 1px solid var(--border); border-radius: 7px; padding: 5px 10px; font-size: 11px; color: var(--mid); }
-.f-search input { border: none; background: transparent; font-family: 'Manrope', sans-serif; font-size: 11px; color: var(--charcoal); outline: none; width: 130px; }
-.unit-legend { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 12px; }
-.u-leg { display: flex; align-items: center; gap: 5px; font-size: 10px; font-weight: 700; color: var(--mid); }
-.u-leg-dot { width: 8px; height: 8px; border-radius: 50%; }
-.unit-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(68px, 1fr)); gap: 5px; }
-.u-cell { aspect-ratio: 1.15; border-radius: 7px; display: flex; flex-direction: column; align-items: center; justify-content: center; cursor: pointer; border: 1.5px solid transparent; transition: all 0.15s; position: relative; padding: 3px; }
-.u-cell:hover { transform: scale(1.05); box-shadow: 0 3px 10px rgba(0,0,0,0.1); z-index: 5; }
-.u-cell.occupied { background: var(--teal-light); border-color: var(--teal); }
-.u-cell.available { background: var(--olive-light); border-color: var(--olive); }
-.u-cell.reserved { background: var(--amber-light); border-color: var(--amber); }
-.u-cell.overdue { background: var(--red-light); border-color: var(--red); }
-.u-cell.maintenance { background: var(--cream2); border-color: var(--sand); }
-.u-cell.selected { border-color: var(--terra) !important; box-shadow: 0 0 0 2px var(--terra-light); }
-.u-dot { position: absolute; top: 4px; right: 4px; width: 5px; height: 5px; border-radius: 50%; }
-.u-cell.occupied .u-dot { background: var(--teal); }
-.u-cell.available .u-dot { background: var(--olive); }
-.u-cell.reserved .u-dot { background: var(--amber); }
-.u-cell.overdue .u-dot { background: var(--red); }
-.u-id { font-family: 'Plus Jakarta Sans', sans-serif; font-size: 10px; font-weight: 800; color: var(--charcoal); }
-.u-size { font-size: 8.5px; font-weight: 600; color: var(--mid); margin-top: 1px; }
-.u-psf { font-size: 8.5px; font-weight: 700; color: var(--terra); margin-top: 1px; }
+/* ============ FUNNEL ============ */
+.funnel{display:flex;gap:8px;align-items:stretch}
+.fstep{min-width:0;flex:1;background:var(--sage);padding:14px;border-radius:12px;position:relative}
+.fstep:not(:last-child):after{content:'›';position:absolute;right:-9px;top:25px;background:var(--paper);border-radius:50%;width:20px;height:20px;text-align:center;z-index:2;color:var(--muted)}
+.fstep b{font-size:20px;display:block}.fstep span{font-size:11px;color:var(--muted)}
 
-/* UNIT DETAIL PANEL */
-.unit-detail { background: var(--white); border: 1px solid var(--border); border-radius: 11px; padding: 18px; margin-bottom: 18px; }
-.ud-hdr { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 14px; padding-bottom: 14px; border-bottom: 1px solid var(--border2); }
-.ud-id { font-family: 'Plus Jakarta Sans', sans-serif; font-size: 20px; font-weight: 900; color: var(--charcoal); }
-.ud-badges { display: flex; gap: 5px; margin-top: 5px; flex-wrap: wrap; }
-.badge { display: inline-flex; align-items: center; gap: 3px; padding: 2px 8px; border-radius: 20px; font-size: 9.5px; font-weight: 700; }
-.badge.occ { background: var(--teal-light); color: var(--teal); }
-.badge.avail { background: var(--olive-light); color: var(--olive); }
-.badge.over { background: var(--red-light); color: var(--red); }
-.badge.res { background: var(--amber-light); color: var(--amber); }
-.badge.amber { background: var(--amber-light); color: var(--amber); }
-.badge.terra { background: var(--terra-light); color: var(--terra); }
-.badge.neutral { background: var(--cream2); color: var(--mid); }
-.ud-actions { display: flex; gap: 7px; }
-.act-btn { padding: 6px 12px; border-radius: 7px; font-size: 11px; font-weight: 700; cursor: pointer; border: 1px solid var(--border); background: var(--cream); color: var(--charcoal); transition: all 0.15s; font-family: 'Manrope', sans-serif; }
-.act-btn:hover { background: var(--cream2); }
-.act-btn.primary { background: var(--terra); color: white; border-color: var(--terra); }
-.act-btn.primary:hover { background: var(--terra-mid); }
-.act-btn.danger { background: var(--red-light); color: var(--red); border-color: transparent; }
-.act-btn.danger:hover { background: var(--red); color: white; }
-.act-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-.ud-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 14px; }
-.ud-stat { background: var(--cream); border-radius: 8px; padding: 11px 12px; }
-.ud-stat-lbl { font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--light); margin-bottom: 4px; }
-.ud-stat-val { font-family: 'Plus Jakarta Sans', sans-serif; font-size: 17px; font-weight: 900; color: var(--charcoal); }
-.ud-stat-sub { font-size: 10px; color: var(--mid); margin-top: 2px; }
+/* ============ QUEUE ============ */
+.queue{display:grid;gap:9px}.qitem{display:grid;grid-template-columns:34px 1fr auto;gap:10px;align-items:center;padding:10px;border:1px solid var(--line);border-radius:11px;background:white}
+.qitem .dot{width:8px;height:8px;border-radius:50%;background:var(--terra);margin:auto}
+.qitem b{font-size:13px}.qitem small{color:var(--muted)}
+.pill{border-radius:99px;padding:4px 8px;font-size:11px;font-weight:700;white-space:nowrap}
+.pill.red{background:#f8dfdc;color:#9e3f38}.pill.amber{background:#faebcf;color:#8b6324}.pill.green{background:#dfe7dd;color:#39503f}.pill.blue{background:#dfeef3;color:#3a5f6e}
 
-/* RATE ADJUSTMENT */
-.rate-box { background: var(--cream); border-radius: 9px; padding: 14px 16px; }
-.rate-box-title { font-family: 'Plus Jakarta Sans', sans-serif; font-size: 12px; font-weight: 800; color: var(--charcoal); margin-bottom: 12px; }
-.rate-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; }
-.rate-lbl { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--mid); margin-bottom: 5px; }
-.rate-input-wrap { display: flex; align-items: center; background: var(--white); border: 1.5px solid var(--border); border-radius: 7px; padding: 7px 10px; gap: 5px; }
-.rate-input-wrap.active { border-color: var(--terra); background: var(--terra-light); }
-.rate-input-wrap .curr { font-size: 11px; color: var(--light); }
-.rate-input-wrap input { border: none; background: transparent; font-family: 'Manrope', sans-serif; font-size: 14px; font-weight: 800; color: var(--charcoal); outline: none; width: 70px; }
-.rate-input-wrap.active input { color: var(--terra); }
-.rate-change { font-size: 10px; font-weight: 700; margin-top: 4px; }
-.rate-change.up { color: var(--olive); }
-.rate-change.down { color: var(--red); }
-.rate-actions { display: flex; gap: 8px; margin-top: 12px; align-items: center; }
-.rate-note { font-size: 10px; color: var(--mid); }
+/* ============ SOURCE ROWS ============ */
+.source-row{display:flex;align-items:center;gap:12px;padding:8px 0;border-bottom:1px solid var(--line)}.source-row:last-child{border-bottom:0}
+.source-row b{width:90px;font-size:12px;flex-shrink:0}
+.bar{flex:1;height:8px;background:#eee8df;border-radius:8px;overflow:hidden}
+.bar i{height:100%;display:block;background:var(--olive2);border-radius:8px}
+.source-row span{width:30px;text-align:right;font-weight:700;font-size:12px}
 
-/* RATE HISTORY TABLE */
-.rate-hist { margin-top: 14px; }
-.rate-hist-title { font-size: 11px; font-weight: 700; color: var(--mid); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
+/* ============ STAFF TABLE (command) ============ */
+.staff{width:100%;border-collapse:collapse}.staff td,.staff th{padding:11px;border-bottom:1px solid var(--line);text-align:left;font-size:12px}
 
-/* DATA TABLE */
-.tbl-card { background: var(--white); border: 1px solid var(--border); border-radius: 11px; padding: 18px; margin-bottom: 18px; }
-.data-tbl { width: 100%; border-collapse: collapse; }
-.data-tbl th { text-align: left; font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--light); padding: 7px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
-.data-tbl td { padding: 10px 10px; font-size: 12px; color: var(--charcoal); border-bottom: 1px solid var(--border2); vertical-align: middle; }
-.data-tbl tr:last-child td { border-bottom: none; }
-.data-tbl tr:hover td { background: var(--cream); }
-.t-name { font-weight: 700; }
-.t-type { font-size: 10px; color: var(--mid); margin-top: 1px; }
-.psf-val { font-family: 'Plus Jakarta Sans', sans-serif; font-weight: 800; color: var(--terra); }
-.days-left { font-size: 10px; font-weight: 700; }
-.days-left.urgent { color: var(--red); }
-.days-left.soon { color: var(--amber); }
-.days-left.ok { color: var(--mid); }
-.row-blocked td { opacity: 0.45; }
+/* ============ LEAD TABLE ============ */
+.toolbar{display:flex;align-items:center;gap:8px;margin-bottom:12px;flex-wrap:wrap}.toolbar .grow{flex:1}
+.filter{border:1px solid var(--line);background:white;border-radius:9px;padding:8px 10px;color:#4e534c;cursor:pointer;font-family:Manrope,system-ui,sans-serif;font-size:12px}
+.seg{display:flex;border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.seg button{border:0;border-right:1px solid var(--line);padding:8px 11px;background:white;cursor:pointer;font-family:Manrope,system-ui,sans-serif}
+.seg button:last-child{border:0}.seg button.active{background:var(--sage);color:var(--olive);font-weight:700}
+.table-wrap{overflow:auto}
+.lead-table{width:100%;border-collapse:collapse;min-width:1060px}
+.lead-table th{text-align:left;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.05em;padding:11px 13px;border-bottom:1px solid var(--line);white-space:nowrap}
+.lead-table td{padding:12px 13px;border-bottom:1px solid #eee9e1;white-space:nowrap}
+.lead-table tr:hover td{background:#fbf8f3}
+.contact{display:flex;gap:10px;align-items:center}.contact .avatar{width:34px;height:34px;font-size:12px}
+.contact b{display:block}.contact small{color:var(--muted)}
+.heat{display:flex;gap:2px}.heat i{width:5px;height:13px;border-radius:2px;background:#ddd}.heat i.on{background:var(--terra)}
+.channel{width:26px;height:26px;border-radius:8px;display:inline-grid;place-items:center;background:#edf1eb;color:var(--olive);font-weight:800;font-size:11px}
+.late{color:var(--red);font-weight:700}.check{width:16px;height:16px}
+.pagination{display:flex;justify-content:space-between;align-items:center;padding:14px;color:var(--muted);font-size:12px}
+.pagination .pages{display:flex;gap:5px}.pages button{width:31px;height:31px;border-radius:8px;border:1px solid var(--line);background:white;cursor:pointer}
+.pages button.active{background:var(--olive);color:white}
 
-/* TWO/THREE COL */
-.two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 18px; }
-.three-col { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; margin-bottom: 18px; }
+/* ============ KANBAN ============ */
+.kanban{display:grid;grid-template-columns:repeat(5,minmax(250px,1fr));gap:12px;overflow:auto;padding-bottom:8px}
+.column{background:#eee9e1;border-radius:14px;padding:10px;min-height:570px}
+.col-head{display:flex;justify-content:space-between;align-items:center;padding:5px 4px 10px;font-weight:700}
+.col-head small{font-weight:500;color:var(--muted)}
+.deal{background:white;border:1px solid var(--line);border-radius:12px;padding:13px;margin-bottom:9px;box-shadow:0 2px 6px #00000008;cursor:pointer}
+.deal:hover{border-color:#c9b8a8;box-shadow:var(--shadow)}
+.deal-top{display:flex;justify-content:space-between;gap:8px}.deal h4{font-size:13px;margin:0 0 3px}.deal p{font-size:12px;color:var(--muted);margin:0}
+.deal-value{font-size:15px;font-weight:800;margin:12px 0 8px}
+.deal-meta{display:flex;justify-content:space-between;align-items:center;color:var(--muted);font-size:11px}.deal .flag{color:var(--red)}
 
-/* REVENUE BARS */
-.rev-row { display: flex; align-items: center; padding: 9px 0; border-bottom: 1px solid var(--border2); }
-.rev-row:last-child { border-bottom: none; }
-.rev-lbl { font-size: 11px; font-weight: 600; color: var(--charcoal); width: 70px; flex-shrink: 0; }
-.rev-bar-wrap { flex: 1; margin: 0 12px; height: 6px; background: var(--cream2); border-radius: 3px; overflow: hidden; }
-.rev-bar { height: 100%; border-radius: 3px; }
-.rev-val { font-family: 'Plus Jakarta Sans', sans-serif; font-size: 12px; font-weight: 800; color: var(--charcoal); min-width: 60px; text-align: right; }
+/* ============ INBOX / CHAT / PROFILE ============ */
+.inbox{display:grid;grid-template-columns:320px 1fr 300px;height:calc(100vh - 145px);min-height:650px;overflow:hidden}
+.threads{border-right:1px solid var(--line);overflow:auto}
+.thread{padding:13px 15px;border-bottom:1px solid var(--line);display:grid;grid-template-columns:38px 1fr auto;gap:9px;cursor:pointer}
+.thread.active{background:#edf1eb;border-left:3px solid var(--terra)}
+.thread b{font-size:13px}.thread p{margin:2px 0 0;color:var(--muted);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:185px}
+.thread time{font-size:10px;color:var(--muted)}
+.chat{display:flex;flex-direction:column;min-width:0}
+.chat-head{padding:13px 18px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center}
+.messages{padding:20px;overflow:auto;flex:1;background:#fbf9f5}
+.bubble{max-width:72%;padding:10px 13px;border-radius:13px;margin-bottom:10px;background:white;border:1px solid var(--line)}
+.bubble.me{margin-left:auto;background:var(--olive);color:white;border-color:var(--olive)}
+.bubble small{display:block;margin-top:5px;opacity:.6}
+.composer{border-top:1px solid var(--line);padding:12px;background:white}
+.composer textarea{width:100%;height:68px;resize:none;border:1px solid var(--line);border-radius:11px;padding:10px;outline:none;font-family:Manrope,system-ui,sans-serif}
+.composer-foot{display:flex;justify-content:space-between;align-items:center;margin-top:7px}
+.profile{border-left:1px solid var(--line);padding:18px;overflow:auto}
+.profile h3{margin:10px 0 2px}.profile dl{display:grid;grid-template-columns:90px 1fr;gap:9px;margin:18px 0}
+.profile dt{color:var(--muted);font-size:12px}.profile dd{margin:0;font-size:12px;font-weight:600}
+.tag{display:inline-block;padding:4px 8px;background:#eee9e2;border-radius:7px;font-size:11px;margin:2px}
 
-/* KANBAN */
-.kanban-board { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin-top: 14px; }
-.k-col { background: var(--cream); border-radius: 9px; padding: 10px; }
-.k-col-hdr { display: flex; align-items: center; justify-content: space-between; margin-bottom: 9px; }
-.k-col-title { font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.5px; color: var(--mid); }
-.k-count { background: var(--white); border: 1px solid var(--border); border-radius: 10px; padding: 1px 6px; font-size: 9px; font-weight: 700; color: var(--charcoal); }
-.k-card { background: var(--white); border: 1px solid var(--border); border-radius: 7px; padding: 9px; margin-bottom: 7px; cursor: pointer; transition: all 0.15s; }
-.k-card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.07); transform: translateY(-1px); }
-.k-name { font-size: 11px; font-weight: 700; color: var(--charcoal); margin-bottom: 4px; }
-.k-meta { font-size: 10px; color: var(--mid); display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
-.k-tag { padding: 2px 5px; border-radius: 4px; font-size: 9px; font-weight: 700; }
-.k-tag.biz { background: var(--teal-light); color: var(--teal); }
-.k-tag.per { background: var(--terra-light); color: var(--terra); }
-.k-tag.exp { background: var(--olive-light); color: var(--olive); }
-.k-tag.ren { background: var(--amber-light); color: var(--amber); }
+/* ============ CALENDAR ============ */
+.calendar-layout{display:grid;grid-template-columns:1fr 300px;gap:16px}
+.week{display:grid;grid-template-columns:60px repeat(5,1fr);border:1px solid var(--line);border-radius:14px;overflow:hidden;background:white}
+.week>div{min-height:75px;border-right:1px solid var(--line);border-bottom:1px solid var(--line);padding:7px}
+.week .day{min-height:auto;background:#faf7f2;text-align:center;font-weight:700}
+.week .time{font-size:11px;color:var(--muted);text-align:right}
+.event{padding:7px;border-radius:8px;background:#f4dfd3;border-left:3px solid var(--terra);font-size:11px;margin-bottom:4px}
+.event.green{background:#e1e9df;border-color:var(--olive2)}
 
-/* ALERTS */
-.alert-list { }
-.alert-item { display: flex; align-items: flex-start; gap: 10px; padding: 11px 0; border-bottom: 1px solid var(--border2); }
-.alert-item:last-child { border-bottom: none; }
-.alert-icon { width: 30px; height: 30px; border-radius: 7px; display: flex; align-items: center; justify-content: center; font-size: 13px; flex-shrink: 0; }
-.alert-icon.red { background: var(--red-light); }
-.alert-icon.amber { background: var(--amber-light); }
-.alert-icon.olive { background: var(--olive-light); }
-.alert-icon.terra { background: var(--terra-light); }
-.alert-body { flex: 1; }
-.alert-title { font-size: 12px; font-weight: 700; color: var(--charcoal); margin-bottom: 2px; }
-.alert-desc { font-size: 10px; color: var(--mid); }
-.alert-time { font-size: 10px; color: var(--light); white-space: nowrap; }
-.alert-act { padding: 4px 9px; border-radius: 6px; font-size: 10px; font-weight: 700; cursor: pointer; border: 1px solid var(--border); background: var(--cream); color: var(--charcoal); white-space: nowrap; align-self: center; transition: all 0.15s; font-family: 'Manrope', sans-serif; }
-.alert-act:hover { background: var(--terra); color: white; border-color: var(--terra); }
+/* ============ AUTOMATIONS ============ */
+.automations{display:grid;grid-template-columns:repeat(3,1fr);gap:13px}
+.auto{padding:17px}.auto-icon{width:38px;height:38px;border-radius:10px;background:var(--sage);display:grid;place-items:center;color:var(--olive);font-size:18px}
+.auto h3{margin:13px 0 4px;font-size:15px}.auto p{color:var(--muted);min-height:40px;font-size:12px}
+.sw{width:38px;height:22px;border-radius:20px;background:#d7d2ca;padding:3px;display:inline-flex;justify-content:flex-start;cursor:pointer}
+.sw.on{background:var(--olive);justify-content:flex-end}
+.sw i{width:16px;height:16px;background:white;border-radius:50%}
+.auto-foot{display:flex;justify-content:space-between;align-items:center;margin-top:14px;font-size:11px;color:var(--muted)}
 
-/* PSF LEGEND */
-.psf-legend { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 10px; }
-.psf-leg { display: flex; align-items: center; gap: 5px; font-size: 10px; color: var(--mid); font-weight: 600; }
-.psf-dot { width: 9px; height: 9px; border-radius: 50%; }
+/* ============ ANALYTICS ============ */
+.analytics-grid{display:grid;grid-template-columns:2fr 1fr;gap:16px}
+.chart{height:230px;display:flex;align-items:flex-end;gap:12px;padding:12px 4px 25px;position:relative;border-bottom:1px solid var(--line)}
+.chart .group{flex:1;height:100%;display:flex;align-items:flex-end;gap:3px;position:relative}
+.chart .group:after{content:attr(data-label);position:absolute;bottom:-24px;left:0;right:0;text-align:center;color:var(--muted);font-size:10px}
+.chart .b{flex:1;border-radius:5px 5px 0 0;background:var(--olive2)}.chart .b:nth-child(2){background:var(--terra)}
 
-/* ADMIN: FORMS + MODALS (same theme tokens) */
-.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-.field { display: flex; flex-direction: column; gap: 4px; }
-.field.full { grid-column: 1 / -1; }
-.field label { font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--light); }
-.field input, .field select { border: 1.5px solid var(--border); border-radius: 7px; padding: 8px 10px; font-family: 'Manrope', sans-serif; font-size: 13px; font-weight: 700; color: var(--charcoal); outline: none; background: var(--white); width: 100%; }
-.field input:focus, .field select:focus { border-color: var(--terra); }
-.field select { cursor: pointer; }
-.field select:disabled { background: var(--cream2); color: var(--mid); cursor: not-allowed; }
-.field-err { color: var(--red); font-size: 10px; font-weight: 700; min-height: 12px; }
-.field input.err, .field select.err { border-color: var(--red); }
-.modal-overlay { position: fixed; inset: 0; background: rgba(31,31,31,0.5); display: flex; align-items: flex-start; justify-content: center; padding: 8vh 16px 16px; z-index: 200; }
-.modal-overlay[hidden] { display: none; }
-.modal { background: var(--white); border: 1px solid var(--border); border-radius: 11px; padding: 18px; width: 540px; max-width: 100%; box-shadow: 0 12px 40px rgba(0,0,0,0.18); }
-.modal-hdr { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
-.modal-title { font-family: 'Plus Jakarta Sans', sans-serif; font-size: 15px; font-weight: 800; color: var(--charcoal); }
-.modal-x { background: var(--cream); border: 1px solid var(--border); border-radius: 6px; width: 26px; height: 26px; cursor: pointer; font-size: 12px; color: var(--mid); }
-.modal-x:hover { background: var(--cream2); }
-.modal-foot { display: flex; gap: 8px; margin-top: 16px; justify-content: flex-end; align-items: center; }
-.modal-alert { background: var(--red-light); color: var(--red); border-radius: 7px; padding: 9px 11px; font-size: 11px; font-weight: 700; margin-bottom: 12px; }
-.modal-alert.olive { background: var(--olive-light); color: var(--olive); }
-.modal-alert.amber { background: var(--amber-light); color: var(--amber); }
-.modal-hint { font-size: 10px; color: var(--light); margin-bottom: 10px; }
-.unit-actions { display: table-cell; text-align: right; white-space: nowrap; }
-.unit-actions .act-btn { padding: 3px 8px; font-size: 10px; line-height: 1; }
+/* ============ SUBTABS ============ */
+.subtabs{display:flex;gap:4px;border-bottom:1px solid var(--line);margin:-6px 0 18px;overflow:auto}
+.subtabs button{border:0;background:transparent;padding:11px 13px;border-bottom:2px solid transparent;white-space:nowrap;color:var(--muted);font-weight:650;cursor:pointer;font-family:Manrope,system-ui,sans-serif}
+.subtabs button.active{border-color:var(--terra);color:var(--terra2)}
+.module-panel{display:none}.module-panel.active{display:block}
 
-/* SIDEBAR-NAVIGATED VIEWS */
-.view[hidden] { display: none; }
+/* ============ MASTER-DETAIL (customers) ============ */
+.master-detail{display:grid;grid-template-columns:360px 1fr;min-height:680px;overflow:hidden}
+.record-list{border-right:1px solid var(--line);overflow:auto}
+.record-search{padding:13px;border-bottom:1px solid var(--line)}
+.record-search input{width:100%;padding:9px 11px;border:1px solid var(--line);border-radius:9px;font-family:Manrope,system-ui,sans-serif}
+.record{padding:13px 15px;border-bottom:1px solid var(--line);display:grid;grid-template-columns:38px 1fr auto;gap:10px;align-items:center;cursor:pointer}
+.record:hover,.record.active{background:#f0f2ed}.record.active{border-left:3px solid var(--terra)}
+.record b{font-size:12px}.record small{display:block;color:var(--muted);font-size:10px}
+.record-detail{padding:20px;overflow:auto}
+.summary-strip{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin:16px 0}
+.summary-strip div{background:#f3efe8;border-radius:9px;padding:9px}
+.summary-strip small{display:block;color:var(--muted);font-size:9px}.summary-strip b{font-size:12px}
+.account-head{display:flex;align-items:center;gap:12px}.account-head h2{margin:0}
+.account-actions{display:flex;gap:7px;margin-left:auto;flex-wrap:wrap}
 
-/* UNITS SECTION — table toolbar + pager */
-.tbl-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
-.tbl-select { border: 1.5px solid var(--border); border-radius: 7px; padding: 6px 10px; font-family: 'Manrope', sans-serif; font-size: 11px; font-weight: 700; color: var(--charcoal); outline: none; background: var(--white); cursor: pointer; }
-.tbl-select:focus { border-color: var(--terra); }
-.tbl-search { border: 1.5px solid var(--border); border-radius: 7px; padding: 6px 10px; font-family: 'Manrope', sans-serif; font-size: 11px; font-weight: 700; color: var(--charcoal); outline: none; background: var(--white); width: 220px; }
-.tbl-search:focus { border-color: var(--terra); }
-.tbl-pager { display: flex; align-items: center; justify-content: space-between; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border2); }
-.tbl-pager-info { font-size: 11px; font-weight: 700; color: var(--mid); }
-.tbl-pager-btns { display: flex; gap: 7px; }
-.tbl-pager .tb-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+/* ============ FACILITY CARDS (facilities page) ============ */
+.facility-cards{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px}
+.facility-card{padding:16px;cursor:pointer}.facility-card:hover,.facility-card.selected{border-color:var(--terra);box-shadow:0 0 0 2px #c9795220}
+.facility-top{display:flex;justify-content:space-between;align-items:flex-start}.facility-card h3{margin:0 0 4px}
+.occupancy-ring{width:54px;height:54px;border-radius:50%;display:grid;place-items:center;background:conic-gradient(var(--terra) calc(var(--pct)*1%),#ebe5dc 0);position:relative}
+.occupancy-ring:before{content:'';position:absolute;inset:6px;background:var(--paper);border-radius:50%}.occupancy-ring b{z-index:1;font-size:11px}
+.facility-metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin-top:14px}
+.facility-metrics div{background:#f5f1ea;border-radius:8px;padding:8px}
+.facility-metrics small{display:block;color:var(--muted);font-size:10px}.facility-metrics b{font-size:12px}
 
-/* ACTIVITY FEED tones + tenant-history placeholder */
-.alert-icon.teal { background: var(--teal-light); }
-.ud-history { border-top: 1px solid var(--border2); padding-top: 14px; }
-.ud-history-title { font-size: 11px; font-weight: 700; color: var(--mid); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
-.ud-history-empty { font-size: 11px; color: var(--light); font-style: italic; }
+/* ============ AGING ============ */
+.aging{display:grid;grid-template-columns:repeat(5,1fr);gap:9px}
+.agebox{padding:13px;border:1px solid var(--line);border-radius:10px;background:#fff}
+.agebox small{color:var(--muted)}.agebox b{display:block;font-size:20px;margin:3px 0}
+.agebox.danger{border-color:#e6b5b0;background:#fff8f7}
 
-/* FLOOR PLAN EDITOR (facility setup) — same theme tokens */
-.fp-layout { display: grid; grid-template-columns: 215px 1fr; gap: 14px; margin-bottom: 12px; }
-.fp-palette { background: var(--cream); border: 1px solid var(--border); border-radius: 9px; padding: 12px; max-height: 560px; overflow-y: auto; }
-.fp-unit-list { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
-.fp-unit-chip { background: var(--white); border: 1.5px solid var(--border); border-radius: 7px; padding: 6px 9px; cursor: grab; font-size: 11px; font-weight: 700; transition: all 0.15s; user-select: none; touch-action: none; }
-.fp-unit-chip:hover { border-color: var(--terra); box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
-.fp-unit-chip.placed { opacity: 0.4; pointer-events: none; cursor: default; }
-.fp-editor { min-width: 0; }
-.fp-toolbar { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; margin-bottom: 8px; }
-.fp-toolbar .tbl-search { width: 70px; padding: 5px 8px; font-size: 11px; }
-.fp-zoom { display: flex; align-items: center; gap: 5px; margin-left: auto; }
-.fp-zoom .tb-btn { padding: 2px 9px; font-size: 13px; line-height: 1.2; }
-.fp-sel-info { display: inline-flex; align-items: center; gap: 8px; }
-.fp-canvas-wrap { background: var(--white); border: 1px solid var(--border); border-radius: 9px; padding: 12px; overflow: auto; max-height: 640px; min-height: 360px; }
-.fp-canvas { position: relative; background-color: var(--cream); border: 1px solid var(--sand); background-image: linear-gradient(var(--sand) 1px, transparent 1px), linear-gradient(90deg, var(--sand) 1px, transparent 1px); }
-.fp-wall { position: absolute; background: var(--charcoal); z-index: 1; pointer-events: none; }
-.fp-corridor { position: absolute; background: var(--sand); z-index: 1; border-radius: 2px; pointer-events: none; }
-.fp-struct { position: absolute; background: var(--terra-light); border: 1.5px solid var(--terra); color: var(--terra); font-size: 9px; font-weight: 800; display: flex; align-items: center; justify-content: center; z-index: 1; border-radius: 4px; padding: 1px; pointer-events: none; }
-/* User-authored decoration blocks (lift / stairs / exit / walking area ...) —
-   name+rect primitives, rendered BELOW units (z-index 1 vs 2). Dashed neutral
-   tint by default so they are visually distinct from the solid outlined units;
-   wrapped legs (resize corner + drag) behave like units. */
-.fp-block { position: absolute; background: var(--sand); border: 1.5px dashed var(--mid); border-radius: 4px; display: flex; align-items: center; justify-content: center; cursor: grab; box-sizing: border-box; z-index: 1; touch-action: none; overflow: hidden; }
-.fp-block .fp-block-name { font-family: 'Plus Jakarta Sans', sans-serif; font-size: 10px; font-weight: 800; color: var(--mid); text-align: center; padding: 1px 4px; line-height: 1.2; overflow: hidden; }
-.fp-block.selected { border-color: var(--terra); border-style: solid; background: var(--terra-light); box-shadow: 0 0 0 2px var(--terra-light); }
-.fp-block.selected .fp-block-name { color: var(--terra); }
-.fp-block .fp-resize { position: absolute; right: 2px; bottom: 2px; width: 11px; height: 11px; background: var(--mid); border-radius: 2px; cursor: nwse-resize; opacity: 0; transition: opacity 0.15s; }
-.fp-block.selected .fp-resize { opacity: 1; }
-.fp-placed { position: absolute; border-radius: 6px; display: flex; flex-direction: column; align-items: center; justify-content: center; cursor: grab; border: 2px solid var(--teal); background: var(--teal-light); box-sizing: border-box; font-family: 'Plus Jakarta Sans', sans-serif; font-weight: 800; color: var(--teal); overflow: hidden; z-index: 2; touch-action: none; }
-.fp-placed .fp-code { font-size: 10px; line-height: 1.15; }
-.fp-placed .fp-size { font-size: 8.5px; color: var(--mid); font-weight: 600; line-height: 1.2; }
-.fp-placed .fp-status { position: absolute; top: 3px; right: 3px; width: 7px; height: 7px; border-radius: 50%; }
-.fp-placed.selected { border-color: var(--terra); box-shadow: 0 0 0 2px var(--terra-light); }
-.fp-placed .fp-resize { position: absolute; right: 2px; bottom: 2px; width: 11px; height: 11px; background: var(--charcoal); border-radius: 2px; cursor: nwse-resize; opacity: 0; transition: opacity 0.15s; }
-.fp-placed.selected .fp-resize { opacity: 1; }
-.fp-ghost { position: fixed; z-index: 300; pointer-events: none; display: flex; align-items: center; justify-content: center; border: 2px dashed var(--terra); background: rgba(184,106,74,0.15); color: var(--terra); font-family: 'Plus Jakarta Sans', sans-serif; font-weight: 800; font-size: 11px; border-radius: 6px; }
-.fp-hint { font-size: 10px; color: var(--light); }
-.fp-structure { margin-top: 4px; }
-.fp-structure summary { color: var(--mid); }
-.fp-structure-input { width: 100%; font-family: 'SFMono-Regular', Menlo, Consolas, monospace; font-size: 11px; border: 1.5px solid var(--border); border-radius: 7px; padding: 8px; background: var(--white); color: var(--charcoal); resize: vertical; margin-top: 6px; }
-.fp-structure-input:focus { border-color: var(--terra); outline: none; }
-.fp-block-form { margin-top: 10px; border-top: 1px solid var(--border); padding-top: 10px; }
-.fp-block-form input { width: 100%; box-sizing: border-box; }
-.fp-legacy-note { font-size: 10px; color: var(--amber); font-weight: 700; margin-top: 6px; }
+/* ============ DRAWER / MODAL ============ */
+.drawer,.modal{position:fixed;inset:0;z-index:50;pointer-events:none}
+.overlay{position:absolute;inset:0;background:#17201866;opacity:0;transition:.2s}
+.drawer-panel{position:absolute;right:0;top:0;height:100%;width:min(640px,96vw);background:var(--paper);transform:translateX(100%);transition:.25s;box-shadow:-20px 0 50px #0002;display:flex;flex-direction:column}
+.drawer.open,.modal.open{pointer-events:auto}.drawer.open .overlay,.modal.open .overlay{opacity:1}
+.drawer.open .drawer-panel{transform:none}
+.drawer-head{padding:20px 22px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between}
+.drawer-body{padding:20px 22px;overflow:auto}
+.detail-top{display:flex;gap:14px;align-items:center}.detail-top .avatar{width:48px;height:48px}
+.detail-tabs{display:flex;border-bottom:1px solid var(--line);margin:20px -22px 16px;padding:0 22px}
+.detail-tabs button{border:0;background:transparent;padding:10px 13px;border-bottom:2px solid transparent;cursor:pointer;font-family:Manrope,system-ui,sans-serif}
+.detail-tabs button.active{border-color:var(--terra);color:var(--terra2);font-weight:700}
+.info-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
+.info{border:1px solid var(--line);padding:11px;border-radius:10px}.info small{display:block;color:var(--muted)}
+.timeline{border-left:2px solid var(--line);margin:20px 0 0 8px;padding-left:18px}
+.timeitem{margin-bottom:18px;position:relative}
+.timeitem:before{content:'';width:9px;height:9px;background:var(--terra);border:3px solid var(--paper);border-radius:50%;left:-24px;top:4px;position:absolute}
+.timeitem b{font-size:12px}.timeitem p{margin:3px 0;color:var(--muted);font-size:12px}
+.modal-card{position:absolute;width:min(650px,94vw);max-height:90vh;overflow:auto;left:50%;top:50%;transform:translate(-50%,-46%);opacity:0;background:var(--paper);border-radius:18px;box-shadow:0 20px 60px #0004;transition:.2s}
+.modal.open .modal-card{transform:translate(-50%,-50%);opacity:1}
+.modal-card header{display:flex;justify-content:space-between;padding:20px;border-bottom:1px solid var(--line)}
+.modal-card header h2{margin:0;font-size:17px}.modal-card header small{color:var(--muted)}
+.modal-card section{padding:20px;overflow:auto}
+.modal-card footer{padding:16px 20px;border-top:1px solid var(--line);display:flex;justify-content:flex-end;gap:8px}
+/* toast */
+.toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--ink);color:white;padding:12px 20px;border-radius:12px;font-weight:600;z-index:100;opacity:0;transition:.25s;pointer-events:none}
+.toast.show{opacity:1}
 
-/* FLOOR PLAN READ-ONLY MODAL (Units → Show Floor Plan) — reuses fp-canvas
-   geometry/colors but nothing in the modal is draggable or selectable. */
-.modal-wide { width: 860px; max-width: 100%; }
-.fp-view-wrap { display: flex; flex-direction: column; }
-.fp-view-wrap .fp-canvas-wrap { min-height: 0; max-height: 62vh; }
-.fp-view-canvas .fp-canvas { margin: 0 auto; }
-.fp-view-canvas .fp-block, .fp-view-canvas .fp-placed, .fp-view-canvas .fp-resize { pointer-events: none; cursor: default; }
-.fp-view-empty { font-size: 12px; font-weight: 700; color: var(--mid); text-align: center; background: var(--cream); border: 1.5px dashed var(--sand); border-radius: 9px; padding: 44px 16px; }
+/* ============ ADMIN CRUD-SPECIFIC (modals, forms, fp editor, tables — v8 themed) ============ */
+.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.field{display:flex;flex-direction:column;gap:4px}.field.full{grid-column:1/-1}
+.field label{font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--muted)}
+.field input,.field select{border:1.5px solid var(--line);border-radius:7px;padding:8px 10px;font-family:Manrope,system-ui,sans-serif;font-size:13px;font-weight:700;color:var(--ink);outline:none;background:var(--white);width:100%}
+.field input:focus,.field select:focus{border-color:var(--terra)}
+.field select{cursor:pointer}
+.field-err{color:var(--red);font-size:10px;font-weight:700;min-height:12px}
+.field input.err,.field select.err{border-color:var(--red)}
+.modal-overlay{position:fixed;inset:0;background:rgba(32,36,31,.5);display:flex;align-items:flex-start;justify-content:center;padding:8vh 16px 16px;z-index:200}
+.modal-overlay[hidden]{display:none}
+.modal-win{background:var(--paper);border:1px solid var(--line);border-radius:14px;padding:18px;width:540px;max-width:100%;box-shadow:0 12px 40px rgba(0,0,0,.18)}
+.modal-hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}
+.modal-title{font-size:16px;font-weight:800;color:var(--ink)}
+.modal-x{background:var(--cream);border:1px solid var(--line);border-radius:8px;width:28px;height:28px;cursor:pointer;font-size:13px;color:var(--muted)}
+.modal-foot{display:flex;gap:8px;margin-top:16px;justify-content:flex-end;align-items:center}
+.modal-alert{border-radius:9px;padding:10px 12px;font-size:11px;font-weight:700;margin-bottom:12px}
+.modal-alert:empty{display:none}
+.modal-alert{background:var(--red-light);color:var(--red)}
+.modal-hint{font-size:10px;color:var(--muted);margin-bottom:10px}
+.unit-actions{display:table-cell;text-align:right;white-space:nowrap}
+.unit-actions .act-btn{padding:3px 8px;font-size:10px;line-height:1}
 
-::-webkit-scrollbar { width: 4px; height: 4px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--sand); border-radius: 2px; }
+/* VIEWS (admin breakout sections) */
+.view[hidden]{display:none}
 
-/* ============================================================
-   RESPONSIVE LAYER (admin)
-   Breakpoints: <=1024 tablet · <=768 mobile · <=600 forms · <=480 small phone.
-   Desktop (>1024) renders identically — every rule below is additive and
-   scoped inside these media queries, except the two inert defaults
-   (.nav-toggle hidden, .sb-backdrop invisible/non-interactive).
-   ============================================================ */
-.nav-toggle { display: none; }
-.sb-backdrop {
-  position: fixed; inset: 0; z-index: 90;
-  background: rgba(31,31,31,0.45);
-  opacity: 0; visibility: hidden; pointer-events: none;
-  transition: opacity 0.2s ease, visibility 0.2s ease;
+/* Data table (admin unified) */
+.tbl-card{background:var(--paper);border:1px solid var(--line);border-radius:var(--r);padding:18px;margin-bottom:18px}
+.data-tbl{width:100%;border-collapse:collapse}
+.data-tbl th{text-align:left;font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);padding:7px 10px;border-bottom:1px solid var(--line);white-space:nowrap}
+.data-tbl td{padding:10px 10px;font-size:12px;color:var(--ink);border-bottom:1px solid #ede8e2;vertical-align:middle}
+.data-tbl tr:last-child td{border-bottom:none}.data-tbl tr:hover td{background:var(--cream)}
+.t-name{font-weight:700}.t-type{font-size:10px;color:var(--muted);margin-top:1px}
+.psf-val{font-weight:800;color:var(--terra)}
+.days-left{font-size:10px;font-weight:700}.days-left.urgent{color:var(--red)}
+.days-left.soon{color:var(--amber)}.days-left.ok{color:var(--muted)}
+.row-blocked td{opacity:.45}
+.tbl-toolbar{display:flex;align-items:center;gap:8px;margin-bottom:10px}
+.tbl-select{border:1.5px solid var(--line);border-radius:7px;padding:6px 10px;font-family:Manrope,system-ui,sans-serif;font-size:11px;font-weight:700;color:var(--ink);outline:none;background:var(--white);cursor:pointer}
+.tbl-select:focus{border-color:var(--terra)}
+.tbl-search{border:1.5px solid var(--line);border-radius:7px;padding:6px 10px;font-family:Manrope,system-ui,sans-serif;font-size:11px;font-weight:700;color:var(--ink);outline:none;background:var(--white);width:220px}
+.tbl-pager{display:flex;align-items:center;justify-content:space-between;margin-top:12px;padding-top:12px;border-top:1px solid #ede8e2}
+.tbl-pager-info{font-size:11px;font-weight:700;color:var(--muted)}
+.tbl-pager-btns{display:flex;gap:7px}
+.tbl-pager .tb-btn:disabled{opacity:.4;cursor:not-allowed}
+
+/* Admin legacy badge tones mapping to v8 */
+.badge{display:inline-flex;align-items:center;gap:3px;padding:2px 8px;border-radius:20px;font-size:9.5px;font-weight:700}
+.badge.occ{background:var(--sage);color:var(--olive2)}
+.badge.avail{background:var(--sage);color:var(--olive2)}
+.badge.over{background:var(--red-light);color:var(--red)}
+.badge.res{background:var(--amber-light);color:#8b6324}
+.badge.amber{background:var(--amber-light);color:#8b6324}
+.badge.terra{background:var(--terra-light);color:var(--terra2)}
+.badge.neutral{background:#ede8e2;color:var(--muted)}
+
+/* Unit detail panel */
+.unit-detail{background:var(--paper);border:1px solid var(--line);border-radius:var(--r);padding:18px;margin-bottom:18px}
+.ud-hdr{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:14px;padding-bottom:14px;border-bottom:1px solid #ede8e2}
+.ud-id{font-size:20px;font-weight:800;color:var(--ink)}
+.ud-badges{display:flex;gap:5px;margin-top:5px;flex-wrap:wrap}
+.ud-actions{display:flex;gap:7px;flex-wrap:wrap}
+.act-btn{padding:6px 12px;border-radius:7px;font-size:11px;font-weight:700;cursor:pointer;border:1px solid var(--line);background:var(--cream);color:var(--ink);transition:all.15s;font-family:Manrope,system-ui,sans-serif}
+.act-btn:hover{background:#ede8e2}
+.act-btn.primary{background:var(--terra);color:white;border-color:var(--terra)}
+.act-btn.primary:hover{background:var(--terra2)}
+.act-btn.danger{background:var(--red-light);color:var(--red);border-color:transparent}
+.act-btn.danger:hover{background:var(--red);color:white}
+.act-btn:disabled{opacity:.4;cursor:not-allowed}
+.ud-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px}
+.ud-stat{background:var(--cream);border-radius:8px;padding:11px 12px}
+.ud-stat-lbl{font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);margin-bottom:4px}
+.ud-stat-val{font-size:17px;font-weight:800;color:var(--ink)}
+.ud-stat-sub{font-size:10px;color:var(--muted);margin-top:2px}
+
+/* Unit map card (inside facilities page) — v8 themed */
+.unit-map-card{background:var(--paper);border:1px solid var(--line);border-radius:var(--r);padding:18px;margin-bottom:18px}
+.floor-tabs{display:flex;gap:4px;margin-bottom:12px;border-bottom:1px solid #ede8e2;padding-bottom:10px}
+.floor-tab{padding:5px 13px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;color:var(--muted);background:transparent;border:none;font-family:Manrope,system-ui,sans-serif}
+.floor-tab.active{background:var(--olive);color:white}
+.unit-filter-row{display:flex;align-items:center;gap:7px;margin-bottom:12px;flex-wrap:wrap}
+.f-pill{padding:4px 11px;border-radius:20px;font-size:10px;font-weight:700;cursor:pointer;border:1.5px solid var(--line);background:transparent;color:var(--muted)}
+.f-pill.active{background:var(--ink);color:white;border-color:var(--ink)}
+.f-search{margin-left:auto;display:flex;align-items:center;gap:6px;background:var(--cream);border:1px solid var(--line);border-radius:7px;padding:5px 10px;font-size:11px;color:var(--muted)}
+.f-search input{border:none;background:transparent;font-family:Manrope,system-ui,sans-serif;font-size:11px;color:var(--ink);outline:none;width:130px}
+.unit-legend{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:12px}
+.u-leg{display:flex;align-items:center;gap:5px;font-size:10px;font-weight:700;color:var(--muted)}
+.u-leg-dot{width:8px;height:8px;border-radius:50%}
+.unit-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(68px,1fr));gap:5px}
+.u-cell{aspect-ratio:1.15;border-radius:7px;display:flex;flex-direction:column;align-items:center;justify-content:center;cursor:pointer;border:1.5px solid transparent;transition:all.15s;position:relative;padding:3px}
+.u-cell:hover{transform:scale(1.05);box-shadow:0 3px 10px rgba(0,0,0,.1);z-index:5}
+.u-cell.occupied{background:var(--sage);border-color:var(--olive2)}
+.u-cell.available{background:var(--sage);border-color:var(--olive)}
+.u-cell.reserved{background:var(--amber-light);border-color:var(--amber)}
+.u-cell.overdue{background:var(--red-light);border-color:var(--red)}
+.u-cell.maintenance{background:var(--cream);border-color:var(--line)}
+.u-cell.selected{border-color:var(--terra)!important;box-shadow:0 0 0 2px var(--terra-light)}
+.u-dot{position:absolute;top:4px;right:4px;width:5px;height:5px;border-radius:50%}
+.u-cell.occupied .u-dot{background:var(--olive2)}
+.u-cell.available .u-dot{background:var(--olive)}
+.u-cell.reserved .u-dot{background:var(--amber)}
+.u-cell.overdue .u-dot{background:var(--red)}
+.u-id{font-size:10px;font-weight:800;color:var(--ink)}
+.u-size{font-size:8.5px;font-weight:600;color:var(--muted);margin-top:1px}
+.u-psf{font-size:8.5px;font-weight:700;color:var(--terra);margin-top:1px}
+/* Revenue bars (legacy dashboard card) */
+.rev-row{display:flex;align-items:center;padding:9px 0;border-bottom:1px solid #ede8e2}
+.rev-row:last-child{border-bottom:none}
+.rev-lbl{font-size:11px;font-weight:600;color:var(--ink);width:70px;flex-shrink:0}
+.rev-bar-wrap{flex:1;margin:0 12px;height:6px;background:var(--cream);border-radius:3px;overflow:hidden}
+.rev-bar{height:100%;border-radius:3px}
+.rev-val{font-size:12px;font-weight:800;color:var(--ink);min-width:60px;text-align:right}
+/* Alert/activity items */
+.alert-list{}
+.alert-item{display:flex;align-items:flex-start;gap:10px;padding:11px 0;border-bottom:1px solid #ede8e2}
+.alert-item:last-child{border-bottom:none}
+.alert-icon{width:30px;height:30px;border-radius:7px;display:flex;align-items:center;justify-content:center;font-size:13px;flex-shrink:0}
+.alert-icon.red{background:var(--red-light)}
+.alert-icon.amber{background:var(--amber-light)}
+.alert-icon.olive{background:var(--sage)}
+.alert-icon.terra{background:var(--terra-light)}
+.alert-icon.teal{background:var(--sage)}
+.alert-body{flex:1}.alert-title{font-size:12px;font-weight:700;color:var(--ink);margin-bottom:2px}
+.alert-desc{font-size:10px;color:var(--muted)}
+.alert-time{font-size:10px;color:var(--muted);white-space:nowrap}
+.alert-act{padding:4px 9px;border-radius:6px;font-size:10px;font-weight:700;cursor:pointer;border:1px solid var(--line);background:var(--cream);color:var(--ink);white-space:nowrap;align-self:center;font-family:Manrope,system-ui,sans-serif}
+.alert-act:hover{background:var(--terra);color:white;border-color:var(--terra)}
+/* Floor plan editor (v8 themed) */
+.fp-layout{display:grid;grid-template-columns:215px 1fr;gap:14px;margin-bottom:12px}
+.fp-palette{background:var(--cream);border:1px solid var(--line);border-radius:9px;padding:12px;max-height:560px;overflow-y:auto}
+.fp-unit-list{display:flex;flex-direction:column;gap:6px;margin-top:8px}
+.fp-unit-chip{background:var(--white);border:1.5px solid var(--line);border-radius:7px;padding:6px 9px;cursor:grab;font-size:11px;font-weight:700}
+.fp-unit-chip:hover{border-color:var(--terra);box-shadow:0 2px 8px rgba(0,0,0,.08)}
+.fp-unit-chip.placed{opacity:.4;pointer-events:none}
+.fp-editor{min-width:0}
+.fp-toolbar{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-bottom:8px}
+.fp-zoom{display:flex;align-items:center;gap:5px;margin-left:auto}
+.fp-canvas-wrap{background:var(--white);border:1px solid var(--line);border-radius:9px;padding:12px;overflow:auto;max-height:640px;min-height:360px}
+.fp-canvas{position:relative;background-color:var(--cream);border:1px solid var(--line);background-image:linear-gradient(var(--line) 1px,transparent 1px),linear-gradient(90deg,var(--line) 1px,transparent 1px)}
+.fp-placed{position:absolute;border-radius:6px;display:flex;flex-direction:column;align-items:center;justify-content:center;cursor:grab;border:2px solid var(--olive2);background:var(--sage);box-sizing:border-box;font-weight:800;color:var(--olive);overflow:hidden;z-index:2}
+.fp-placed .fp-code{font-size:10px;line-height:1.15}.fp-placed .fp-size{font-size:8.5px;color:var(--muted);font-weight:600}
+.fp-placed .fp-status{position:absolute;top:3px;right:3px;width:7px;height:7px;border-radius:50%}
+.fp-placed.selected{border-color:var(--terra);box-shadow:0 0 0 2px var(--terra-light)}
+.fp-placed .fp-resize{position:absolute;right:2px;bottom:2px;width:11px;height:11px;background:var(--ink);border-radius:2px;cursor:nwse-resize;opacity:0}
+.fp-placed.selected .fp-resize{opacity:1}
+.fp-block{position:absolute;background:var(--line);border:1.5px dashed var(--muted);border-radius:4px;display:flex;align-items:center;justify-content:center;cursor:grab;box-sizing:border-box;z-index:1}
+.fp-block .fp-block-name{font-size:10px;font-weight:800;color:var(--muted);text-align:center}
+.fp-block.selected{border-color:var(--terra);border-style:solid;background:var(--terra-light);box-shadow:0 0 0 2px var(--terra-light)}
+.fp-structure{margin-top:4px}
+.fp-structure summary{cursor:pointer;color:var(--muted);font-size:12px}
+.fp-structure-input{width:100%;font-family:Menlo,Consolas,monospace;font-size:11px;border:1.5px solid var(--line);border-radius:7px;padding:8px;background:var(--white);color:var(--ink);resize:vertical;margin-top:6px}
+.modal-wide{width:860px;max-width:100%}
+.fp-view-wrap .fp-canvas-wrap{min-height:0;max-height:62vh}
+.fp-view-canvas .fp-block,.fp-view-canvas .fp-placed{pointer-events:none;cursor:default}
+.fp-view-empty{font-size:12px;font-weight:700;color:var(--muted);text-align:center;background:var(--cream);border:1.5px dashed var(--line);border-radius:9px;padding:44px 16px}
+
+/* Settings page grid */
+.setting-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.setting-card{background:#fff;border:1px solid var(--line);border-radius:13px;padding:15px;display:grid;gap:13px}
+.setting-card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.setting-card h3{margin:0;font-size:14px}
+.setting-card p{margin:3px 0 0;color:var(--muted);font-size:12px}
+/* Period picker */
+.period-picker{display:flex;gap:4px;flex-wrap:wrap}
+.period-picker button{border:1px solid var(--line);background:#fff;padding:7px 9px;border-radius:8px;font-size:11px;color:var(--muted);cursor:pointer;font-family:Manrope,system-ui,sans-serif}
+.period-picker button.active{border-color:var(--terra);color:var(--terra2);background:#fff8f3}
+/* Two col layout */
+.two-col{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:18px}
+/* Section header */
+.sec-hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}
+.sec-title{font-size:14px;font-weight:800;color:var(--ink)}
+.sec-sub{font-size:11px;color:var(--muted);margin-top:2px}
+
+/* Toast notification v8 */
+.toast-v8{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--ink);color:white;padding:12px 20px;border-radius:12px;font-weight:600;z-index:100;opacity:0;transition:.25s;pointer-events:none;font-size:13px}
+.toast-v8.show{opacity:1}
+
+/* Section empty state */
+.section-empty{text-align:center;padding:38px 20px;color:var(--muted)}
+
+/* Navigation toggle / mobile drawer (inert at desktop) */
+.nav-toggle{display:none}
+.sb-backdrop{position:fixed;inset:0;z-index:90;background:rgba(32,36,31,.45);opacity:0;visibility:hidden;pointer-events:none;transition:opacity.2s ease,visibility.2s ease}
+
+/* Error banner */
+#errorBanner{font-size:11px;font-weight:700;margin-left:12px;color:var(--red)}
+#errorBanner:empty{display:none}
+
+/* ============ RESPONSIVE (v8 from prototype + admin accumulation) ============ */
+@media(max-width:1100px){
+  .stats{grid-template-columns:repeat(3,1fr)}
+  .grid,.analytics-grid,.two-col{grid-template-columns:1fr}
+  .inbox{grid-template-columns:280px 1fr}.profile{display:none}
+  .automations,.promo-grid,.facility-cards{grid-template-columns:repeat(2,1fr)}
+  .master-detail{grid-template-columns:300px 1fr}
+  .summary-strip{grid-template-columns:repeat(3,1fr)}
+  .calendar-layout{grid-template-columns:1fr}
+  .kanban{display:flex;overflow:auto}
+  .kanban .column{flex:0 0 280px}
+  /* tablet admin */
+  .top{height:auto;min-height:66px;flex-wrap:wrap;row-gap:8px;padding:8px 16px}
+  .data-tbl{display:block;overflow-x:auto;-webkit-overflow-scrolling:touch}
+  .fp-layout{grid-template-columns:1fr}
+  .fp-palette{max-height:200px}
 }
-
-/* ---- Tablet 769–1024px: keep the full sidebar (chosen option — simplest,
-   no usability loss vs an icon rail). Relax dense grids; contain wide
-   tables/kanban inside their cards; stack the floorplan palette+canvas. ---- */
-@media (max-width: 1024px) {
-  /* Topbar wraps to two rows (title row + actions row) instead of clipping */
-  .topbar { height: auto; min-height: 54px; flex-wrap: wrap; row-gap: 8px; padding: 8px 16px; }
-  .topbar-left { flex: 1 1 100%; min-width: 0; }
-  .topbar-right { flex-wrap: wrap; }
-  .topbar-title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .topbar-sub { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-
-  .kpi-strip { grid-template-columns: repeat(3, 1fr); }
-
-  /* Wide content scrolls within its card — never the page */
-  .data-tbl { display: block; overflow-x: auto; -webkit-overflow-scrolling: touch; }
-  .kanban-board {
-    display: flex; overflow-x: auto; -webkit-overflow-scrolling: touch;
-    scroll-snap-type: x proximity; padding-bottom: 6px;
-  }
-  .k-col { flex: 0 0 215px; scroll-snap-align: start; }
-
-  /* Floorplan editor: palette above canvas so the canvas gets full width */
-  .fp-layout { grid-template-columns: 1fr; }
-  .fp-palette { max-height: 200px; }
+@media(max-width:760px){
+  :root{--side:0}
+  .app{display:block}
+  .side{position:fixed;left:0;width:255px;transform:translateX(-100%);transition:.25s;overflow:auto;z-index:100}
+  .side.open{transform:none}
+  .nav-toggle{display:flex;align-items:center;justify-content:center;width:40px;height:40px;margin-right:10px;flex-shrink:0;background:var(--cream);border:1px solid var(--line);border-radius:8px;color:var(--ink);font-size:17px;cursor:pointer}
+  body.sb-open .side{transform:translateX(0);box-shadow:0 10px 40px rgba(0,0,0,.28)}
+  body.sb-open .sb-backdrop{opacity:1;visibility:visible;pointer-events:auto}
+  .main{margin-left:0}
+  .top{padding:0 14px;flex-wrap:wrap;height:auto;min-height:66px;padding:8px 12px}
+  .top .search{display:none}
+  .top{overflow-x:hidden}
+  .content{padding:18px 14px}
+  .head{align-items:flex-start}
+  .stats{grid-template-columns:1fr 1fr}
+  .stat:last-child{grid-column:1/-1}
+  .funnel{overflow:auto}.fstep{min-width:120px}
+  .inbox{grid-template-columns:1fr;height:700px}.threads{display:none}
+  .calendar-layout>.card:last-child{display:none}
+  .calendar-layout>.card:first-child{overflow-x:auto}
+  .week{min-width:700px}
+  .card-body canvas{max-width:100%}
+  .chart-card,.lead-funnel-card{min-width:0}
+  .automations,.promo-grid,.facility-cards{grid-template-columns:1fr}
+  .form-grid{grid-template-columns:1fr}
+  .head .actions .btn{display:none}
+  .unit-grid{grid-template-columns:repeat(5,1fr)}
+  .master-detail{grid-template-columns:1fr}
+  .record-list{border:0;max-height:260px}
+  .record-detail{padding:14px}
+  .summary-strip,.aging{grid-template-columns:1fr 1fr}
+  .setting-grid{grid-template-columns:1fr}
+  .kpi-strip{grid-template-columns:repeat(2,1fr)}
+  .charts-row,.two-col{grid-template-columns:1fr}
+  .ud-stats{grid-template-columns:repeat(2,1fr)}
+  .sec-hdr,.chart-hdr{flex-wrap:wrap;gap:8px}
+  .ud-hdr{flex-direction:column;align-items:stretch;gap:10px}
+  .alert-item{flex-wrap:wrap;row-gap:8px}
+  .alert-body{min-width:170px}
+  .alert-act{margin-left:40px;padding:8px 11px}
+  .top .top-actions .tb-btn{padding:9px 11px}
+  .tb-notif{width:38px;height:38px}
 }
-
-/* ---- Mobile <=768px: off-canvas sidebar + single-column reflow ---- */
-@media (max-width: 768px) {
-  /* Off-canvas sidebar (slides over content; backdrop dims the page).
-     Negative translate never creates left-side page overflow. z-order:
-     sidebar 100 > backdrop 90 > topbar 50 < modals 200 (modals stay on top). */
-  .sidebar { transform: translateX(-100%); transition: transform 0.25s ease; }
-  body.sb-open .sidebar { transform: translateX(0); box-shadow: 0 10px 40px rgba(0,0,0,0.28); }
-  body.sb-open .sb-backdrop { opacity: 1; visibility: visible; pointer-events: auto; }
-  .main { margin-left: 0; }
-
-  /* Hamburger — hidden >768px */
-  .nav-toggle {
-    display: flex; align-items: center; justify-content: center;
-    width: 40px; height: 40px; margin-right: 10px; flex-shrink: 0;
-    background: var(--cream); border: 1px solid var(--border); border-radius: 8px;
-    color: var(--charcoal); font-size: 17px; cursor: pointer;
-  }
-
-  /* Compact topbar (title row + actions row) */
-  .topbar { padding: 8px 12px; row-gap: 8px; }
-  .topbar-right { gap: 6px; }
-  .tb-btn { padding: 9px 11px; font-size: 11px; }
-  .tb-notif { width: 38px; height: 38px; }
-
-  /* Tighter page/card rhythm */
-  .content { padding: 14px 12px; }
-  .chart-card, .tbl-card, .unit-map-card, .unit-detail { padding: 14px; }
-
-  /* Grids reflow: KPIs 3→2→1 across breakpoints */
-  .kpi-strip { grid-template-columns: repeat(2, 1fr); }
-  .charts-row, .two-col, .three-col { grid-template-columns: 1fr; }
-  .ud-stats { grid-template-columns: repeat(2, 1fr); }
-  .rate-grid { grid-template-columns: 1fr; }
-
-  /* Headers/toolbars/action rows wrap instead of overflowing */
-  .sec-hdr, .chart-hdr { flex-wrap: wrap; gap: 8px 10px; }
-  .tbl-toolbar { flex-wrap: wrap; }
-  .floor-tabs { flex-wrap: wrap; }
-  .ud-hdr { flex-direction: column; align-items: stretch; gap: 10px; }
-  .ud-actions, .rate-actions { flex-wrap: wrap; }
-
-  /* Alert rows: button drops below the text when tight */
-  .alert-item { flex-wrap: wrap; row-gap: 8px; }
-  .alert-body { min-width: 170px; }
-  .alert-act { margin-left: 40px; padding: 8px 11px; }
-
-  /* Touch-friendly tap targets (~40px where feasible) */
-  .nav-item { padding: 12px; }
-  .f-pill { padding: 8px 13px; }
-  .c-tab, .floor-tab { padding: 8px 11px; }
-  .act-btn { padding: 9px 12px; }
-
-  /* Modals fit small screens; bigger close target */
-  .modal-overlay { padding: 4vh 10px 12px; }
-  .modal-x { width: 32px; height: 32px; }
+@media(max-width:600px){
+  .form-grid{grid-template-columns:1fr}
 }
-
-/* ---- Narrow phones <=600px: single-column form fields ---- */
-@media (max-width: 600px) {
-  .form-grid { grid-template-columns: 1fr; }
+@media(max-width:480px){
+  .stats{grid-template-columns:1fr}
+  .kpi-strip{grid-template-columns:1fr}
 }
-
-/* ---- Small phones <=480px ---- */
-@media (max-width: 480px) {
-  .kpi-strip { grid-template-columns: 1fr; }
-  .topbar-right .tb-btn { padding: 9px 9px; }
+@media(prefers-reduced-motion:reduce){
+  .side,.sb-backdrop,.drawer-panel{transition:none}
 }
-
-@media (prefers-reduced-motion: reduce) {
-  .sidebar, .sb-backdrop { transition: none; }
-}
+::-webkit-scrollbar{width:4px;height:4px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--line);border-radius:2px}
 </style>
 </head>
 <body>
 
-<!-- MOBILE NAV BACKDROP (inert on desktop) -->
+<!-- MOBILE BACKDROP -->
 <div class="sb-backdrop" id="sbBackdrop" aria-hidden="true"></div>
 
-<!-- SIDEBAR -->
-<nav class="sidebar" id="sidebarNav" aria-label="Admin navigation">
-  <div class="sb-logo">
-    <div class="sb-logo-mark">SL</div>
-    <div class="sb-logo-text">Store<span>Lah</span></div>
-  </div>
-  <div class="sb-branch" id="sbBranch" title="Filter everything by facility">
-    <select id="sbBranchSelect" class="sb-branch-select" aria-label="Facility filter"></select>
-    <span style="color:rgba(255,255,255,0.4);font-size:10px;">▾</span>
-  </div>
-  <div class="sb-section">
-    <div class="sb-section-lbl">Overview</div>
-    <div class="nav-item active" data-view="dashboard"><span class="nav-icon">▦</span> Dashboard</div>
-    <div class="nav-item" title="Coming soon"><span class="nav-icon">⚡</span> Action Centre <span class="nav-badge red">5</span></div>
-  </div>
-  <div class="sb-section">
-    <div class="sb-section-lbl">Operations</div>
-    <div class="nav-item" data-view="units"><span class="nav-icon">⬛</span> Units</div>
-    <div class="nav-item" data-view="tenants"><span class="nav-icon">👤</span> Tenants</div>
-    <div class="nav-item" data-view="bookings"><span class="nav-icon">📋</span> Bookings <span class="nav-badge" id="navBookingsBadge" hidden></span></div>
-    <div class="nav-item" data-view="moveins"><span class="nav-icon">🔑</span> Move-ins Today <span class="nav-badge" id="navMoveinsBadge" hidden></span></div>
-  </div>
-  <div class="sb-section">
-    <div class="sb-section-lbl">Facility Setup</div>
-    <div class="nav-item" data-view="floorplans"><span class="nav-icon">🗺️</span> Floor Plans</div>
-  </div>
-  <div class="sb-section">
-    <div class="sb-section-lbl">Revenue</div>
-    <div class="nav-item" title="Coming soon"><span class="nav-icon">💰</span> Payments</div>
-    <div class="nav-item" title="Coming soon"><span class="nav-icon">📈</span> Rate Management</div>
-    <div class="nav-item" title="Coming soon"><span class="nav-icon">🏷️</span> Promos & Offers</div>
-  </div>
-  <div class="sb-section">
-    <div class="sb-section-lbl">Growth</div>
-    <div class="nav-item" title="Coming soon"><span class="nav-icon">🎯</span> Leads CRM <span class="nav-badge">8</span></div>
-    <div class="nav-item" title="Coming soon"><span class="nav-icon">📊</span> Reports</div>
-  </div>
-  <div class="sb-section">
-    <div class="sb-section-lbl">System</div>
-    <div class="nav-item" title="Coming soon"><span class="nav-icon">⚙️</span> Settings</div>
-  </div>
-  <div class="sb-footer">
-    <div class="sb-user">
-      <div class="sb-avatar">FZ</div>
-      <div>
-        <div class="sb-user-name">Faisal Z.</div>
-        <div class="sb-user-role">Owner · Admin</div>
-      </div>
-    </div>
-  </div>
-</nav>
+<div class="app">
 
-<!-- MAIN -->
-<main class="main">
-  <div class="topbar">
-    <div class="topbar-left" style="display:flex;align-items:center;">
-      <button type="button" class="nav-toggle" id="navToggle" aria-label="Open navigation menu" aria-expanded="false" aria-controls="sidebarNav">☰</button>
-      <div class="topbar-title">Good morning, Faisal 👋</div>
-      <div class="topbar-sub">Thu 31 Jul 2026 · Bukit Merah</div>
-      <div id="errorBanner"></div>
-    </div>
-    <div class="topbar-right">
-      <button class="tb-btn ghost">⬇ Export</button>
-      <button class="tb-btn ghost">📅 Jul 2026 ▾</button>
-      <button class="tb-btn primary">+ New Booking</button>
-      <div class="tb-notif">🔔<div class="notif-dot"></div></div>
-    </div>
+<!-- ============ SIDEBAR ============ -->
+<aside class="side" id="sidebar">
+  <div class="brand">Store<span>Lah</span></div>
+  <div class="workspace"><div class="mark">SL</div><div><b>StoreLah SG</b><br><small>Operating platform</small></div></div>
+  <div class="workspace" id="sbBranch" style="margin-top:0;margin-bottom:14px;padding:6px 10px;" title="Filter everything by facility">
+    <select id="sbBranchSelect" style="flex:1;background:transparent;border:none;outline:none;color:rgba(255,255,255,.9);font:700 11px Manrope,system-ui,sans-serif;text-transform:uppercase;letter-spacing:.5px;cursor:pointer;appearance:none;-webkit-appearance:none;">
+      <option>All Facilities</option>
+    </select>
   </div>
+  <div class="nav-group">StoreLah platform</div>
+  <button class="nav active" data-core-page="command"><svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 8l7-6 7 6"/><path d="M4 7v7a1 1 0 001 1h3"/><path d="M11 15h3a1 1 0 001-1V9"/><path d="M9 15V9"/></svg> <span>Overview</span></button>
+  <button class="nav" data-core-page="leads"><svg viewBox="0 0 18 18" fill="currentColor"><circle cx="9" cy="9" r="5"/></svg> <span>Leads Management</span><i class="badge" id="leadsBadge">0</i></button>
+  <button class="nav" data-core-page="customers"><svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 9a3 3 0 100-6 3 3 0 000 6z"/><path d="M3 17c0-3.3 2.7-6 6-6s6 2.7 6 6"/></svg> <span>Customer Management</span></button>
+  <button class="nav" data-core-page="facilities"><svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="6" height="6" rx="1"/><rect x="10" y="2" width="6" height="6" rx="1"/><rect x="2" y="10" width="6" height="6" rx="1"/><rect x="10" y="10" width="6" height="6" rx="1"/></svg> <span>Facilities Management</span><i class="badge" id="facilityBadge">0</i></button>
+  <button class="nav" data-core-page="promotions">% <span>Discount &amp; Promotion</span></button>
+  <button class="nav" data-core-page="billing">$ <span>Finance Management</span></button>
+  <button class="nav" data-core-page="settings"><svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="9" r="2.5"/><path d="M9 1.5v2M9 14.5v2M1.5 9h2M14.5 9h2M3.3 3.3l1.4 1.4M13.3 13.3l1.4 1.4M3.3 14.7l1.4-1.4M13.3 4.7l1.4-1.4"/></svg> <span>Global Settings</span></button>
+  <div class="side-foot"><div class="user"><div class="avatar" id="userAvatar">FZ</div><div><b id="userName">Faisal</b><br><small id="userRole">Administrator</small></div></div></div>
+</aside>
+
+<main>
+  <!-- ============ TOPBAR ============ -->
+  <header class="top">
+    <button class="iconbtn nav-toggle" id="navToggle" aria-label="Open navigation">☰</button>
+    <div class="search"><svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="7.5" cy="7.5" r="5"/><path d="M11.5 11.5L16 16"/></svg><input id="globalSearch" placeholder="Search leads, phone, unit, conversation…"><kbd class="shortcut">⌘K</kbd></div>
+    <div class="top-actions">
+      <button class="iconbtn" title="Tasks"><svg viewBox="0 0 18 18" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l4 4 8-8"/></svg></button>
+      <button class="iconbtn" title="Notifications"><svg viewBox="0 0 18 18" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2a5 5 0 00-5 5v3l-1 2h12l-1-2V7a5 5 0 00-5-5z"/><path d="M6 14a3 3 0 006 0"/></svg></button>
+      <button class="primary" id="addLeadBtn">＋ Add lead</button>
+    </div>
+    <div id="errorBanner"></div>
+  </header>
 
   <div class="content">
 
-    <div class="view" id="view-dashboard">
+    <!-- ============ OVERVIEW (Command centre) ============ -->
+    <section class="page active" id="command">
+      <div class="head"><div><h1>Good morning</h1><p>Here's what needs attention across sales, customers and facility operations today.</p></div><div class="actions"><button class="btn">Today</button><button class="btn olive">Run today's operations →</button></div></div>
+      <div class="stats" id="commandStats">
+        <div class="stat"><div class="label">New leads today</div><div class="val" id="cmdNewLeads">—</div><div class="trend" id="cmdNewLeadsTrend"></div></div>
+        <div class="stat"><div class="label">Awaiting first response</div><div class="val" id="cmdAwaiting">—</div><div class="trend bad" id="cmdAwaitingTrend"></div></div>
+        <div class="stat"><div class="label">Occupancy</div><div class="val" id="cmdOccupancy">—</div><div class="trend" id="cmdOccupancyTrend"></div></div>
+        <div class="stat"><div class="label">Monthly revenue</div><div class="val" id="cmdMrr">—</div><div class="trend" id="cmdMrrTrend"></div></div>
+        <div class="stat"><div class="label">Action items</div><div class="val" id="cmdActions">—</div><div class="trend bad" id="cmdActionsTrend"></div></div>
+      </div>
+      <div class="grid">
+        <div class="card lead-funnel-card"><div class="card-head"><h3>Lead funnel</h3><div class="period-picker" id="funnelPeriod"></div></div><div class="card-body"><div class="funnel" id="funnelSteps"></div></div></div>
+        <div class="card"><div class="card-head"><h3>Priority queue</h3><button class="btn" data-page-jump="leads">View all</button></div><div class="card-body queue" id="priorityQueue"></div></div>
+        <div class="card"><div class="card-head"><h3>Enquiry sources</h3></div><div class="card-body" id="sourceBreakdown"></div></div>
+        <div class="card"><div class="card-head"><h3>Team pulse</h3><span class="pill green">On track</span></div><div class="card-body" id="teamPulse"></div></div>
+      </div>
+      <!-- Legacy live data cards (unit activity, charts, action items, etc.) -->
+      <div style="margin-top:16px" class="two-col">
+        <div class="card"><div class="card-head"><h3>Monthly Revenue</h3><div class="mini-tabs"><button class="mini-tab active">Revenue</button><button class="mini-tab">Occupancy</button></div></div><div class="card-body"><canvas id="revenueChart" height="110"></canvas></div></div>
+        <div class="card"><div class="card-head"><h3>Occupancy by Branch</h3></div><div class="card-body"><canvas id="branchChart" height="110"></canvas></div></div>
+      </div>
+      <div class="card" style="margin-bottom:16px"><div class="card-head"><h3>Latest Unit Activity</h3></div><div class="card-body"><div class="alert-list" id="activityFeed"></div></div></div>
+    </section>
 
-    <!-- KPI STRIP -->
-    <div class="kpi-strip">
-      <div class="kpi">
-        <div class="kpi-lbl">Occupancy</div>
-        <div class="kpi-val">87.5<span class="unit">%</span></div>
-        <span class="kpi-delta up">↑ +2.3% MoM</span>
+    <!-- ============ LEADS DATABASE ============ -->
+    <section class="page" id="leads">
+      <div class="head"><div><h1>All leads</h1><p>One view of every enquiry, owner, next step and outcome.</p></div><div class="actions"><button class="btn">Import</button><button class="btn">Export</button><button class="primary" id="addLeadBtn2">＋ Add lead</button></div></div>
+      <div class="toolbar">
+        <select class="filter" id="leadStatusFilter"><option>All statuses</option><option>New</option><option>Contacted</option><option>Qualified</option><option>Quoted</option><option>Won</option><option>Lost</option></select>
+        <select class="filter" id="leadSourceFilter"><option>All sources</option><option>Website</option><option>WhatsApp</option><option>Referral</option><option>Google</option></select>
+        <button class="filter">＋ More filters</button><span class="grow"></span>
+        <div class="seg"><button class="active" id="listViewBtn">List</button><button data-page-jump="pipeline">Board</button></div>
       </div>
-      <div class="kpi teal">
-        <div class="kpi-lbl">Total Units</div>
-        <div class="kpi-val">80</div>
-        <span class="kpi-delta flat">70 occ · 10 avail</span>
-      </div>
-      <div class="kpi red">
-        <div class="kpi-lbl">Overdue</div>
-        <div class="kpi-val">4<span class="unit"> units</span></div>
-        <span class="kpi-delta down">↑ +1 from last month</span>
-      </div>
-      <div class="kpi olive">
-        <div class="kpi-lbl">MRR</div>
-        <div class="kpi-val"><span class="unit">$</span>42,860</div>
-        <span class="kpi-delta up">↑ +$1,240 MoM</span>
-      </div>
-      <div class="kpi amber">
-        <div class="kpi-lbl">Avg PSF</div>
-        <div class="kpi-val"><span class="unit">$</span>4.82</div>
-        <span class="kpi-delta up">↑ +$0.18 MoM</span>
-      </div>
-    </div>
+      <div class="card"><div class="table-wrap"><table class="lead-table"><thead><tr><th><input class="check" type="checkbox"></th><th>Lead</th><th>Status</th><th>Intent</th><th>Product / Facility</th><th>Source</th><th>Next action</th><th>Est. value</th><th>Created</th></tr></thead><tbody id="leadRows"></tbody></table></div><div class="pagination"><span id="leadCount">0 leads</span><div class="pages"><button>‹</button><button class="active">1</button><button>›</button></div></div></div>
+    </section>
 
-    <!-- CHARTS -->
-    <div class="charts-row">
-      <div class="chart-card">
-        <div class="chart-hdr">
-          <div>
-            <div class="chart-title">Monthly Revenue</div>
-            <div class="chart-sub">Actual vs target · Jan–Jul 2026</div>
-          </div>
-          <div class="chart-tabs">
-            <button class="c-tab active">Revenue</button>
-            <button class="c-tab">Occupancy</button>
-            <button class="c-tab">PSF</button>
-          </div>
-        </div>
-        <canvas id="revenueChart" height="110"></canvas>
-      </div>
-      <div class="chart-card">
-        <div class="chart-hdr">
-          <div>
-            <div class="chart-title">Occupancy by Branch</div>
-            <div class="chart-sub">Current period</div>
-          </div>
-        </div>
-        <canvas id="branchChart" height="110"></canvas>
-      </div>
-    </div>
+    <!-- ============ PIPELINE (kanban) ============ -->
+    <section class="page" id="pipeline">
+      <div class="head"><div><h1>Pipeline</h1><p>Drag opportunities through the booking journey.</p></div><div class="actions"><select class="filter" id="pipelineFilter"><option>All pipelines</option></select><button class="primary">＋ Add lead</button></div></div>
+      <div class="toolbar"><b id="pipelineValue" style="margin-left:auto">$0 pipeline value</b></div>
+      <div class="kanban" id="kanban"></div>
+    </section>
 
-    <!-- LATEST UNIT ACTIVITY (replaces the units management card) -->
-    <div class="tbl-card">
-      <div class="sec-hdr">
-        <div>
-          <div class="sec-title">Latest Unit Activity</div>
-          <div class="sec-sub">Recent additions, rate changes & move-ins</div>
-        </div>
-      </div>
-      <div class="alert-list" id="activityFeed"></div>
-    </div>
+    <!-- ============ INBOX (Conversations) ============ -->
+    <section class="page" id="inbox">
+      <div class="head"><div><h1>Conversations</h1><p>Lead conversation timeline — click a lead to see activity.</p></div><div class="actions"><button class="btn">Assign</button><button class="primary">＋ New message</button></div></div>
+      <div class="card inbox"><div class="threads" id="threads"></div><div class="chat"><div class="chat-head"><div><b>Lead Activity</b><br><small style="color:var(--muted)">Select a lead to view</small></div></div><div class="messages" id="chatMessages"><div class="section-empty">Select a lead from the list to view their activity timeline.</div></div><div class="composer"><textarea placeholder="Add a note…"></textarea><div class="composer-foot"><button class="btn">Templates</button><button class="primary">Send</button></div></div></div><aside class="profile" id="leadProfile"><div class="avatar" id="profileAvatar">—</div><h3 id="profileName">Select a lead</h3><small id="profileSub">Click a lead to view details</small><dl id="profileFields"></dl></aside></div>
+    </section>
 
-    <!-- PSF SCATTER + REVENUE BREAKDOWN -->
-    <div class="two-col">
-      <div class="chart-card">
-        <div class="chart-hdr">
-          <div>
-            <div class="chart-title">PSF Distribution by Unit Size</div>
-            <div class="chart-sub">All occupied units · Bukit Merah</div>
-          </div>
-        </div>
-        <canvas id="psfChart" height="150"></canvas>
-        <div class="psf-legend">
-          <div class="psf-leg"><div class="psf-dot" style="background:#B86A4A;"></div>Locker</div>
-          <div class="psf-leg"><div class="psf-dot" style="background:#5A7A60;"></div>Small</div>
-          <div class="psf-leg"><div class="psf-dot" style="background:#0B4F5E;"></div>Medium</div>
-          <div class="psf-leg"><div class="psf-dot" style="background:#D4860A;"></div>Large</div>
-          <div class="psf-leg"><div class="psf-dot" style="background:#9C948D;"></div>XL Biz</div>
-        </div>
+    <!-- ============ CALENDAR (appointments / move-ins) ============ -->
+    <section class="page" id="calendar">
+      <div class="head"><div><h1>Appointments</h1><p>Viewings, move-ins and scheduled callbacks.</p></div><div class="actions"><button class="primary">＋ Schedule</button></div></div>
+      <div class="calendar-layout"><div class="card"><div class="card-head"><h3>This week</h3></div><div class="card-body"><div class="week" id="weekView"><div class="time">AM</div><div class="day">Mon</div><div class="day">Tue</div><div class="day">Wed</div><div class="day">Thu</div><div class="day">Fri</div></div></div></div><div class="card"><div class="card-head"><h3>Today</h3></div><div class="card-body queue" id="todayAppts"></div></div></div>
+    </section>
+
+    <!-- ============ ANALYTICS ============ -->
+    <section class="page" id="analytics">
+      <div class="head"><div><h1>Sales performance</h1><p>Track demand, response quality and conversion.</p></div><div class="actions"><button class="btn">Export</button><button class="primary">Share dashboard</button></div></div>
+      <div class="stats" id="analyticsStats"></div>
+      <div class="analytics-grid"><div class="card"><div class="card-head"><h3>Enquiries and bookings</h3></div><div class="card-body"><div class="chart" id="anaChart"></div></div></div><div class="card"><div class="card-head"><h3>Conversion by facility</h3></div><div class="card-body" id="convByFacility"></div></div></div>
+    </section>
+
+    <!-- ============ AUTOMATION ============ -->
+    <section class="page" id="automation">
+      <div class="head"><div><h1>Automation &amp; Workflows</h1><p>Lead response automation, SLA alerts and stalled-deal recovery.</p></div><div class="actions"><button class="primary">＋ Create workflow</button></div></div>
+      <div class="automations" id="automationCards">
+        <div class="card auto"><div class="auto-icon">⚡</div><h3>Instant lead acknowledgement</h3><p>Send personalised WhatsApp or email within one minute.</p><div class="auto-foot"><span>Active</span><span class="sw on"><i></i></span></div></div>
+        <div class="card auto"><div class="auto-icon">24</div><h3>24-hour first follow-up</h3><p>Create a priority task if the lead has not replied. <span class="pill amber" id="autoFollowUp">—</span></p><div class="auto-foot"><span>Active</span><span class="sw on"><i></i></span></div></div>
+        <div class="card auto"><div class="auto-icon">!</div><h3>SLA &amp; stalled-deal alert</h3><p>Flag overdue responses and stuck deals. <span class="pill red" id="autoAlerts">—</span></p><div class="auto-foot"><span>Active</span><span class="sw on"><i></i></span></div></div>
+        <div class="card auto"><div class="auto-icon">✦</div><h3>Lead scoring</h3><p>Score by move-in urgency, replies and pricing activity.</p><div class="auto-foot"><span>Active</span><span class="sw on"><i></i></span></div></div>
+        <div class="card auto"><div class="auto-icon">↔</div><h3>Smart lead distribution</h3><p>Round-robin by facility, workload and expertise.</p><div class="auto-foot"><span>Active</span><span class="sw on"><i></i></span></div></div>
+        <div class="card auto"><div class="auto-icon">↻</div><h3>Lost lead reactivation</h3><p>Build audiences by loss reason and new inventory.</p><div class="auto-foot"><span>Draft</span><span class="sw"><i></i></span></div></div>
       </div>
-      <div class="chart-card">
-        <div class="chart-hdr">
-          <div>
-            <div class="chart-title">Revenue by Unit Size</div>
-            <div class="chart-sub">Jul 2026 · $42,860 total</div>
-          </div>
+    </section>
+
+    <!-- ============ CUSTOMERS (master-detail) ============ -->
+    <section class="page" id="customers">
+      <div class="head"><div><h1>Customers &amp; agreements</h1><p>Every tenant, unit and service record.</p></div><div class="actions"><button class="primary">＋ New customer</button></div></div>
+      <div class="card master-detail"><div class="record-list"><div class="record-search"><input id="customerSearch" placeholder="Search customer or unit…"></div><div class="records" id="customerRecords"></div></div><div class="record-detail" id="customerDetail"><div class="section-empty">Select a customer from the list.</div></div></div>
+    </section>
+
+    <!-- ============ FACILITIES ============ -->
+    <section class="page" id="facilities">
+      <div class="subtabs" data-tabs="facility"><button class="active" data-tab="facility-map">Unit Map</button><button data-tab="facility-units">Units</button><button data-tab="facility-tenants">Tenants</button><button data-tab="facility-bookings">Bookings</button><button data-tab="facility-moveins">Move-ins</button><button data-tab="facility-floorplans">Floor Plans</button><button data-tab="facility-promos">Promotions</button></div>
+      <!-- Unit Map -->
+      <div class="module-panel active" id="facility-map">
+        <div class="unit-map-card">
+          <div class="sec-hdr"><div><div class="sec-title" id="unitMapTitle">Unit Map — All Facilities</div><div class="sec-sub">Click any unit to view details</div></div><div style="display:flex;gap:8px;"><button class="tb-btn ghost" style="font-size:10px;" id="unitShowFloorPlan">👁 Show Floor Plan</button></div></div>
+          <div class="unit-legend" id="mapLegend"></div>
+          <div class="floor-tabs" id="floorTabs"></div>
+          <div class="unit-grid" id="unitGrid"></div>
         </div>
-        <div style="margin-top:10px;">
-          <div class="rev-row"><div class="rev-lbl">Locker</div><div class="rev-bar-wrap"><div class="rev-bar" style="width:18%;background:var(--terra);"></div></div><div class="rev-val">$7,680</div></div>
-          <div class="rev-row"><div class="rev-lbl">Small</div><div class="rev-bar-wrap"><div class="rev-bar" style="width:38%;background:var(--olive);"></div></div><div class="rev-val">$16,320</div></div>
-          <div class="rev-row"><div class="rev-lbl">Medium</div><div class="rev-bar-wrap"><div class="rev-bar" style="width:22%;background:var(--teal);"></div></div><div class="rev-val">$9,240</div></div>
-          <div class="rev-row"><div class="rev-lbl">Large</div><div class="rev-bar-wrap"><div class="rev-bar" style="width:14%;background:var(--amber);"></div></div><div class="rev-val">$6,080</div></div>
-          <div class="rev-row"><div class="rev-lbl">XL Biz</div><div class="rev-bar-wrap"><div class="rev-bar" style="width:8%;background:var(--light);"></div></div><div class="rev-val">$3,540</div></div>
+        <div class="unit-detail" id="unitDetail">
+          <div class="ud-hdr"><div><div class="ud-id" id="udId">Select a unit</div><div class="ud-badges" id="udBadges"></div></div><div class="ud-actions"><button class="act-btn" id="viewHistoryBtn">📋 History</button><button class="act-btn" id="editUnitBtn">✏️ Edit</button><button class="act-btn primary" id="adjustRateBtn">⚡ Adjust Rate</button><button class="act-btn danger" id="deleteUnitBtn">🗑 Delete</button></div></div>
+          <div class="ud-stats"><div class="ud-stat"><div class="ud-stat-lbl">Tenant</div><div class="ud-stat-val" id="udTenant" style="font-size:14px;">—</div><div class="ud-stat-sub" id="udTenantSub"></div></div><div class="ud-stat"><div class="ud-stat-lbl">Rate</div><div class="ud-stat-val" id="udRate">—</div><div class="ud-stat-sub" id="udRateSub"></div></div><div class="ud-stat"><div class="ud-stat-lbl">Status</div><div class="ud-stat-val" id="udStatus" style="font-size:16px;">—</div></div><div class="ud-stat"><div class="ud-stat-lbl">Branch</div><div class="ud-stat-val" id="udBranch" style="font-size:14px;">—</div><div class="ud-stat-sub" id="udLevel"></div></div><div class="ud-stat"><div class="ud-stat-lbl">Size</div><div class="ud-stat-val" id="udSize" style="font-size:14px;">—</div><div class="ud-stat-sub" id="udSizeSub"></div></div><div class="ud-stat"><div class="ud-stat-lbl">PSF</div><div class="ud-stat-val" id="udPsf">—</div></div><div class="ud-stat"><div class="ud-stat-lbl">Rate history</div><div class="ud-stat-val" id="udRateHistCount" style="font-size:16px;">0</div></div><div class="ud-stat"><div class="ud-stat-lbl">Last change</div><div class="ud-stat-val" id="udLastChange" style="font-size:14px;">—</div></div></div>
+          <div class="ud-history"><div class="ud-history-title">Tenant History</div><div class="ud-history-empty" id="tenantHistoryEmpty">No tenant history recorded for this unit yet.</div></div>
         </div>
       </div>
-    </div>
-
-    <!-- LEADS KANBAN -->
-    <div class="tbl-card">
-      <div class="sec-hdr">
-        <div>
-          <div class="sec-title">Leads CRM</div>
-          <div class="sec-sub">8 active leads · 3 hot prospects</div>
-        </div>
-        <button class="tb-btn primary" style="font-size:10px;">+ Add Lead</button>
-      </div>
-      <div class="kanban-board" id="kanbanBoard"></div>
-    </div>
-
-    <!-- ACTION REQUIRED -->
-    <div class="tbl-card">
-      <div class="sec-hdr">
-        <div class="sec-title">Action Required</div>
-        <div class="sec-sub">5 items need your attention today</div>
-      </div>
-      <div class="alert-list" id="alertList"></div>
-    </div>
-
-    </div>
-
-    <!-- UNITS SECTION (sidebar-navigated) -->
-    <div class="view" id="view-units" hidden>
-
-      <!-- UNIT MAP -->
-      <div class="unit-map-card">
-        <div class="sec-hdr">
-          <div>
-            <div class="sec-title" id="unitMapTitle">Unit Map — Bukit Merah · Level 1</div>
-            <div class="sec-sub">Click any unit to view details, adjust rate, or manage tenancy</div>
-          </div>
-          <div style="display:flex;gap:8px;">
-            <button class="tb-btn ghost" style="font-size:10px;" id="unitShowFloorPlan" type="button">👁 Show Floor Plan</button>
-          </div>
-        </div>
-
-        <div class="unit-legend" id="mapLegend">
-          <div class="u-leg"><div class="u-leg-dot" style="background:var(--teal);"></div>Occupied (56)</div>
-          <div class="u-leg"><div class="u-leg-dot" style="background:var(--olive);"></div>Available (10)</div>
-          <div class="u-leg"><div class="u-leg-dot" style="background:var(--amber);"></div>Reserved (3)</div>
-          <div class="u-leg"><div class="u-leg-dot" style="background:var(--red);"></div>Overdue (4)</div>
-          <div class="u-leg"><div class="u-leg-dot" style="background:var(--light);"></div>Maintenance (7)</div>
-        </div>
-
-        <div class="floor-tabs" id="floorTabs">
-          <button class="floor-tab active" data-level="1">Level 1</button>
-          <button class="floor-tab" data-level="2">Level 2</button>
-          <button class="floor-tab" data-level="3">Level 3</button>
-          <button class="floor-tab" data-level="4">Level 4</button>
-        </div>
-
-        <div class="unit-grid" id="unitGrid">
-          <div class="u-cell occupied selected" onclick="selectUnit(this,'BM-01-01')"><div class="u-dot"></div><div class="u-id">01-01</div><div class="u-size">Small</div><div class="u-psf">$4.80</div></div>
-          <div class="u-cell occupied" onclick="selectUnit(this,'BM-01-02')"><div class="u-dot"></div><div class="u-id">01-02</div><div class="u-size">Small</div><div class="u-psf">$4.80</div></div>
-          <div class="u-cell occupied" onclick="selectUnit(this,'BM-01-03')"><div class="u-dot"></div><div class="u-id">01-03</div><div class="u-size">Locker</div><div class="u-psf">$5.20</div></div>
-          <div class="u-cell available" onclick="selectUnit(this,'BM-01-04')"><div class="u-dot"></div><div class="u-id">01-04</div><div class="u-size">Locker</div><div class="u-psf">$5.20</div></div>
-          <div class="u-cell occupied" onclick="selectUnit(this,'BM-01-05')"><div class="u-dot"></div><div class="u-id">01-05</div><div class="u-size">Medium</div><div class="u-psf">$4.40</div></div>
-          <div class="u-cell overdue" onclick="selectUnit(this,'BM-01-06')"><div class="u-dot"></div><div class="u-id">01-06</div><div class="u-size">Small</div><div class="u-psf">$4.60</div></div>
-          <div class="u-cell occupied" onclick="selectUnit(this,'BM-01-07')"><div class="u-dot"></div><div class="u-id">01-07</div><div class="u-size">Large</div><div class="u-psf">$3.80</div></div>
-          <div class="u-cell available" onclick="selectUnit(this,'BM-01-08')"><div class="u-dot"></div><div class="u-id">01-08</div><div class="u-size">Large</div><div class="u-psf">$3.80</div></div>
-          <div class="u-cell reserved" onclick="selectUnit(this,'BM-01-09')"><div class="u-dot"></div><div class="u-id">01-09</div><div class="u-size">Small</div><div class="u-psf">$4.80</div></div>
-          <div class="u-cell occupied" onclick="selectUnit(this,'BM-01-10')"><div class="u-dot"></div><div class="u-id">01-10</div><div class="u-size">Medium</div><div class="u-psf">$4.50</div></div>
-          <div class="u-cell occupied" onclick="selectUnit(this,'BM-01-11')"><div class="u-dot"></div><div class="u-id">01-11</div><div class="u-size">XL Biz</div><div class="u-psf">$3.20</div></div>
-          <div class="u-cell overdue" onclick="selectUnit(this,'BM-01-12')"><div class="u-dot"></div><div class="u-id">01-12</div><div class="u-size">Small</div><div class="u-psf">$4.80</div></div>
-          <div class="u-cell available" onclick="selectUnit(this,'BM-01-13')"><div class="u-dot"></div><div class="u-id">01-13</div><div class="u-size">Locker</div><div class="u-psf">$5.20</div></div>
-          <div class="u-cell occupied" onclick="selectUnit(this,'BM-01-14')"><div class="u-dot"></div><div class="u-id">01-14</div><div class="u-size">Medium</div><div class="u-psf">$4.40</div></div>
-          <div class="u-cell occupied" onclick="selectUnit(this,'BM-01-15')"><div class="u-dot"></div><div class="u-id">01-15</div><div class="u-size">Small</div><div class="u-psf">$4.80</div></div>
-          <div class="u-cell reserved" onclick="selectUnit(this,'BM-01-16')"><div class="u-dot"></div><div class="u-id">01-16</div><div class="u-size">Large</div><div class="u-psf">$3.90</div></div>
-          <div class="u-cell occupied" onclick="selectUnit(this,'BM-01-17')"><div class="u-dot"></div><div class="u-id">01-17</div><div class="u-size">XL Biz</div><div class="u-psf">$3.20</div></div>
-          <div class="u-cell available" onclick="selectUnit(this,'BM-01-18')"><div class="u-dot"></div><div class="u-id">01-18</div><div class="u-size">Small</div><div class="u-psf">$4.80</div></div>
-          <div class="u-cell overdue" onclick="selectUnit(this,'BM-01-19')"><div class="u-dot"></div><div class="u-id">01-19</div><div class="u-size">Medium</div><div class="u-psf">$4.40</div></div>
-          <div class="u-cell occupied" onclick="selectUnit(this,'BM-01-20')"><div class="u-dot"></div><div class="u-id">01-20</div><div class="u-size">Locker</div><div class="u-psf">$5.20</div></div>
-          <div class="u-cell maintenance" onclick="selectUnit(this,'BM-01-21')"><div class="u-dot" style="background:var(--light);"></div><div class="u-id">01-21</div><div class="u-size">Small</div><div class="u-psf" style="color:var(--light);">Maint.</div></div>
-          <div class="u-cell occupied" onclick="selectUnit(this,'BM-01-22')"><div class="u-dot"></div><div class="u-id">01-22</div><div class="u-size">Small</div><div class="u-psf">$4.80</div></div>
-          <div class="u-cell available" onclick="selectUnit(this,'BM-01-23')"><div class="u-dot"></div><div class="u-id">01-23</div><div class="u-size">Medium</div><div class="u-psf">$4.40</div></div>
-          <div class="u-cell occupied" onclick="selectUnit(this,'BM-01-24')"><div class="u-dot"></div><div class="u-id">01-24</div><div class="u-size">Large</div><div class="u-psf">$3.80</div></div>
-          <div class="u-cell reserved" onclick="selectUnit(this,'BM-01-25')"><div class="u-dot"></div><div class="u-id">01-25</div><div class="u-size">Locker</div><div class="u-psf">$5.10</div></div>
+      <!-- Units Table -->
+      <div class="module-panel" id="facility-units">
+        <div class="tbl-card">
+          <div class="sec-hdr"><div><div class="sec-title">Units</div><div class="sec-sub" id="unitsSub">All units across branches</div></div><div style="display:flex;gap:7px;"><button class="tb-btn primary" id="addUnitBtn">+ Add Unit</button></div></div>
+          <div class="tbl-toolbar"><select id="statusFilter" class="tbl-select"><option value="">All statuses</option><option value="OCCUPIED">Occupied</option><option value="AVAILABLE">Available</option><option value="RESERVED">Reserved</option><option value="OVERDUE">Overdue</option><option value="MAINTENANCE">Maintenance</option><option value="INACTIVE">Inactive</option></select></div>
+          <div class="modal-alert" id="unitsBanner" hidden></div>
+          <table class="data-tbl" id="unitsTable"><thead><tr><th>Code</th><th>Name</th><th>Size</th><th>Branch</th><th>Floor</th><th>Sqft</th><th>Rate/mo</th><th>PSF</th><th>Status</th><th>Tenant</th><th></th></tr></thead><tbody></tbody></table>
+          <div class="tbl-pager"><div class="tbl-pager-info" id="pageInfo">Page 1 of 1</div><div class="tbl-pager-btns"><button class="tb-btn ghost" id="pagePrev">‹ Prev</button><button class="tb-btn ghost" id="pageNext">Next ›</button></div></div>
         </div>
       </div>
-
-      <!-- UNIT DETAIL PANEL (opens on map-cell click or table View) -->
-      <div class="unit-detail" id="unitDetail">
-        <div class="ud-hdr">
-          <div>
-            <div class="ud-id" id="udId">BM-01-01 · Small Unit</div>
-            <div class="ud-badges" id="udBadges">
-              <span class="badge occ">● Occupied</span>
-              <span class="badge terra">30 sq ft</span>
-              <span class="badge neutral">Level 1 · Bukit Merah</span>
-              <span class="badge neutral">Ambient climate</span>
-            </div>
-          </div>
-          <div class="ud-actions">
-            <button class="act-btn" id="viewHistoryBtn">📋 History</button>
-            <button class="act-btn">📧 Message</button>
-            <button class="act-btn">🔑 Override PIN</button>
-            <button class="act-btn" id="editUnitBtn">✏️ Edit</button>
-            <button class="act-btn primary" id="adjustRateBtn">⚡ Adjust Rate</button>
-            <button class="act-btn danger" id="deleteUnitBtn">🗑 Delete</button>
-          </div>
-        </div>
-
-        <div class="ud-stats">
-          <div class="ud-stat">
-            <div class="ud-stat-lbl">Current Tenant</div>
-            <div class="ud-stat-val" id="udTenant" style="font-size:14px;">Priya Nair</div>
-            <div class="ud-stat-sub" id="udTenantSub">Business · E-commerce</div>
-          </div>
-          <div class="ud-stat">
-            <div class="ud-stat-lbl">Monthly Rate</div>
-            <div class="ud-stat-val" id="udRate">$144</div>
-            <div class="ud-stat-sub" id="udRateSub">$4.80/sq ft</div>
-          </div>
-          <div class="ud-stat">
-            <div class="ud-stat-lbl">Status</div>
-            <div class="ud-stat-val" id="udStatus" style="font-size:16px;">Occupied</div>
-            <div class="ud-stat-sub" id="udStatusSub">—</div>
-          </div>
-          <div class="ud-stat">
-            <div class="ud-stat-lbl">Branch · Level</div>
-            <div class="ud-stat-val" id="udBranch" style="font-size:14px;">Bukit Merah</div>
-            <div class="ud-stat-sub" id="udLevel">Level 1</div>
-          </div>
-          <div class="ud-stat">
-            <div class="ud-stat-lbl">Size</div>
-            <div class="ud-stat-val" id="udSize" style="font-size:14px;">Small</div>
-            <div class="ud-stat-sub" id="udSizeSub">SMALL · 30 sq ft</div>
-          </div>
-          <div class="ud-stat">
-            <div class="ud-stat-lbl">PSF</div>
-            <div class="ud-stat-val" id="udPsf">$4.80</div>
-            <div class="ud-stat-sub" id="udPsfSub">—</div>
-          </div>
-          <div class="ud-stat">
-            <div class="ud-stat-lbl">Rate History</div>
-            <div class="ud-stat-val" id="udRateHistCount" style="font-size:16px;">2</div>
-            <div class="ud-stat-sub" id="udRateHistSub">entries</div>
-          </div>
-          <div class="ud-stat">
-            <div class="ud-stat-lbl">Last Rate Change</div>
-            <div class="ud-stat-val" id="udLastChange" style="font-size:14px;">+5.9%</div>
-            <div class="ud-stat-sub" id="udLastChangeSub">01 Jul 2026 · Annual review</div>
-          </div>
-        </div>
-
-        <!-- Extensible placeholder — no fabricated data (filled in a later phase). -->
-        <div class="ud-history">
-          <div class="ud-history-title">Tenant History</div>
-          <div class="ud-history-empty" id="tenantHistoryEmpty">No tenant history recorded for this unit yet.</div>
+      <!-- Tenants Table -->
+      <div class="module-panel" id="facility-tenants">
+        <div class="tbl-card">
+          <div class="sec-hdr"><div><div class="sec-title">Tenants</div><div class="sec-sub" id="tenantsViewSub">All tenants</div></div><div style="display:flex;gap:7px;"><button class="tb-btn primary" id="addTenantBtn">+ New Tenant</button></div></div>
+          <div class="tbl-toolbar"><input type="text" id="tenantSearch" class="tbl-search" placeholder="Search name, segment, unit…"><select id="tenantStatusFilter" class="tbl-select"><option value="">All statuses</option><option value="ACTIVE">Active</option><option value="DUE_SOON">Due Soon</option><option value="OVERDUE">Overdue</option><option value="NOTICE">Notice</option><option value="INACTIVE">Inactive</option></select></div>
+          <div class="modal-alert" id="tenantsBanner" hidden></div>
+          <table class="data-tbl" id="tenantsViewTable"><thead><tr><th>Name</th><th>Type/Segment</th><th>Unit</th><th>Size/sqft</th><th>Rate</th><th>Status</th><th>Next Payment</th><th></th></tr></thead><tbody id="tenantsViewBody"></tbody></table>
+          <div class="tbl-pager"><div class="tbl-pager-info" id="tenantsPageInfo">Page 1 of 1</div><div class="tbl-pager-btns"><button class="tb-btn ghost" id="tenantsPagePrev">‹ Prev</button><button class="tb-btn ghost" id="tenantsPageNext">Next ›</button></div></div>
         </div>
       </div>
-
-      <!-- UNITS TABLE (server-side paginated CRUD) -->
-      <div class="tbl-card">
-        <div class="sec-hdr">
-          <div>
-            <div class="sec-title">Units</div>
-            <div class="sec-sub" id="unitsSub">All units across branches</div>
-          </div>
-          <div style="display:flex;gap:7px;">
-            <button class="tb-btn primary" id="addUnitBtn">+ Add Unit</button>
-          </div>
-        </div>
-        <div class="tbl-toolbar">
-          <select id="statusFilter" class="tbl-select" title="Filter by status (map branch/level also apply)">
-            <option value="">All statuses</option>
-            <option value="OCCUPIED">Occupied</option>
-            <option value="AVAILABLE">Available</option>
-            <option value="RESERVED">Reserved</option>
-            <option value="OVERDUE">Overdue</option>
-            <option value="MAINTENANCE">Maintenance</option>
-            <option value="INACTIVE">Inactive</option>
-          </select>
-        </div>
-        <div class="modal-alert" id="unitsBanner" hidden></div>
-        <table class="data-tbl" id="unitsTable">
-          <thead>
-            <tr>
-              <th>Code</th><th>Name</th><th>Size</th><th>Branch</th><th>Floor</th><th>Sqft</th><th>Rate/mo</th><th>PSF</th><th>Status</th><th>Tenant</th><th></th>
-            </tr>
-          </thead>
-          <tbody></tbody>
-        </table>
-        <div class="tbl-pager">
-          <div class="tbl-pager-info" id="pageInfo">Page 1 of 1</div>
-          <div class="tbl-pager-btns">
-            <button class="tb-btn ghost" id="pagePrev">‹ Prev</button>
-            <button class="tb-btn ghost" id="pageNext">Next ›</button>
-          </div>
+      <!-- Bookings table -->
+      <div class="module-panel" id="facility-bookings">
+        <div class="tbl-card">
+          <div class="sec-hdr"><div><div class="sec-title">Bookings</div><div class="sec-sub" id="bookingsViewSub">All bookings</div></div></div>
+          <div class="tbl-toolbar"><input type="text" id="bookingSearch" class="tbl-search" placeholder="Search ref, customer, unit…"><select id="bookingStatusFilter" class="tbl-select"><option value="">All statuses</option><option value="PENDING_PAYMENT">Pending Payment</option><option value="CONFIRMED">Confirmed</option><option value="ACTIVE">Active</option><option value="CANCELLED">Cancelled</option></select></div>
+          <table class="data-tbl" id="bookingsViewTable"><thead><tr><th>Ref</th><th>Customer</th><th>Unit</th><th>Move-in</th><th>Duration</th><th>$/mo</th><th>Paid/Due</th><th>Status</th></tr></thead><tbody id="bookingsViewBody"></tbody></table>
         </div>
       </div>
-
-    </div>
-
-    <!-- TENANTS SECTION (sidebar-navigated, mirrors Units) -->
-    <div class="view" id="view-tenants" hidden>
-
-      <div class="tbl-card">
-        <div class="sec-hdr">
-          <div>
-            <div class="sec-title">Tenants</div>
-            <div class="sec-sub" id="tenantsViewSub">All tenants across branches</div>
-          </div>
-          <div style="display:flex;gap:7px;">
-            <button class="tb-btn primary" id="addTenantBtn">+ New Tenant</button>
-          </div>
-        </div>
-        <div class="tbl-toolbar">
-          <input type="text" id="tenantSearch" class="tbl-search" placeholder="Search name, segment, unit…">
-          <select id="tenantStatusFilter" class="tbl-select" title="Filter by status">
-            <option value="">All statuses</option>
-            <option value="ACTIVE">Active</option>
-            <option value="DUE_SOON">Due Soon</option>
-            <option value="OVERDUE">Overdue</option>
-            <option value="NOTICE">Notice</option>
-            <option value="INACTIVE">Inactive</option>
-          </select>
-        </div>
-        <div class="modal-alert" id="tenantsBanner" hidden></div>
-        <table class="data-tbl" id="tenantsViewTable">
-          <thead>
-            <tr>
-              <th>Name</th><th>Type/Segment</th><th>Unit</th><th>Size/sqft</th><th>Rate</th><th>Status</th><th>Next Payment</th><th></th>
-            </tr>
-          </thead>
-          <tbody id="tenantsViewBody"></tbody>
-        </table>
-        <div class="tbl-pager">
-          <div class="tbl-pager-info" id="tenantsPageInfo">Page 1 of 1</div>
-          <div class="tbl-pager-btns">
-            <button class="tb-btn ghost" id="tenantsPagePrev">‹ Prev</button>
-            <button class="tb-btn ghost" id="tenantsPageNext">Next ›</button>
-          </div>
+      <!-- Move-ins today -->
+      <div class="module-panel" id="facility-moveins">
+        <div class="tbl-card">
+          <div class="sec-hdr"><div><div class="sec-title">Move-ins Today</div><div class="sec-sub" id="moveinsViewSub">Bookings with move-in date today</div></div></div>
+          <table class="data-tbl" id="moveinsViewTable"><thead><tr><th>Ref</th><th>Customer</th><th>Unit</th><th>Move-in</th><th>Duration</th><th>$/mo</th><th>Paid/Due</th><th>Status</th></tr></thead><tbody id="moveinsViewBody"></tbody></table>
         </div>
       </div>
-
-    </div>
-
-    <!-- BOOKINGS SECTION (sidebar-navigated live booking list) -->
-    <div class="view" id="view-bookings" hidden>
-
-      <div class="tbl-card">
-        <div class="sec-hdr">
-          <div>
-            <div class="sec-title">Bookings</div>
-            <div class="sec-sub" id="bookingsViewSub">All bookings across branches · live from checkout</div>
-          </div>
+      <!-- Floor Plan Editor -->
+      <div class="module-panel" id="facility-floorplans">
+        <div class="unit-map-card">
+          <div class="sec-hdr"><div><div class="sec-title" id="fpTitle">Floor Plan Editor</div><div class="sec-sub" id="fpSub">Design the layout: drag units onto the canvas</div></div><div style="display:flex;gap:8px;flex-wrap:wrap;"><select id="fpBranch" class="tbl-select"></select><select id="fpFloor" class="tbl-select"></select><button class="tb-btn ghost" id="fpDeletePlan">🗑 Delete plan</button><button class="tb-btn primary" id="fpSaveCanvas">💾 Save Canvas</button></div></div>
+          <div class="modal-alert" id="fpBanner" hidden></div>
+          <div class="fp-layout"><div class="fp-palette"><div class="chart-title">Units</div><div class="t-type" id="fpPaletteSub">Drag a unit onto the canvas</div><div class="fp-unit-list" id="fpPalette"></div><div class="fp-block-form" id="fpBlockForm" hidden><div class="chart-title" style="font-size:11px;margin-bottom:4px;">New block</div><input type="text" id="fpBlockName" maxlength="80" spellcheck="false" placeholder='Name — e.g. "Lift", "Stair"'><div style="display:flex;gap:6px;margin-top:6px;"><button class="act-btn primary" id="fpBlockAdd" style="flex:1;text-align:center;">Add block</button><button class="act-btn" id="fpBlockCancel" style="flex:1;text-align:center;">Cancel</button></div></div></div><div class="fp-editor"><div class="fp-toolbar"><span class="t-type">Canvas</span><input type="number" id="fpWidth" class="tbl-search" min="1" max="500" step="1"><span class="t-type">×</span><input type="number" id="fpHeight" class="tbl-search" min="1" max="500" step="1"><button class="tb-btn ghost" id="fpAddBlock">＋ Block</button><span class="fp-zoom"><button class="tb-btn ghost" id="fpZoomOut">−</button><span class="t-type" id="fpZoomLbl">100%</span><button class="tb-btn ghost" id="fpZoomIn">+</button></span><span class="fp-sel-info" id="fpSelInfo"></span></div><div class="fp-canvas-wrap" id="fpCanvasWrap"><div class="fp-canvas" id="fpCanvas"></div></div></div></div>
+          <details class="fp-structure"><summary>Advanced — legacy structure JSON <span class="t-type">(walls / corridors)</span></summary><textarea id="fpStructure" class="fp-structure-input" rows="6" spellcheck="false"></textarea><div class="fp-legacy-note" id="fpLegacyNote" hidden>Legacy structure attached.</div></details>
         </div>
-        <div class="tbl-toolbar">
-          <input type="text" id="bookingSearch" class="tbl-search" placeholder="Search ref, customer, unit…">
-          <select id="bookingStatusFilter" class="tbl-select" title="Filter by status">
-            <option value="">All statuses</option>
-            <option value="PENDING_PAYMENT">Pending Payment</option>
-            <option value="CONFIRMED">Confirmed</option>
-            <option value="ACTIVE">Active</option>
-            <option value="CANCELLED">Cancelled</option>
-          </select>
-        </div>
-        <table class="data-tbl" id="bookingsViewTable">
-          <thead>
-            <tr>
-              <th>Ref</th><th>Customer</th><th>Unit</th><th>Move-in</th><th>Duration</th><th>$/mo</th><th>Paid/Due</th><th>Status</th>
-            </tr>
-          </thead>
-          <tbody id="bookingsViewBody"></tbody>
-        </table>
       </div>
-
-    </div>
-
-    <!-- MOVE-INS TODAY SECTION (sidebar-navigated today's move-ins) -->
-    <div class="view" id="view-moveins" hidden>
-
-      <div class="tbl-card">
-        <div class="sec-hdr">
-          <div>
-            <div class="sec-title">Move-ins Today</div>
-            <div class="sec-sub" id="moveinsViewSub">Bookings with a move-in date of today</div>
-          </div>
-        </div>
-        <table class="data-tbl" id="moveinsViewTable">
-          <thead>
-            <tr>
-              <th>Ref</th><th>Customer</th><th>Unit</th><th>Move-in</th><th>Duration</th><th>$/mo</th><th>Paid/Due</th><th>Status</th>
-            </tr>
-          </thead>
-          <tbody id="moveinsViewBody"></tbody>
-        </table>
+      <!-- Promotions inside Facilities tab — refer to endpoint -->
+      <div class="module-panel" id="facility-promos">
+        <div class="card"><div class="card-head"><h3>Promotions</h3></div><div class="card-body" id="promoTable"></div></div>
       </div>
+    </section>
 
-    </div>
+    <!-- ============ PROMOTIONS ============ -->
+    <section class="page" id="promotions">
+      <div class="head"><div><h1>Discount &amp; Promotion</h1><p>Manage promo codes, discounts and campaigns.</p></div><div class="actions"><button class="primary">＋ Create promotion</button></div></div>
+      <div class="card"><div class="card-head"><h3>Active Promotions</h3></div><div class="table-wrap"><table class="lead-table"><thead><tr><th>Code</th><th>Name</th><th>Type</th><th>Value</th><th>Min months</th><th>Status</th></tr></thead><tbody id="promoRows"></tbody></table></div></div>
+    </section>
 
-    <!-- FLOOR PLANS SECTION (sidebar-navigated facility-setup editor) -->
-    <div class="view" id="view-floorplans" hidden>
-
-      <div class="unit-map-card">
-        <div class="sec-hdr">
-          <div>
-            <div class="sec-title" id="fpTitle">Floor Plan Editor</div>
-            <div class="sec-sub" id="fpSub">Design the layout: drag units onto the floor, snap to grid, resize, save</div>
-          </div>
-          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-            <select id="fpBranch" class="tbl-select" title="Branch"></select>
-            <select id="fpFloor" class="tbl-select" title="Floor"></select>
-            <button class="tb-btn ghost" id="fpDeletePlan" title="Delete this floor plan and all placements on it">🗑 Delete plan</button>
-            <button class="tb-btn primary" id="fpSaveCanvas">💾 Save Canvas</button>
-          </div>
-        </div>
-
-        <div class="modal-alert" id="fpBanner" hidden></div>
-
-        <div class="fp-layout">
-          <div class="fp-palette">
-            <div class="chart-title">Units</div>
-            <div class="t-type" id="fpPaletteSub">Drag a unit onto the canvas</div>
-            <div class="fp-unit-list" id="fpPalette"></div>
-            <div class="fp-block-form" id="fpBlockForm" hidden>
-              <div class="chart-title" style="font-size:11px;margin-bottom:4px;">New block</div>
-              <input type="text" id="fpBlockName" maxlength="80" spellcheck="false" placeholder='Name — e.g. "Lift", "Stair", "Walking area", "Exit"'>
-              <div style="display:flex;gap:6px;margin-top:6px;">
-                <button class="act-btn primary" id="fpBlockAdd" style="flex:1;text-align:center;">Add block</button>
-                <button class="act-btn" id="fpBlockCancel" style="flex:1;text-align:center;">Cancel</button>
-              </div>
-            </div>
-          </div>
-          <div class="fp-editor">
-            <div class="fp-toolbar">
-              <span class="t-type">Canvas</span>
-              <input type="number" id="fpWidth" class="tbl-search" min="1" max="500" step="1" title="Canvas width (grid units)">
-              <span class="t-type">×</span>
-              <input type="number" id="fpHeight" class="tbl-search" min="1" max="500" step="1" title="Canvas height (grid units)">
-              <button class="tb-btn ghost" id="fpAddBlock" title="Add a decoration block (lift, stairs, exit, walking area) — sets a 6×6 block you can drag, resize and rename">＋ Block</button>
-              <span class="fp-zoom">
-                <button class="tb-btn ghost" id="fpZoomOut" title="Zoom out">−</button>
-                <span class="t-type" id="fpZoomLbl">100%</span>
-                <button class="tb-btn ghost" id="fpZoomIn" title="Zoom in">+</button>
-              </span>
-              <span class="fp-sel-info" id="fpSelInfo"></span>
-            </div>
-            <div class="fp-canvas-wrap" id="fpCanvasWrap">
-              <div class="fp-canvas" id="fpCanvas"></div>
-            </div>
-          </div>
-        </div>
-
-        <details class="fp-structure">
-          <summary>Advanced — legacy structure JSON <span class="t-type">(walls / corridors; author lifts, stairs, exits &amp; walking areas as blocks instead)</span></summary>
-          <textarea id="fpStructure" class="fp-structure-input" rows="6" spellcheck="false" placeholder='{ "walls": [ { "x1": 0, "y1": 0, "x2": 40, "y2": 0 } ] }'></textarea>
-          <div class="fp-legacy-note" id="fpLegacyNote" hidden>This plan has a legacy structure attached — it renders as static decoration (not editable here). New decorations are authored as blocks.</div>
-        </details>
+    <!-- ============ FINANCE / BILLING ============ -->
+    <section class="page" id="billing">
+      <div class="head"><div><h1>Finance Management</h1><p>Invoices, payments and revenue overview.</p></div><div class="actions"><button class="btn">Export</button><button class="primary">＋ Create invoice</button></div></div>
+      <div class="subtabs" data-tabs="billing"><button class="active" data-tab="bill-overview">Overview</button><button data-tab="bill-invoices">Invoices</button><button data-tab="bill-arrears">Arrears</button></div>
+      <div class="module-panel active" id="bill-overview">
+        <div class="stats" id="billingStats"></div>
+        <div class="aging" id="agingBreakdown"></div>
       </div>
+      <div class="module-panel" id="bill-invoices">
+        <div class="card"><div class="card-head"><h3>Invoices</h3></div><div class="table-wrap"><table class="lead-table"><thead><tr><th>Invoice</th><th>Customer</th><th>Unit</th><th>Amount</th><th>Due</th><th>Status</th></tr></thead><tbody id="invoiceRows"></tbody></table></div></div>
+      </div>
+      <div class="module-panel" id="bill-arrears">
+        <div class="card"><div class="card-head"><h3>Overdue Invoices</h3></div><div class="table-wrap"><table class="lead-table"><thead><tr><th>Invoice</th><th>Customer</th><th>Amount</th><th>Overdue by</th></tr></thead><tbody id="arrearRows"></tbody></table></div></div>
+      </div>
+    </section>
 
-    </div>
-  </div>
+    <!-- ============ SETTINGS ============ -->
+    <section class="page" id="settings">
+      <div class="head"><div><h1>Global Settings</h1><p>Business rules, fees, users and platform-wide policies.</p></div><div class="actions"><button class="primary">Save changes</button></div></div>
+      <div class="setting-grid">
+        <div class="card"><div class="card-head"><h3>Organisation</h3></div><div class="card-body"><div class="info-grid"><div class="info"><small>Legal entity</small><b>StoreLah Pte. Ltd.</b></div><div class="info"><small>Trading name</small><b>StoreLah Self Storage</b></div><div class="info"><small>Currency</small><b>SGD</b></div><div class="info"><small>Timezone</small><b>Singapore · UTC+8</b></div></div></div></div>
+        <div class="card"><div class="card-head"><h3>Booking rules</h3></div><div class="card-body"><div class="info-grid"><div class="info"><small>Reservation hold</small><b>24 hours</b></div><div class="info"><small>Min rental</small><b>1 month</b></div><div class="info"><small>Notice period</small><b>14 days</b></div></div></div></div>
+        <div class="card"><div class="card-head"><h3>System</h3></div><div class="card-body"><div class="info-grid"><div class="info"><small>API</small><b>Active</b></div><div class="info"><small>Version</small><b>v8.0</b></div></div></div></div>
+      </div>
+    </section>
+
+  </div><!-- .content -->
 </main>
 
-<!-- UNIT MODAL (create / edit) -->
+</div><!-- .app -->
+
+<!-- ============ MODALS (admin CRUD) ============ -->
+<!-- Unit modal -->
 <div class="modal-overlay" id="unitModal" hidden>
-  <div class="modal">
-    <div class="modal-hdr">
-      <div class="modal-title" id="unitModalTitle">Add Unit</div>
-      <button class="modal-x" id="unitModalClose" type="button">✕</button>
-    </div>
+  <div class="modal-win">
+    <div class="modal-hdr"><div class="modal-title" id="unitModalTitle">Add Unit</div><button class="modal-x" id="unitModalClose" type="button">✕</button></div>
     <div class="modal-alert" id="unitModalAlert" hidden></div>
     <div class="modal-hint" id="unitModalHint" hidden>Branch, floor and size cannot be changed for an existing unit.</div>
     <form id="unitForm" novalidate>
       <div class="form-grid">
-        <div class="field">
-          <label for="f-branch">Branch</label>
-          <select id="f-branch" name="branch"></select>
-          <div class="field-err" id="e-branch"></div>
-        </div>
-        <div class="field">
-          <label for="f-floor">Floor</label>
-          <select id="f-floor" name="floor"></select>
-          <div class="field-err" id="e-floor"></div>
-        </div>
-        <div class="field">
-          <label for="f-size">Size</label>
-          <select id="f-size" name="size"></select>
-          <div class="field-err" id="e-size"></div>
-        </div>
-        <div class="field">
-          <label for="f-status">Status</label>
-          <select id="f-status" name="status"></select>
-          <div class="field-err" id="e-status"></div>
-        </div>
-        <div class="field full">
-          <label for="f-name">Name (optional)</label>
-          <input type="text" id="f-name" name="name" maxlength="80" placeholder="Defaults to unit code, e.g. BM-01-29">
-          <div class="field-err" id="e-name"></div>
-        </div>
-        <div class="field">
-          <label for="f-sqft">Sq Ft</label>
-          <input type="number" id="f-sqft" name="sqft" min="1" step="1" placeholder="30">
-          <div class="field-err" id="e-sqft"></div>
-        </div>
-        <div class="field">
-          <label for="f-monthlyRate">Monthly Rate ($)</label>
-          <input type="number" id="f-monthlyRate" name="monthlyRate" min="0" step="0.01" placeholder="150.00">
-          <div class="field-err" id="e-monthlyRate"></div>
-        </div>
-        <div class="field full">
-          <label for="f-climateControl">Climate Control</label>
-          <input type="text" id="f-climateControl" name="climateControl" placeholder="Ambient climate">
-          <div class="field-err" id="e-climateControl"></div>
-        </div>
+        <div class="field"><label for="f-branch">Branch</label><select id="f-branch" name="branch"></select><div class="field-err" id="e-branch"></div></div>
+        <div class="field"><label for="f-floor">Floor</label><select id="f-floor" name="floor"></select><div class="field-err" id="e-floor"></div></div>
+        <div class="field"><label for="f-size">Size</label><select id="f-size" name="size"></select><div class="field-err" id="e-size"></div></div>
+        <div class="field"><label for="f-status">Status</label><select id="f-status" name="status"></select><div class="field-err" id="e-status"></div></div>
+        <div class="field full"><label for="f-name">Name (optional)</label><input type="text" id="f-name" name="name" maxlength="80" placeholder="Defaults to unit code"><div class="field-err" id="e-name"></div></div>
+        <div class="field"><label for="f-sqft">Sq Ft</label><input type="number" id="f-sqft" name="sqft" min="1" step="1"><div class="field-err" id="e-sqft"></div></div>
+        <div class="field"><label for="f-monthlyRate">Monthly Rate ($)</label><input type="number" id="f-monthlyRate" name="monthlyRate" min="0" step="0.01"><div class="field-err" id="e-monthlyRate"></div></div>
+        <div class="field full"><label for="f-climateControl">Climate Control</label><input type="text" id="f-climateControl" name="climateControl" placeholder="Ambient climate"><div class="field-err" id="e-climateControl"></div></div>
       </div>
-      <div class="modal-foot">
-        <button class="act-btn" type="button" id="unitFormCancel">Cancel</button>
-        <button class="act-btn primary" type="submit" id="unitFormSubmit">Save Unit</button>
-      </div>
+      <div class="modal-foot"><button class="act-btn" type="button" id="unitFormCancel">Cancel</button><button class="act-btn primary" type="submit" id="unitFormSubmit">Save Unit</button></div>
     </form>
   </div>
 </div>
 
-<!-- RATE MODAL -->
+<!-- Rate modal -->
 <div class="modal-overlay" id="rateModal" hidden>
-  <div class="modal">
-    <div class="modal-hdr">
-      <div class="modal-title" id="rateModalTitle">Adjust Rate</div>
-      <button class="modal-x" id="rateModalClose" type="button">✕</button>
-    </div>
+  <div class="modal-win">
+    <div class="modal-hdr"><div class="modal-title" id="rateModalTitle">Adjust Rate</div><button class="modal-x" id="rateModalClose" type="button">✕</button></div>
     <div class="modal-alert" id="rateModalAlert" hidden></div>
     <form id="rateForm" novalidate>
       <div class="form-grid">
-        <div class="field">
-          <label for="f-newRate">New Rate ($/mo)</label>
-          <input type="number" id="f-newRate" name="newRate" min="0.01" step="0.01">
-          <div class="field-err" id="e-newRate"></div>
-        </div>
-        <div class="field">
-          <label for="f-reason">Reason</label>
-          <input type="text" id="f-reason" name="reason" placeholder="Manual adjustment">
-          <div class="field-err" id="e-reason"></div>
-        </div>
+        <div class="field"><label for="f-newRate">New Rate ($/mo)</label><input type="number" id="f-newRate" name="newRate" min="0.01" step="0.01"><div class="field-err" id="e-newRate"></div></div>
+        <div class="field"><label for="f-reason">Reason</label><input type="text" id="f-reason" name="reason" placeholder="Manual adjustment"><div class="field-err" id="e-reason"></div></div>
       </div>
-      <div class="modal-foot">
-        <button class="act-btn" type="button" id="rateFormCancel">Cancel</button>
-        <button class="act-btn primary" type="submit" id="rateFormSubmit">Apply Rate</button>
-      </div>
+      <div class="modal-foot"><button class="act-btn" type="button" id="rateFormCancel">Cancel</button><button class="act-btn primary" type="submit" id="rateFormSubmit">Apply Rate</button></div>
     </form>
   </div>
 </div>
 
-<!-- TENANT MODAL (create / edit) -->
+<!-- Tenant modal -->
 <div class="modal-overlay" id="tenantModal" hidden>
-  <div class="modal">
-    <div class="modal-hdr">
-      <div class="modal-title" id="tenantModalTitle">Add Tenant</div>
-      <button class="modal-x" id="tenantModalClose" type="button">✕</button>
-    </div>
+  <div class="modal-win">
+    <div class="modal-hdr"><div class="modal-title" id="tenantModalTitle">Add Tenant</div><button class="modal-x" id="tenantModalClose" type="button">✕</button></div>
     <div class="modal-alert" id="tenantModalAlert" hidden></div>
-    <div class="modal-hint" id="tenantModalHint" hidden>Unit size and PSF are derived from the assigned unit — they are set server-side, not edited here.</div>
+    <div class="modal-hint" id="tenantModalHint" hidden>Unit size and PSF are derived from the assigned unit.</div>
     <form id="tenantForm" novalidate>
       <div class="form-grid">
-        <div class="field full">
-          <label for="tf-name">Name</label>
-          <input type="text" id="tf-name" name="name" maxlength="80" placeholder="Tenant name">
-          <div class="field-err" id="te-name"></div>
-        </div>
-        <div class="field">
-          <label for="tf-type">Type</label>
-          <select id="tf-type" name="type">
-            <option value="PERSONAL">Personal</option>
-            <option value="BUSINESS">Business</option>
-          </select>
-          <div class="field-err" id="te-type"></div>
-        </div>
-        <div class="field">
-          <label for="tf-segment">Segment</label>
-          <input type="text" id="tf-segment" name="segment" placeholder="E.g. E-commerce">
-          <div class="field-err" id="te-segment"></div>
-        </div>
-        <div class="field">
-          <label for="tf-email">Email</label>
-          <input type="email" id="tf-email" name="email" placeholder="name@example.com">
-          <div class="field-err" id="te-email"></div>
-        </div>
-        <div class="field">
-          <label for="tf-mobile">Mobile</label>
-          <input type="text" id="tf-mobile" name="mobile" placeholder="+65 9xxx xxxx">
-          <div class="field-err" id="te-mobile"></div>
-        </div>
-        <div class="field full">
-          <label for="tf-unit">Unit</label>
-          <select id="tf-unit" name="unit"></select>
-          <div class="field-err" id="te-unit"></div>
-        </div>
-        <div class="field">
-          <label for="tf-moveInDate">Move-in Date</label>
-          <input type="date" id="tf-moveInDate" name="moveInDate">
-          <div class="field-err" id="te-moveInDate"></div>
-        </div>
-        <div class="field">
-          <label for="tf-rate">Monthly Rate ($)</label>
-          <input type="number" id="tf-rate" name="monthlyRate" min="0" step="0.01" placeholder="150.00">
-          <div class="field-err" id="te-monthlyRate"></div>
-        </div>
-        <div class="field">
-          <label for="tf-status">Status</label>
-          <select id="tf-status" name="status"></select>
-          <div class="field-err" id="te-status"></div>
-        </div>
-        <div class="field">
-          <label for="tf-autoDebit">Auto Debit</label>
-          <select id="tf-autoDebit" name="autoDebit">
-            <option value="false">No</option>
-            <option value="true">Yes</option>
-          </select>
-          <div class="field-err" id="te-autoDebit"></div>
-        </div>
+        <div class="field full"><label for="tf-name">Name</label><input type="text" id="tf-name" name="name" maxlength="80" placeholder="Tenant name"><div class="field-err" id="te-name"></div></div>
+        <div class="field"><label for="tf-type">Type</label><select id="tf-type" name="type"><option value="PERSONAL">Personal</option><option value="BUSINESS">Business</option></select><div class="field-err" id="te-type"></div></div>
+        <div class="field"><label for="tf-segment">Segment</label><input type="text" id="tf-segment" name="segment" placeholder="E.g. E-commerce"><div class="field-err" id="te-segment"></div></div>
+        <div class="field"><label for="tf-email">Email</label><input type="email" id="tf-email" name="email" placeholder="name@example.com"><div class="field-err" id="te-email"></div></div>
+        <div class="field"><label for="tf-mobile">Mobile</label><input type="text" id="tf-mobile" name="mobile" placeholder="+65 9xxx xxxx"><div class="field-err" id="te-mobile"></div></div>
+        <div class="field full"><label for="tf-unit">Unit</label><select id="tf-unit" name="unit"></select><div class="field-err" id="te-unit"></div></div>
+        <div class="field"><label for="tf-moveInDate">Move-in Date</label><input type="date" id="tf-moveInDate" name="moveInDate"><div class="field-err" id="te-moveInDate"></div></div>
+        <div class="field"><label for="tf-rate">Monthly Rate ($)</label><input type="number" id="tf-rate" name="monthlyRate" min="0" step="0.01"><div class="field-err" id="te-monthlyRate"></div></div>
+        <div class="field"><label for="tf-status">Status</label><select id="tf-status" name="status"></select><div class="field-err" id="te-status"></div></div>
+        <div class="field"><label for="tf-autoDebit">Auto Debit</label><select id="tf-autoDebit" name="autoDebit"><option value="false">No</option><option value="true">Yes</option></select><div class="field-err" id="te-autoDebit"></div></div>
       </div>
-      <div class="modal-foot">
-        <button class="act-btn" type="button" id="tenantFormCancel">Cancel</button>
-        <button class="act-btn primary" type="submit" id="tenantFormSubmit">Save Tenant</button>
-      </div>
+      <div class="modal-foot"><button class="act-btn" type="button" id="tenantFormCancel">Cancel</button><button class="act-btn primary" type="submit" id="tenantFormSubmit">Save Tenant</button></div>
     </form>
   </div>
 </div>
 
-<!-- FLOOR PLAN VIEW MODAL (read-only preview; Units → Show Floor Plan) -->
+<!-- Floor plan view modal -->
 <div class="modal-overlay" id="fpViewModal" hidden>
-  <div class="modal modal-wide" role="dialog" aria-modal="true" aria-label="Floor plan preview">
-    <div class="modal-hdr">
-      <div class="modal-title" id="fpViewTitle">Floor Plan</div>
-      <button class="modal-x" id="fpViewClose" type="button" aria-label="Close floor plan">✕</button>
-    </div>
-    <div class="fp-view-wrap">
-      <div class="fp-view-empty" id="fpViewEmpty" hidden></div>
-      <div class="fp-canvas-wrap fp-view-canvas" id="fpViewCanvasWrap" hidden>
-        <div class="fp-canvas" id="fpViewCanvas"></div>
-      </div>
-    </div>
-    <div class="modal-foot">
-      <button class="act-btn" type="button" id="fpViewCloseBtn">Close</button>
-      <button class="act-btn primary" type="button" id="fpViewEdit">Edit</button>
-    </div>
+  <div class="modal-win modal-wide" role="dialog" aria-modal="true" aria-label="Floor plan preview">
+    <div class="modal-hdr"><div class="modal-title" id="fpViewTitle">Floor Plan</div><button class="modal-x" id="fpViewClose" type="button" aria-label="Close">✕</button></div>
+    <div class="fp-view-wrap"><div class="fp-view-empty" id="fpViewEmpty" hidden></div><div class="fp-canvas-wrap fp-view-canvas" id="fpViewCanvasWrap" hidden><div class="fp-canvas" id="fpViewCanvas"></div></div></div>
+    <div class="modal-foot"><button class="act-btn" type="button" id="fpViewCloseBtn">Close</button><button class="act-btn primary" type="button" id="fpViewEdit">Edit</button></div>
   </div>
 </div>
 
+<!-- Toast notification container -->
+<div class="toast-v8" id="toastEl"></div>
+
+<!-- Inline boot script -->
 <script>
-// Lightweight inline helper (kept global so inline onclick attributes work).
-function selectUnit(el, id) {
-  document.querySelectorAll('.u-cell').forEach((c) => c.classList.remove('selected'));
+function selectUnit(el,id){
+  document.querySelectorAll('.u-cell').forEach(function(c){c.classList.remove('selected')});
   el.classList.add('selected');
-  document.getElementById('unitDetail').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-  if (window.StoreLahAdmin && typeof window.StoreLahAdmin.showUnitDetail === 'function') {
-    window.StoreLahAdmin.showUnitDetail(id);
-  }
+  if(window.StoreLahAdmin&&typeof window.StoreLahAdmin.showUnitDetail==='function')window.StoreLahAdmin.showUnitDetail(id);
 }
 </script>
 
-<!-- StoreLah CMS admin data layer (units CRUD + dashboard bindings) -->
+<!-- Admin data layer -->
 <script type="module" src="/admin/admin.js"></script>
 </body>
 </html>

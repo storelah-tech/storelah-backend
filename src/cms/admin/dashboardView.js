@@ -130,19 +130,19 @@ export function initCharts() {
       data: {
         labels: ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul'],
         datasets: [
-          { label: 'Actual', data: [36200, 37800, 38500, 39200, 40100, 41600, 42860], backgroundColor: (ctx) => (ctx.dataIndex === 6 ? '#B86A4A' : '#E9E1D0'), borderRadius: 5, borderSkipped: false },
-          { label: 'Target', data: [38000, 38000, 39000, 39000, 40000, 41000, 42000], type: 'line', borderColor: '#5A7A60', borderWidth: 1.5, borderDash: [4, 3], pointRadius: 0, fill: false, tension: 0.3 },
+          { label: 'Actual', data: [36200, 37800, 38500, 39200, 40100, 41600, 42860], backgroundColor: (ctx) => (ctx.dataIndex === 6 ? '#c97952' : '#e6e0d7'), borderRadius: 5, borderSkipped: false },
+          { label: 'Target', data: [38000, 38000, 39000, 39000, 40000, 41000, 42000], type: 'line', borderColor: '#526557', borderWidth: 1.5, borderDash: [4, 3], pointRadius: 0, fill: false, tension: 0.3 },
         ],
       },
-      options: { responsive: true, plugins: { legend: { display: false } }, scales: { x: { grid: { display: false }, ticks: { font: { family: 'Manrope', size: 10 }, color: '#9C948D' } }, y: { grid: { color: '#F3EEE6' }, ticks: { font: { family: 'Manrope', size: 10 }, color: '#9C948D', callback: (v) => '$' + (v / 1000).toFixed(0) + 'k' } } } },
+      options: { responsive: true, plugins: { legend: { display: false } }, scales: { x: { grid: { display: false }, ticks: { font: { family: 'Manrope', size: 10 }, color: '#6f746d' } }, y: { grid: { color: '#ede8e2' }, ticks: { font: { family: 'Manrope', size: 10 }, color: '#6f746d', callback: (v) => '$' + (v / 1000).toFixed(0) + 'k' } } } },
     });
   }
   const bCtx = $('#branchChart')?.getContext('2d');
   if (bCtx && !Chart.getChart('branchChart')) {
     new Chart(bCtx, {
       type: 'bar',
-      data: { labels: ['Bukit Merah', 'Woodlands', 'Ubi'], datasets: [{ data: [87.5, 91.2, 82.0], backgroundColor: ['#B86A4A', '#5A7A60', '#0B4F5E'], borderRadius: 7, borderSkipped: false }] },
-      options: { indexAxis: 'y', responsive: true, plugins: { legend: { display: false } }, scales: { x: { grid: { color: '#F3EEE6' }, ticks: { font: { family: 'Manrope', size: 10 }, color: '#9C948D', callback: (v) => v + '%' }, max: 100 }, y: { grid: { display: false }, ticks: { font: { family: 'Manrope', size: 10 }, color: '#6B6560' } } } },
+      data: { labels: ['Bukit Merah', 'Woodlands', 'Ubi'], datasets: [{ data: [87.5, 91.2, 82.0], backgroundColor: ['#c97952', '#526557', '#547b8d'], borderRadius: 7, borderSkipped: false }] },
+      options: { indexAxis: 'y', responsive: true, plugins: { legend: { display: false } }, scales: { x: { grid: { color: '#ede8e2' }, ticks: { font: { family: 'Manrope', size: 10 }, color: '#6f746d', callback: (v) => v + '%' }, max: 100 }, y: { grid: { display: false }, ticks: { font: { family: 'Manrope', size: 10 }, color: '#20241f' } } } },
     });
   }
   const pCtx = $('#psfChart')?.getContext('2d');
@@ -151,14 +151,14 @@ export function initCharts() {
       type: 'scatter',
       data: {
         datasets: [
-          { label: 'Locker', data: [{ x: 12, y: 5.2 }, { x: 15, y: 5.1 }, { x: 18, y: 5.3 }, { x: 10, y: 5.4 }, { x: 20, y: 5.0 }], backgroundColor: '#B86A4A', pointRadius: 5 },
-          { label: 'Small', data: [{ x: 30, y: 4.8 }, { x: 35, y: 4.7 }, { x: 28, y: 4.9 }, { x: 40, y: 4.6 }, { x: 32, y: 4.8 }], backgroundColor: '#5A7A60', pointRadius: 5 },
-          { label: 'Medium', data: [{ x: 60, y: 4.4 }, { x: 65, y: 4.3 }, { x: 70, y: 4.5 }, { x: 55, y: 4.45 }], backgroundColor: '#0B4F5E', pointRadius: 5 },
-          { label: 'Large', data: [{ x: 120, y: 3.8 }, { x: 130, y: 3.7 }, { x: 110, y: 3.9 }], backgroundColor: '#D4860A', pointRadius: 5 },
-          { label: 'XL Biz', data: [{ x: 200, y: 3.2 }, { x: 220, y: 3.1 }, { x: 180, y: 3.3 }], backgroundColor: '#9C948D', pointRadius: 5 },
+          { label: 'Locker', data: [{ x: 12, y: 5.2 }, { x: 15, y: 5.1 }, { x: 18, y: 5.3 }, { x: 10, y: 5.4 }, { x: 20, y: 5.0 }], backgroundColor: '#c97952', pointRadius: 5 },
+          { label: 'Small', data: [{ x: 30, y: 4.8 }, { x: 35, y: 4.7 }, { x: 28, y: 4.9 }, { x: 40, y: 4.6 }, { x: 32, y: 4.8 }], backgroundColor: '#526557', pointRadius: 5 },
+          { label: 'Medium', data: [{ x: 60, y: 4.4 }, { x: 65, y: 4.3 }, { x: 70, y: 4.5 }, { x: 55, y: 4.45 }], backgroundColor: '#334437', pointRadius: 5 },
+          { label: 'Large', data: [{ x: 120, y: 3.8 }, { x: 130, y: 3.7 }, { x: 110, y: 3.9 }], backgroundColor: '#e5a84b', pointRadius: 5 },
+          { label: 'XL Biz', data: [{ x: 200, y: 3.2 }, { x: 220, y: 3.1 }, { x: 180, y: 3.3 }], backgroundColor: '#547b8d', pointRadius: 5 },
         ],
       },
-      options: { responsive: true, plugins: { legend: { display: false } }, scales: { x: { grid: { color: '#F3EEE6' }, ticks: { font: { family: 'Manrope', size: 10 }, color: '#9C948D', callback: (v) => v + ' sqft' } }, y: { grid: { color: '#F3EEE6' }, ticks: { font: { family: 'Manrope', size: 10 }, color: '#9C948D', callback: (v) => '$' + v } } } },
+      options: { responsive: true, plugins: { legend: { display: false } }, scales: { x: { grid: { color: '#ede8e2' }, ticks: { font: { family: 'Manrope', size: 10 }, color: '#6f746d', callback: (v) => v + ' sqft' } }, y: { grid: { color: '#ede8e2' }, ticks: { font: { family: 'Manrope', size: 10 }, color: '#6f746d', callback: (v) => '$' + v } } } },
     });
   }
 }

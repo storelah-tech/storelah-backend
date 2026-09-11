@@ -40,7 +40,7 @@ interface Selector {
 // BM L1 gets the same 60-unit layout as every other floor.
 const BM_L1: U[] = ((s: Record<number, U[]>) => s[1] ?? [])(genSeeds('BM'));
 
-function genSeeds(branch: string): Record<number, U[]> {
+function genSeeds(_branch: string): Record<number, U[]> {
   // 60 units per level for every branch → rich floor plan with X+Y scroll
   const out: Record<number, U[]> = {};
   for (const lv of [1, 2, 3, 4]) {

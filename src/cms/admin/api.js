@@ -70,6 +70,18 @@ export async function request(path, opts = {}) {
 
 export const get = (p) => request(p).then((b) => b.data);
 
+export function post(p, body) {
+  return request(p, { method: 'POST', body: JSON.stringify(body) }).then((b) => b.data);
+}
+
+export function put(p, body) {
+  return request(p, { method: 'PUT', body: JSON.stringify(body) }).then((b) => b.data);
+}
+
+export function del(p) {
+  return request(p, { method: 'DELETE' }).then((b) => b.data);
+}
+
 // Shape any thrown error into a user-facing message. Lives beside ApiError
 // because it pattern-matches on that class first, then falls back generically.
 export function describeError(err) {

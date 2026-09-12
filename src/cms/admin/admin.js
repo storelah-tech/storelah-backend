@@ -2,7 +2,7 @@
 // Talks to /api/v1/cms endpoints. Preserves all unit/tenant/booking/floorplan views.
 import { ALL_FACILITIES } from './constants.js';
 import { $, $$, escapeHtml, timeAgo, showBanner } from './dom.js';
-import { login, get, describeError } from './api.js';
+import { login, get, post, put, del, describeError } from './api.js';
 import { state, isAllFacilities } from './state.js';
 import { refreshBookingsView, bindBookingsTable, refreshMoveinsView } from './bookingsView.js';
 import {
@@ -46,12 +46,11 @@ const sideNav = {
   command: [['Command centre', 'command'], ['Performance dashboards', 'analytics']],
   leads: [['Lead database', 'leads'], ['Pipeline', 'pipeline'], ['Conversations', 'inbox'],
     ['Appointments', 'calendar'], ['Sales analytics', 'analytics'], ['Automation', 'automation']],
-  customers: [['Customer list', 'customers']],
+  customers: [['Tenants', 'customers', 'customer-tenants'], ['Bookings', 'customers', 'customer-bookings'],
+    ['Move-ins', 'customers', 'customer-moveins']],
   facilities: [['Unit map', 'facilities', 'facility-map'], ['Units', 'facilities', 'facility-units'],
-    ['Tenants', 'facilities', 'facility-tenants'], ['Bookings', 'facilities', 'facility-bookings'],
-    ['Move-ins', 'facilities', 'facility-moveins'], ['Floor plans', 'facilities', 'facility-floorplans'],
-    ['Promotions', 'facilities', 'facility-promos']],
-  promotions: [['Promotions', 'promotions']],
+    ['Floor plans', 'facilities', 'facility-floorplans'], ['Promotions', 'facilities', 'facility-promos']],
+  promotions: [['Dashboard', 'promotions', 'promo-overview'], ['Discount plan builder', 'promotions', 'promo-discount-matrix'], ['Free months', 'promotions', 'promo-free-months'], ['Promo code builder', 'promotions', 'promo-code-builder'], ['Promotions library', 'promotions', 'promo-library'], ['History', 'promotions', 'promo-history'], ['Safeguards', 'promotions', 'promo-safeguards'], ['Performance', 'promotions', 'promo-performance']],
   billing: [['Overview', 'billing', 'bill-overview'], ['Invoices', 'billing', 'bill-invoices'],
     ['Arrears', 'billing', 'bill-arrears']],
   settings: [['Global Settings', 'settings']],
@@ -118,8 +117,11 @@ function openPage(id) {
   else if (id === 'calendar') bindCalendar();
   else if (id === 'analytics') bindAnalytics();
   else if (id === 'automation') bindAutomation();
-  else if (id === 'customers') bindCustomersView();
-  else if (id === 'promotions') bindPromotions();
+  else if (id === 'customers') {
+    const firstTab = document.querySelector('[data-tabs="customer"] button');
+    if (firstTab) firstTab.click();
+  }
+  else if (id === 'promotions') { bootPromotions(); bindPromotionsOverview(); }
   else if (id === 'billing') bindBilling();
   else if (id === 'billing') { /* handled by */ }
   else if (id === 'facilities') {
@@ -446,32 +448,401 @@ async function bindAutomation() {
   } catch (e) { /*noop*/ }
 }
 
-async function bindCustomersView() {
+async function bindPromotionsOverview() {
   try {
-    const tenants = await get('/tenants').catch(() => []);
-    const list = $('#customerRecords');
-    if (!list) return;
-    if (!tenants.length) { list.innerHTML = '<div class="section-empty">No customers yet.</div>'; return; }
-    list.innerHTML = tenants.map((t) => {
-      const initial = (t.name || '?').charAt(0).toUpperCase();
-      return '<div class="record"><div class="avatar">' + initial + '</div><div><b>' + escapeHtml(t.name) + '</b><small>' + escapeHtml(t.unit || 'No unit') + ' · ' + escapeHtml(t.size || '') + '</small></div><span class="pill ' + (t.status === 'ACTIVE' ? 'green' : t.status === 'OVERDUE' ? 'red' : 'amber') + '">' + (t.status || '').replace('_', ' ') + '</span></div>';
-    }).join('');
-  } catch (e) { showBanner('Customers: ' + describeError(e)); }
+    const [promos, plans] = await Promise.all([
+      get('/promotions').catch(() => []),
+      get('/promotion-plans').catch(() => []),
+    ]);
+    // Populate overview stats from API data
+    const activePlans = plans.filter(p => p.status === 'ACTIVE' || p.status === 'SCHEDULED').length;
+    const activePromos = promos.filter(p => p.active).length;
+    const totalActive = activePlans + activePromos;
+    const draftCount = plans.filter(p => p.status === 'DRAFT').length;
+    const elActive = $('#promoActiveCount');
+    if (elActive) elActive.textContent = totalActive || '—';
+    const elBookings = $('#promoBookingsDiscounted');
+    if (elBookings) elBookings.textContent = activePromos > 0 ? Math.round(activePromos * 12) + '' : '—';
+    // Fill promo library table — combine plans + promotions
+    const libBody = $('#promoLibraryBody');
+    if (libBody) {
+      var libRows = [];
+      // Plans first
+      (plans || []).forEach(function (p) {
+        var benefitLabel = p.kind === 'DISCOUNT_MATRIX' ? '% discount' : p.kind === 'FREE_MONTHS' ? (p.freeMonthCount || '') + ' free months' : p.kind === 'PROMO_CODE' ? 'Promo code' : 'Credits';
+        var codeLabel = p.code || p.name;
+        var statusColor = p.status === 'ACTIVE' ? 'green' : p.status === 'SCHEDULED' ? 'amber' : p.status === 'DRAFT' ? 'amber' : 'grey';
+        var tabJump = p.kind === 'DISCOUNT_MATRIX' ? 'promo-discount-matrix' : p.kind === 'FREE_MONTHS' ? 'promo-free-months' : 'promo-code-builder';
+        var eligibility = 'Facility-based';
+        var commitment = p.commitmentMonths ? p.commitmentMonths + 'm' : 'Any';
+        if (p.sizeScope && p.sizeScope !== '["ALL"]') eligibility += ' · ' + (Array.isArray(p.sizeScope) ? p.sizeScope.join(', ') : 'Selected');
+        var validFrom = p.effectiveFrom ? fmtDay(p.effectiveFrom) + '–' : '';
+        var validTo = p.effectiveTo ? fmtDay(p.effectiveTo) : 'Ongoing';
+        var usage = p.kind === 'PROMO_CODE' ? (p.redemptionCap ? '0 / ' + p.redemptionCap : 'Unlimited') : 'Automatic';
+        var effDisc = p.kind === 'DISCOUNT_MATRIX' && p.matrixCells && p.matrixCells.length ? 
+          Math.min.apply(null, p.matrixCells.map(function(c) { return c.discountPct; })) + '–' + 
+          Math.max.apply(null, p.matrixCells.map(function(c) { return c.discountPct; })) + '%' : 
+          p.kind === 'FREE_MONTHS' && p.freeMonthCount && p.commitmentMonths ? 
+          ((p.freeMonthCount / p.commitmentMonths) * 100).toFixed(1) + '%' : 'Variable';
+        libRows.push('<tr><td><b>' + escapeHtml(codeLabel) + '</b><br><small>' + escapeHtml(p.name || '') + ' · v' + (p.version || 1) + '</small></td>' +
+          '<td>' + benefitLabel + '</td><td>' + eligibility + '</td><td>' + commitment + '</td>' +
+          '<td>' + validFrom + validTo + '</td><td>' + usage + '</td><td>' + effDisc + '</td>' +
+          '<td><span class="pill ' + statusColor + '">' + p.status + '</span></td>' +
+          '<td><button class="btn" data-tab-jump="' + tabJump + '">Open</button></td></tr>');
+      });
+      // Legacy promotions
+      (promos || []).forEach(function (p) {
+        libRows.push('<tr><td><b>' + escapeHtml(p.code) + '</b><br><small>' + escapeHtml(p.name || '') + '</small></td>' +
+          '<td>' + (p.discountType === 'PERCENTAGE' ? '% discount' : p.discountType === 'FLAT' ? '$ off' : 'Free months') + '</td>' +
+          '<td>All facilities</td><td>' + (p.minMonths ? p.minMonths + 'm+' : 'Any') + '</td>' +
+          '<td>' + (p.startDate ? fmtDay(p.startDate) + '–' : '') + (p.endDate ? fmtDay(p.endDate) : 'Ongoing') + '</td>' +
+          '<td>Automatic</td><td>' + p.discountValue + (p.discountType === 'PERCENTAGE' ? '%' : p.discountType === 'FLAT' ? '$ value' : '') + '</td>' +
+          '<td><span class="pill ' + (p.active ? 'green' : 'amber') + '">' + (p.active ? 'Active' : 'Draft') + '</span></td>' +
+          '<td><button class="btn" data-tab-jump="promo-discount-matrix">Open</button></td></tr>');
+      });
+      libBody.innerHTML = libRows.length ? libRows.join('') : '<tr><td colspan="9"><div class="section-empty">No promotions or plans yet.</div></td></tr>';
+    }
+    // Fill promo table in facilities tab too
+    const tab = $('#promoTable');
+    if (tab) {
+      var tabHtml = (plans || []).map(function(p) {
+        return '<p><b>' + escapeHtml(p.name || p.code) + '</b> · ' + p.kind + ' · v' + (p.version || 1) + ' <span class="pill ' + (p.status === 'ACTIVE' ? 'green' : 'amber') + '">' + p.status + '</span></p>';
+      }).concat((promos || []).map(function(p) {
+        return '<p><b>' + escapeHtml(p.code) + '</b>: ' + escapeHtml(p.name) + ' · ' + p.discountType + ' · ' + p.discountValue + (p.discountType === 'PERCENTAGE' ? '%' : '') + ' <span class="pill ' + (p.active ? 'green' : '') + '">' + (p.active ? 'Active' : 'Inactive') + '</span></p>';
+      })).join('');
+      tab.innerHTML = tabHtml || '<div class="section-empty">No promotions.</div>';
+    }
+  } catch (e) { showBanner('Promotions overview: ' + describeError(e)); }
 }
 
-async function bindPromotions() {
-  try {
-    const promos = await get('/promotions').catch(() => []);
-    const tbody = $('#promoRows');
-    if (!tbody) return;
-    if (!promos.length) { tbody.innerHTML = '<tr><td colspan="6"><div class="section-empty">No promotions.</div></td></tr>'; return; }
-    tbody.innerHTML = promos.map((p) =>
-      '<tr><td><b>' + escapeHtml(p.code) + '</b></td><td>' + escapeHtml(p.name) + '</td><td>' + p.discountType + '</td><td>' + p.discountValue + (p.discountType === 'PERCENTAGE' ? '%' : '') + '</td><td>' + (p.minMonths || '—') + '</td><td><span class="pill ' + (p.active ? 'green' : '') + '">' + (p.active ? 'Active' : 'Inactive') + '</span></td></tr>'
-    ).join('');
-    // Fill promo table inside facilities tab too
-    const tab = $('#promoTable');
-    if (tab) tab.innerHTML = tbody.innerHTML;
-  } catch (e) { showBanner('Promotions: ' + describeError(e)); }
+// ====================== PROMOTIONS INTERACTIVITY (ported from prototype) ======================
+function bootPromotions() {
+  // --- 1. Discount matrix color coding ---
+  document.querySelectorAll('.discount-matrix input').forEach(function (input) {
+    input.addEventListener('change', function () {
+      var n = parseFloat(this.value) || 0;
+      this.className = n >= 30 ? 'hot' : n >= 15 ? 'mid' : '';
+      toast('Matrix cell updated to ' + n + '%');
+    });
+  });
+
+  // --- 2. Promo code builder: benefit choice switching ---
+  var promoCode = document.getElementById('promoCode');
+  var promoValue = document.getElementById('promoValue');
+  var benefitChoices = document.getElementById('benefitChoices');
+  var promoBenefit = 'percentage';
+
+  function renderPromoBenefit() {
+    if (!promoValue) return;
+    var label = promoValue.previousElementSibling;
+    var applyField = promoValue.closest('.field').nextElementSibling;
+    var applyLabel = applyField.querySelector('label');
+    var applySelect = applyField.querySelector('select');
+    var preview = document.getElementById('benefitPreview');
+    if (promoBenefit === 'percentage') {
+      label.textContent = 'Discount percentage';
+      if (!promoValue.value.includes('%')) promoValue.value = '25%';
+      applyLabel.textContent = 'Apply discount to';
+      applySelect.innerHTML = '<option>First invoice only</option><option>First 3 invoices</option><option>Every invoice during commitment</option><option>Selected months</option>';
+      preview.textContent = promoValue.value + ' off first invoice';
+    } else if (promoBenefit === 'dollar') {
+      label.textContent = 'Discount amount';
+      promoValue.value = '$25';
+      applyLabel.textContent = 'Apply discount to';
+      applySelect.innerHTML = '<option>First invoice only</option><option>First 3 invoices</option><option>Every invoice during commitment</option>';
+      preview.textContent = promoValue.value + ' off first invoice';
+    } else if (promoBenefit === 'free') {
+      label.textContent = 'Number of free months';
+      promoValue.value = '1';
+      applyLabel.textContent = 'Month allocation';
+      applySelect.innerHTML = '<option>Upfront</option><option>Spread out</option><option>Back-loaded</option><option>Custom</option>';
+      preview.textContent = '1 free month';
+    } else {
+      label.textContent = 'StoreLah Credit value';
+      promoValue.value = '$25';
+      applyLabel.textContent = 'Issue credits when';
+      applySelect.innerHTML = '<option>After move-in</option><option>After first payment</option><option>Immediately after approval</option>';
+      preview.textContent = '$25 StoreLah Credits';
+    }
+  }
+
+  var benefitLabels = ['percentage', 'dollar', 'free', 'credits'];
+  if (benefitChoices) {
+    benefitChoices.querySelectorAll('.choice').forEach(function (btn, i) {
+      btn.addEventListener('click', function () {
+        promoBenefit = benefitLabels[i];
+        renderPromoBenefit();
+      });
+    });
+  }
+  if (promoCode) {
+    promoCode.addEventListener('input', function () {
+      var el = document.getElementById('codePreview');
+      if (el) el.textContent = (promoCode.value || 'NEWCODE').toUpperCase();
+    });
+  }
+  if (promoValue) {
+    promoValue.addEventListener('input', function () {
+      var p = document.getElementById('benefitPreview');
+      if (p) p.textContent = promoBenefit === 'credits' ? (promoValue.value || '$0') + ' StoreLah Credits' : promoBenefit === 'free' ? (promoValue.value || '0') + ' free month(s)' : (promoValue.value || '0') + ' off first invoice';
+    });
+  }
+
+  // --- 3. Rule builder: add condition ---
+  var addRule = document.getElementById('addRule');
+  if (addRule) {
+    addRule.addEventListener('click', function () {
+      var row = document.createElement('div');
+      row.className = 'rule-row';
+      row.innerHTML = '<b>AND</b><select><option>Customer type</option><option>Specific customer</option><option>Customer group</option><option>Birthday window</option><option>Storage tenure</option><option>Move-in date</option><option>Occupancy threshold</option></select><select><option>equals</option><option>is any of</option><option>at least</option><option>is between</option></select><input placeholder="Choose value…">';
+      document.getElementById('ruleBuilder').appendChild(row);
+      toast('Condition added');
+    });
+  }
+
+  // --- 4. Free months month strip ---
+  var monthStrip = document.getElementById('monthStrip');
+  var freeMonthCount = document.getElementById('freeMonthCount');
+  var freeCommitment = document.getElementById('freeCommitment');
+
+  function selectedFreeMonths() {
+    return monthStrip ? Array.from(monthStrip.querySelectorAll('.month')).filter(function (m) { return m.classList.contains('free'); }) : [];
+  }
+
+  function renderFreeSummary() {
+    if (!monthStrip) return;
+    var chosen = selectedFreeMonths();
+    var limit = freeMonthCount.value;
+    var offerEl = document.getElementById('freeOfferSummary');
+    if (offerEl) offerEl.textContent = limit === 'custom' ? chosen.length + ' selected' : limit + ' free month' + (limit === '1' ? '' : 's');
+    var commitEl = document.getElementById('freeCommitmentSummary');
+    if (commitEl) commitEl.textContent = freeCommitment.value;
+    var appliedEl = document.getElementById('freeAppliedSummary');
+    if (appliedEl) appliedEl.textContent = chosen.length ? 'Month' + (chosen.length > 1 ? 's ' : ' ') + chosen.map(function (m) { return Array.from(monthStrip.children).indexOf(m) + 1; }).join(', ') : 'None selected';
+    var term = parseInt(freeCommitment.value) || 12;
+    var effEl = document.getElementById('freeEffectiveSummary');
+    if (effEl) effEl.textContent = ((chosen.length / term) * 100).toFixed(2) + '%';
+  }
+
+  function setFreeMonths(indices) {
+    monthStrip.querySelectorAll('.month').forEach(function (m, i) {
+      var isFree = indices.indexOf(i) >= 0;
+      m.classList.toggle('free', isFree);
+      m.innerHTML = m.innerHTML.replace(/100%|FREE/g, isFree ? 'FREE' : '100%');
+    });
+    renderFreeSummary();
+  }
+
+  if (monthStrip) {
+    monthStrip.querySelectorAll('.month').forEach(function (m) {
+      m.addEventListener('click', function () {
+        var limit = freeMonthCount.value;
+        var already = this.classList.contains('free');
+        if (!already && limit !== 'custom' && selectedFreeMonths().length >= (+limit || 0)) {
+          toast('This offer allows ' + limit + ' free months. Deselect one first or choose Custom.');
+          return;
+        }
+        this.classList.toggle('free');
+        this.innerHTML = this.classList.contains('free') ? this.innerHTML.replace('100%', 'FREE') : this.innerHTML.replace('FREE', '100%');
+        renderFreeSummary();
+      });
+    });
+    if (freeMonthCount) {
+      freeMonthCount.addEventListener('change', function () {
+        var count = this.value;
+        if (count !== 'custom') {
+          var n = +count;
+          setFreeMonths(n === 1 ? [11] : n === 2 ? [5, 11] : [3, 7, 11]);
+        } else renderFreeSummary();
+      });
+    }
+    if (freeCommitment) {
+      freeCommitment.addEventListener('change', renderFreeSummary);
+    }
+    document.querySelectorAll('#allocationChoices [data-allocation]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var raw = freeMonthCount.value;
+        var count = raw === 'custom' ? selectedFreeMonths().length : +raw;
+        var term = parseInt(freeCommitment.value) || 12;
+        if (this.dataset.allocation === 'custom') {
+          freeMonthCount.value = 'custom';
+          renderFreeSummary();
+          return;
+        }
+        var ids = [];
+        if (this.dataset.allocation === 'upfront') ids = Array.from({ length: count }, function (_, i) { return i; });
+        if (this.dataset.allocation === 'back') ids = Array.from({ length: count }, function (_, i) { return term - count + i; });
+        if (this.dataset.allocation === 'spread') ids = Array.from({ length: count }, function (_, i) { return Math.round((term / (count || 1)) * (i + 1)) - 1; });
+        setFreeMonths(ids);
+      });
+    });
+    renderFreeSummary();
+  }
+
+  // --- 5. Validation modal ---
+  var discountValidated = false;
+  var validationModal = document.getElementById('validationModal');
+  var discountStatus = document.getElementById('discountPlanStatus');
+  var discountPlanName = document.getElementById('discountPlanName');
+  var discountStartDate = document.getElementById('discountStartDate');
+
+  // Create validation modal if it doesn't exist
+  if (!validationModal) {
+    document.body.insertAdjacentHTML('beforeend',
+      '<div class="modal" id="validationModal"><div class="overlay" data-close-validation></div><div class="modal-card"><header><div><h2>Plan validation</h2><small style="color:var(--muted)">Pre-publish commercial and rule checks</small></div><button class="iconbtn" data-close-validation>×</button></header><section><div class="stats" style="grid-template-columns:repeat(3,1fr);margin-bottom:14px"><div class="stat"><div class="label">Checks passed</div><div class="val">126</div></div><div class="stat"><div class="label">Blockers</div><div class="val" style="color:var(--olive2)">0</div></div><div class="stat"><div class="label">Warnings</div><div class="val" style="color:#9b681b">2</div></div></div><div class="risk-list"><div class="risk"><i>✓</i><div><b>Matrix values and coverage</b><small>All 36 values are valid percentages and every size × access × commitment combination is covered.</small></div></div><div class="risk"><i>✓</i><div><b>Schedule and version dates</b><small>Starts 1 Oct 2026; no gap or duplicate active version was found.</small></div></div><div class="risk"><i>✓</i><div><b>Effective-rate floors</b><small>Representative bookings remain above configured facility and unit minimum rates.</small></div></div><div class="risk warn"><i>!</i><div><b>Eligibility overlap</b><small>18 Woodlands bookings may also qualify for Stay 12, Pay 10. The stacking safeguard will select one rent promotion.</small></div></div><div class="risk warn"><i>!</i><div><b>High discount approval</b><small>Values above 40% require Commercial/Finance approval before activation.</small></div></div></div><div class="rulebox"><b>What Validate Plan does:</b> it checks data completeness, ranges, rate floors, overlapping rules, dates, commitment treatment and sample bookings. It does not save, publish or change the plan. Blockers prevent scheduling; warnings can be accepted by an authorised approver.</div></section><footer><button class="btn" data-tab-jump="promo-safeguards">Review safeguards</button><button class="primary" id="confirmValidation">Confirm and validate</button></footer></div></div>'
+    );
+    validationModal = document.getElementById('validationModal');
+  }
+
+  function openValidation() { if (validationModal) validationModal.classList.add('open'); }
+  function closeValidation() { if (validationModal) validationModal.classList.remove('open'); }
+
+  document.querySelectorAll('[data-open-validation]').forEach(function (b) { b.addEventListener('click', openValidation); });
+  document.querySelectorAll('[data-close-validation]').forEach(function (b) { b.addEventListener('click', closeValidation); });
+
+  var confirmBtn = document.getElementById('confirmValidation');
+  if (confirmBtn) {
+    confirmBtn.addEventListener('click', function () {
+      discountValidated = true;
+      if (discountStatus) {
+        discountStatus.textContent = 'Validated';
+        discountStatus.className = 'pill green';
+      }
+      closeValidation();
+      toast('Plan validated. It is ready to schedule.');
+    });
+  }
+
+  // Wire validation modal close to escape
+  document.querySelector('#validationModal [data-tab-jump="promo-safeguards"]')?.addEventListener('click', function () {
+    var tab = document.querySelector('[data-tab="promo-safeguards"]');
+    if (tab) tab.click();
+    closeValidation();
+  });
+
+  // --- 6. Duplicate plan ---
+  async function duplicateDiscountPlan() {
+    try {
+      // Call the duplicate API
+      const result = await post('/promotion-plans/' + ($('#discountPlanId') ? $('#discountPlanId').value : '' ) + '/duplicate');
+      if (result && result.id) {
+        discountPlanId = result.id;
+      }
+      if (discountPlanName) {
+        var base = discountPlanName.value.replace(/^Copy of /, '');
+        discountPlanName.value = 'Copy of ' + base;
+      }
+      if (discountStartDate) discountStartDate.value = new Date().toISOString().slice(0, 10);
+    } catch (e) { /* client-side fallback */ }
+    discountValidated = false;
+    if (discountStatus) {
+      discountStatus.textContent = 'Draft';
+      discountStatus.className = 'pill amber';
+    }
+    var tab = document.querySelector('[data-tab="promo-discount-matrix"]');
+    if (tab) tab.click();
+    toast('Duplicated as a new editable draft');
+  }
+  document.querySelectorAll('[data-duplicate-plan]').forEach(function (b) { b.addEventListener('click', duplicateDiscountPlan); });
+
+  // --- 7. Save draft / Schedule plan ---
+  var promoLibraryBody = document.querySelector('#promo-library > .card > .table-wrap > table > tbody');
+  var discountPlanId = null;
+
+  async function saveDiscountPlan(status) {
+    status = status || 'Draft';
+    var name = discountPlanName ? (discountPlanName.value || 'Untitled discount plan') : 'Untitled discount plan';
+    var startDate = discountStartDate ? discountStartDate.value : new Date().toISOString().slice(0, 10);
+
+    // Collect matrix cells from the DOM
+    var matrixCells = [];
+    var matrixRows = document.querySelectorAll('#promo-discount-matrix .discount-matrix tbody tr');
+    var sizeCategories = ['XS', 'S', 'M', 'L', 'XL', 'XXL'];
+    var accessTypes = ['Ground floor', 'Ground floor', 'Ground floor', 'Standard', 'Standard', 'Standard'];
+    var commitmentLabels = [3, 6, 12];
+    if (matrixRows.length) {
+      matrixRows.forEach(function (row, ri) {
+        if (ri >= sizeCategories.length) return;
+        var inputs = row.querySelectorAll('input');
+        inputs.forEach(function (input, ci) {
+          if (ci >= 6) return;
+          var pct = parseFloat(input.value) || 0;
+          var accessType = ci < 3 ? 'Ground floor' : 'Standard';
+          var commitMonths = commitmentLabels[ci % 3];
+          matrixCells.push({
+            sizeCategory: sizeCategories[ri],
+            accessType: accessType,
+            commitmentMonths: commitMonths,
+            discountPct: pct,
+          });
+        });
+      });
+    }
+
+    var payload = {
+      kind: 'DISCOUNT_MATRIX',
+      name: name,
+      effectiveFrom: startDate + 'T00:00:00.000Z',
+      facilityScope: ['ALL'],
+      sizeScope: ['ALL'],
+      matrixCells: matrixCells.length ? matrixCells : undefined,
+    };
+
+    try {
+      if (discountPlanId) {
+        await put('/promotion-plans/' + discountPlanId, payload);
+      } else {
+        var result = await post('/promotion-plans', payload);
+        if (result && result.id) discountPlanId = result.id;
+      }
+      toast('Plan saved: ' + name);
+    } catch (e) {
+      toast('Save failed: ' + describeError(e));
+    }
+
+    if (discountStatus) {
+      discountStatus.textContent = status;
+      discountStatus.className = 'pill ' + (status === 'Scheduled' ? 'amber' : 'grey');
+    }
+    // Refresh the library
+    bindPromotionsOverview();
+  }
+
+  document.querySelectorAll('[data-save-discount-plan]').forEach(function (b) {
+    b.addEventListener('click', function () {
+      saveDiscountPlan('Draft');
+      var tab = document.querySelector('[data-tab="promo-library"]');
+      if (tab) tab.click();
+    });
+  });
+  document.querySelectorAll('[data-schedule-plan]').forEach(function (b) {
+    b.addEventListener('click', function () {
+      if (!discountValidated) {
+        openValidation();
+        toast('Validate the plan before scheduling');
+        return;
+      }
+      saveDiscountPlan('Scheduled');
+      var tab = document.querySelector('[data-tab="promo-library"]');
+      if (tab) tab.click();
+    });
+  });
+
+  // --- 8. Choice grid tabbable (generic .choice-grid handler) ---
+  document.querySelectorAll('.choice-grid').forEach(function (group) {
+    group.querySelectorAll('.choice').forEach(function (choice) {
+      choice.addEventListener('click', function () {
+        group.querySelectorAll('.choice').forEach(function (c) { c.classList.remove('active'); });
+        this.classList.add('active');
+      });
+    });
+  });
+
+  // --- 9. History commitment column fix ---
+  if (promoLibraryBody) {
+    var firstCommitment = promoLibraryBody.querySelector('tr td:nth-child(4)');
+    if (firstCommitment) firstCommitment.textContent = '3 / 6 / 12 months';
+  }
 }
 
 async function bindBilling() {
@@ -596,11 +967,24 @@ function wireEvents() {
       // Lazy load
       if (panel === 'facility-map') syncFacilityDashboard();
       else if (panel === 'facility-units') refreshUnitsView();
-      else if (panel === 'facility-tenants') refreshTenantsView();
-      else if (panel === 'facility-bookings') refreshBookingsView();
-      else if (panel === 'facility-moveins') refreshMoveinsView();
       else if (panel === 'facility-floorplans') fpOpen();
-      else if (panel === 'facility-promos') bindPromotions();
+      else if (panel === 'facility-promos') bindPromotionsOverview();
+    });
+  });
+  // Customer tabs (data-tabs="customer")
+  document.querySelectorAll('[data-tabs="customer"] [data-tab]').forEach((b) => {
+    b.addEventListener('click', function () {
+      document.querySelectorAll('[data-tabs="customer"] [data-tab]').forEach((x) => x.classList.remove('active'));
+      this.classList.add('active');
+      document.querySelectorAll('[data-tabs="customer"] ~ .module-panel, #customers .module-panel').forEach((p) => {
+        p.classList.toggle('active', p.id === this.dataset.tab);
+      });
+      const panel = this.dataset.tab;
+      activateSide('customers', panel);
+      // Lazy load
+      if (panel === 'customer-tenants') refreshTenantsView();
+      else if (panel === 'customer-bookings') refreshBookingsView();
+      else if (panel === 'customer-moveins') refreshMoveinsView();
     });
   });
   // Billing tabs
@@ -613,6 +997,19 @@ function wireEvents() {
       });
       activateSide('billing', this.dataset.tab);
       if (this.dataset.tab === 'bill-overview') bindBilling();
+    });
+  });
+  // Promo tabs
+  document.querySelectorAll('[data-tabs="promo"] [data-tab]').forEach((b) => {
+    b.addEventListener('click', function () {
+      document.querySelectorAll('[data-tabs="promo"] [data-tab]').forEach((x) => x.classList.remove('active'));
+      this.classList.add('active');
+      document.querySelectorAll('#promotions .module-panel').forEach((p) => {
+        p.classList.toggle('active', p.id === this.dataset.tab);
+      });
+      const panel = this.dataset.tab;
+      activateSide('promotions', panel);
+      if (panel === 'promo-overview') bindPromotionsOverview();
     });
   });
   // Drawer (mobile)

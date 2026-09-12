@@ -130,6 +130,7 @@ model Branch {
   tenants         Tenant[]
   leads           Lead[]
   appointments    Appointment[]
+  safeguardRules  SafeguardRule[]
   createdAt       DateTime     @default(now())
   updatedAt       DateTime     @updatedAt
 }
@@ -226,6 +227,7 @@ model UnitSize {
 
   units      Unit[]
   promotions Promotion[]
+  safeguardRules SafeguardRule[]
 
   @@map("UnitSize")
 }
@@ -435,6 +437,36 @@ enum PromotionDiscountType {
   FLAT
 }
 
+enum PromotionBenefitType {
+  PERCENTAGE
+  DOLLAR
+  FREE_MONTHS
+  CREDITS
+}
+
+enum PlanKind {
+  DISCOUNT_MATRIX
+  FREE_MONTHS
+  PROMO_CODE
+  CREDITS
+}
+
+enum PlanStatus {
+  DRAFT
+  VALIDATED
+  SCHEDULED
+  ACTIVE
+  ENDED
+}
+
+enum PromoStatus {
+  DRAFT
+  ACTIVE
+  SCHEDULED
+  ENDED
+  USED
+}
+
 model Promotion {
   id             String                 @id @default(cuid())
   code           String                 @unique // e.g. STORELAH10
@@ -448,8 +480,128 @@ model Promotion {
   startDate      DateTime?
   endDate        DateTime?
   active         Boolean                @default(true)
+
+  // Enhanced fields (additive — backward compatible)
+  planId         String?                // FK → PromotionPlan (nullable for backward compat)
+  plan           PromotionPlan?         @relation(fields: [planId], references: [id])
+  status         PromoStatus?           @default(DRAFT)
+  benefitType    PromotionBenefitType?
+  applyTo        String?                // "First invoice only" / "First 3 invoices" / "Every invoice" / "Selected months"
+  usagePerCustomer Int?
+  redemptionCap  Int?
+  perUnitApplication Boolean?
+  stackingRule   String?                // "Cannot combine" / "Can combine selected" / "Can combine with credits"
+  budgetCap      Decimal?               @db.Decimal(12, 2)
+
   createdAt      DateTime               @default(now())
   updatedAt      DateTime               @updatedAt
 
   @@index([active])
+  @@index([planId])
+}
+
+model PromotionPlan {
+  id              String       @id @default(cuid())
+  kind            PlanKind
+  name            String
+  code            String?      @unique // customer-facing code (only for PROMO_CODE kind)
+  status          PlanStatus   @default(DRAFT)
+  description     String?
+  effectiveFrom   DateTime
+  effectiveTo     DateTime?
+  facilityScope   Json         @default("[\"ALL\"]") // list of branch IDs or "ALL"
+  storageType     String?      // "Self Storage" / "Business Storage" / "Wine Storage"
+  sizeScope       Json         @default("[\"ALL\"]") // list of UnitSize IDs or "ALL"
+
+  // Promo-code-specific fields
+  appliesTo           String?   // "First invoice only" / "First 3 invoices" / "Every invoice" / "Selected months"
+  usagePerCustomer    Int?
+  redemptionCap       Int?
+  perUnitApplication  Boolean?
+  stackingRule        String?   // "Exclusive" / "Can combine selected" / "Can combine with credits"
+  budgetCap           Decimal?  @db.Decimal(12, 2)
+  freeMonthCount      Int?      // for FREE_MONTHS kind
+  commitmentMonths    Int?      // for FREE_MONTHS kind
+  earlyExitTreatment  String?   // "Prorate" / "Clawback" / "Keep"
+  minStayPct          Int?      // minimum stay as % of commitment to keep free months
+
+  version         Int        @default(1)
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+
+  // Relations
+  matrixCells     DiscountMatrixCell[]
+  freeMonths      FreeMonthAllocation[]
+  rules           PromotionRule[]
+  versions        PromotionVersion[]
+  promotions      Promotion[]
+
+  @@index([kind])
+  @@index([status])
+  @@index([code])
+}
+
+model DiscountMatrixCell {
+  id              String   @id @default(cuid())
+  planId          String
+  plan            PromotionPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+  sizeCategory    String   // XS / S / M / L / XL / XXL
+  accessType      String   // "Ground floor" / "Standard"
+  commitmentMonths Int     // 3 / 6 / 12
+  discountPct     Decimal  @db.Decimal(5, 2)
+
+  @@unique([planId, sizeCategory, accessType, commitmentMonths])
+  @@index([planId])
+}
+
+model FreeMonthAllocation {
+  id              String   @id @default(cuid())
+  planId          String
+  plan            PromotionPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+  monthIndex      Int      // 0-based
+  free            Boolean  @default(true)
+  discountPct     Decimal? @db.Decimal(5, 2)
+
+  @@unique([planId, monthIndex])
+  @@index([planId])
+}
+
+model PromotionRule {
+  id              String   @id @default(cuid())
+  planId          String
+  plan            PromotionPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+  groupId         Int      // groups rules into AND/OR clauses
+  field           String   // "Facility" / "Size category" / "Customer type" / etc.
+  operator        String   // "equals" / "is any of" / "at least" / "is between" / "is not"
+  value           String
+
+  @@index([planId])
+}
+
+model PromotionVersion {
+  id              String   @id @default(cuid())
+  planId          String
+  plan            PromotionPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+  version         Int
+  snapshot        Json     // full plan state at version time
+  changedBy       String
+  changeSummary   String
+  createdAt       DateTime @default(now())
+
+  @@unique([planId, version])
+  @@index([planId])
+}
+
+model SafeguardRule {
+  id                    String   @id @default(cuid())
+  facilityId            String?  // FK → Branch (null = global)
+  branch                Branch?  @relation(fields: [facilityId], references: [id])
+  sizeId                String?  // FK → UnitSize (null = all sizes)
+  unitSize              UnitSize? @relation(fields: [sizeId], references: [id])
+  minEffectiveRate      Decimal  @db.Decimal(10, 2)
+  requiresApprovalAbove Decimal? @db.Decimal(5, 2) // discount % threshold
+  approverRole          String?  // who approves
+
+  @@index([facilityId])
+  @@index([sizeId])
 }

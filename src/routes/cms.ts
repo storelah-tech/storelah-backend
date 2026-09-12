@@ -30,6 +30,20 @@ import {
   updatePromotion,
   deletePromotion,
 } from '../core/promotions';
+import {
+  listPlans,
+  getPlan,
+  createPlan,
+  updatePlan,
+  setPlanStatus,
+  duplicatePlan,
+  deletePlan,
+  validatePlan,
+  listSafeguards,
+  createSafeguard,
+  updateSafeguard,
+  deleteSafeguard,
+} from '../core/promotionPlans';
 import { listAppointments } from '../core/appointments';
 import {
   upsertFloorPlan,
@@ -350,20 +364,6 @@ router.get('/promotions/:id', requireAuth, async (req: Request, res: Response) =
   ok(res, await getPromotion(String(req.params.id)));
 });
 
-router.post('/promotions', requireAuth, async (req: Request, res: Response) => {
-  const parsed = createPromotionSchema.safeParse(req.body);
-  if (!parsed.success) {
-    fail(res, 400, 'VALIDATION', 'Invalid promotion payload', parsed.error.flatten());
-    return;
-  }
-  const input = {
-    ...parsed.data,
-    startDate: parsed.data.startDate ? new Date(parsed.data.startDate) : undefined,
-    endDate: parsed.data.endDate ? new Date(parsed.data.endDate) : undefined,
-  };
-  created(res, await createPromotion(input));
-});
-
 router.put('/promotions/:id', requireAuth, async (req: Request, res: Response) => {
   const parsed = updatePromotionSchema.safeParse(req.body);
   if (!parsed.success) {
@@ -474,6 +474,173 @@ router.put('/floor-plans/:floorId/blocks/:blockId', requireAuth, async (req: Req
 // Remove a layout-decoration block (scoped to the plan; cross-plan ids 404).
 router.delete('/floor-plans/:floorId/blocks/:blockId', requireAuth, async (req: Request, res: Response) => {
   ok(res, await removeFloorPlanBlock(String(req.params.floorId), String(req.params.blockId)));
+});
+
+// --- Promotion Plans ---
+
+const planSchema = z.object({
+  kind: z.enum(['DISCOUNT_MATRIX', 'FREE_MONTHS', 'PROMO_CODE', 'CREDITS']),
+  name: z.string().min(1),
+  code: z.string().optional(),
+  description: z.string().optional(),
+  effectiveFrom: z.string().min(1),
+  effectiveTo: z.string().optional(),
+  facilityScope: z.unknown().optional(),
+  storageType: z.string().optional(),
+  sizeScope: z.unknown().optional(),
+  appliesTo: z.string().optional(),
+  usagePerCustomer: z.number().int().positive().optional(),
+  redemptionCap: z.number().int().positive().optional(),
+  perUnitApplication: z.boolean().optional(),
+  stackingRule: z.string().optional(),
+  budgetCap: z.number().nonnegative().optional(),
+  freeMonthCount: z.number().int().positive().optional(),
+  commitmentMonths: z.number().int().positive().optional(),
+  earlyExitTreatment: z.string().optional(),
+  minStayPct: z.number().int().min(0).max(100).optional(),
+  matrixCells: z.array(z.object({
+    sizeCategory: z.string().min(1),
+    accessType: z.string().min(1),
+    commitmentMonths: z.number().int().positive(),
+    discountPct: z.number().nonnegative(),
+  })).optional(),
+  freeMonths: z.array(z.object({
+    monthIndex: z.number().int().min(0),
+    free: z.boolean(),
+    discountPct: z.number().optional(),
+  })).optional(),
+  rules: z.array(z.object({
+    groupId: z.number().int(),
+    field: z.string().min(1),
+    operator: z.string().min(1),
+    value: z.string().min(1),
+  })).optional(),
+});
+
+const planUpdateSchema = planSchema.partial();
+const planStatusSchema = z.object({ status: z.enum(['DRAFT', 'VALIDATED', 'SCHEDULED', 'ACTIVE', 'ENDED']) });
+
+const safeguardSchema = z.object({
+  facilityId: z.string().optional(),
+  sizeId: z.string().optional(),
+  minEffectiveRate: z.number().nonnegative(),
+  requiresApprovalAbove: z.number().nonnegative().optional(),
+  approverRole: z.string().optional(),
+});
+const safeguardUpdateSchema = safeguardSchema.partial();
+
+// Enhanced promotion schema with new fields
+const createPromotionSchemaExtended = z.object({
+  code: z.string().min(1),
+  name: z.string().min(1),
+  description: z.string().optional(),
+  discountType: z.enum(['PERCENTAGE', 'FLAT']).default('PERCENTAGE'),
+  discountValue: z.number().nonnegative(),
+  minMonths: z.number().int().positive().optional(),
+  applicableSizeId: z.string().optional(),
+  startDate: z.string().datetime().optional(),
+  endDate: z.string().datetime().optional(),
+  active: z.boolean().optional(),
+  planId: z.string().optional(),
+  status: z.enum(['DRAFT', 'ACTIVE', 'SCHEDULED', 'ENDED', 'USED']).optional(),
+  benefitType: z.enum(['PERCENTAGE', 'DOLLAR', 'FREE_MONTHS', 'CREDITS']).optional(),
+  applyTo: z.string().optional(),
+  usagePerCustomer: z.number().int().positive().optional(),
+  redemptionCap: z.number().int().positive().optional(),
+  perUnitApplication: z.boolean().optional(),
+  stackingRule: z.string().optional(),
+  budgetCap: z.number().nonnegative().optional(),
+});
+
+// Promotion plan routes
+router.get('/promotion-plans', requireAuth, async (_req: Request, res: Response) => {
+  ok(res, await listPlans(), { count: 0 });
+});
+
+router.post('/promotion-plans', requireAuth, async (req: Request, res: Response) => {
+  const parsed = planSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid plan payload', parsed.error.flatten());
+    return;
+  }
+  created(res, await createPlan(parsed.data as any));
+});
+
+router.get('/promotion-plans/:id', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await getPlan(String(req.params.id)));
+});
+
+router.put('/promotion-plans/:id', requireAuth, async (req: Request, res: Response) => {
+  const parsed = planUpdateSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid plan payload', parsed.error.flatten());
+    return;
+  }
+  ok(res, await updatePlan(String(req.params.id), parsed.data as any));
+});
+
+router.patch('/promotion-plans/:id/status', requireAuth, async (req: Request, res: Response) => {
+  const parsed = planStatusSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid status', parsed.error.flatten());
+    return;
+  }
+  ok(res, await setPlanStatus(String(req.params.id), parsed.data.status));
+});
+
+router.post('/promotion-plans/:id/validate', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await validatePlan(String(req.params.id)));
+});
+
+router.post('/promotion-plans/:id/duplicate', requireAuth, async (req: Request, res: Response) => {
+  created(res, await duplicatePlan(String(req.params.id)));
+});
+
+router.delete('/promotion-plans/:id', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await deletePlan(String(req.params.id)));
+});
+
+// Safeguard routes
+router.get('/safeguards', requireAuth, async (_req: Request, res: Response) => {
+  ok(res, await listSafeguards());
+});
+
+router.post('/safeguards', requireAuth, async (req: Request, res: Response) => {
+  const parsed = safeguardSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid safeguard payload', parsed.error.flatten());
+    return;
+  }
+  created(res, await createSafeguard(parsed.data));
+});
+
+router.put('/safeguards/:id', requireAuth, async (req: Request, res: Response) => {
+  const parsed = safeguardUpdateSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid safeguard payload', parsed.error.flatten());
+    return;
+  }
+  ok(res, await updateSafeguard(String(req.params.id), parsed.data));
+});
+
+router.delete('/safeguards/:id', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await deleteSafeguard(String(req.params.id)));
+});
+
+// Enhanced promotion routes (keep existing, but use extended schema)
+// Replace the existing create promotion schema reference
+router.post('/promotions', requireAuth, async (req: Request, res: Response) => {
+  const parsed = createPromotionSchemaExtended.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid promotion payload', parsed.error.flatten());
+    return;
+  }
+  const input = {
+    ...parsed.data,
+    startDate: parsed.data.startDate ? new Date(parsed.data.startDate) : undefined,
+    endDate: parsed.data.endDate ? new Date(parsed.data.endDate) : undefined,
+  };
+  created(res, await createPromotion(input));
 });
 
 // Delete the floor plan (cascades its placements; Unit rows untouched).

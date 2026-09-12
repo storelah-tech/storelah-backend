@@ -446,6 +446,67 @@ main{min-width:0;display:flex;flex-direction:column;min-height:100vh}
 #errorBanner{font-size:11px;font-weight:700;margin-left:12px;color:var(--red)}
 #errorBanner:empty{display:none}
 
+/* ============ PROMOTIONS v8 (ported from prototype) ============ */
+.promo-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}.promo-grid .promo-card{padding:18px}
+.promo-card .promo-status{display:flex;align-items:center;gap:6px;margin-bottom:9px}
+.promo-card .promo-code{font-size:16px;font-weight:800;letter-spacing:-.02em;margin-bottom:4px}
+.promo-card p{margin:4px 0 10px;color:var(--muted);font-size:12px;line-height:1.4}
+.promo-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin:12px 0}
+.promo-stats div{background:var(--cream);border-radius:8px;padding:8px;text-align:center}
+.promo-stats small{display:block;color:var(--muted);font-size:10px}.promo-stats b{font-size:13px}
+.approval-flow{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:12px}
+.approval-step{background:#f5f1ea;border-radius:9px;padding:10px;font-size:11px;flex:1;min-width:0}
+.approval-step b{display:block;font-size:12px;margin-bottom:2px}.approval-step small{color:var(--muted)}
+.approval-flow>span{font-size:16px;color:var(--muted)}
+.promo-builder{display:grid;grid-template-columns:1.3fr .7fr;gap:16px;align-items:start}
+.builder-section{padding:17px;margin-bottom:12px}.builder-section h3{margin:0 0 4px;font-size:14px}.builder-section p{margin:0 0 14px;color:var(--muted);font-size:12px}
+.builder-summary{position:sticky;top:86px;padding:17px}.builder-summary h3{margin:0 0 12px;font-size:14px}
+.summary-line{display:flex;justify-content:space-between;gap:12px;padding:9px 0;border-bottom:1px solid var(--line);font-size:11px}
+.summary-line span{color:var(--muted)}.summary-line b{font-weight:700}
+.choice-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+.choice{border:1px solid var(--line);border-radius:10px;background:var(--white);padding:12px;text-align:center;cursor:pointer;transition:.15s;min-height:70px}
+.choice:hover{border-color:#c7bbae}.choice.active{border-color:var(--terra);background:#fff8f3;box-shadow:0 0 0 1px #c9795230}
+.choice b{display:block;font-size:12px;margin-bottom:3px}.choice small{font-size:10px;color:var(--muted);display:block}
+.month-strip{display:flex;gap:6px;overflow:auto;padding:4px 0;margin-top:12px}
+.month{padding:9px 8px;border:1px solid var(--line);border-radius:8px;background:var(--white);font-size:9px;font-weight:700;text-align:center;min-width:52px;min-height:58px;cursor:pointer;line-height:1.3;flex-shrink:0}
+.month.free{background:var(--olive);color:#fff;border-color:var(--olive)}
+.month:disabled{opacity:.4;pointer-events:none}
+.risk-list{display:grid;gap:8px}.risk{display:flex;align-items:flex-start;gap:10px;padding:10px;border:1px solid var(--line);border-radius:9px;background:#f5f1ea}.risk i{font-weight:800;color:var(--olive2);font-size:14px;margin-top:1px}.risk.warn i{color:var(--amber)}.risk b{display:block;font-size:12px}.risk small{color:var(--muted);font-size:10px;display:block;margin-top:2px}
+.rule-builder{display:grid;gap:8px}.rule-row{display:flex;gap:6px;align-items:center;padding:9px;background:#f5f1ea;border-radius:9px}.rule-row b{min-width:36px;font-size:11px;color:var(--muted)}.rule-row select,.rule-row input{border:1.5px solid var(--line);border-radius:7px;padding:7px 8px;font-size:11px;font-weight:700;font-family:Manrope,system-ui,sans-serif;background:var(--white);color:var(--ink);outline:none;flex:1;min-width:0}.rule-row select{cursor:pointer}
+.code-preview{background:var(--sage);border-radius:10px;padding:17px;font-size:18px;font-weight:800;letter-spacing:2px;text-align:center;color:var(--olive);margin-bottom:14px;font-family:Menlo,Consolas,monospace}
+.stepper{display:flex;gap:6px;margin-bottom:18px;padding:4px;background:#eee8df;border-radius:10px}
+.step{display:flex;align-items:center;gap:6px;padding:8px 13px;border-radius:8px;font-size:11px;font-weight:700;color:var(--muted);background:transparent}.step i{width:22px;height:22px;border-radius:50%;background:var(--line);display:grid;place-items:center;font-style:normal;font-size:10px}
+.step.active{background:var(--white);color:var(--ink);box-shadow:0 1px 3px #0001}.step.active i{background:var(--olive);color:#fff}
+.discount-matrix{width:100%;border-collapse:collapse;font-size:11px}
+.discount-matrix th,.discount-matrix td{padding:8px 6px;text-align:center;border:1px solid var(--line)}
+.discount-matrix th{background:var(--cream);font-size:10px;font-weight:700;color:var(--muted)}
+.discount-matrix th.group{background:var(--sage);color:var(--olive)}
+.discount-matrix .rowhead{text-align:left;font-weight:700;background:var(--cream);white-space:nowrap}
+.discount-matrix input{width:52px;padding:8px 5px;border:1.5px solid var(--line);border-radius:6px;text-align:center;font-weight:700;font-size:12px;font-family:Manrope,system-ui,sans-serif;transition:.15s}
+.discount-matrix input:focus{border-color:var(--terra);outline:none}
+.discount-matrix input.hot{background:#faebcf;border-color:var(--amber)}
+.discount-matrix input.mid{background:#dfe7dd;border-color:var(--olive2)}
+.matrix-wrap{overflow:auto;margin:14px 0}
+.rulebox{border-radius:9px;padding:10px 12px;font-size:11px;background:var(--cream);border:1px solid var(--line);margin-bottom:10px;line-height:1.5}
+.rulebox b{font-weight:700}
+
+/* Approval workflow pills inside safeguards */
+.promo-table{width:100%;border-collapse:collapse}.promo-table th,.promo-table td{padding:9px 11px;border-bottom:1px solid var(--line);text-align:left;font-size:11px}.promo-table th{color:var(--muted);background:var(--cream);font-weight:700}
+
+/* Responsive promotions */
+@media(max-width:1100px){
+  .promo-grid{grid-template-columns:repeat(2,1fr)}
+  .promo-builder{grid-template-columns:1fr}
+  .choice-grid{grid-template-columns:repeat(2,1fr)}
+  .approval-flow{flex-direction:column;align-items:stretch}
+}
+@media(max-width:760px){
+  .promo-grid{grid-template-columns:1fr}
+  .choice-grid{grid-template-columns:1fr}
+  .discount-matrix input{width:42px}
+  .month-strip{max-width:100%}
+}
+
 /* ============ RESPONSIVE (v8 from prototype + admin accumulation) ============ */
 @media(max-width:1100px){
   .stats{grid-template-columns:repeat(3,1fr)}
@@ -638,15 +699,40 @@ main{min-width:0;display:flex;flex-direction:column;min-height:100vh}
       </div>
     </section>
 
-    <!-- ============ CUSTOMERS (master-detail) ============ -->
+    <!-- ============ CUSTOMERS (subtabs: Tenants, Bookings, Move-ins) ============ -->
     <section class="page" id="customers">
       <div class="head"><div><h1>Customers &amp; agreements</h1><p>Every tenant, unit and service record.</p></div><div class="actions"><button class="primary">＋ New customer</button></div></div>
-      <div class="card master-detail"><div class="record-list"><div class="record-search"><input id="customerSearch" placeholder="Search customer or unit…"></div><div class="records" id="customerRecords"></div></div><div class="record-detail" id="customerDetail"><div class="section-empty">Select a customer from the list.</div></div></div>
+      <div class="subtabs" data-tabs="customer"><button class="active" data-tab="customer-tenants">Tenants</button><button data-tab="customer-bookings">Bookings</button><button data-tab="customer-moveins">Move-ins</button></div>
+      <!-- Tenants Table -->
+      <div class="module-panel active" id="customer-tenants">
+        <div class="tbl-card">
+          <div class="sec-hdr"><div><div class="sec-title">Tenants</div><div class="sec-sub" id="tenantsViewSub">All tenants</div></div><div style="display:flex;gap:7px;"><button class="tb-btn primary" id="addTenantBtn">+ New Tenant</button></div></div>
+          <div class="tbl-toolbar"><input type="text" id="tenantSearch" class="tbl-search" placeholder="Search name, segment, unit…"><select id="tenantStatusFilter" class="tbl-select"><option value="">All statuses</option><option value="ACTIVE">Active</option><option value="DUE_SOON">Due Soon</option><option value="OVERDUE">Overdue</option><option value="NOTICE">Notice</option><option value="INACTIVE">Inactive</option></select></div>
+          <div class="modal-alert" id="tenantsBanner" hidden></div>
+          <table class="data-tbl" id="tenantsViewTable"><thead><tr><th>Name</th><th>Type/Segment</th><th>Unit</th><th>Size/sqft</th><th>Rate</th><th>Status</th><th>Next Payment</th><th></th></tr></thead><tbody id="tenantsViewBody"></tbody></table>
+          <div class="tbl-pager"><div class="tbl-pager-info" id="tenantsPageInfo">Page 1 of 1</div><div class="tbl-pager-btns"><button class="tb-btn ghost" id="tenantsPagePrev">‹ Prev</button><button class="tb-btn ghost" id="tenantsPageNext">Next ›</button></div></div>
+        </div>
+      </div>
+      <!-- Bookings table -->
+      <div class="module-panel" id="customer-bookings">
+        <div class="tbl-card">
+          <div class="sec-hdr"><div><div class="sec-title">Bookings</div><div class="sec-sub" id="bookingsViewSub">All bookings</div></div></div>
+          <div class="tbl-toolbar"><input type="text" id="bookingSearch" class="tbl-search" placeholder="Search ref, customer, unit…"><select id="bookingStatusFilter" class="tbl-select"><option value="">All statuses</option><option value="PENDING_PAYMENT">Pending Payment</option><option value="CONFIRMED">Confirmed</option><option value="ACTIVE">Active</option><option value="CANCELLED">Cancelled</option></select></div>
+          <table class="data-tbl" id="bookingsViewTable"><thead><tr><th>Ref</th><th>Customer</th><th>Unit</th><th>Move-in</th><th>Duration</th><th>$/mo</th><th>Paid/Due</th><th>Status</th></tr></thead><tbody id="bookingsViewBody"></tbody></table>
+        </div>
+      </div>
+      <!-- Move-ins today -->
+      <div class="module-panel" id="customer-moveins">
+        <div class="tbl-card">
+          <div class="sec-hdr"><div><div class="sec-title">Move-ins Today</div><div class="sec-sub" id="moveinsViewSub">Bookings with move-in date today</div></div></div>
+          <table class="data-tbl" id="moveinsViewTable"><thead><tr><th>Ref</th><th>Customer</th><th>Unit</th><th>Move-in</th><th>Duration</th><th>$/mo</th><th>Paid/Due</th><th>Status</th></tr></thead><tbody id="moveinsViewBody"></tbody></table>
+        </div>
+      </div>
     </section>
 
     <!-- ============ FACILITIES ============ -->
     <section class="page" id="facilities">
-      <div class="subtabs" data-tabs="facility"><button class="active" data-tab="facility-map">Unit Map</button><button data-tab="facility-units">Units</button><button data-tab="facility-tenants">Tenants</button><button data-tab="facility-bookings">Bookings</button><button data-tab="facility-moveins">Move-ins</button><button data-tab="facility-floorplans">Floor Plans</button><button data-tab="facility-promos">Promotions</button></div>
+      <div class="subtabs" data-tabs="facility"><button class="active" data-tab="facility-map">Unit Map</button><button data-tab="facility-units">Units</button><button data-tab="facility-floorplans">Floor Plans</button><button data-tab="facility-promos">Promotions</button></div>
       <!-- Unit Map -->
       <div class="module-panel active" id="facility-map">
         <div class="unit-map-card">
@@ -671,31 +757,6 @@ main{min-width:0;display:flex;flex-direction:column;min-height:100vh}
           <div class="tbl-pager"><div class="tbl-pager-info" id="pageInfo">Page 1 of 1</div><div class="tbl-pager-btns"><button class="tb-btn ghost" id="pagePrev">‹ Prev</button><button class="tb-btn ghost" id="pageNext">Next ›</button></div></div>
         </div>
       </div>
-      <!-- Tenants Table -->
-      <div class="module-panel" id="facility-tenants">
-        <div class="tbl-card">
-          <div class="sec-hdr"><div><div class="sec-title">Tenants</div><div class="sec-sub" id="tenantsViewSub">All tenants</div></div><div style="display:flex;gap:7px;"><button class="tb-btn primary" id="addTenantBtn">+ New Tenant</button></div></div>
-          <div class="tbl-toolbar"><input type="text" id="tenantSearch" class="tbl-search" placeholder="Search name, segment, unit…"><select id="tenantStatusFilter" class="tbl-select"><option value="">All statuses</option><option value="ACTIVE">Active</option><option value="DUE_SOON">Due Soon</option><option value="OVERDUE">Overdue</option><option value="NOTICE">Notice</option><option value="INACTIVE">Inactive</option></select></div>
-          <div class="modal-alert" id="tenantsBanner" hidden></div>
-          <table class="data-tbl" id="tenantsViewTable"><thead><tr><th>Name</th><th>Type/Segment</th><th>Unit</th><th>Size/sqft</th><th>Rate</th><th>Status</th><th>Next Payment</th><th></th></tr></thead><tbody id="tenantsViewBody"></tbody></table>
-          <div class="tbl-pager"><div class="tbl-pager-info" id="tenantsPageInfo">Page 1 of 1</div><div class="tbl-pager-btns"><button class="tb-btn ghost" id="tenantsPagePrev">‹ Prev</button><button class="tb-btn ghost" id="tenantsPageNext">Next ›</button></div></div>
-        </div>
-      </div>
-      <!-- Bookings table -->
-      <div class="module-panel" id="facility-bookings">
-        <div class="tbl-card">
-          <div class="sec-hdr"><div><div class="sec-title">Bookings</div><div class="sec-sub" id="bookingsViewSub">All bookings</div></div></div>
-          <div class="tbl-toolbar"><input type="text" id="bookingSearch" class="tbl-search" placeholder="Search ref, customer, unit…"><select id="bookingStatusFilter" class="tbl-select"><option value="">All statuses</option><option value="PENDING_PAYMENT">Pending Payment</option><option value="CONFIRMED">Confirmed</option><option value="ACTIVE">Active</option><option value="CANCELLED">Cancelled</option></select></div>
-          <table class="data-tbl" id="bookingsViewTable"><thead><tr><th>Ref</th><th>Customer</th><th>Unit</th><th>Move-in</th><th>Duration</th><th>$/mo</th><th>Paid/Due</th><th>Status</th></tr></thead><tbody id="bookingsViewBody"></tbody></table>
-        </div>
-      </div>
-      <!-- Move-ins today -->
-      <div class="module-panel" id="facility-moveins">
-        <div class="tbl-card">
-          <div class="sec-hdr"><div><div class="sec-title">Move-ins Today</div><div class="sec-sub" id="moveinsViewSub">Bookings with move-in date today</div></div></div>
-          <table class="data-tbl" id="moveinsViewTable"><thead><tr><th>Ref</th><th>Customer</th><th>Unit</th><th>Move-in</th><th>Duration</th><th>$/mo</th><th>Paid/Due</th><th>Status</th></tr></thead><tbody id="moveinsViewBody"></tbody></table>
-        </div>
-      </div>
       <!-- Floor Plan Editor -->
       <div class="module-panel" id="facility-floorplans">
         <div class="unit-map-card">
@@ -713,8 +774,309 @@ main{min-width:0;display:flex;flex-direction:column;min-height:100vh}
 
     <!-- ============ PROMOTIONS ============ -->
     <section class="page" id="promotions">
-      <div class="head"><div><h1>Discount &amp; Promotion</h1><p>Manage promo codes, discounts and campaigns.</p></div><div class="actions"><button class="primary">＋ Create promotion</button></div></div>
-      <div class="card"><div class="card-head"><h3>Active Promotions</h3></div><div class="table-wrap"><table class="lead-table"><thead><tr><th>Code</th><th>Name</th><th>Type</th><th>Value</th><th>Min months</th><th>Status</th></tr></thead><tbody id="promoRows"></tbody></table></div></div>
+      <div class="head"><div><h1>Promotion engine</h1><p>Build controlled discounts and free-month offers by facility, unit, duration and customer eligibility.</p></div><div class="actions"><button class="btn">Import matrix</button><button class="btn">Settings</button><button class="primary" data-tab-jump="promo-code-builder">＋ Build promotion</button></div></div>
+      <div class="subtabs" data-tabs="promo"><button class="active" data-tab="promo-overview">Dashboard</button><button data-tab="promo-discount-matrix">Discount plan builder</button><button data-tab="promo-free-months">Free months</button><button data-tab="promo-code-builder">Promo code builder</button><button data-tab="promo-library">Promotions library</button><button data-tab="promo-history">History</button><button data-tab="promo-safeguards">Safeguards</button><button data-tab="promo-performance">Performance</button></div>
+
+      <!-- OVERVIEW panel -->
+      <div class="module-panel active" id="promo-overview">
+        <div class="stats">
+          <div class="stat"><div class="label">Active rule sets</div><div class="val" id="promoActiveCount">8</div><div class="trend">3 discount · 2 free-month · 3 code</div></div>
+          <div class="stat"><div class="label">Bookings discounted</div><div class="val" id="promoBookingsDiscounted">82</div><div class="trend">35% of monthly bookings</div></div>
+          <div class="stat"><div class="label">Discount cost</div><div class="val" id="promoDiscountCost">$9.8k</div><div class="trend">6.8% of booked value</div></div>
+          <div class="stat"><div class="label">Effective revenue</div><div class="val" id="promoEffectiveRevenue">$24.6k</div><div class="trend">After estimated discount cost</div></div>
+          <div class="stat"><div class="label">Conflicts detected</div><div class="val" id="promoConflicts">3</div><div class="trend bad">Need resolution before publish</div></div>
+        </div>
+        <div class="promo-grid" id="promoGrid">
+          <div class="card promo-card">
+            <div class="promo-status"><span class="pill green">Active</span><small>Rule plan</small></div>
+            <div class="promo-code">LONGER STAY</div>
+            <p>Percentage matrix by facility, unit category, location type and committed duration.</p>
+            <div class="promo-stats"><div><small>Facilities</small><b>3</b></div><div><small>Rules</small><b>144</b></div><div><small>Avg discount</small><b>24%</b></div></div>
+            <button class="btn" style="width:100%" data-tab-jump="promo-discount-matrix">Manage matrix</button>
+          </div>
+          <div class="card promo-card">
+            <div class="promo-status"><span class="pill green">Active</span><small>Rule plan</small></div>
+            <div class="promo-code">STAY 12, PAY 10</div>
+            <p>Two free months for eligible 12-month commitments, allocated to months 6 and 12.</p>
+            <div class="promo-stats"><div><small>Bookings</small><b>18</b></div><div><small>Free months</small><b>36</b></div><div><small>Value</small><b>$22.4k</b></div></div>
+            <button class="btn" style="width:100%" data-tab-jump="promo-free-months">Manage allocation</button>
+          </div>
+          <div class="card promo-card">
+            <div class="promo-status"><span class="pill amber">Scheduled</span><small>15 Sep–31 Oct</small></div>
+            <div class="promo-code">FESTIVE25</div>
+            <p>Deepavali storage special — 25% off for new customers, 6 months minimum commitment, S/M/L units only.</p>
+            <div class="promo-stats"><div><small>Capacity</small><b>200</b></div><div><small>Used</small><b>0</b></div><div><small>Budget</small><b>$5,000</b></div></div>
+            <button class="btn" style="width:100%" data-tab-jump="promo-code-builder">Manage code</button>
+          </div>
+        </div>
+        <div class="card" style="margin-top:16px">
+          <div class="card-head"><h3>What needs attention</h3></div>
+          <div class="card-body queue" id="promoAttentionList">
+            <div class="qitem"><i style="color:var(--amber);font-weight:800;width:20px">!</i><div><b>Promo code FESTIVE25 is a draft</b><br><small>Review and activate before campaign start on 1 Oct.</small></div><span class="pill amber">Draft</span></div>
+            <div class="qitem"><i style="color:var(--red);font-weight:800;width:20px">!</i><div><b>Conflict: Concurrent free-month plans</b><br><small>Stay 12 Pay 10 and ReferralFreeMonth may overlap for 8 bookings.</small></div><span class="pill red">Resolve</span></div>
+            <div class="qitem"><i style="color:var(--olive2);font-weight:800;width:20px">✓</i><div><b>Version v4 of Longer Stay active since 1 Sep</b><br><small>No issues detected in latest audit.</small></div><span class="pill green">OK</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- DISCOUNT MATRIX panel -->
+      <div class="module-panel" id="promo-discount-matrix">
+        <div class="card">
+          <div class="card-head">
+            <div><h3>Discount plan builder</h3><small style="color:var(--muted)">Create a reusable, versioned percentage plan</small></div>
+            <div class="actions"><span class="pill amber" id="discountPlanStatus">Draft</span><button class="filter">Facility: Woodlands</button><button class="filter">Storage type: Self Storage</button><button class="btn" data-duplicate-plan>Duplicate</button><button class="btn" data-tab-jump="promo-history">History</button></div>
+          </div>
+          <div class="card-body">
+            <div class="form-grid" style="margin-bottom:14px">
+              <div class="field"><label>Plan name</label><input id="discountPlanName" value="Longer Stay Plan · October 2026"></div>
+              <div class="field"><label>Effective from</label><input id="discountStartDate" type="date" value="2026-10-01"></div>
+            </div>
+            <div class="rulebox"><b>Plan lifecycle:</b> Save Draft adds this version to the Promotions Library. Schedule Next Month locks the approved version for 1 October; the current live version remains unchanged until then.</div>
+            <div class="matrix-wrap">
+              <table class="discount-matrix">
+                <thead>
+                  <tr><th rowspan="2">Size category</th><th class="group" colspan="3">Ground floor / premium access</th><th class="group" colspan="3">Standard unit</th></tr>
+                  <tr><th>3 months</th><th>6 months</th><th>12 months</th><th>3 months</th><th>6 months</th><th>12 months</th></tr>
+                </thead>
+                <tbody>
+                  <tr><td class="rowhead">XS · ≤15 sqft</td><td><input class="mid" value="20%"></td><td><input class="mid" value="25%"></td><td><input class="hot" value="35%"></td><td><input class="mid" value="20%"></td><td><input class="hot" value="40%"></td><td><input class="hot" value="45%"></td></tr>
+                  <tr><td class="rowhead">S · 16–25 sqft</td><td><input class="mid" value="20%"></td><td><input class="mid" value="25%"></td><td><input class="hot" value="35%"></td><td><input class="mid" value="20%"></td><td><input class="hot" value="40%"></td><td><input class="hot" value="45%"></td></tr>
+                  <tr><td class="rowhead">M · 26–60 sqft</td><td><input value="15%"></td><td><input class="mid" value="20%"></td><td><input class="mid" value="25%"></td><td><input value="15%"></td><td><input class="mid" value="20%"></td><td><input class="mid" value="30%"></td></tr>
+                  <tr><td class="rowhead">L · 61–100 sqft</td><td><input value="12%"></td><td><input value="15%"></td><td><input class="mid" value="20%"></td><td><input value="10%"></td><td><input value="15%"></td><td><input class="mid" value="20%"></td></tr>
+                  <tr><td class="rowhead">XL · 101–300 sqft</td><td><input value="10%"></td><td><input value="12%"></td><td><input value="15%"></td><td><input value="10%"></td><td><input value="12%"></td><td><input value="15%"></td></tr>
+                  <tr><td class="rowhead">XXL · ≥301 sqft</td><td><input value="8%"></td><td><input value="10%"></td><td><input value="12%"></td><td><input value="8%"></td><td><input value="10%"></td><td><input value="12%"></td></tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="rulebox" style="margin:18px 0;background:var(--olive-light);border-color:#cad7c4">
+              <b>Before scheduling, run Validate Plan.</b> It checks completeness, range floors, overlaps, dates and representative bookings. Blocker count must be 0 before scheduling.
+            </div>
+            <div style="display:flex;gap:8px;justify-content:flex-end">
+              <button class="btn" data-open-validation>Validate plan</button>
+              <button class="btn" data-save-discount-plan>Save Draft</button>
+              <button class="primary" data-schedule-plan>Schedule next month</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- FREE MONTHS panel -->
+      <div class="module-panel" id="promo-free-months">
+        <div class="promo-builder">
+          <div>
+            <div class="card builder-section">
+              <h3>Free Months plan</h3>
+              <p>Define the entitlement, commitment and exact invoices that become free.</p>
+              <div class="form-grid">
+                <div class="field"><label>Plan name</label><input id="freePlanName" value="Stay 12, Pay 10"></div>
+                <div class="field"><label>Free months</label><select id="freeMonthCount"><option value="1">1 free month</option><option value="2" selected>2 free months</option><option value="3">3 free months</option><option value="custom">Custom</option></select></div>
+                <div class="field"><label>Required commitment</label><select id="freeCommitment"><option>3 months</option><option>6 months</option><option selected>12 months</option></select></div>
+                <div class="field"><label>Facility</label><select><option>All facilities</option><option selected>Woodlands</option><option>Ubi</option><option>Jurong East</option></select></div>
+                <div class="field"><label>Storage type</label><select><option>Self Storage</option><option>Business Storage</option><option>Wine Storage</option></select></div>
+                <div class="field"><label>Size categories</label><select><option>All eligible sizes</option><option selected>M, L and XL</option><option>Choose individually…</option></select></div>
+              </div>
+            </div>
+            <div class="card builder-section">
+              <h3>Allocate the free months</h3>
+              <p>Select exactly the number promised above. StoreLah prevents an accidental over-allocation unless Custom is chosen.</p>
+              <div class="month-strip" id="monthStrip">
+                <button class="month">Month 1<br>100%</button><button class="month">Month 2<br>100%</button><button class="month">Month 3<br>100%</button><button class="month">Month 4<br>100%</button><button class="month">Month 5<br>100%</button><button class="month free">Month 6<br>FREE</button>
+                <button class="month">Month 7<br>100%</button><button class="month">Month 8<br>100%</button><button class="month">Month 9<br>100%</button><button class="month">Month 10<br>100%</button><button class="month free">Month 11<br>FREE</button><button class="month">Month 12<br>100%</button>
+              </div>
+              <div class="choices" id="allocationChoices" style="display:flex;gap:6px;margin-top:8px">
+                <small style="color:var(--muted)">Quick allocate:</small>
+                <button class="btn" data-allocation="upfront">Upfront</button>
+                <button class="btn" data-allocation="back">Back-loaded</button>
+                <button class="btn" data-allocation="spread">Spread out</button>
+                <button class="btn" data-allocation="custom">Manual</button>
+              </div>
+            </div>
+            <div class="card builder-section">
+              <h3>Early exit treatment</h3>
+              <p>Choose how free months are handled if the customer ends the agreement early.</p>
+              <div class="form-grid">
+                <div class="field"><label>On early exit</label><select><option selected>Prorate — free months remain but adjust final invoice</option><option>Clawback — unpaid free months are billed at standard rate</option><option>Keep — no change, free months are unconditional</option></select></div>
+                <div class="field"><label>Minimum stay to keep free months</label><select><option selected>50% of commitment</option><option>75% of commitment</option><option>100% of commitment</option><option>No minimum</option></select></div>
+              </div>
+            </div>
+          </div>
+          <div class="card builder-summary">
+            <h3>Free months summary</h3>
+            <div class="summary-line"><span>Offer</span><b id="freeOfferSummary">2 free months</b></div>
+            <div class="summary-line"><span>Commitment</span><b id="freeCommitmentSummary">12 months</b></div>
+            <div class="summary-line"><span>Applied to</span><b id="freeAppliedSummary">Months 6 and 11</b></div>
+            <div class="summary-line"><span>Effective discount</span><b id="freeEffectiveSummary">16.67%</b></div>
+            <div class="rulebox" style="margin-top:14px;font-size:11px"><b>Early exit:</b> prorate keeps free months but adjusts final invoice based on 6-month minimum stay.</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- PROMO CODE BUILDER panel -->
+      <div class="module-panel" id="promo-code-builder">
+        <div class="stepper">
+          <div class="step active"><i>1</i>Benefit</div>
+          <div class="step active"><i>2</i>Eligibility</div>
+          <div class="step active"><i>3</i>Usage</div>
+          <div class="step"><i>4</i>Review</div>
+        </div>
+        <div class="promo-builder">
+          <div>
+            <div class="card builder-section">
+              <h3>1. Promotion benefit</h3>
+              <p>Choose the commercial benefit. Festive promotions use the same engine; "festive" is a campaign label, not a separate discount type.</p>
+              <div class="choice-grid" id="benefitChoices">
+                <button class="choice active"><b>Percentage off</b><small>One invoice or recurring</small></button>
+                <button class="choice"><b>Dollar value off</b><small>Fixed amount</small></button>
+                <button class="choice"><b>Free months</b><small>Allocated months</small></button>
+                <button class="choice"><b>StoreLah Credits</b><small>Wallet reward</small></button>
+              </div>
+              <div class="form-grid" style="margin-top:14px">
+                <div class="field"><label>Promotion name</label><input id="promoName" value="Deepavali Storage Special"></div>
+                <div class="field"><label>Customer-facing code</label><input id="promoCode" value="FESTIVE25"></div>
+                <div class="field"><label>Discount value</label><input id="promoValue" value="25%"></div>
+                <div class="field"><label>Apply discount to</label><select><option>First invoice only</option><option>First 3 invoices</option><option>Every invoice during commitment</option><option>Selected months</option></select></div>
+              </div>
+            </div>
+            <div class="card builder-section">
+              <h3>2. Eligibility rules</h3>
+              <p>Use AND/OR groups to target facilities, units, commitments and customer segments precisely.</p>
+              <div class="rule-builder" id="ruleBuilder">
+                <div class="rule-row"><b>Where</b><select><option>Facility</option><option>Storage type</option><option>Size category</option><option>Specific unit</option><option>Customer</option><option>Customer group</option><option>Customer type</option><option>Birthday</option><option>Storage tenure</option></select><select><option>is any of</option><option>equals</option><option>is not</option></select><input placeholder="Choose value…"></div>
+                <div class="rule-row"><b>AND</b><select><option>Size category</option><option>Storage type</option><option>Specific unit</option><option>Customer</option><option>Customer group</option></select><select><option>is any of</option><option>equals</option><option>is between</option></select><input placeholder="Choose value…"></div>
+                <div class="rule-row"><b>OR</b><select><option>Commitment duration</option><option>Customer type</option><option>Storage tenure</option><option>Move-in date</option></select><select><option>at least</option><option>equals</option><option>is between</option></select><input placeholder="Choose value…"></div>
+              </div>
+              <button class="btn" id="addRule" style="margin-top:8px">＋ Add condition</button>
+            </div>
+            <div class="card builder-section">
+              <h3>3. Usage timing &amp; limits</h3>
+              <p>Control when and how often this promo can be used.</p>
+              <div class="form-grid">
+                <div class="field"><label>Valid from</label><input type="date" value="2026-10-01"></div>
+                <div class="field"><label>Valid until</label><input type="date" value="2026-10-31"></div>
+                <div class="field"><label>Usage limit</label><select><option>1 use per customer</option><option selected>Unlimited</option></select></div>
+                <div class="field"><label>Total capacity</label><input type="number" value="200"></div>
+              </div>
+            </div>
+            <div class="card builder-section" style="margin-top:14px">
+              <h3>4. Stacking &amp; compatibility</h3>
+              <div class="choice-grid" style="grid-template-columns:repeat(2,1fr)">
+                <button class="choice"><b>Stack with other codes</b><small>May combine with other eligible promotions</small></button>
+                <button class="choice active"><b>Exclusive</b><small>Cannot combine with any other promotion</small></button>
+              </div>
+            </div>
+          </div>
+          <div class="card builder-summary">
+            <h3>Code preview</h3>
+            <div class="code-preview" id="codePreview">FESTIVE25</div>
+            <div class="summary-line"><span>Benefit</span><b id="benefitPreview">25% off first invoice</b></div>
+            <div class="summary-line"><span>Eligibility</span><b>New customers · S/M/L</b></div>
+            <div class="summary-line"><span>Validity</span><b>1–31 Oct 2026</b></div>
+            <div class="summary-line"><span>Capacity</span><b>200 total</b></div>
+            <div class="rulebox" style="margin-top:14px;font-size:11px"><b>Festive:</b> labelled as such in reporting, using same engine and rules.</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- PROMO LIBRARY panel -->
+      <div class="module-panel" id="promo-library">
+        <div class="card">
+          <div class="card-head"><h3>All promotions and rule plans</h3><div class="actions"><button class="filter">Type: All</button><button class="filter">Status: All</button><button class="filter">Facility: All</button><button class="filter">Storage type: All</button></div></div>
+          <div class="table-wrap"><table class="lead-table"><thead><tr><th>Name / code</th><th>Benefit type</th><th>Eligibility</th><th>Commitment</th><th>Validity</th><th>Usage</th><th>Effective discount</th><th>Status</th><th>Action</th></tr></thead><tbody id="promoLibraryBody">
+            <tr><td><b>Longer Stay Plan</b><br><small>Automatic rule matrix</small></td><td>% discount</td><td>Facility × unit × size</td><td>3 / 6 / 12m</td><td>15 Sep–31 Dec</td><td>Automatic</td><td>5–45%</td><td><span class="pill green">Active</span></td><td><button class="btn" data-tab-jump="promo-discount-matrix">Open</button></td></tr>
+            <tr><td><b>Stay 12, Pay 10</b><br><small>Automatic plan</small></td><td>2 free months</td><td>Woodlands · M/L/XL</td><td>12m</td><td>Ongoing</td><td>Once per agreement</td><td>16.67%</td><td><span class="pill green">Active</span></td><td><button class="btn" data-tab-jump="promo-free-months">Open</button></td></tr>
+            <tr><td><b>FESTIVE25</b><br><small>Deepavali Storage Special</small></td><td>25% off</td><td>New customers · S/M/L</td><td>6m+</td><td>1–31 Oct</td><td>0 / 200</td><td>25% first invoice</td><td><span class="pill amber">Draft</span></td><td><button class="btn" data-tab-jump="promo-code-builder">Edit</button></td></tr>
+            <tr><td><b>BIRTHDAY30</b><br><small>Customer birthday</small></td><td>$30 off</td><td>Active customers · Birthday month</td><td>None</td><td>Ongoing</td><td>Once yearly</td><td>Variable</td><td><span class="pill green">Active</span></td><td><button class="btn">Open</button></td></tr>
+            <tr><td><b>LOYAL50</b><br><small>12-month tenure reward</small></td><td>$50 credit</td><td>Tenure ≥12 months</td><td>Active agreement</td><td>Ongoing</td><td>Once yearly</td><td>Variable</td><td><span class="pill green">Active</span></td><td><button class="btn">Open</button></td></tr>
+          </tbody></table></div>
+        </div>
+      </div>
+
+      <!-- HISTORY panel (statically included, prototype inserts dynamically) -->
+      <div class="module-panel" id="promo-history">
+        <div class="card">
+          <div class="card-head"><div><h3>Discount plan history</h3><small style="color:var(--muted)">Every saved or published version remains auditable</small></div><button class="primary" data-duplicate-plan>Duplicate latest as draft</button></div>
+          <div class="table-wrap"><table class="lead-table"><thead><tr><th>Version</th><th>Plan</th><th>Effective period</th><th>Changed by</th><th>Change summary</th><th>Status</th><th>Action</th></tr></thead><tbody>
+            <tr><td><b>v5</b></td><td>Longer Stay Plan · October 2026</td><td>From 1 Oct 2026</td><td>Faisal · 3 Sep</td><td>Removed 1-month band; revised XXL floor</td><td><span class="pill amber">Draft</span></td><td><button class="btn" data-duplicate-plan>Duplicate</button></td></tr>
+            <tr><td><b>v4</b></td><td>Longer Stay Plan</td><td>1 Sep–30 Sep 2026</td><td>Commercial Team · 28 Aug</td><td>September facility pricing</td><td><span class="pill green">Active</span></td><td><button class="btn">Compare</button></td></tr>
+            <tr><td><b>v3</b></td><td>Longer Stay Plan</td><td>1 Jun–31 Aug 2026</td><td>Nur Aisyah · 27 May</td><td>Added premium-access rules</td><td><span class="pill grey">Ended</span></td><td><button class="btn" data-duplicate-plan>Restore as new draft</button></td></tr>
+          </tbody></table></div>
+          <div class="card-body"><div class="rulebox"><b>History rule:</b> an Active or Ended version is never overwritten. Restoring or editing one always creates a new Draft, preserving approvals, timestamps and the original values.</div></div>
+        </div>
+      </div>
+
+      <!-- SAFEGUARDS panel -->
+      <div class="module-panel" id="promo-safeguards">
+        <div class="analytics-grid">
+          <div class="card">
+            <div class="card-head"><h3>Rule priority and conflict resolution</h3><button class="btn">Configure priority</button></div>
+            <div class="card-body">
+              <div class="approval-flow">
+                <div class="approval-step"><b>1. Contracted rate</b><small>Protected negotiated pricing</small></div><span>→</span>
+                <div class="approval-step"><b>2. Automatic plan</b><small>Duration/size matrix</small></div><span>→</span>
+                <div class="approval-step"><b>3. Promo code</b><small>Campaign or customer code</small></div><span>→</span>
+                <div class="approval-step"><b>4. StoreLah Credits</b><small>Wallet applied last</small></div>
+              </div>
+              <div class="rulebox"><b>Recommended default:</b> one rent promotion per agreement. Credits may stack only after the rent promotion and within an invoice-level cap.</div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-head"><h3>Risk controls</h3></div>
+            <div class="card-body risk-list">
+              <div class="risk"><i>✓</i><div><b>Effective-rate floor</b><small>Block or require approval below unit/facility margin floor.</small></div></div>
+              <div class="risk"><i>✓</i><div><b>Commitment enforcement</b><small>Minimum billed months, early-exit recalculation and clawback rules.</small></div></div>
+              <div class="risk"><i>✓</i><div><b>Identity and usage deduplication</b><small>Check verified customer, mobile, email, payment method, company UEN and unit.</small></div></div>
+              <div class="risk"><i>✓</i><div><b>Version and audit control</b><small>Never edit a live rule invisibly; publish a dated version with approval history.</small></div></div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-head"><h3>Edge-case policy</h3></div>
+            <div class="card-body"><table class="lead-table"><thead><tr><th>Event</th><th>Required rule</th><th>Recommended default</th></tr></thead><tbody>
+              <tr><td>Upgrade / downsize</td><td>Carry, recalculate or end promotion</td><td>Recalculate on new unit from transfer date</td></tr>
+              <tr><td>Facility transfer</td><td>Apply receiving facility rules</td><td>Recalculate using receiving facility</td></tr>
+              <tr><td>Early exit</td><td>Clawback, prorate or forfeit</td><td>Prorate free months, clawback paid credits</td></tr>
+              <tr><td>Payment default</td><td>Discount suspension or reversal</td><td>Suspend promotion until payment resumes</td></tr>
+            </tbody></table></div>
+          </div>
+          <div class="card">
+            <div class="card-head"><h3>Approval workflow</h3></div>
+            <div class="card-body">
+              <div style="display:grid;gap:4px;margin-bottom:12px">
+                <div style="display:flex;align-items:center;gap:10px"><span class="pill green">Automatic</span><div><b>Draft &le; 25% discount</b><br><small>No approval needed</small></div></div>
+                <div style="display:flex;align-items:center;gap:10px"><span class="pill amber">Manager</span><div><b>Discount 25–40% or overlap detected</b><br><small>Requires commercial manager</small></div></div>
+                <div style="display:flex;align-items:center;gap:10px"><span class="pill red">Commercial/Finance</span><div><b>Discount &gt; 40% or conflict with contracted rate</b><br><small>Requires Commercial/Finance director</small></div></div>
+              </div>
+              <div class="rulebox"><b>Approval note:</b> approvals are logged to the version audit. A scheduled plan cannot be edited by a non-admin without manager override.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- PERFORMANCE panel -->
+      <div class="module-panel" id="promo-performance">
+        <div class="analytics-grid">
+          <div class="card">
+            <div class="card-head"><h3>Promotion revenue impact</h3><button class="filter">Last 90 days</button></div>
+            <div class="card-body"><div class="chart"><div class="group" data-label="Jun"><i class="b" style="height:48%"></i><i class="b" style="height:22%"></i></div><div class="group" data-label="Jul"><i class="b" style="height:62%"></i><i class="b" style="height:28%"></i></div><div class="group" data-label="Aug"><i class="b" style="height:76%"></i><i class="b" style="height:36%"></i></div><div class="group" data-label="Sep"><i class="b" style="height:84%"></i><i class="b" style="height:41%"></i></div></div><div style="text-align:center;margin-top:10px;color:var(--muted)">Booked revenue vs discount cost</div></div>
+          </div>
+          <div class="card">
+            <div class="card-head"><h3>Commercial health</h3></div>
+            <div class="card-body">
+              <div class="source-row"><b>Budget used</b><div class="bar"><i style="width:68%"></i></div><span>68%</span></div>
+              <div class="source-row"><b>Usage cap</b><div class="bar"><i style="width:51%"></i></div><span>51%</span></div>
+              <div class="source-row"><b>Rate floor</b><div class="bar"><i style="width:88%;background:var(--olive2)"></i></div><span>Safe</span></div>
+              <div class="rulebox"><b>Track both:</b> headline discount and effective discount after free months, recurring reductions, credits and early exits.</div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-head"><h3>Performance by plan</h3></div>
+            <div class="card-body"><table class="staff"><tr><th>Plan</th><th>Eligible bookings</th><th>Applied</th><th>Booked revenue</th><th>Discount cost</th><th>Effective rate</th><th>Retention</th></tr>
+              <tr><td><b>Longer Stay</b></td><td>182</td><td>61</td><td>$28,840</td><td>$7,620</td><td>$328</td><td><span class="pill green">94%</span></td></tr>
+              <tr><td><b>Stay 12 Pay 10</b></td><td>48</td><td>18</td><td>$22,420</td><td>$3,960</td><td>$346</td><td><span class="pill green">97%</span></td></tr>
+              <tr><td><b>FESTIVE25</b></td><td>—</td><td>0</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+            </tbody></table></div>
+          </div>
+        </div>
+      </div>
     </section>
 
     <!-- ============ FINANCE / BILLING ============ -->

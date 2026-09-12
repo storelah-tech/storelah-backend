@@ -1,10 +1,10 @@
 import { prisma } from '../lib/prisma';
 import { toNum } from '../lib/format';
 import { AppError } from '../lib/http';
-import { Prisma, Promotion, PromotionDiscountType } from '@prisma/client';
+import { Prisma, Promotion, PromotionDiscountType, PromotionBenefitType, PromoStatus } from '@prisma/client';
 
 type PromotionWithRelations = Prisma.PromotionGetPayload<{
-  include: { applicableSize: true };
+  include: { applicableSize: true; plan: true };
 }>;
 
 export interface PromotionInput {
@@ -18,6 +18,15 @@ export interface PromotionInput {
   startDate?: Date;
   endDate?: Date;
   active?: boolean;
+  planId?: string;
+  status?: PromoStatus;
+  benefitType?: PromotionBenefitType;
+  applyTo?: string;
+  usagePerCustomer?: number;
+  redemptionCap?: number;
+  perUnitApplication?: boolean;
+  stackingRule?: string;
+  budgetCap?: number;
 }
 
 function serialize(p: PromotionWithRelations) {
@@ -34,12 +43,22 @@ function serialize(p: PromotionWithRelations) {
     startDate: p.startDate,
     endDate: p.endDate,
     active: p.active,
+    planId: p.planId,
+    plan: p.plan,
+    status: p.status,
+    benefitType: p.benefitType,
+    applyTo: p.applyTo,
+    usagePerCustomer: p.usagePerCustomer,
+    redemptionCap: p.redemptionCap,
+    perUnitApplication: p.perUnitApplication,
+    stackingRule: p.stackingRule,
+    budgetCap: p.budgetCap ? toNum(p.budgetCap) : null,
   };
 }
 
 export async function listPromotions() {
   const rows = await prisma.promotion.findMany({
-    include: { applicableSize: true },
+    include: { applicableSize: true, plan: true },
     orderBy: { createdAt: 'desc' },
   });
   return rows.map(serialize);
@@ -48,7 +67,7 @@ export async function listPromotions() {
 export async function getPromotion(id: string) {
   const promo = await prisma.promotion.findUnique({
     where: { id },
-    include: { applicableSize: true },
+    include: { applicableSize: true, plan: true },
   });
   if (!promo) throw new AppError(404, 'NOT_FOUND', `Promotion ${id} not found`);
   return serialize(promo);
@@ -70,8 +89,17 @@ export async function createPromotion(input: PromotionInput) {
       startDate: input.startDate,
       endDate: input.endDate,
       active: input.active ?? true,
+      planId: input.planId,
+      status: input.status,
+      benefitType: input.benefitType,
+      applyTo: input.applyTo,
+      usagePerCustomer: input.usagePerCustomer,
+      redemptionCap: input.redemptionCap,
+      perUnitApplication: input.perUnitApplication,
+      stackingRule: input.stackingRule,
+      budgetCap: input.budgetCap,
     },
-    include: { applicableSize: true },
+    include: { applicableSize: true, plan: true },
   });
   return serialize(promo);
 }
@@ -98,8 +126,17 @@ export async function updatePromotion(id: string, input: Partial<PromotionInput>
       startDate: input.startDate,
       endDate: input.endDate,
       active: input.active,
+      planId: input.planId,
+      status: input.status,
+      benefitType: input.benefitType,
+      applyTo: input.applyTo,
+      usagePerCustomer: input.usagePerCustomer,
+      redemptionCap: input.redemptionCap,
+      perUnitApplication: input.perUnitApplication,
+      stackingRule: input.stackingRule,
+      budgetCap: input.budgetCap,
     },
-    include: { applicableSize: true },
+    include: { applicableSize: true, plan: true },
   });
   return serialize(promo);
 }

@@ -45,13 +45,20 @@ export async function listPublicBranches() {
   }));
 }
 
-export async function getMoveIns() {
+export async function getMoveIns(opts?: { from?: Date; to?: Date }) {
+  // Default: today's move-ins only. An explicit from/to overrides the window
+  // (the CMS move-ins table uses this for its date-range filter).
   const now = new Date();
   const startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const startTomorrow = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
 
+  const range: { gte?: Date; lt?: Date; lte?: Date } =
+    opts?.from || opts?.to
+      ? { ...(opts.from ? { gte: opts.from } : {}), ...(opts.to ? { lte: opts.to } : {}) }
+      : { gte: startToday, lt: startTomorrow };
+
   const bookings = await prisma.booking.findMany({
-    where: { moveInDate: { gte: startToday, lt: startTomorrow } },
+    where: { moveInDate: range },
     include: { tenant: true, unit: { include: { size: true, branch: true } } },
   });
 

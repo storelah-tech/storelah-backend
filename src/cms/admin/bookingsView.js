@@ -8,6 +8,7 @@
 
 import { get, describeError } from './api.js';
 import { $, escapeHtml, showBanner } from './dom.js';
+import { createDateFilter, withDateQuery, isRangeActive, rangeLabel, rangeEmptyText } from './dateFilter.js';
 import { BOOKING_TONE, INVOICE_TONE, fmtMoney, fmtDay } from './constants.js';
 import { state, selectedFacilityName } from './state.js';
 
@@ -43,18 +44,38 @@ function bookingRowHtml(r) {
   </tr>`;
 }
 
-function emptyRowHtml() {
-  return '<tr><td colspan="8"><div class="t-type">— none</div></td></tr>';
+function emptyRowHtml(noun, range) {
+  const text = isRangeActive(range)
+    ? rangeEmptyText(noun, range)
+    : '— none';
+  return '<tr><td colspan="8"><div class="t-type">' + escapeHtml(text) + '</div></td></tr>';
 }
 
 export async function refreshBookingsView() {
+  ensureBookingsDateFilter();
   try {
-    state.bookings = (await get('/bookings')) || [];
+    state.bookings = (await get(withDateQuery('/bookings', state.bookingDate))) || [];
     syncNavBadge('navBookingsBadge', state.bookings.length);
     bindBookingsTable();
   } catch (err) {
     showBanner('Bookings: ' + describeError(err));
   }
+}
+
+// Date-range control lives in the bookings toolbar; changing the range refetches
+// server-side (Booking.createdAt) and composes with search/status/facility.
+function ensureBookingsDateFilter() {
+  const bar = document.querySelector('#customer-bookings .tbl-toolbar');
+  if (!bar || bar.dataset.dateFilterMounted) return;
+  bar.dataset.dateFilterMounted = '1';
+  const handle = createDateFilter({
+    onChange: (r) => {
+      state.bookingDate = r;
+      refreshBookingsView();
+    },
+  });
+  // Date-range trigger is the FIRST control in the toolbar (before search + status select).
+  bar.prepend(handle.el);
 }
 
 export function bindBookingsTable() {
@@ -75,14 +96,16 @@ export function bindBookingsTable() {
     const scope = facility ? `${facility} · ` : '';
     const n = state.bookings.length;
     const shown = rows.length === n ? `${n} booking${n === 1 ? '' : 's'}` : `${rows.length} of ${n} bookings`;
-    sub.textContent = `${scope}${shown} · live from checkout`;
+    sub.textContent = `${scope}${shown} · live from checkout` +
+      (isRangeActive(state.bookingDate) ? ` · ${rangeLabel(state.bookingDate)}` : '');
   }
-  tbody.innerHTML = rows.length ? rows.map(bookingRowHtml).join('') : emptyRowHtml();
+  tbody.innerHTML = rows.length ? rows.map(bookingRowHtml).join('') : emptyRowHtml('bookings', state.bookingDate);
 }
 
 export async function refreshMoveinsView() {
+  ensureMoveinsDateFilter();
   try {
-    const all = (await get('/move-ins')) || [];
+    const all = (await get(withDateQuery('/move-ins', state.moveinDate))) || [];
     const facility = selectedFacilityName();
     const rows = facility ? all.filter((r) => r.branch === facility) : all;
     syncNavBadge('navMoveinsBadge', rows.length);
@@ -92,10 +115,31 @@ export async function refreshMoveinsView() {
     if (sub) {
       const scope = facility ? `${facility} · ` : '';
       const n = rows.length;
-      sub.textContent = `${scope}${n} move-in${n === 1 ? '' : 's'} scheduled today`;
+      sub.textContent = isRangeActive(state.moveinDate)
+        ? `${scope}${n} move-in${n === 1 ? '' : 's'} in ${rangeLabel(state.moveinDate)}`
+        : `${scope}${n} move-in${n === 1 ? '' : 's'} scheduled today`;
     }
-    tbody.innerHTML = rows.length ? rows.map(bookingRowHtml).join('') : emptyRowHtml();
+    tbody.innerHTML = rows.length ? rows.map(bookingRowHtml).join('') : emptyRowHtml('move-ins', state.moveinDate);
   } catch (err) {
     showBanner('Move-ins: ' + describeError(err));
   }
+}
+
+// Date-range control lives in the move-ins header; changing the range refetches
+// server-side (Booking.moveInDate, overriding the today-only default).
+function ensureMoveinsDateFilter() {
+  const hdr = document.querySelector('#customer-moveins .sec-hdr');
+  if (!hdr || hdr.dataset.dateFilterMounted) return;
+  hdr.dataset.dateFilterMounted = '1';
+  const handle = createDateFilter({
+    onChange: (r) => {
+      state.moveinDate = r;
+      refreshMoveinsView();
+    },
+  });
+  // .sec-hdr leads with the title block — the date trigger goes right after it
+  // so it is the first (and currently only) control.
+  const moveinTitle = hdr.firstElementChild;
+  if (moveinTitle && moveinTitle.nextSibling) hdr.insertBefore(handle.el, moveinTitle.nextSibling);
+  else hdr.appendChild(handle.el);
 }

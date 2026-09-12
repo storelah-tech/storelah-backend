@@ -28,6 +28,53 @@ export function timeAgo(d) {
   return Math.floor(mo / 12) + 'y ago';
 }
 
+// ---------- table select-all (shared) ----------
+// Any <table> whose <thead> holds a checkbox gets header↔rows sync for free:
+// a header change checks/unchecks every <tbody> checkbox, and row changes
+// update the header's checked/indeterminate state. Listeners are delegated on
+// the table itself so <tbody> re-renders via innerHTML keep working. Call
+// resetSelectAll(table) after re-rendering a body's rows to clear stale
+// header state (no rows checked anymore).
+export function bindSelectAll(table) {
+  if (!table || table.dataset.selectAllBound) return;
+  const header = table.querySelector('thead input[type="checkbox"]');
+  if (!header) return;
+  table.dataset.selectAllBound = '1';
+
+  const syncHeader = () => {
+    const boxes = Array.from(table.querySelectorAll('tbody input[type="checkbox"]'));
+    const checked = boxes.filter((b) => b.checked);
+    header.checked = boxes.length > 0 && checked.length === boxes.length;
+    header.indeterminate = checked.length > 0 && checked.length < boxes.length;
+  };
+
+  header.addEventListener('change', () => {
+    table.querySelectorAll('tbody input[type="checkbox"]').forEach((b) => {
+      b.checked = header.checked;
+    });
+    header.indeterminate = false;
+  });
+  table.addEventListener('change', (e) => {
+    if (e.target && e.target !== header && e.target.matches('tbody input[type="checkbox"]')) syncHeader();
+  });
+}
+
+export function initSelectAll(root) {
+  (root || document).querySelectorAll('table').forEach(bindSelectAll);
+}
+
+export function resetSelectAll(table) {
+  let el = typeof table === 'string' ? document.querySelector(table) : table;
+  if (!el) return;
+  // Accept a tbody id (e.g. '#leadRows') as well as the table itself.
+  if (el.tagName !== 'TABLE') el = el.closest('table');
+  if (!el) return;
+  const header = el.querySelector('thead input[type="checkbox"]');
+  if (!header) return;
+  header.checked = false;
+  header.indeterminate = false;
+}
+
 // ---------- themed error/success banner (tolerates both error shapes) ----------
 
 export function showBanner(msg, ok) {

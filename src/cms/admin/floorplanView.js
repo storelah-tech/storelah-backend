@@ -5,6 +5,7 @@
 // entry because views must never import the entry module.
 
 import { escapeHtml, $ } from './dom.js';
+import { confirmDialog } from './confirmDialog.js';
 import { get, request, describeError } from './api.js';
 import { state, branchByCode, branchFloors, selectedFacilityName } from './state.js';
 
@@ -16,23 +17,68 @@ export function setRefsLoader(fn) {
 }
 
 // ---------- floor-plan constants & private module state ----------
-const FP_BASE = 24; // px per grid unit at zoom 1
-const FP_FOOTPRINT = {
-  LOCKER: { w: 2, h: 2 },
-  SMALL: { w: 3, h: 2 },
-  MEDIUM: { w: 4, h: 3 },
-  LARGE: { w: 5, h: 4 },
-  XLBIZ: { w: 6, h: 5 },
-};
+const FP_BASE = 24; // px per foot at zoom 1 (BLUEPRINT SCALE: 1 grid unit = 1 ft)
 let fpDimsTimer = null;
 
-function fpPx() {
-  return Math.max(8, Math.round(FP_BASE * state.fp.scale));
+// ---------- blueprint footprints (P1): 1 grid unit = 1 ft ----------
+// Canonical dims mirror the UnitSize.widthFt/heightFt catalogue backfill (see
+// docs/FLOOR_PLAN_MODEL.md + migration `add_unit_size_footprint`): LOCKER
+// 12 sqft → 3×4 ft, SMALL 30 → 5×6, MEDIUM 60 → 6×10, LARGE 120 → 10×12.
+// Resolution order for a unit: live /sizes dims (widthFt/heightFt) → these
+// constants → the per-size aspect fallback below. NOTE: the old XLBIZ key was
+// dead (no such size exists in the DB or seed) and has been dropped — unknown
+// size codes fall through to the aspect formula instead of a hardcoded guess.
+const FP_SIZE_DIMS = {
+  LOCKER: { w: 3, h: 4 },
+  SMALL: { w: 5, h: 6 },
+  MEDIUM: { w: 6, h: 10 },
+  LARGE: { w: 10, h: 12 },
+};
+// Per-size width/height aspects (w/h) for the fallback; chosen to reproduce
+// the catalogue footprints exactly. Mirrors SIZE_ASPECT in src/core/floorPlans.ts.
+const FP_SIZE_ASPECT = { LOCKER: 3 / 4, SMALL: 5 / 6, MEDIUM: 6 / 10, LARGE: 10 / 12 };
+const FP_DEFAULT_ASPECT = 3 / 4;
+
+// Documented fallback: w = round(sqrt(sqft·aspect)), h = ceil(sqft/w).
+// Mirrors sqftFootprint() in src/core/floorPlans.ts — keep the two in sync.
+function sqftFootprint(sqft, sizeCode) {
+  const aspect = FP_SIZE_ASPECT[String(sizeCode || '').toUpperCase()] || FP_DEFAULT_ASPECT;
+  const safe = Math.max(1, Number(sqft) || 1);
+  const w = Math.max(1, Math.round(Math.sqrt(safe * aspect)));
+  return { w, h: Math.max(1, Math.ceil(safe / w)) };
+}
+
+function sizeFootprint(sizeCode, sqft) {
+  const code = String(sizeCode || '').toUpperCase();
+  const live = (state.sizes || []).find((s) => String(s.code || '').toUpperCase() === code);
+  if (live && Number.isInteger(live.widthFt) && live.widthFt > 0 && Number.isInteger(live.heightFt) && live.heightFt > 0) {
+    return { w: live.widthFt, h: live.heightFt };
+  }
+  const d = FP_SIZE_DIMS[code];
+  if (d) return { w: d.w, h: d.h };
+  return sqftFootprint(sqft, code);
 }
 
 function unitFootprint(u) {
-  const f = FP_FOOTPRINT[String(u.sizeCode || '').toUpperCase()];
-  return f || { w: 3, h: 2 };
+  const fp = sizeFootprint(u.sizeCode, u.sqft);
+  // Palette orientation toggle for rectangular footprints (placement-time only).
+  return state.fp.ghostRotated ? { w: fp.h, h: fp.w } : fp;
+}
+
+// Overlap policy: REJECT. Client pre-check mirroring the server's 409
+// PLACEMENT_OVERLAP (unit-vs-unit only — decoration blocks may underlay).
+// Touching edges are fine; only shared interior area collides.
+function fpOverlapAt(x, y, w, h, ignoreUnitId) {
+  return (
+    state.fp.placements.find(
+      (o) =>
+        o.unitId !== ignoreUnitId && x < o.x + o.width && o.x < x + w && y < o.y + o.height && o.y < y + h,
+    ) || null
+  );
+}
+
+function fpPx() {
+  return Math.max(8, Math.round(FP_BASE * state.fp.scale));
 }
 
 function fpNormalizeUnit(u) {
@@ -154,7 +200,7 @@ function fpOnDimCommit() {
   fpApplyLiveDims();
   if (wEl) wEl.value = w;
   if (hEl) hEl.value = h;
-  fpToast('Canvas size must be a whole number between 1 and 500 grid units.', false);
+  fpToast('Canvas size must be a whole number between 1 and 500 feet.', false);
 }
 
 function fpOnDimEnter(e) {
@@ -280,7 +326,7 @@ function fpRenderPalette() {
     ? state.fp.unplaced
         .map((u) => {
           const fp = unitFootprint(u);
-          return `<div class="fp-unit-chip" data-unit-id="${escapeHtml(u.id)}" title="${escapeHtml(u.unitCode)} · ${u.sqft} sqft — drag onto the canvas">${escapeHtml(u.unitCode)}<div class="t-type">${escapeHtml(u.sizeName)} · ${u.sqft} sqft · ${fp.w}×${fp.h}</div></div>`;
+          return `<div class="fp-unit-chip" data-unit-id="${escapeHtml(u.id)}" title="${escapeHtml(u.unitCode)} · ${u.sqft} sqft — drag onto the canvas">${escapeHtml(u.unitCode)}<div class="t-type">${escapeHtml(u.sizeName)} · ${u.sqft} sqft · ${fp.w}×${fp.h} ft</div></div>`;
         })
         .join('')
     : '<div class="fp-hint">No unplaced units on this floor.</div>';
@@ -417,8 +463,10 @@ function fpRenderSelInfo() {
     info.innerHTML = '';
     return;
   }
+  const lockNote = state.fp.lockSqft ? ' · 🔒 sqft' : '';
   info.innerHTML =
-    `<span class="t-type">${escapeHtml(pl.unitCode)} · ${pl.x},${pl.y} · ${pl.width}×${pl.height}</span>` +
+    `<span class="t-type">${escapeHtml(pl.unitCode)} · ${pl.x},${pl.y} · ${pl.width}×${pl.height} ft · ${pl.sqft} sqft${lockNote}</span>` +
+    `<button class="act-btn" id="fpRotateBtn" style="padding:2px 9px;font-size:10px;" title="Swap width/height (90° rotation)">⟳ Rotate</button>` +
     `<button class="act-btn danger" id="fpRemoveBtn" style="padding:2px 9px;font-size:10px;">Remove from floor</button>`;
 }
 
@@ -434,7 +482,7 @@ function fpRender() {
     const unitLabel = `${state.fp.placements.length} unit${state.fp.placements.length === 1 ? '' : 's'}`;
     const blockLabel = `${state.fp.blocks.length} block${state.fp.blocks.length === 1 ? '' : 's'}`;
     sub.textContent = state.fp.plan
-      ? `${unitLabel} placed · ${blockLabel} on a ${d.w}×${d.h} grid — drag to move, corner handle to resize`
+      ? `${unitLabel} placed · ${blockLabel} on a ${d.w}×${d.h} ft canvas — drag to move, corner handle to resize`
       : "No plan yet — set a canvas size and click Save Canvas, then drag this floor's units from the palette.";
   }
   fpSyncDimInputs(d);
@@ -467,7 +515,7 @@ async function fpPersist(pl, verb) {
       method: 'PUT',
       body: JSON.stringify({ x: pl.x, y: pl.y, width: pl.width, height: pl.height }),
     });
-    fpToast(`${verb} ${pl.unitCode} → ${pl.x},${pl.y} · ${pl.width}×${pl.height}`, true);
+    fpToast(`${verb} ${pl.unitCode} → ${pl.x},${pl.y} · ${pl.width}×${pl.height} ft`, true);
   } catch (err) {
     fpToast(`${verb} ${pl.unitCode}: ${describeError(err)}`, false);
     await fpFetch(); // revert local state to what the server has
@@ -477,11 +525,16 @@ async function fpPersist(pl, verb) {
 async function fpPlaceUnit(unit, footprint, gx, gy) {
   const { w: cw, h: ch } = fpCanvasDims();
   if (footprint.w > cw || footprint.h > ch) {
-    fpToast(`${unit.unitCode} (${footprint.w}×${footprint.h}) is too large for the ${cw}×${ch} canvas — enlarge the canvas first`, false);
+    fpToast(`${unit.unitCode} (${footprint.w}×${footprint.h} ft) is too large for the ${cw}×${ch} ft canvas — enlarge the canvas first`, false);
     return;
   }
   const x = Math.min(Math.max(0, gx), cw - footprint.w);
   const y = Math.min(Math.max(0, gy), ch - footprint.h);
+  const hit = fpOverlapAt(x, y, footprint.w, footprint.h, null);
+  if (hit) {
+    fpToast(`Cannot place ${unit.unitCode} at ${x},${y} — overlaps ${hit.unitCode} (${hit.x},${hit.y} · ${hit.width}×${hit.height} ft). Drop it on a free spot.`, false);
+    return;
+  }
   try {
     await request(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/units/${encodeURIComponent(unit.id)}`, {
       method: 'PUT',
@@ -502,7 +555,7 @@ async function fpPlaceUnit(unit, footprint, gx, gy) {
       width: footprint.w,
       height: footprint.h,
     });
-    fpToast(`Placed ${unit.unitCode} → ${x},${y} · ${footprint.w}×${footprint.h}`, true);
+    fpToast(`Placed ${unit.unitCode} → ${x},${y} · ${footprint.w}×${footprint.h} ft`, true);
     fpRender();
   } catch (err) {
     fpToast(`Place ${unit.unitCode}: ${describeError(err)}`, false);
@@ -563,6 +616,8 @@ function fpStartMove(e, el) {
   fpRenderCanvas();
   fpRenderSelInfo();
   const { w: cw, h: ch } = fpCanvasDims();
+  const origX = pl.x;
+  const origY = pl.y;
   const move = (ev) => {
     const cell = fpCanvasCellAt(ev.clientX - offsetX, ev.clientY - offsetY);
     if (!cell) return;
@@ -573,10 +628,35 @@ function fpStartMove(e, el) {
   const up = () => {
     document.removeEventListener('pointermove', move);
     document.removeEventListener('pointerup', up);
+    const hit = fpOverlapAt(pl.x, pl.y, pl.width, pl.height, pl.unitId);
+    if (hit) {
+      pl.x = origX;
+      pl.y = origY;
+      fpRenderCanvas();
+      fpToast(`Cannot move ${pl.unitCode} to ${pl.x},${pl.y} — overlaps ${hit.unitCode}. Reverted.`, false);
+      return;
+    }
     fpPersist(pl, 'Moved');
   };
   document.addEventListener('pointermove', move);
   document.addEventListener('pointerup', up);
+}
+
+// Lock-to-sqft resize snapping: given the free-dragged size (w0×h0), return
+// the nearest integer rect that preserves area≈sqft while staying on-canvas.
+// Keeps the dragged width, derives h=round(sqft/w); if that overflows the
+// canvas height, pins h and re-derives w the other way round.
+function fpSnapToSqft(w0, h0, sqft, cw, ch, ox, oy) {
+  void h0;
+  const maxW = Math.max(1, cw - ox);
+  const maxH = Math.max(1, ch - oy);
+  let w = Math.max(1, Math.min(Math.round(w0) || 1, maxW));
+  let h = Math.max(1, Math.min(Math.round(sqft / w), maxH));
+  if (Math.round(sqft / w) > maxH) {
+    h = maxH;
+    w = Math.max(1, Math.min(Math.round(sqft / h), maxW));
+  }
+  return { w, h };
 }
 
 function fpStartResize(e, pl) {
@@ -599,17 +679,61 @@ function fpStartResize(e, pl) {
   const move = (ev) => {
     const dx = Math.round((ev.clientX - startX) / u);
     const dy = Math.round((ev.clientY - startY) / u);
-    pl.width = Math.max(1, Math.min(origW + dx, cw - origX));
-    pl.height = Math.max(1, Math.min(origH + dy, ch - origY));
+    const freeW = Math.max(1, Math.min(origW + dx, cw - origX));
+    const freeH = Math.max(1, Math.min(origH + dy, ch - origY));
+    if (state.fp.lockSqft && pl.sqft > 0) {
+      const snapped = fpSnapToSqft(freeW, freeH, pl.sqft, cw, ch, origX, origY);
+      pl.width = snapped.w;
+      pl.height = snapped.h;
+    } else {
+      pl.width = freeW;
+      pl.height = freeH;
+    }
     fpRenderCanvas();
   };
   const up = () => {
     document.removeEventListener('pointermove', move);
     document.removeEventListener('pointerup', up);
+    const hit = fpOverlapAt(pl.x, pl.y, pl.width, pl.height, pl.unitId);
+    if (hit) {
+      pl.width = origW;
+      pl.height = origH;
+      fpRenderCanvas();
+      fpToast(`Cannot resize ${pl.unitCode} to ${pl.width}×${pl.height} ft — overlaps ${hit.unitCode}. Reverted.`, false);
+      return;
+    }
     fpPersist(pl, 'Resized');
   };
   document.addEventListener('pointermove', move);
   document.addEventListener('pointerup', up);
+}
+
+// 90° rotation for rectangular placements: swaps W/H, clamps into the canvas,
+// rejects on overlap, persists. No Unit row writes.
+async function fpRotatePlacement() {
+  const pl = state.fp.placements.find((p) => p.unitId === state.fp.selected);
+  if (!pl) return;
+  const { w: cw, h: ch } = fpCanvasDims();
+  const w = pl.height;
+  const h = pl.width;
+  if (w > cw || h > ch) {
+    fpToast(`Cannot rotate ${pl.unitCode} — ${w}×${h} ft does not fit the ${cw}×${ch} ft canvas.`, false);
+    return;
+  }
+  const prev = { x: pl.x, y: pl.y, w: pl.width, h: pl.height };
+  pl.width = w;
+  pl.height = h;
+  pl.x = Math.min(pl.x, Math.max(0, cw - w));
+  pl.y = Math.min(pl.y, Math.max(0, ch - h));
+  const hit = fpOverlapAt(pl.x, pl.y, pl.width, pl.height, pl.unitId);
+  if (hit) {
+    Object.assign(pl, { x: prev.x, y: prev.y, width: prev.w, height: prev.h });
+    fpRenderCanvas();
+    fpToast(`Cannot rotate ${pl.unitCode} — ${w}×${h} ft overlaps ${hit.unitCode}.`, false);
+    return;
+  }
+  fpRender();
+  await fpPersist(pl, 'Rotated');
 }
 
 function fpToggleBlockForm(show) {
@@ -643,6 +767,155 @@ function fpFirstFreeSpot(size) {
     };
   }
   return { x: 0, y: 0 };
+}
+
+// Rectangular first-free-spot scan for auto-place (same repack approach as the
+// opt-in scripts/backfill-placement-footprints.ts): top-left → bottom-right
+// over integer foot cells against the live `taken` rect list. Returns {x,y} or
+// null — never a fallback spot: canvas dims are blueprint feet and auto-place
+// must NOT auto-resize the canvas.
+function fpFirstFreeRect(w, h, taken) {
+  const { w: cw, h: ch } = fpCanvasDims();
+  if (w > cw || h > ch) return null;
+  const collides = (x, y) =>
+    taken.some((o) => x < o.x + o.width && o.x < x + w && y < o.y + o.height && o.y < y + h);
+  for (let y = 0; y + h <= ch; y++) {
+    for (let x = 0; x + w <= cw; x++) {
+      if (!collides(x, y)) return { x, y };
+    }
+  }
+  return null;
+}
+
+// Solid legacy-structure footprints (structure JSON): corridors as their
+// bounding box expanded by half-width, plus entrance/lift/stairs/fireExit
+// rects. Thin wall lines stay non-blocking — the editor overlap policy is
+// unit-vs-unit (+ blocks for auto-place). Occupied rects for auto-place only.
+function fpStructureRects() {
+  const s = state.fp.structure;
+  if (!s || typeof s !== 'object' || Array.isArray(s)) return [];
+  const rects = [];
+  (Array.isArray(s.corridors) ? s.corridors : []).forEach((c) => {
+    const pts = c && Array.isArray(c.pts) ? c.pts : [];
+    if (pts.length < 2) return;
+    const half = (c.w || 3) / 2;
+    const x0 = Math.floor(Math.min(...pts.map((p) => p.x)) - half);
+    const y0 = Math.floor(Math.min(...pts.map((p) => p.y)) - half);
+    const x1 = Math.ceil(Math.max(...pts.map((p) => p.x)) + half);
+    const y1 = Math.ceil(Math.max(...pts.map((p) => p.y)) + half);
+    rects.push({ x: x0, y: y0, width: Math.max(1, x1 - x0), height: Math.max(1, y1 - y0) });
+  });
+  ['entrance', 'lift', 'stairs', 'fireExit'].forEach((key) => {
+    const d = s[key];
+    if (!d || typeof d !== 'object') return;
+    rects.push({
+      x: Math.floor(d.x || 0),
+      y: Math.floor(d.y || 0),
+      width: Math.max(1, Math.ceil(d.w || 2)),
+      height: Math.max(1, Math.ceil(d.h || 2)),
+    });
+  });
+  return rects;
+}
+
+// Auto-place: renders ALL unplaced units of the current floor onto the canvas.
+// One PUT per unit via the existing placement endpoint; footprints come from
+// unitFootprint() (true-size sqftFootprint, ghost-rotated orientation first,
+// swapped orientation as fallback) so the server's 15% area tolerance holds.
+// Units that don't fit — or fail to persist — are collected and reported;
+// already-placed units are kept, never reverted as a batch. Canvas dims are
+// blueprint feet and are never auto-resized.
+async function fpAutoPlaceAll() {
+  const btn = $('#fpAutoPlace');
+  if (!state.fp.floorId) {
+    fpToast('Pick a floor first — auto-place needs a target plan.', false);
+    return;
+  }
+  const queue = state.fp.unplaced.slice();
+  if (!queue.length) {
+    fpToast('All units on this floor are already placed.', true);
+    return;
+  }
+  const placeOk = await confirmDialog({
+    title: `Place ${queue.length} unplaced unit${queue.length === 1 ? '' : 's'}?`,
+    message: 'Units are placed into the first free space on the canvas. Already-placed units are kept.',
+    confirmLabel: 'Place units',
+  });
+  if (!placeOk) return;
+  if (btn) btn.disabled = true;
+  const { w: cw, h: ch } = fpCanvasDims();
+  // Placements + blocks + solid structure rects count as occupied for the scan.
+  const taken = state.fp.placements
+    .map((p) => ({ x: p.x, y: p.y, width: p.width, height: p.height }))
+    .concat(
+      state.fp.blocks.map((b) => ({ x: b.x, y: b.y, width: b.width, height: b.height })),
+      fpStructureRects(),
+    );
+  const placed = [];
+  const unfit = [];
+  const failed = [];
+  try {
+    for (const unit of queue) {
+      const fp = unitFootprint(unit);
+      const orientations = [{ w: fp.w, h: fp.h }];
+      if (fp.w !== fp.h) orientations.push({ w: fp.h, h: fp.w });
+      let spot = null;
+      let geom = null;
+      for (const o of orientations) {
+        const s = fpFirstFreeRect(o.w, o.h, taken);
+        if (s) {
+          spot = s;
+          geom = o;
+          break;
+        }
+      }
+      if (!spot) {
+        unfit.push(unit.unitCode);
+        continue;
+      }
+      try {
+        await request(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/units/${encodeURIComponent(unit.id)}`, {
+          method: 'PUT',
+          body: JSON.stringify({ x: spot.x, y: spot.y, width: geom.w, height: geom.h }),
+        });
+        state.fp.unplaced = state.fp.unplaced.filter((u) => u.id !== unit.id);
+        state.fp.placements.push({
+          id: '',
+          unitId: unit.id,
+          unitCode: unit.unitCode,
+          name: unit.name,
+          sizeCode: unit.sizeCode,
+          sizeName: unit.sizeName,
+          sqft: unit.sqft,
+          status: unit.status,
+          x: spot.x,
+          y: spot.y,
+          width: geom.w,
+          height: geom.h,
+        });
+        taken.push({ x: spot.x, y: spot.y, width: geom.w, height: geom.h });
+        placed.push(unit.unitCode);
+      } catch (err) {
+        failed.push(`${unit.unitCode} (${describeError(err)})`);
+      }
+    }
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+  fpRender();
+  if (!placed.length) {
+    fpToast(
+      `Auto-place: nothing fits on the ${cw}×${ch} ft canvas — enlarge the canvas first.` +
+        (unfit.length ? ` Did not fit: ${unfit.join(', ')}.` : '') +
+        (failed.length ? ` Errors: ${failed.join('; ')}.` : ''),
+      false,
+    );
+    return;
+  }
+  let msg = `Placed ${placed.length} unit${placed.length === 1 ? '' : 's'}`;
+  if (unfit.length) msg += `, ${unfit.length} did not fit: ${unfit.join(', ')}`;
+  if (failed.length) msg += `, ${failed.length} failed: ${failed.join('; ')}`;
+  fpToast(msg + '.', !unfit.length && !failed.length);
 }
 
 async function fpAddBlock() {
@@ -789,7 +1062,13 @@ async function fpRenameBlock() {
 async function fpRemoveBlock() {
   const blk = state.fp.blocks.find((b) => b.id === state.fp.selectedBlock);
   if (!blk) return;
-  if (!window.confirm(`Remove block "${blk.name}" from the plan?`)) return;
+  const blockOk = await confirmDialog({
+    title: `Remove block "${blk.name}" from the plan?`,
+    message: 'The block is removed from the canvas. Units are unaffected.',
+    confirmLabel: 'Remove',
+    danger: true,
+  });
+  if (!blockOk) return;
   try {
     await request(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/blocks/${encodeURIComponent(blk.id)}`, {
       method: 'DELETE',
@@ -806,7 +1085,7 @@ async function fpSaveCanvas() {
   const w = Number($('#fpWidth').value);
   const h = Number($('#fpHeight').value);
   if (!Number.isInteger(w) || w < 1 || w > 500 || !Number.isInteger(h) || h < 1 || h > 500) {
-    fpToast('Canvas size must be a whole number between 1 and 500 grid units.', false);
+    fpToast('Canvas size must be a whole number between 1 and 500 feet.', false);
     return;
   }
   let structure = null;
@@ -824,7 +1103,7 @@ async function fpSaveCanvas() {
       method: 'POST',
       body: JSON.stringify({ width: w, height: h, structure }),
     });
-    fpToast(`Canvas saved (${w}×${h}).`, true);
+    fpToast(`Canvas saved (${w}×${h} ft).`, true);
     await fpFetch();
   } catch (err) {
     fpToast('Save canvas: ' + describeError(err), false);
@@ -836,7 +1115,13 @@ async function fpDeletePlan() {
     fpToast('No plan to delete — set a canvas size and save first.', false);
     return;
   }
-  if (!window.confirm('Delete this floor plan and ALL unit placements on it? Units themselves are not affected.')) return;
+  const planOk = await confirmDialog({
+    title: 'Delete this floor plan?',
+    message: 'ALL unit placements on it will be removed. Units themselves are not affected.',
+    confirmLabel: 'Delete plan',
+    danger: true,
+  });
+  if (!planOk) return;
   try {
     await request(`/floor-plans/${encodeURIComponent(state.fp.floorId)}`, { method: 'DELETE' });
     fpToast('Floor plan deleted.', true);
@@ -849,7 +1134,13 @@ async function fpDeletePlan() {
 async function fpRemovePlacement() {
   const pl = state.fp.placements.find((p) => p.unitId === state.fp.selected);
   if (!pl) return;
-  if (!window.confirm(`Remove ${pl.unitCode} from the floor plan? (The unit itself is unaffected.)`)) return;
+  const plOk = await confirmDialog({
+    title: `Remove ${pl.unitCode} from the floor plan?`,
+    message: 'The unit itself is unaffected.',
+    confirmLabel: 'Remove',
+    danger: true,
+  });
+  if (!plOk) return;
   try {
     await request(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/units/${encodeURIComponent(pl.unitId)}`, {
       method: 'DELETE',
@@ -1003,6 +1294,44 @@ export function fpInitEvents() {
   });
   $('#fpSaveCanvas').addEventListener('click', fpSaveCanvas);
   $('#fpDeletePlan').addEventListener('click', fpDeletePlan);
+  // Orientation toggle for rectangular palette ghosts (placement-time only).
+  const rotBtn = $('#fpRotateGhost');
+  const syncRotBtn = () => {
+    if (!rotBtn) return;
+    rotBtn.classList.toggle('on', state.fp.ghostRotated);
+    rotBtn.setAttribute('aria-pressed', String(state.fp.ghostRotated));
+  };
+  if (rotBtn) {
+    syncRotBtn();
+    rotBtn.addEventListener('click', () => {
+      state.fp.ghostRotated = !state.fp.ghostRotated;
+      syncRotBtn();
+      fpRenderPalette();
+      fpToast(state.fp.ghostRotated ? 'Ghost rotated — palette units place swapped (H×W).' : 'Ghost orientation reset (W×H).', true);
+    });
+  }
+  // Lock-to-sqft resize (default ON). OFF is the ops override: free resize,
+  // with a warning that the server rejects writes deviating >15% from sqft.
+  const lockBtn = $('#fpLockSqft');
+  const syncLockBtn = () => {
+    if (!lockBtn) return;
+    lockBtn.classList.toggle('on', state.fp.lockSqft);
+    lockBtn.setAttribute('aria-pressed', String(state.fp.lockSqft));
+    lockBtn.textContent = state.fp.lockSqft ? '🔒 sqft' : '🔓 sqft';
+  };
+  if (lockBtn) {
+    syncLockBtn();
+    lockBtn.addEventListener('click', () => {
+      state.fp.lockSqft = !state.fp.lockSqft;
+      syncLockBtn();
+      fpRenderSelInfo();
+      if (!state.fp.lockSqft) {
+        fpToast('Sqft lock OFF — free resize enabled, but the server rejects placements deviating more than 15% from the unit sqft.', false);
+      } else {
+        fpToast('Sqft lock ON — resize snaps to the nearest rect preserving area ≈ sqft.', true);
+      }
+    });
+  }
   // Live canvas resizing: W/H edits re-render the canvas immediately (debounced
   // while typing); change/blur commits the typed value or reverts an invalid one.
   $('#fpWidth').addEventListener('input', fpOnDimInput);
@@ -1025,6 +1354,8 @@ export function fpInitEvents() {
     fpStartPaletteDrag(e, chip);
   });
   $('#fpAddBlock').addEventListener('click', () => fpToggleBlockForm(true));
+  const fpAutoBtn = $('#fpAutoPlace');
+  if (fpAutoBtn) fpAutoBtn.addEventListener('click', fpAutoPlaceAll);
   $('#fpBlockAdd').addEventListener('click', fpAddBlock);
   $('#fpBlockCancel').addEventListener('click', () => fpToggleBlockForm(false));
   $('#fpBlockName').addEventListener('keydown', (e) => {
@@ -1054,6 +1385,7 @@ export function fpInitEvents() {
   });
   $('#fpSelInfo').addEventListener('click', (e) => {
     if (e.target && e.target.id === 'fpRemoveBtn') fpRemovePlacement();
+    else if (e.target && e.target.id === 'fpRotateBtn') fpRotatePlacement();
     else if (e.target && e.target.id === 'fpBlockRemoveBtn') fpRemoveBlock();
     else if (e.target && e.target.id === 'fpBlockRenameBtn') fpRenameBlock();
   });

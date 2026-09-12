@@ -177,8 +177,12 @@ export async function deactivateTenant(id: string) {
   return { id, unitReleased: updated[0].unitId === null };
 }
 
-export async function listTenants() {
+export async function listTenants(opts?: { from?: Date; to?: Date }) {
+  const createdAt: { gte?: Date; lte?: Date } = {};
+  if (opts?.from) createdAt.gte = opts.from;
+  if (opts?.to) createdAt.lte = opts.to;
   const tenants = await prisma.tenant.findMany({
+    where: createdAt.gte || createdAt.lte ? { createdAt } : undefined,
     include: { unit: { include: { size: true, branch: true } } },
     orderBy: { name: 'asc' },
   });

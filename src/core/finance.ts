@@ -56,8 +56,12 @@ export async function serializeBookings(bookings: BookingWithRelations[]) {
   });
 }
 
-export async function listBookings() {
+export async function listBookings(opts?: { from?: Date; to?: Date }) {
+  const createdAt: { gte?: Date; lte?: Date } = {};
+  if (opts?.from) createdAt.gte = opts.from;
+  if (opts?.to) createdAt.lte = opts.to;
   const bookings = await prisma.booking.findMany({
+    where: createdAt.gte || createdAt.lte ? { createdAt } : undefined,
     include: { tenant: true, unit: { include: { size: true, branch: true } } },
     orderBy: { createdAt: 'desc' },
   });
@@ -65,9 +69,15 @@ export async function listBookings() {
   return serializeBookings(bookings);
 }
 
-export async function listInvoices(status?: string) {
+export async function listInvoices(status?: string, opts?: { from?: Date; to?: Date }) {
+  const dueDate: { gte?: Date; lte?: Date } = {};
+  if (opts?.from) dueDate.gte = opts.from;
+  if (opts?.to) dueDate.lte = opts.to;
   const invoices = await prisma.invoice.findMany({
-    where: status && ['DUE', 'PAID', 'OVERDUE'].includes(status) ? { status: status as any } : undefined,
+    where: {
+      ...(status && ['DUE', 'PAID', 'OVERDUE'].includes(status) ? { status: status as any } : {}),
+      ...(dueDate.gte || dueDate.lte ? { dueDate } : {}),
+    },
     include: { tenant: true, unit: true },
     orderBy: { dueDate: 'asc' },
   });

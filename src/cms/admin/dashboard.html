@@ -131,7 +131,7 @@ main{min-width:0;display:flex;flex-direction:column;min-height:100vh}
 .contact b{display:block}.contact small{color:var(--muted)}
 .heat{display:flex;gap:2px}.heat i{width:5px;height:13px;border-radius:2px;background:#ddd}.heat i.on{background:var(--terra)}
 .channel{width:26px;height:26px;border-radius:8px;display:inline-grid;place-items:center;background:#edf1eb;color:var(--olive);font-weight:800;font-size:11px}
-.late{color:var(--red);font-weight:700}.check{width:16px;height:16px}
+.late{color:var(--red);font-weight:700}.check{width:16px;height:16px;cursor:pointer;accent-color:var(--olive);vertical-align:middle}
 .pagination{display:flex;justify-content:space-between;align-items:center;padding:14px;color:var(--muted);font-size:12px}
 .pagination .pages{display:flex;gap:5px}.pages button{width:31px;height:31px;border-radius:8px;border:1px solid var(--line);background:white;cursor:pointer}
 .pages button.active{background:var(--olive);color:white}
@@ -277,7 +277,24 @@ main{min-width:0;display:flex;flex-direction:column;min-height:100vh}
 .modal-alert{border-radius:9px;padding:10px 12px;font-size:11px;font-weight:700;margin-bottom:12px}
 .modal-alert:empty{display:none}
 .modal-alert{background:var(--red-light);color:var(--red)}
+.modal-alert.olive{background:var(--sage);color:var(--olive2)}
 .modal-hint{font-size:10px;color:var(--muted);margin-bottom:10px}
+#confirmModal{z-index:300}
+.confirm-win{width:440px;max-width:100%}
+.confirm-msg{font-size:13px;color:var(--ink);margin:2px 0 0}
+/* Toolbar buttons (used across floor-plan editor, pagers, CRUD headers).
+   NOTE: these previously had NO base rule — only :disabled/override selectors
+   — so every .tb-btn (incl. the floor-plan Delete plan button) rendered as an
+   unstyled native button. */
+.tb-btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;border:1.5px solid var(--line);background:var(--white);border-radius:9px;padding:7px 13px;font-family:Manrope,system-ui,sans-serif;font-size:11px;font-weight:700;color:var(--ink);cursor:pointer;white-space:nowrap}
+.tb-btn:hover{border-color:#c7bbae;background:var(--cream)}
+.tb-btn.primary{background:var(--terra);border-color:var(--terra);color:#fff}
+.tb-btn.primary:hover{background:var(--terra2);border-color:var(--terra2)}
+.tb-btn.ghost{background:var(--white)}
+.tb-btn.danger{background:var(--red-light);border-color:transparent;color:var(--red)}
+.tb-btn.danger:hover{background:var(--red);color:#fff}
+.tb-btn.on{border-color:var(--olive);background:var(--sage);color:var(--olive)}
+.tb-btn:disabled{opacity:.4;cursor:not-allowed}
 .unit-actions{display:table-cell;text-align:right;white-space:nowrap}
 .unit-actions .act-btn{padding:3px 8px;font-size:10px;line-height:1}
 
@@ -392,6 +409,9 @@ main{min-width:0;display:flex;flex-direction:column;min-height:100vh}
 .fp-unit-chip{background:var(--white);border:1.5px solid var(--line);border-radius:7px;padding:6px 9px;cursor:grab;font-size:11px;font-weight:700}
 .fp-unit-chip:hover{border-color:var(--terra);box-shadow:0 2px 8px rgba(0,0,0,.08)}
 .fp-unit-chip.placed{opacity:.4;pointer-events:none}
+.fp-ghost{position:fixed;z-index:300;pointer-events:none;opacity:.75;border:2px dashed var(--terra);background:var(--terra-light);border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:800;color:var(--terra2);transform:translate(-50%,-50%)}
+.fp-sel-info{display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap;min-height:26px}
+.fp-hint{font-size:11px;color:var(--muted);padding:8px 2px}
 .fp-editor{min-width:0}
 .fp-toolbar{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-bottom:8px}
 .fp-zoom{display:flex;align-items:center;gap:5px;margin-left:auto}
@@ -414,12 +434,22 @@ main{min-width:0;display:flex;flex-direction:column;min-height:100vh}
 .fp-view-canvas .fp-block,.fp-view-canvas .fp-placed{pointer-events:none;cursor:default}
 .fp-view-empty{font-size:12px;font-weight:700;color:var(--muted);text-align:center;background:var(--cream);border:1.5px dashed var(--line);border-radius:9px;padding:44px 16px}
 
-/* Settings page grid */
-.setting-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
-.setting-card{background:#fff;border:1px solid var(--line);border-radius:13px;padding:15px;display:grid;gap:13px}
-.setting-card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
-.setting-card h3{margin:0;font-size:14px}
-.setting-card p{margin:3px 0 0;color:var(--muted);font-size:12px}
+/* Settings page — grouped cards mirroring the automation pattern (.card.auto + .sw) */
+#settingsGrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.set-card h3{margin:13px 0 4px;font-size:15px}
+.set-card>p{margin:0 0 4px;color:var(--muted);font-size:12px}
+.set-row{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 0;border-top:1px solid var(--line)}
+.set-rows{margin-top:10px}
+.set-row b{display:block;font-size:12px}
+.set-row small{display:block;color:var(--muted);font-size:11px;margin-top:2px;max-width:320px}
+.set-state{font-size:11px;color:var(--muted);margin-right:8px}
+.set-ctl{display:flex;align-items:center;flex:none}
+.set-input,.set-select{flex:none;width:150px;padding:7px 9px;border:1px solid var(--line);border-radius:8px;font-family:Manrope,system-ui,sans-serif;font-size:12px;background:#fff;color:var(--ink)}
+.set-input.num{width:96px}
+.dirty-dot{display:none;align-items:center;gap:6px;font-size:12px;color:var(--terra2);font-weight:700}
+.dirty-dot.show{display:inline-flex}
+.dirty-dot i{width:8px;height:8px;border-radius:50%;background:var(--terra)}
+#settingsSaveBtn:disabled{opacity:.45;cursor:default}
 /* Period picker */
 .period-picker{display:flex;gap:4px;flex-wrap:wrap}
 .period-picker button{border:1px solid var(--line);background:#fff;padding:7px 9px;border-radius:8px;font-size:11px;color:var(--muted);cursor:pointer;font-family:Manrope,system-ui,sans-serif}
@@ -555,7 +585,7 @@ main{min-width:0;display:flex;flex-direction:column;min-height:100vh}
   .record-list{border:0;max-height:260px}
   .record-detail{padding:14px}
   .summary-strip,.aging{grid-template-columns:1fr 1fr}
-  .setting-grid{grid-template-columns:1fr}
+  #settingsGrid{grid-template-columns:1fr}
   .kpi-strip{grid-template-columns:repeat(2,1fr)}
   .charts-row,.two-col{grid-template-columns:1fr}
   .ud-stats{grid-template-columns:repeat(2,1fr)}
@@ -650,32 +680,32 @@ main{min-width:0;display:flex;flex-direction:column;min-height:100vh}
 
     <!-- ============ LEADS DATABASE ============ -->
     <section class="page" id="leads">
-      <div class="head"><div><h1>All leads</h1><p>One view of every enquiry, owner, next step and outcome.</p></div><div class="actions"><button class="btn">Import</button><button class="btn">Export</button><button class="primary" id="addLeadBtn2">＋ Add lead</button></div></div>
+      <div class="head"><div><h1>All leads</h1><p>One view of every enquiry, owner, next step and outcome.</p></div><div class="actions"><button class="btn" id="leadImportBtn" type="button">Import</button><input type="file" id="leadImportFile" accept=".csv,text/csv" hidden><button class="btn" id="leadExportBtn" type="button">Export</button><button class="primary" id="addLeadBtn2">＋ Add lead</button></div></div>
       <div class="toolbar">
-        <select class="filter" id="leadStatusFilter"><option>All statuses</option><option>New</option><option>Contacted</option><option>Qualified</option><option>Quoted</option><option>Won</option><option>Lost</option></select>
-        <select class="filter" id="leadSourceFilter"><option>All sources</option><option>Website</option><option>WhatsApp</option><option>Referral</option><option>Google</option></select>
+        <select class="filter" id="leadStatusFilter"><option value="">All statuses</option><option value="NEW_ENQUIRY">New</option><option value="CONTACTED">Contacted</option><option value="VIEWING_BOOKED">Qualified</option><option value="PROPOSAL_SENT">Quoted</option><option value="WON">Won</option><option value="LOST">Lost</option></select>
+        <select class="filter" id="leadSourceFilter"><option value="">All sources</option><option value="WEBSITE">Website</option><option value="WHATSAPP">WhatsApp</option><option value="REFERRAL">Referral</option><option value="GOOGLE">Google</option></select>
         <button class="filter">＋ More filters</button><span class="grow"></span>
         <div class="seg"><button class="active" id="listViewBtn">List</button><button data-page-jump="pipeline">Board</button></div>
       </div>
-      <div class="card"><div class="table-wrap"><table class="lead-table"><thead><tr><th><input class="check" type="checkbox"></th><th>Lead</th><th>Status</th><th>Intent</th><th>Product / Facility</th><th>Source</th><th>Next action</th><th>Est. value</th><th>Created</th></tr></thead><tbody id="leadRows"></tbody></table></div><div class="pagination"><span id="leadCount">0 leads</span><div class="pages"><button>‹</button><button class="active">1</button><button>›</button></div></div></div>
+      <div class="card"><div class="table-wrap"><table class="lead-table"><thead><tr><th><input class="check" type="checkbox" id="leadSelectAll" aria-label="Select all leads"></th><th>Lead</th><th>Status</th><th>Intent</th><th>Product / Facility</th><th>Source</th><th>Next action</th><th>Est. value</th><th>Created</th><th></th></tr></thead><tbody id="leadRows"></tbody></table></div><div class="pagination"><span id="leadCount">0 leads</span><div class="pages"><button id="leadsPagePrev" type="button" aria-label="Previous page">‹</button><button class="active" id="leadsPageNum">1</button><button id="leadsPageNext" type="button" aria-label="Next page">›</button></div></div></div>
     </section>
 
     <!-- ============ PIPELINE (kanban) ============ -->
     <section class="page" id="pipeline">
-      <div class="head"><div><h1>Pipeline</h1><p>Drag opportunities through the booking journey.</p></div><div class="actions"><select class="filter" id="pipelineFilter"><option>All pipelines</option></select><button class="primary">＋ Add lead</button></div></div>
+      <div class="head"><div><h1>Pipeline</h1><p>Drag opportunities through the booking journey.</p></div><div class="actions"><select class="filter" id="pipelineFilter"><option value="">All pipelines</option></select><button class="primary" id="addLeadBtn" type="button">＋ Add lead</button></div></div>
       <div class="toolbar"><b id="pipelineValue" style="margin-left:auto">$0 pipeline value</b></div>
       <div class="kanban" id="kanban"></div>
     </section>
 
     <!-- ============ INBOX (Conversations) ============ -->
     <section class="page" id="inbox">
-      <div class="head"><div><h1>Conversations</h1><p>Lead conversation timeline — click a lead to see activity.</p></div><div class="actions"><button class="btn">Assign</button><button class="primary">＋ New message</button></div></div>
-      <div class="card inbox"><div class="threads" id="threads"></div><div class="chat"><div class="chat-head"><div><b>Lead Activity</b><br><small style="color:var(--muted)">Select a lead to view</small></div></div><div class="messages" id="chatMessages"><div class="section-empty">Select a lead from the list to view their activity timeline.</div></div><div class="composer"><textarea placeholder="Add a note…"></textarea><div class="composer-foot"><button class="btn">Templates</button><button class="primary">Send</button></div></div></div><aside class="profile" id="leadProfile"><div class="avatar" id="profileAvatar">—</div><h3 id="profileName">Select a lead</h3><small id="profileSub">Click a lead to view details</small><dl id="profileFields"></dl></aside></div>
+      <div class="head"><div><h1>Conversations</h1><p>Lead conversation timeline — click a lead to see activity.</p></div><div class="actions"><button class="btn" id="inboxAssignBtn" type="button">Assign</button><button class="primary" id="inboxNewMsgBtn" type="button">＋ New message</button></div></div>
+      <div class="card inbox"><div class="threads" id="threads"></div><div class="chat"><div class="chat-head"><div><b>Lead Activity</b><br><small style="color:var(--muted)">Select a lead to view</small></div></div><div class="messages" id="chatMessages"><div class="section-empty">Select a lead from the list to view their activity timeline.</div></div><div class="composer"><textarea id="composerText" placeholder="Add a note…"></textarea><div class="composer-foot"><button class="btn" id="composerTemplatesBtn" type="button">Templates</button><button class="primary" id="composerSendBtn" type="button">Send</button></div></div></div><aside class="profile" id="leadProfile"><div class="avatar" id="profileAvatar">—</div><h3 id="profileName">Select a lead</h3><small id="profileSub">Click a lead to view details</small><dl id="profileFields"></dl></aside></div>
     </section>
 
     <!-- ============ CALENDAR (appointments / move-ins) ============ -->
     <section class="page" id="calendar">
-      <div class="head"><div><h1>Appointments</h1><p>Viewings, move-ins and scheduled callbacks.</p></div><div class="actions"><button class="primary">＋ Schedule</button></div></div>
+      <div class="head"><div><h1>Appointments</h1><p>Viewings, move-ins and scheduled callbacks.</p></div><div class="actions"><button class="primary" id="scheduleBtn" type="button">＋ Schedule</button></div></div>
       <div class="calendar-layout"><div class="card"><div class="card-head"><h3>This week</h3></div><div class="card-body"><div class="week" id="weekView"><div class="time">AM</div><div class="day">Mon</div><div class="day">Tue</div><div class="day">Wed</div><div class="day">Thu</div><div class="day">Fri</div></div></div></div><div class="card"><div class="card-head"><h3>Today</h3></div><div class="card-body queue" id="todayAppts"></div></div></div>
     </section>
 
@@ -732,7 +762,7 @@ main{min-width:0;display:flex;flex-direction:column;min-height:100vh}
 
     <!-- ============ FACILITIES ============ -->
     <section class="page" id="facilities">
-      <div class="subtabs" data-tabs="facility"><button class="active" data-tab="facility-map">Unit Map</button><button data-tab="facility-units">Units</button><button data-tab="facility-floorplans">Floor Plans</button><button data-tab="facility-promos">Promotions</button></div>
+      <div class="subtabs" data-tabs="facility"><button class="active" data-tab="facility-map">Unit Map</button><button data-tab="facility-units">Units</button><button data-tab="facility-floorplans">Floor Plans</button></div>
       <!-- Unit Map -->
       <div class="module-panel active" id="facility-map">
         <div class="unit-map-card">
@@ -762,13 +792,9 @@ main{min-width:0;display:flex;flex-direction:column;min-height:100vh}
         <div class="unit-map-card">
           <div class="sec-hdr"><div><div class="sec-title" id="fpTitle">Floor Plan Editor</div><div class="sec-sub" id="fpSub">Design the layout: drag units onto the canvas</div></div><div style="display:flex;gap:8px;flex-wrap:wrap;"><select id="fpBranch" class="tbl-select"></select><select id="fpFloor" class="tbl-select"></select><button class="tb-btn ghost" id="fpDeletePlan">🗑 Delete plan</button><button class="tb-btn primary" id="fpSaveCanvas">💾 Save Canvas</button></div></div>
           <div class="modal-alert" id="fpBanner" hidden></div>
-          <div class="fp-layout"><div class="fp-palette"><div class="chart-title">Units</div><div class="t-type" id="fpPaletteSub">Drag a unit onto the canvas</div><div class="fp-unit-list" id="fpPalette"></div><div class="fp-block-form" id="fpBlockForm" hidden><div class="chart-title" style="font-size:11px;margin-bottom:4px;">New block</div><input type="text" id="fpBlockName" maxlength="80" spellcheck="false" placeholder='Name — e.g. "Lift", "Stair"'><div style="display:flex;gap:6px;margin-top:6px;"><button class="act-btn primary" id="fpBlockAdd" style="flex:1;text-align:center;">Add block</button><button class="act-btn" id="fpBlockCancel" style="flex:1;text-align:center;">Cancel</button></div></div></div><div class="fp-editor"><div class="fp-toolbar"><span class="t-type">Canvas</span><input type="number" id="fpWidth" class="tbl-search" min="1" max="500" step="1"><span class="t-type">×</span><input type="number" id="fpHeight" class="tbl-search" min="1" max="500" step="1"><button class="tb-btn ghost" id="fpAddBlock">＋ Block</button><span class="fp-zoom"><button class="tb-btn ghost" id="fpZoomOut">−</button><span class="t-type" id="fpZoomLbl">100%</span><button class="tb-btn ghost" id="fpZoomIn">+</button></span><span class="fp-sel-info" id="fpSelInfo"></span></div><div class="fp-canvas-wrap" id="fpCanvasWrap"><div class="fp-canvas" id="fpCanvas"></div></div></div></div>
+          <div class="fp-layout"><div class="fp-palette"><div class="chart-title">Units</div><div class="t-type" id="fpPaletteSub">Drag a unit onto the canvas</div><div class="fp-unit-list" id="fpPalette"></div><div class="fp-block-form" id="fpBlockForm" hidden><div class="chart-title" style="font-size:11px;margin-bottom:4px;">New block</div><input type="text" id="fpBlockName" maxlength="80" spellcheck="false" placeholder='Name — e.g. "Lift", "Stair"'><div style="display:flex;gap:6px;margin-top:6px;"><button class="act-btn primary" id="fpBlockAdd" style="flex:1;text-align:center;">Add block</button><button class="act-btn" id="fpBlockCancel" style="flex:1;text-align:center;">Cancel</button></div></div></div><div class="fp-editor"><div class="fp-toolbar"><span class="t-type">Canvas (ft)</span><input type="number" id="fpWidth" class="tbl-search" min="1" max="500" step="1" title="Canvas width in feet" style="width:80px;"><span class="t-type">×</span><input type="number" id="fpHeight" class="tbl-search" min="1" max="500" step="1" title="Canvas height in feet" style="width:80px;"><button class="tb-btn ghost" id="fpAddBlock">＋ Block</button><button class="tb-btn ghost" id="fpRotateGhost" title="Swap palette ghost orientation (W×H ↔ H×W) for rectangular units" aria-pressed="false">⟳ Rotate</button><button class="tb-btn ghost on" id="fpLockSqft" title="Lock resize to the nearest rect preserving area ≈ sqft (toggle off for free resize; server rejects >15% deviation)" aria-pressed="true">🔒 sqft</button><button class="tb-btn ghost" id="fpAutoPlace" title="Place all unplaced units of this floor at the first free spot (asks for confirmation first)">⤵ Auto-place all</button><span class="fp-zoom"><button class="tb-btn ghost" id="fpZoomOut">−</button><span class="t-type" id="fpZoomLbl">100%</span><button class="tb-btn ghost" id="fpZoomIn">+</button></span><span class="fp-sel-info" id="fpSelInfo"></span></div><div class="fp-canvas-wrap" id="fpCanvasWrap"><div class="fp-canvas" id="fpCanvas"></div></div></div></div>
           <details class="fp-structure"><summary>Advanced — legacy structure JSON <span class="t-type">(walls / corridors)</span></summary><textarea id="fpStructure" class="fp-structure-input" rows="6" spellcheck="false"></textarea><div class="fp-legacy-note" id="fpLegacyNote" hidden>Legacy structure attached.</div></details>
         </div>
-      </div>
-      <!-- Promotions inside Facilities tab — refer to endpoint -->
-      <div class="module-panel" id="facility-promos">
-        <div class="card"><div class="card-head"><h3>Promotions</h3></div><div class="card-body" id="promoTable"></div></div>
       </div>
     </section>
 
@@ -1096,13 +1122,14 @@ main{min-width:0;display:flex;flex-direction:column;min-height:100vh}
     </section>
 
     <!-- ============ SETTINGS ============ -->
+    <!-- Grouped setting cards mirroring the automation pattern: one card per
+         group, boolean rows use the same .sw toggle switch, values render as
+         number/text/select controls. Rows are rendered by bindSettings()
+         (admin.js) from GET /settings; the Save bar PUTs the diff. -->
     <section class="page" id="settings">
-      <div class="head"><div><h1>Global Settings</h1><p>Business rules, fees, users and platform-wide policies.</p></div><div class="actions"><button class="primary">Save changes</button></div></div>
-      <div class="setting-grid">
-        <div class="card"><div class="card-head"><h3>Organisation</h3></div><div class="card-body"><div class="info-grid"><div class="info"><small>Legal entity</small><b>StoreLah Pte. Ltd.</b></div><div class="info"><small>Trading name</small><b>StoreLah Self Storage</b></div><div class="info"><small>Currency</small><b>SGD</b></div><div class="info"><small>Timezone</small><b>Singapore · UTC+8</b></div></div></div></div>
-        <div class="card"><div class="card-head"><h3>Booking rules</h3></div><div class="card-body"><div class="info-grid"><div class="info"><small>Reservation hold</small><b>24 hours</b></div><div class="info"><small>Min rental</small><b>1 month</b></div><div class="info"><small>Notice period</small><b>14 days</b></div></div></div></div>
-        <div class="card"><div class="card-head"><h3>System</h3></div><div class="card-body"><div class="info-grid"><div class="info"><small>API</small><b>Active</b></div><div class="info"><small>Version</small><b>v8.0</b></div></div></div></div>
-      </div>
+      <div class="head"><div><h1>Global Settings</h1><p>Business rules, fees, alerts and platform-wide policies. Changes apply app-wide on save.</p></div><div class="actions"><span class="dirty-dot" id="settingsDirty"><i></i>Unsaved changes</span><button class="primary" id="settingsSaveBtn" disabled>Save changes</button></div></div>
+      <div class="modal-alert" id="settingsBanner" hidden></div>
+      <div id="settingsGrid"></div>
     </section>
 
   </div><!-- .content -->
@@ -1178,6 +1205,61 @@ main{min-width:0;display:flex;flex-direction:column;min-height:100vh}
     <div class="modal-hdr"><div class="modal-title" id="fpViewTitle">Floor Plan</div><button class="modal-x" id="fpViewClose" type="button" aria-label="Close">✕</button></div>
     <div class="fp-view-wrap"><div class="fp-view-empty" id="fpViewEmpty" hidden></div><div class="fp-canvas-wrap fp-view-canvas" id="fpViewCanvasWrap" hidden><div class="fp-canvas" id="fpViewCanvas"></div></div></div>
     <div class="modal-foot"><button class="act-btn" type="button" id="fpViewCloseBtn">Close</button><button class="act-btn primary" type="button" id="fpViewEdit">Edit</button></div>
+  </div>
+</div>
+
+<!-- Lead modal -->
+<div class="modal-overlay" id="leadModal" hidden>
+  <div class="modal-win">
+    <div class="modal-hdr"><div class="modal-title" id="leadModalTitle">Add Lead</div><button class="modal-x" id="leadModalClose" type="button">✕</button></div>
+    <div class="modal-alert" id="leadModalAlert" hidden></div>
+    <form id="leadForm" novalidate>
+      <div class="form-grid">
+        <div class="field full"><label for="lf-name">Name</label><input type="text" id="lf-name" name="name" maxlength="120" placeholder="Lead name"><div class="field-err" id="le-name"></div></div>
+        <div class="field"><label for="lf-type">Type</label><select id="lf-type" name="type"><option value="PERSONAL">Personal</option><option value="BUSINESS">Business</option></select><div class="field-err" id="le-type"></div></div>
+        <div class="field"><label for="lf-source">Source</label><select id="lf-source" name="source"><option value="WEBSITE">Website</option><option value="WHATSAPP">WhatsApp</option><option value="REFERRAL">Referral</option><option value="GOOGLE">Google</option></select><div class="field-err" id="le-source"></div></div>
+        <div class="field"><label for="lf-stage">Stage</label><select id="lf-stage" name="stage"><option value="NEW_ENQUIRY">New</option><option value="CONTACTED">Contacted</option><option value="VIEWING_BOOKED">Qualified</option><option value="PROPOSAL_SENT">Quoted</option><option value="WON">Won</option><option value="LOST">Lost</option></select><div class="field-err" id="le-stage"></div></div>
+        <div class="field"><label for="lf-branch">Facility</label><select id="lf-branch" name="branch"></select><div class="field-err" id="le-branch"></div></div>
+        <div class="field"><label for="lf-size">Preferred size</label><input type="text" id="lf-size" name="size" maxlength="40" placeholder="E.g. SMALL"><div class="field-err" id="le-size"></div></div>
+        <div class="field"><label for="lf-rate">Est. value ($/mo)</label><input type="number" id="lf-rate" name="monthlyRate" min="0" step="0.01"><div class="field-err" id="le-rate"></div></div>
+        <div class="field"><label for="lf-owner">Owner</label><input type="text" id="lf-owner" name="owner" maxlength="80" placeholder="Operator name"><div class="field-err" id="le-owner"></div></div>
+        <div class="field"><label for="lf-nextAction">Next action date</label><input type="date" id="lf-nextAction" name="nextActionAt"><div class="field-err" id="le-nextAction"></div></div>
+        <div class="field"><label for="lf-email">Email</label><input type="email" id="lf-email" name="email" placeholder="name@example.com"><div class="field-err" id="le-email"></div></div>
+        <div class="field"><label for="lf-mobile">Mobile</label><input type="text" id="lf-mobile" name="mobile" placeholder="+65 9xxx xxxx"><div class="field-err" id="le-mobile"></div></div>
+        <div class="field full"><label for="lf-note">Note</label><input type="text" id="lf-note" name="note" maxlength="500" placeholder="Enquiry details"><div class="field-err" id="le-note"></div></div>
+      </div>
+      <div class="modal-foot"><button class="act-btn" type="button" id="leadFormCancel">Cancel</button><button class="act-btn primary" type="submit" id="leadFormSubmit">Save Lead</button></div>
+    </form>
+  </div>
+</div>
+
+<!-- Appointment modal -->
+<div class="modal-overlay" id="apptModal" hidden>
+  <div class="modal-win">
+    <div class="modal-hdr"><div class="modal-title" id="apptModalTitle">Schedule Appointment</div><button class="modal-x" id="apptModalClose" type="button">✕</button></div>
+    <div class="modal-alert" id="apptModalAlert" hidden></div>
+    <form id="apptForm" novalidate>
+      <div class="form-grid">
+        <div class="field full"><label for="af-title">Title</label><input type="text" id="af-title" name="title" maxlength="160" placeholder="E.g. Unit viewing"><div class="field-err" id="ae-title"></div></div>
+        <div class="field"><label for="af-person">Person</label><input type="text" id="af-person" name="personName" maxlength="120" placeholder="Contact name"><div class="field-err" id="ae-person"></div></div>
+        <div class="field"><label for="af-type">Type</label><select id="af-type" name="type"><option value="VIEWING">Viewing</option><option value="CALLBACK">Callback</option><option value="VIDEO_CONSULT">Video consult</option><option value="MOVE_IN">Move-in</option></select><div class="field-err" id="ae-type"></div></div>
+        <div class="field"><label for="af-branch">Facility</label><select id="af-branch" name="branch"></select><div class="field-err" id="ae-branch"></div></div>
+        <div class="field"><label for="af-lead">Lead (optional)</label><select id="af-lead" name="lead"></select><div class="field-err" id="ae-lead"></div></div>
+        <div class="field"><label for="af-start">Start</label><input type="datetime-local" id="af-start" name="startAt"><div class="field-err" id="ae-start"></div></div>
+        <div class="field"><label for="af-end">End (optional)</label><input type="datetime-local" id="af-end" name="endAt"><div class="field-err" id="ae-end"></div></div>
+        <div class="field full"><label for="af-note">Note</label><input type="text" id="af-note" name="note" maxlength="500" placeholder="Optional note"><div class="field-err" id="ae-note"></div></div>
+      </div>
+      <div class="modal-foot"><button class="act-btn" type="button" id="apptFormCancel">Cancel</button><button class="act-btn primary" type="submit" id="apptFormSubmit">Save Appointment</button></div>
+    </form>
+  </div>
+</div>
+
+<!-- Confirm dialog (shared shell, populated per invocation by confirmDialog.js) -->
+<div class="modal-overlay" id="confirmModal" hidden>
+  <div class="modal-win confirm-win" role="alertdialog" aria-modal="true" aria-labelledby="confirmTitle" aria-describedby="confirmMessage">
+    <div class="modal-hdr"><div class="modal-title" id="confirmTitle">Are you sure?</div><button class="modal-x" id="confirmClose" type="button" aria-label="Cancel">✕</button></div>
+    <p class="confirm-msg" id="confirmMessage"></p>
+    <div class="modal-foot"><button class="act-btn" type="button" id="confirmCancel">Cancel</button><button class="act-btn primary" type="button" id="confirmOk">Confirm</button></div>
   </div>
 </div>
 

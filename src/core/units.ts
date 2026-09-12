@@ -52,11 +52,15 @@ function serializeUnit(u: UnitWithRelations) {
 export async function listUnits(query: UnitListQuery = {}) {
   const page = Math.max(1, query.page ?? 1);
   const perPage = Math.min(200, Math.max(1, query.perPage ?? 25));
+  const createdAt: { gte?: Date; lte?: Date } = {};
+  if (query.from) createdAt.gte = query.from;
+  if (query.to) createdAt.lte = query.to;
   const where: Prisma.UnitWhereInput = {
     deletedAt: null,
     ...(query.status ? { status: query.status as UnitStatus } : {}),
     ...(query.branch ? { branch: { code: query.branch } } : {}),
     ...(query.level != null ? { floor: { level: query.level } } : {}),
+    ...(createdAt.gte || createdAt.lte ? { createdAt } : {}),
   };
   const [units, total] = await Promise.all([
     prisma.unit.findMany({
@@ -86,6 +90,8 @@ export interface UnitListQuery {
   status?: string;
   branch?: string;
   level?: number;
+  from?: Date;
+  to?: Date;
 }
 
 export interface PublicUnitsQuery {
@@ -271,7 +277,9 @@ export async function listFloors() {
   }));
 }
 
-// Reference data for the admin units UI: all UnitSize rows.
+// Reference data for the admin units UI: all UnitSize rows. widthFt/heightFt
+// feed the floor-plan editor's true-size footprints (null → the documented
+// aspect fallback in src/core/floorPlans.ts).
 export async function listSizes() {
   const sizes = await prisma.unitSize.findMany({ orderBy: { sortOrder: 'asc' } });
   return sizes.map((s) => ({
@@ -280,6 +288,8 @@ export async function listSizes() {
     name: s.name,
     sqftFrom: s.sqftFrom,
     sqftTo: s.sqftTo,
+    widthFt: s.widthFt,
+    heightFt: s.heightFt,
     sortOrder: s.sortOrder,
   }));
 }

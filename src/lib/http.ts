@@ -17,8 +17,8 @@ export function ok(res: Response, data: unknown, meta?: Record<string, unknown>)
   res.json({ data, meta });
 }
 
-export function created(res: Response, data: unknown): void {
-  res.status(201).json({ data });
+export function created(res: Response, data: unknown, meta?: Record<string, unknown>): void {
+  res.status(201).json(meta === undefined ? { data } : { data, meta });
 }
 
 export function fail(res: Response, status: number, code: string, message: string, details?: unknown): void {

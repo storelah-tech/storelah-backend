@@ -4,9 +4,10 @@ import { Prisma } from '@prisma/client';
 
 // Floor-plan layout aggregate (see docs/FLOOR_PLAN_MODEL.md).
 //
-// All geometry is in LOGICAL GRID UNITS (not px): plan width/height and
-// placement/block x/y/width/height are abstract grid coordinates; renderers
-// scale grid → px at whatever zoom they want.
+// BLUEPRINT SCALE: 1 grid unit = 1 FOOT. Plan width/height are the building's
+// real dimensions in feet; placement/block x/y/width/height are integer foot
+// rects in the same space. Columns stay `Int` (1:1 grid-unit→ft); renderers
+// scale ft → px at whatever zoom they want.
 //
 // Single plan per floor (FloorPlan.floorId is @unique). The upsert key for the
 // operator editor save is therefore the floorId itself.
@@ -18,11 +19,70 @@ import { Prisma } from '@prisma/client';
 //     They REPLACE authoring the legacy `structure` JSON markers, which stays
 //     readable/writable for old clients and renders statically.
 //
+// Footprints: a unit's drawn rect must approximate its real area —
+// `sqftFootprint()` resolves UnitSize.widthFt/heightFt when present and falls
+// back to a documented per-size aspect formula otherwise. Writes validate
+// area-vs-sqft within AREA_TOLERANCE (P3) and reject overlaps (409).
+//
 // Soft-delete rule: every plan read joins placements → unit and filters out
 // placements whose unit has deletedAt != null. Never touch Unit rows.
 
 export const CANVAS_DEFAULTS = { width: 20, height: 20 } as const;
-const MAX_CANVAS = 500; // grid units per axis, sanity cap
+const MAX_CANVAS = 500; // feet per axis, sanity cap
+
+// P3: a placement's drawn area (w×h, square feet) must be within ±15% of the
+// unit's sqft. Rejected with 400 VALIDATION; the editor's lock-to-sqft resize
+// keeps operators inside the band, and the ops override warns that breaching
+// it will be rejected here. Grandfathered rows (e.g. seeded uniform 2×3
+// geometry) keep READING fine — this only fires on write.
+export const AREA_TOLERANCE = 0.15;
+
+// Per-size width/height aspect (w/h) used ONLY when a UnitSize row has no
+// widthFt/heightFt dims. Chosen so the formula reproduces the catalogue
+// footprints exactly: LOCKER 3/4, SMALL 5/6, MEDIUM 6/10, LARGE 10/12.
+const SIZE_ASPECT: Record<string, number> = {
+  LOCKER: 3 / 4,
+  SMALL: 5 / 6,
+  MEDIUM: 6 / 10,
+  LARGE: 10 / 12,
+};
+const DEFAULT_ASPECT = 3 / 4;
+
+/**
+ * Integer foot rect for a unit of `sqft` square feet. Prefers explicit
+ * UnitSize.widthFt/heightFt dims; otherwise derives from the per-size aspect:
+ * w = round(sqrt(sqft·aspect)), h = ceil(sqft/w) (so w·h ≥ sqft and the rect
+ * stays integral). Unknown sizes use DEFAULT_ASPECT.
+ */
+export function sqftFootprint(
+  sqft: number,
+  sizeCode?: string | null,
+  widthFt?: number | null,
+  heightFt?: number | null,
+): { w: number; h: number } {
+  if (
+    widthFt != null &&
+    heightFt != null &&
+    Number.isInteger(widthFt) &&
+    Number.isInteger(heightFt) &&
+    widthFt > 0 &&
+    heightFt > 0
+  ) {
+    return { w: widthFt, h: heightFt };
+  }
+  const aspect = (sizeCode && SIZE_ASPECT[sizeCode.toUpperCase()]) || DEFAULT_ASPECT;
+  const w = Math.max(1, Math.round(Math.sqrt(Math.max(1, sqft) * aspect)));
+  const h = Math.max(1, Math.ceil(Math.max(1, sqft) / w));
+  return { w, h };
+}
+
+/** True when two integer foot rects share any interior area (touching edges are fine). */
+export function rectsOverlap(
+  a: { x: number; y: number; width: number; height: number },
+  b: { x: number; y: number; width: number; height: number },
+): boolean {
+  return a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
+}
 
 // Plan payload used by every read; placements exclude soft-deleted units;
 // blocks are plain name+rect rows in authored order (stable for the editor).
@@ -249,8 +309,11 @@ async function ensureCanvasPlan(floorId: string) {
 
 /**
  * Upsert one unit placement keyed by unitId + floorPlanId. Validates the unit
- * belongs to the plan's floor and is not soft-deleted, and that the geometry
- * fits inside the canvas. Never touches the Unit row.
+ * belongs to the plan's floor and is not soft-deleted, that the geometry
+ * fits inside the canvas, that the drawn area is within AREA_TOLERANCE of the
+ * unit's sqft (P3), and that the rect does not overlap another unit's
+ * placement (409 PLACEMENT_OVERLAP — client pre-checks the same rule and
+ * rejects with a toast). Never touches the Unit row.
  */
 export async function setUnitPlacement(floorId: string, unitId: string, geom: PlacementGeometry) {
   checkGeometry(geom);
@@ -264,13 +327,44 @@ export async function setUnitPlacement(floorId: string, unitId: string, geom: Pl
     throw new AppError(400, 'VALIDATION', `Unit ${unit.unitCode} does not belong to floor ${floorId}`);
   }
 
+  // P3: drawn area (square feet, 1 unit = 1 ft) must approximate the unit's
+  // real sqft. Grandfathered rows only hit this when re-saved — the editor's
+  // lock-to-sqft resize and true-size ghost keep new writes inside the band.
+  const area = geom.width * geom.height;
+  const deviation = Math.abs(area - unit.sqft) / Math.max(1, unit.sqft);
+  if (deviation > AREA_TOLERANCE) {
+    const pct = Math.round(deviation * 100);
+    const fp = sqftFootprint(unit.sqft, unit.size.code, unit.size.widthFt, unit.size.heightFt);
+    throw new AppError(
+      400,
+      'VALIDATION',
+      `Placement ${geom.width}×${geom.height} (= ${area} sq ft) deviates ${pct}% from unit ${unit.unitCode}'s ${unit.sqft} sqft (tolerance ${Math.round(AREA_TOLERANCE * 100)}%) — use ~${fp.w}×${fp.h} ft`,
+    );
+  }
+
   const plan = await ensureCanvasPlan(floorId);
 
   if (geom.x + geom.width > plan.width || geom.y + geom.height > plan.height) {
     throw new AppError(
       400,
       'VALIDATION',
-      `Placement ${geom.x},${geom.y} ${geom.width}×${geom.height} exceeds the ${plan.width}×${plan.height} canvas for floor ${floorId} — enlarge the canvas first`,
+      `Placement ${geom.x},${geom.y} ${geom.width}×${geom.height} exceeds the ${plan.width}×${plan.height} ft canvas for floor ${floorId} — enlarge the canvas first`,
+    );
+  }
+
+  // Overlap policy: REJECT (units must not stack; blocks are decoration and
+  // may underlay, so only unit-vs-unit is checked). The upsert key is unitId,
+  // so excluding the unit itself covers both place and move.
+  const siblings = await prisma.unitPlacement.findMany({
+    where: { floorPlanId: plan.id, unitId: { not: unitId } },
+    select: { x: true, y: true, width: true, height: true, unit: { select: { unitCode: true } } },
+  });
+  const hit = siblings.find((s) => rectsOverlap(geom, s));
+  if (hit) {
+    throw new AppError(
+      409,
+      'PLACEMENT_OVERLAP',
+      `Placement ${geom.x},${geom.y} ${geom.width}×${geom.height} overlaps ${hit.unit.unitCode} (${hit.x},${hit.y} ${hit.width}×${hit.height}) — move to a free spot`,
     );
   }
 
@@ -317,7 +411,7 @@ export async function createFloorPlanBlock(floorId: string, input: BlockInput) {
     throw new AppError(
       400,
       'VALIDATION',
-      `Block ${input.x},${input.y} ${input.width}×${input.height} exceeds the ${plan.width}×${plan.height} canvas for floor ${floorId} — enlarge the canvas first`,
+      `Block ${input.x},${input.y} ${input.width}×${input.height} exceeds the ${plan.width}×${plan.height} ft canvas for floor ${floorId} — enlarge the canvas first`,
     );
   }
   const block = await prisma.floorPlanBlock.create({
@@ -348,7 +442,7 @@ export async function setFloorPlanBlock(floorId: string, blockId: string, input:
     throw new AppError(
       400,
       'VALIDATION',
-      `Block ${input.x},${input.y} ${input.width}×${input.height} exceeds the ${plan.width}×${plan.height} canvas for floor ${floorId} — enlarge the canvas first`,
+      `Block ${input.x},${input.y} ${input.width}×${input.height} exceeds the ${plan.width}×${plan.height} ft canvas for floor ${floorId} — enlarge the canvas first`,
     );
   }
 

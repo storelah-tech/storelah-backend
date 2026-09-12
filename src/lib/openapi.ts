@@ -1392,7 +1392,7 @@ export const openapiSpec = {
         type: 'object',
         required: ['id', 'name', 'x', 'y', 'width', 'height'],
         description:
-          'A user-authored layout-decoration rectangle on a floor plan (e.g. Lift, Stairs, Exit, Walking area). Display only — no business behaviour. Geometry is in the same logical grid units as placements.',
+          'A user-authored layout-decoration rectangle on a floor plan (e.g. Lift, Stairs, Exit, Walking area). Display only — no business behaviour. Geometry is in feet, the same coordinate space as placements (1 grid unit = 1 ft).',
         properties: {
           id: { type: 'string', description: 'FloorPlanBlock row id (cuid).' },
           name: {
@@ -1401,8 +1401,8 @@ export const openapiSpec = {
           },
           x: { type: 'integer', description: 'Top-left grid-unit x coordinate.' },
           y: { type: 'integer', description: 'Top-left grid-unit y coordinate.' },
-          width: { type: 'integer', description: 'Bounding box width in grid units.' },
-          height: { type: 'integer', description: 'Bounding box height in grid units.' },
+          width: { type: 'integer', description: 'Bounding box width in feet (1 grid unit = 1 ft).' },
+          height: { type: 'integer', description: 'Bounding box height in feet (1 grid unit = 1 ft).' },
           color: {
             type: ['string', 'null'],
             description: 'Optional render tint (hex); renderers default to a neutral tone when null.',
@@ -1426,7 +1426,7 @@ export const openapiSpec = {
         type: 'object',
         required: ['branch', 'floor', 'plan'],
         description:
-          'A floor\'s layout for the booking renderer: branch + floor + plan canvas (width/height in logical grid units, legacy free-form structure JSON, authored `blocks`) + placements joined to unit code/name/size/status. Soft-deleted units are filtered out; no tenant/PII/rates.',
+          'A floor\'s layout for the booking renderer: branch + floor + plan canvas (width/height in feet, 1 grid unit = 1 ft, legacy free-form structure JSON, authored `blocks`) + placements joined to unit code/name/size/status. Soft-deleted units are filtered out; no tenant/PII/rates.',
         properties: {
           branch: {
             type: 'object',
@@ -1455,8 +1455,8 @@ export const openapiSpec = {
             properties: {
               id: { type: 'string' },
               floorId: { type: 'string' },
-              width: { type: 'integer', description: 'Canvas width in logical grid units.' },
-              height: { type: 'integer', description: 'Canvas height in logical grid units.' },
+              width: { type: 'integer', description: 'Canvas width in feet (1 grid unit = 1 ft).' },
+              height: { type: 'integer', description: 'Canvas height in feet (1 grid unit = 1 ft).' },
               structure: {
                 description:
                   'LEGACY free-form JSONB decorations authored by the operator (walls / corridors / entrance / lift / stairs / fireExit). Kept for old clients; new decorations are authored as `blocks`. Optional.',
@@ -1477,8 +1477,8 @@ export const openapiSpec = {
                     id: { type: 'string' },
                     x: { type: 'integer', description: 'Top-left grid-unit x coordinate.' },
                     y: { type: 'integer', description: 'Top-left grid-unit y coordinate.' },
-                    width: { type: 'integer', description: 'Bounding box width in grid units.' },
-                    height: { type: 'integer', description: 'Bounding box height in grid units.' },
+                    width: { type: 'integer', description: 'Bounding box width in feet (1 grid unit = 1 ft).' },
+                    height: { type: 'integer', description: 'Bounding box height in feet (1 grid unit = 1 ft).' },
                     unit: {
                       type: 'object',
                       required: ['id', 'unitCode', 'name', 'sqft', 'status', 'size'],

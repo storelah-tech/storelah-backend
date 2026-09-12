@@ -7,6 +7,8 @@
 
 import { STATUS_TONE, STATUS_LABEL, fmtMoney } from './constants.js';
 import { $, $$, escapeHtml, showBanner } from './dom.js';
+import { createDateFilter, withDateQuery, isRangeActive, rangeLabel } from './dateFilter.js';
+import { confirmDialog } from './confirmDialog.js';
 import { ApiError, request, get, describeError } from './api.js';
 import { state, isAllFacilities } from './state.js';
 
@@ -94,12 +96,30 @@ function renderUnitsTable() {
   if (sub) {
     const start = state.total === 0 ? 0 : (state.page - 1) * state.perPage + 1;
     const end = Math.min(state.page * state.perPage, state.total);
-    sub.textContent = `${state.total} unit${state.total === 1 ? '' : 's'} · showing ${start}–${end}`;
+    sub.textContent = `${state.total} unit${state.total === 1 ? '' : 's'} · showing ${start}–${end}` +
+      (isRangeActive(state.unitDate) ? ` · ${rangeLabel(state.unitDate)}` : '');
   }
+}
+
+// Date-range control lives in the units toolbar; changing the range resets to page 1.
+function ensureUnitsDateFilter() {
+  const bar = document.querySelector('#facility-units .tbl-toolbar');
+  if (!bar || bar.dataset.dateFilterMounted) return;
+  bar.dataset.dateFilterMounted = '1';
+  const handle = createDateFilter({
+    onChange: (r) => {
+      state.unitDate = r;
+      state.page = 1;
+      fetchUnitsPage().catch((err) => showBanner('Units: ' + describeError(err)));
+    },
+  });
+  // Date-range trigger is the FIRST control in the toolbar (before the status select).
+  bar.prepend(handle.el);
 }
 
 // ---------- server-side pagination ----------
 export async function fetchUnitsPage() {
+  ensureUnitsDateFilter();
   const qs = new URLSearchParams({ page: String(state.page), perPage: String(state.perPage) });
   if (state.statusFilter) qs.set('status', state.statusFilter);
   // All Facilities → omit branch/level so the backend returns every unit.
@@ -107,7 +127,7 @@ export async function fetchUnitsPage() {
     if (state.branchCode) qs.set('branch', state.branchCode);
     if (state.level) qs.set('level', String(state.level));
   }
-  const body = await request(`/units?${qs}`);
+  const body = await request(withDateQuery(`/units?${qs}`, state.unitDate));
   state.units = (body.data || []).map(normalizeUnit);
   const m = body.meta || {};
   state.total = m.total != null ? m.total : state.units.length;
@@ -419,7 +439,13 @@ export async function deleteUnit(code) {
     }
     return;
   }
-  if (!window.confirm(`Delete unit ${code}? This soft-deletes it (removes it from the map and lists).`)) return;
+  const ok = await confirmDialog({
+    title: `Delete unit ${code}?`,
+    message: 'This soft-deletes it (removes it from the map and lists).',
+    confirmLabel: 'Delete',
+    danger: true,
+  });
+  if (!ok) return;
   try {
     await request(`/units/${encodeURIComponent(code)}`, { method: 'DELETE' });
     showBanner(`Deleted ${code}`, true);

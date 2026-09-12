@@ -56,8 +56,12 @@ function serialize(p: PromotionWithRelations) {
   };
 }
 
-export async function listPromotions() {
+export async function listPromotions(opts?: { from?: Date; to?: Date }) {
+  const createdAt: { gte?: Date; lte?: Date } = {};
+  if (opts?.from) createdAt.gte = opts.from;
+  if (opts?.to) createdAt.lte = opts.to;
   const rows = await prisma.promotion.findMany({
+    where: createdAt.gte || createdAt.lte ? { createdAt } : undefined,
     include: { applicableSize: true, plan: true },
     orderBy: { createdAt: 'desc' },
   });

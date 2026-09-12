@@ -7,6 +7,8 @@
 
 import { TENANT_STATUS_TONE, TENANT_STATUS_LABEL, fmtMoney } from './constants.js';
 import { $, $$, escapeHtml, showBanner } from './dom.js';
+import { createDateFilter, withDateQuery, isRangeActive, rangeLabel, rangeEmptyText } from './dateFilter.js';
+import { confirmDialog } from './confirmDialog.js';
 import { ApiError, request, get, describeError } from './api.js';
 import { state, isAllFacilities } from './state.js';
 
@@ -92,15 +94,20 @@ export function bindTenantsView() {
   const rows = filtered.slice(start, start + state.tenantPerPage);
 
   if (!rows.length) {
-    tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;color:var(--light);padding:26px;">${
-      state.tenants.length ? 'No tenants match — adjust your search or filters.' : 'No tenants yet — create your first tenant.'
-    }</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;color:var(--light);padding:26px;">${escapeHtml(
+      isRangeActive(state.tenantDate)
+        ? rangeEmptyText('tenants', state.tenantDate)
+        : state.tenants.length
+          ? 'No tenants match — adjust your search or filters.'
+          : 'No tenants yet — create your first tenant.',
+    )}</td></tr>`;
   } else {
     tbody.innerHTML = rows.map(renderTenantRow).join('');
   }
   const sub = $('#tenantsViewSub');
   if (sub) {
-    sub.textContent = `${state.tenantTotal} tenant${state.tenantTotal === 1 ? '' : 's'}${filtered.length !== state.tenants.length ? ' · ' + filtered.length + ' shown' : ''}`;
+    sub.textContent = `${state.tenantTotal} tenant${state.tenantTotal === 1 ? '' : 's'}${filtered.length !== state.tenants.length ? ' · ' + filtered.length + ' shown' : ''}` +
+      (isRangeActive(state.tenantDate) ? ' · ' + rangeLabel(state.tenantDate) : '');
   }
   renderTenantPager();
 }
@@ -115,14 +122,32 @@ function renderTenantPager() {
 }
 
 export async function refreshTenantsView() {
+  ensureTenantsDateFilter();
   try {
-    const rows = await get('/tenants');
+    const rows = await get(withDateQuery('/tenants', state.tenantDate));
     state.tenants = (rows || []).map(normalizeTenant);
     state.tenantPage = 1;
     bindTenantsView();
   } catch (err) {
     showBanner('Tenants: ' + describeError(err));
   }
+}
+
+// Date-range control lives in the tenants toolbar; changing the range refetches
+// server-side (createdAt) and resets to page 1, composing with search/status.
+function ensureTenantsDateFilter() {
+  const bar = document.querySelector('#customer-tenants .tbl-toolbar');
+  if (!bar || bar.dataset.dateFilterMounted) return;
+  bar.dataset.dateFilterMounted = '1';
+  const handle = createDateFilter({
+    onChange: (r) => {
+      state.tenantDate = r;
+      state.tenantPage = 1;
+      refreshTenantsView();
+    },
+  });
+  // Date-range trigger is the FIRST control in the toolbar (before search + status select).
+  bar.prepend(handle.el);
 }
 
 // ---------- tenant form (create / edit) ----------
@@ -322,7 +347,13 @@ export async function submitTenantForm(e) {
 export async function deactivateTenant(id) {
   const t = state.tenants.find((x) => x.id === id);
   if (!t) return;
-  if (!window.confirm(`Deactivate ${t.name}?${t.unit ? ` Their unit (${t.unit}) is released back to AVAILABLE.` : ''}`)) return;
+  const ok = await confirmDialog({
+    title: `Deactivate ${t.name}?`,
+    message: t.unit ? `Their unit (${t.unit}) is released back to AVAILABLE.` : 'This tenant will be deactivated.',
+    confirmLabel: 'Deactivate',
+    danger: true,
+  });
+  if (!ok) return;
   try {
     const res = await request(`/tenants/${encodeURIComponent(id)}`, { method: 'DELETE' });
     showBanner(`Deactivated ${t.name}${res.data && res.data.unitReleased ? ` — unit ${t.unit} released` : ''}`, true);

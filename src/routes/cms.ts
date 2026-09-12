@@ -3,6 +3,7 @@ import bcrypt from 'bcryptjs';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma';
 import { ok, created, fail, AppError } from '../lib/http';
+import { dateRangeFields, resolveDateRange } from '../lib/dateRange';
 import { resolveHostKind } from '../lib/host';
 import { requireAuth, signToken } from '../middleware/auth';
 import { getSummary } from '../core/summary';
@@ -18,10 +19,19 @@ import {
   getUnitActivity,
 } from '../core/units';
 import { listTenants, createTenant, updateTenant, deactivateTenant } from '../core/tenants';
-import { listLeads, getLeadStats } from '../core/leads';
+import { listLeads, getLeadStats, getWeeklyAnalytics, createLead, updateLead, deleteLead } from '../core/leads';
+import {
+  listConversations,
+  createConversation,
+  updateConversation,
+  getTimeline,
+  postNote,
+  sendMessageStub,
+} from '../core/conversations';
 import { getActionItems } from '../core/actionCenter';
 import { listBookings, listInvoices } from '../core/finance';
 import { listBranches, getMoveIns } from '../core/branches';
+import { getSettings, upsertSettings } from '../core/settings';
 import { adjustRate } from '../core/rates';
 import {
   listPromotions,
@@ -43,8 +53,14 @@ import {
   createSafeguard,
   updateSafeguard,
   deleteSafeguard,
+  listVersions,
+  compareVersions,
+  restoreVersion,
+  recordRedemption,
+  listRedemptions,
+  getPerformance,
 } from '../core/promotionPlans';
-import { listAppointments } from '../core/appointments';
+import { listAppointments, createAppointment, updateAppointment, deleteAppointment, findAppointmentConflicts } from '../core/appointments';
 import {
   upsertFloorPlan,
   getFloorPlan,
@@ -100,7 +116,12 @@ const unitListQuerySchema = z.object({
     .optional(),
   branch: z.string().trim().min(1).optional(),
   level: z.coerce.number().int().min(1).optional(),
+  ...dateRangeFields,
 });
+
+// Optional ?from=YYYY-MM-DD&to=YYYY-MM-DD (inclusive day bounds) for every
+// date-filtered list endpoint below. Garbage → 400 VALIDATION.
+const dateRangeQuerySchema = z.object({ ...dateRangeFields });
 
 const unitActivityQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(20),
@@ -230,7 +251,15 @@ router.get('/units', requireAuth, async (req: Request, res: Response) => {
     fail(res, 400, 'VALIDATION', 'Invalid unit query', parsed.error.flatten());
     return;
   }
-  const { rows, meta } = await listUnits(parsed.data);
+  const range = resolveDateRange(parsed.data);
+  const { rows, meta } = await listUnits({
+    page: parsed.data.page,
+    perPage: parsed.data.perPage,
+    status: parsed.data.status,
+    branch: parsed.data.branch,
+    level: parsed.data.level,
+    ...range,
+  });
   ok(res, rows, meta);
 });
 
@@ -281,8 +310,13 @@ router.post('/units/:code/rate', requireAuth, async (req: Request, res: Response
   created(res, await adjustRate(String(req.params.code), { ...parsed.data, appliedBy }));
 });
 
-router.get('/tenants', requireAuth, async (_req: Request, res: Response) => {
-  const rows = await listTenants();
+router.get('/tenants', requireAuth, async (req: Request, res: Response) => {
+  const parsed = dateRangeQuerySchema.safeParse(req.query);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid date range', parsed.error.flatten());
+    return;
+  }
+  const rows = await listTenants(resolveDateRange(parsed.data));
   ok(res, rows, { count: rows.length });
 });
 
@@ -312,8 +346,13 @@ router.delete('/tenants/:id', requireAuth, async (req: Request, res: Response) =
   ok(res, await deactivateTenant(String(req.params.id)));
 });
 
-router.get('/leads', requireAuth, async (_req: Request, res: Response) => {
-  ok(res, await listLeads());
+router.get('/leads', requireAuth, async (req: Request, res: Response) => {
+  const parsed = dateRangeQuerySchema.safeParse(req.query);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid date range', parsed.error.flatten());
+    return;
+  }
+  ok(res, await listLeads(resolveDateRange(parsed.data)));
 });
 
 // Lead funnel / source stats for the command centre and pipeline header.
@@ -321,13 +360,160 @@ router.get('/leads/stats', requireAuth, async (_req: Request, res: Response) => 
   ok(res, await getLeadStats());
 });
 
-router.get('/bookings', requireAuth, async (_req: Request, res: Response) => {
-  const rows = await listBookings();
+// Weekly enquiry/booking series for the analytics chart (?weeks=N, 1..26).
+router.get('/analytics/weekly', requireAuth, async (req: Request, res: Response) => {
+  const weeks = Number(req.query.weeks ?? 8);
+  if (req.query.weeks !== undefined && (!Number.isFinite(weeks) || weeks < 1 || weeks > 26)) {
+    fail(res, 400, 'VALIDATION', 'weeks must be an integer 1..26');
+    return;
+  }
+  ok(res, await getWeeklyAnalytics(weeks || 8));
+});
+
+const leadPayloadSchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  type: z.enum(['PERSONAL', 'BUSINESS']).optional(),
+  segment: z.string().trim().max(80).nullable().optional(),
+  stage: z.enum(['NEW_ENQUIRY', 'CONTACTED', 'VIEWING_BOOKED', 'PROPOSAL_SENT', 'WON', 'LOST']).optional(),
+  source: z.enum(['WEBSITE', 'WHATSAPP', 'REFERRAL', 'GOOGLE']).optional(),
+  preferredSize: z.string().trim().max(40).nullable().optional(),
+  preferredBranchId: z.string().min(1).nullable().optional(),
+  monthlyRate: z.number().nonnegative().nullable().optional(),
+  note: z.string().max(2000).nullable().optional(),
+  email: z.string().email().nullable().optional(),
+  mobile: z.string().trim().max(40).nullable().optional(),
+  owner: z.string().trim().max(80).nullable().optional(),
+  nextActionAt: z.string().datetime().nullable().optional(),
+  lossReason: z.string().trim().max(80).nullable().optional(),
+  lossValue: z.number().nonnegative().nullable().optional(),
+});
+
+const leadUpdateSchema = leadPayloadSchema.partial();
+
+function toLeadInput(parsed: z.infer<typeof leadPayloadSchema>) {
+  return {
+    ...parsed,
+    nextActionAt: parsed.nextActionAt === undefined ? undefined : parsed.nextActionAt ? new Date(parsed.nextActionAt) : null,
+  };
+}
+
+router.post('/leads', requireAuth, async (req: Request, res: Response) => {
+  const parsed = leadPayloadSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid lead payload', parsed.error.flatten());
+    return;
+  }
+  created(res, await createLead(toLeadInput(parsed.data)));
+});
+
+router.patch('/leads/:id', requireAuth, async (req: Request, res: Response) => {
+  const parsed = leadUpdateSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid lead payload', parsed.error.flatten());
+    return;
+  }
+  ok(res, await updateLead(String(req.params.id), toLeadInput(parsed.data as z.infer<typeof leadPayloadSchema>)));
+});
+
+router.delete('/leads/:id', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await deleteLead(String(req.params.id)));
+});
+
+// --- Conversations (operator inbox threads) ---
+const createConversationSchema = z.object({
+  leadId: z.string().min(1),
+  channel: z.enum(['WHATSAPP', 'EMAIL', 'PHONE', 'IN_PERSON', 'WEBSITE']).optional(),
+});
+
+const updateConversationSchema = z.object({
+  assignee: z.string().trim().max(80).nullable().optional(),
+  status: z.enum(['OPEN', 'CLOSED']).optional(),
+});
+
+const noteSchema = z.object({
+  body: z.string().trim().min(1).max(4000),
+  author: z.string().trim().max(80).optional(),
+});
+
+const sendMessageSchema = z.object({
+  body: z.string().trim().min(1).max(4000),
+  sender: z.string().trim().max(80).optional(),
+});
+
+router.get('/conversations', requireAuth, async (req: Request, res: Response) => {
+  const status = typeof req.query.status === 'string' ? req.query.status : undefined;
+  if (status !== undefined && !['OPEN', 'CLOSED'].includes(status)) {
+    fail(res, 400, 'VALIDATION', 'Invalid status filter');
+    return;
+  }
+  const rows = await listConversations(status);
+  ok(res, rows, { count: rows.length });
+});
+
+router.post('/conversations', requireAuth, async (req: Request, res: Response) => {
+  const parsed = createConversationSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid conversation payload', parsed.error.flatten());
+    return;
+  }
+  created(res, await createConversation(parsed.data.leadId, parsed.data.channel));
+});
+
+router.patch('/conversations/:id', requireAuth, async (req: Request, res: Response) => {
+  const parsed = updateConversationSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid conversation payload', parsed.error.flatten());
+    return;
+  }
+  ok(res, await updateConversation(String(req.params.id), parsed.data));
+});
+
+router.get('/conversations/:id/messages', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await getTimeline(String(req.params.id)));
+});
+
+router.post('/conversations/:id/notes', requireAuth, async (req: Request, res: Response) => {
+  const parsed = noteSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid note payload', parsed.error.flatten());
+    return;
+  }
+  const author = (req as any).user?.name ?? undefined;
+  created(res, await postNote(String(req.params.id), parsed.data.body, parsed.data.author ?? author ?? null));
+});
+
+// Send stub — records the outbound message on the thread; real
+// WhatsApp/email delivery is out of scope (see core/conversations.ts).
+router.post('/conversations/:id/messages', requireAuth, async (req: Request, res: Response) => {
+  const parsed = sendMessageSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid message payload', parsed.error.flatten());
+    return;
+  }
+  const sender = parsed.data.sender ?? (req as any).user?.name ?? null;
+  created(res, await sendMessageStub(String(req.params.id), parsed.data.body, sender));
+});
+
+router.get('/bookings', requireAuth, async (req: Request, res: Response) => {
+  const parsed = dateRangeQuerySchema.safeParse(req.query);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid date range', parsed.error.flatten());
+    return;
+  }
+  const rows = await listBookings(resolveDateRange(parsed.data));
   ok(res, rows, { count: rows.length });
 });
 
 router.get('/invoices', requireAuth, async (req: Request, res: Response) => {
-  const rows = await listInvoices(typeof req.query.status === 'string' ? req.query.status : undefined);
+  const parsed = dateRangeQuerySchema.safeParse(req.query);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid date range', parsed.error.flatten());
+    return;
+  }
+  const rows = await listInvoices(
+    typeof req.query.status === 'string' ? req.query.status : undefined,
+    resolveDateRange(parsed.data),
+  );
   ok(res, rows, { count: rows.length });
 });
 
@@ -345,8 +531,13 @@ router.get('/sizes', requireAuth, async (_req: Request, res: Response) => {
   ok(res, rows, { count: rows.length });
 });
 
-router.get('/move-ins', requireAuth, async (_req: Request, res: Response) => {
-  ok(res, await getMoveIns());
+router.get('/move-ins', requireAuth, async (req: Request, res: Response) => {
+  const parsed = dateRangeQuerySchema.safeParse(req.query);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid date range', parsed.error.flatten());
+    return;
+  }
+  ok(res, await getMoveIns(resolveDateRange(parsed.data)));
 });
 
 router.get('/action-items', requireAuth, async (_req: Request, res: Response) => {
@@ -354,9 +545,30 @@ router.get('/action-items', requireAuth, async (_req: Request, res: Response) =>
   ok(res, items, { count: items.length });
 });
 
+// --- Global Settings (whole-app key/value store; see src/core/settings.ts) ---
+router.get('/settings', requireAuth, async (_req: Request, res: Response) => {
+  ok(res, await getSettings());
+});
+
+const settingsBatchSchema = z.record(z.string(), z.unknown());
+
+router.put('/settings', requireAuth, async (req: Request, res: Response) => {
+  const parsed = settingsBatchSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Settings payload must be an object of { key: value }', parsed.error.flatten());
+    return;
+  }
+  ok(res, await upsertSettings(parsed.data));
+});
+
 // --- Promotions ---
-router.get('/promotions', requireAuth, async (_req: Request, res: Response) => {
-  const rows = await listPromotions();
+router.get('/promotions', requireAuth, async (req: Request, res: Response) => {
+  const parsed = dateRangeQuerySchema.safeParse(req.query);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid date range', parsed.error.flatten());
+    return;
+  }
+  const rows = await listPromotions(resolveDateRange(parsed.data));
   ok(res, rows, { count: rows.length });
 });
 
@@ -383,9 +595,95 @@ router.delete('/promotions/:id', requireAuth, async (req: Request, res: Response
 });
 
 // --- Appointments ---
-router.get('/appointments', requireAuth, async (_req: Request, res: Response) => {
-  const rows = await listAppointments();
+router.get('/appointments', requireAuth, async (req: Request, res: Response) => {
+  const parsed = dateRangeQuerySchema.safeParse(req.query);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid date range', parsed.error.flatten());
+    return;
+  }
+  const range = resolveDateRange(parsed.data);
+  const rows = await listAppointments(range.from, range.to);
   ok(res, rows, { count: rows.length });
+});
+
+const appointmentPayloadSchema = z.object({
+  title: z.string().trim().min(1).max(160),
+  personName: z.string().trim().min(1).max(120),
+  type: z.enum(['VIEWING', 'CALLBACK', 'VIDEO_CONSULT', 'MOVE_IN']),
+  branchId: z.string().min(1).nullable().optional(),
+  leadId: z.string().min(1).nullable().optional(),
+  startAt: z.string().datetime(),
+  endAt: z.string().datetime().nullable().optional(),
+  note: z.string().max(2000).nullable().optional(),
+});
+
+const appointmentUpdateSchema = appointmentPayloadSchema
+  .partial()
+  .extend({ status: z.enum(['PENDING', 'CONFIRMED', 'DONE', 'CANCELLED']).optional() });
+
+router.post('/appointments', requireAuth, async (req: Request, res: Response) => {
+  const parsed = appointmentPayloadSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid appointment payload', parsed.error.flatten());
+    return;
+  }
+  const createdRow = await createAppointment({
+    ...parsed.data,
+    startAt: new Date(parsed.data.startAt),
+    endAt: parsed.data.endAt === undefined ? undefined : parsed.data.endAt ? new Date(parsed.data.endAt) : null,
+  });
+  const conflicts = await findAppointmentConflicts(
+    createdRow.branchId,
+    new Date(createdRow.startAt),
+    createdRow.endAt ? new Date(createdRow.endAt) : null,
+    createdRow.id,
+  );
+  created(
+    res,
+    createdRow,
+    conflicts.length
+      ? {
+          overlapWarning: 'Overlaps with ' + conflicts.length + ' other appointment(s): ' + conflicts.map((c) => c.title).join(', '),
+          conflicts,
+        }
+      : undefined,
+  );
+});
+
+router.patch('/appointments/:id', requireAuth, async (req: Request, res: Response) => {
+  const parsed = appointmentUpdateSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid appointment payload', parsed.error.flatten());
+    return;
+  }
+  const { startAt, endAt, ...rest } = parsed.data;
+  const updated = await updateAppointment(String(req.params.id), {
+    ...rest,
+    ...(startAt !== undefined ? { startAt: new Date(startAt) } : {}),
+    ...(endAt !== undefined ? { endAt: endAt ? new Date(endAt) : null } : {}),
+  });
+  // Non-blocking overlap warning for reschedules: the move is already saved;
+  // callers (calendar drag-drop) surface this from meta without reverting.
+  const conflicts = await findAppointmentConflicts(
+    updated.branchId,
+    new Date(updated.startAt),
+    updated.endAt ? new Date(updated.endAt) : null,
+    updated.id,
+  );
+  ok(
+    res,
+    updated,
+    conflicts.length
+      ? {
+          overlapWarning: 'Overlaps with ' + conflicts.length + ' other appointment(s): ' + conflicts.map((c) => c.title).join(', '),
+          conflicts,
+        }
+      : undefined,
+  );
+});
+
+router.delete('/appointments/:id', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await deleteAppointment(String(req.params.id)));
 });
 
 // --- Floor plans (facility setup editor) ---
@@ -518,7 +816,20 @@ const planSchema = z.object({
 });
 
 const planUpdateSchema = planSchema.partial();
-const planStatusSchema = z.object({ status: z.enum(['DRAFT', 'VALIDATED', 'SCHEDULED', 'ACTIVE', 'ENDED']) });
+const planStatusSchema = z.object({
+  status: z.enum(['DRAFT', 'VALIDATED', 'SCHEDULED', 'ACTIVE', 'ENDED']),
+  changedBy: z.string().trim().max(80).optional(),
+  approverRole: z.string().trim().max(80).optional(),
+});
+const planRestoreSchema = z.object({
+  version: z.number().int().positive(),
+  changedBy: z.string().trim().max(80).optional(),
+});
+const redemptionSchema = z.object({
+  bookingId: z.string().min(1).optional(),
+  code: z.string().trim().max(40).optional(),
+  amount: z.number().nonnegative(),
+});
 
 const safeguardSchema = z.object({
   facilityId: z.string().optional(),
@@ -553,8 +864,19 @@ const createPromotionSchemaExtended = z.object({
 });
 
 // Promotion plan routes
-router.get('/promotion-plans', requireAuth, async (_req: Request, res: Response) => {
-  ok(res, await listPlans(), { count: 0 });
+// NOTE: /promotion-plans/performance is registered BEFORE /:id so
+// "performance" is not parsed as a plan id.
+router.get('/promotion-plans/performance', requireAuth, async (_req: Request, res: Response) => {
+  ok(res, await getPerformance());
+});
+
+router.get('/promotion-plans', requireAuth, async (req: Request, res: Response) => {
+  const parsed = dateRangeQuerySchema.safeParse(req.query);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid date range', parsed.error.flatten());
+    return;
+  }
+  ok(res, await listPlans(resolveDateRange(parsed.data)), { count: 0 });
 });
 
 router.post('/promotion-plans', requireAuth, async (req: Request, res: Response) => {
@@ -585,7 +907,58 @@ router.patch('/promotion-plans/:id/status', requireAuth, async (req: Request, re
     fail(res, 400, 'VALIDATION', 'Invalid status', parsed.error.flatten());
     return;
   }
-  ok(res, await setPlanStatus(String(req.params.id), parsed.data.status));
+  ok(res, await setPlanStatus(String(req.params.id), parsed.data.status, {
+    changedBy: parsed.data.changedBy,
+    approverRole: parsed.data.approverRole,
+  }));
+});
+
+router.get('/promotion-plans/:id/versions', requireAuth, async (req: Request, res: Response) => {
+  const parsed = dateRangeQuerySchema.safeParse(req.query);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid date range', parsed.error.flatten());
+    return;
+  }
+  const rows = await listVersions(String(req.params.id), resolveDateRange(parsed.data));
+  ok(res, rows, { count: rows.length });
+});
+
+router.get('/promotion-plans/:id/compare', requireAuth, async (req: Request, res: Response) => {
+  const from = Number(req.query.from);
+  const to = Number(req.query.to);
+  if (!Number.isInteger(from) || !Number.isInteger(to) || from < 1 || to < 1) {
+    fail(res, 400, 'VALIDATION', 'Query params from and to must be positive integers');
+    return;
+  }
+  ok(res, await compareVersions(String(req.params.id), from, to));
+});
+
+router.post('/promotion-plans/:id/restore', requireAuth, async (req: Request, res: Response) => {
+  const parsed = planRestoreSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid restore payload', parsed.error.flatten());
+    return;
+  }
+  created(res, await restoreVersion(String(req.params.id), parsed.data.version, parsed.data.changedBy));
+});
+
+router.get('/promotion-plans/:id/redemptions', requireAuth, async (req: Request, res: Response) => {
+  const parsed = dateRangeQuerySchema.safeParse(req.query);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid date range', parsed.error.flatten());
+    return;
+  }
+  const rows = await listRedemptions(String(req.params.id), resolveDateRange(parsed.data));
+  ok(res, rows, { count: rows.length });
+});
+
+router.post('/promotion-plans/:id/redemptions', requireAuth, async (req: Request, res: Response) => {
+  const parsed = redemptionSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid redemption payload', parsed.error.flatten());
+    return;
+  }
+  created(res, await recordRedemption(String(req.params.id), parsed.data));
 });
 
 router.post('/promotion-plans/:id/validate', requireAuth, async (req: Request, res: Response) => {

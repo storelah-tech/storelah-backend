@@ -5,6 +5,33 @@
 
 const API = '/api/v1/cms';
 let token = null;
+let currentUser = null;
+
+// Auth-readiness gate: request() must never emit `Authorization: Bearer null`.
+// wireEvents() registers nav/click handlers synchronously while login() is
+// still in flight, so any bind* triggered before login settles (a pre-login
+// click, a boot reorder, a hash-restored openPage) would otherwise fire
+// without a token and 401. When no token is held yet, request() waits for the
+// boot login to settle instead of firing blind: success → the call proceeds
+// with the fresh token; failure → a clear AUTH error instead of a confusing
+// 401. This covers every data-binding (bindInbox, bindLeadTable,
+// bindPipeline, bindCalendar, refreshAll, …) with no per-call-site changes.
+// login()/getCreds() use raw fetch (never request()), so the gate cannot
+// deadlock itself.
+let authResolve;
+let authReject;
+let authSettled = new Promise((resolve, reject) => {
+  authResolve = resolve;
+  authReject = reject;
+});
+
+export function getCurrentUser() {
+  return currentUser;
+}
+
+export function isAuthed() {
+  return !!token;
+}
 
 export class ApiError extends Error {
   constructor(status, code, message, details) {
@@ -24,20 +51,42 @@ async function getCreds() {
 }
 
 export async function login() {
-  const CREDS = await getCreds();
-  const res = await fetch(`${API}/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(CREDS),
+  // Reset the gate so a retried login (after a previous failure) re-arms it.
+  authSettled = new Promise((resolve, reject) => {
+    authResolve = resolve;
+    authReject = reject;
   });
-  if (!res.ok) throw new Error('login failed');
-  const body = await res.json();
-  token = body.data.token;
+  try {
+    const CREDS = await getCreds();
+    const res = await fetch(`${API}/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(CREDS),
+    });
+    if (!res.ok) throw new Error('login failed');
+    const body = await res.json();
+    token = body.data.token;
+    currentUser = body.data.user || null;
+    authResolve();
+  } catch (e) {
+    authReject(e);
+    throw e;
+  }
 }
 
 // ---------- http ----------
 
 export async function request(path, opts = {}) {
+  if (!token) {
+    try {
+      await authSettled;
+    } catch (e) {
+      throw new ApiError(0, 'AUTH', 'Not authenticated — login failed. Reload to retry.');
+    }
+    if (!token) {
+      throw new ApiError(0, 'AUTH', 'Not authenticated — no token. Reload to retry.');
+    }
+  }
   const headers = { Authorization: `Bearer ${token}` };
   if (opts.body) headers['Content-Type'] = 'application/json';
   Object.assign(headers, opts.headers);
@@ -76,6 +125,10 @@ export function post(p, body) {
 
 export function put(p, body) {
   return request(p, { method: 'PUT', body: JSON.stringify(body) }).then((b) => b.data);
+}
+
+export function patch(p, body) {
+  return request(p, { method: 'PATCH', body: JSON.stringify(body) }).then((b) => b.data);
 }
 
 export function del(p) {

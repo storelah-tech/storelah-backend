@@ -12,10 +12,12 @@ import 'dotenv/config';
 const prisma = new PrismaClient();
 
 const SIZES = {
-  LOCKER: { name: 'Locker', sqft: 12, psf: 5.2, sort: 1 },
-  SMALL: { name: 'Small', sqft: 30, psf: 4.8, sort: 2 },
-  MEDIUM: { name: 'Medium', sqft: 60, psf: 4.4, sort: 3 },
-  LARGE: { name: 'Large', sqft: 120, psf: 3.8, sort: 4 },
+  // Blueprint footprint (feet; 1 grid unit = 1 ft) mirrors the P1 migration
+  // backfill so fresh seeds and migrated DBs agree. Area == sqft exactly.
+  LOCKER: { name: 'Locker', sqft: 12, psf: 5.2, sort: 1, w: 3, h: 4 },
+  SMALL: { name: 'Small', sqft: 30, psf: 4.8, sort: 2, w: 5, h: 6 },
+  MEDIUM: { name: 'Medium', sqft: 60, psf: 4.4, sort: 3, w: 6, h: 10 },
+  LARGE: { name: 'Large', sqft: 120, psf: 3.8, sort: 4, w: 10, h: 12 },
 } as const;
 type SizeKey = keyof typeof SIZES;
 
@@ -159,7 +161,7 @@ async function main() {
   const sizeIds: Record<SizeKey, string> = {} as any;
   for (const [code, s] of Object.entries(SIZES)) {
     const rec = await prisma.unitSize.create({
-      data: { code, name: s.name, sqftFrom: s.sqft, sqftTo: s.sqft, sortOrder: s.sort },
+      data: { code, name: s.name, sqftFrom: s.sqft, sqftTo: s.sqft, sortOrder: s.sort, widthFt: s.w, heightFt: s.h },
     });
     sizeIds[code as SizeKey] = rec.id;
   }

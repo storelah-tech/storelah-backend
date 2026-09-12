@@ -23,6 +23,30 @@ export const state = {
   tenantUnits: [], // assignable units for the tenant unit dropdown
   // bookings-view state
   bookings: [], // full enriched list from GET /bookings
+  // leads-view state (lead database table: filters + client-side pager)
+  leadStatusFilter: '',
+  leadSourceFilter: '',
+  leadPage: 1,
+  leadPerPage: 10,
+  leadsCache: [], // flat leads from the last GET /leads (filters/pager/export read this)
+  // date-range filter state per data table ({ from, to } as YYYY-MM-DD or null;
+  // server-side via ?from=&to=; pager resets to page 1 on range change)
+  leadDate: { from: null, to: null },
+  tenantDate: { from: null, to: null },
+  bookingDate: { from: null, to: null },
+  moveinDate: { from: null, to: null },
+  invoiceDate: { from: null, to: null },
+  apptDate: { from: null, to: null },
+  unitDate: { from: null, to: null },
+  promoLibDate: { from: null, to: null },
+  promoHistDate: { from: null, to: null },
+  // pipeline-view state
+  pipelineFilter: '', // '' = all pipelines, otherwise a branch code
+  // inbox-view state (real conversation threads from GET /conversations)
+  threads: [],
+  activeConversationId: null,
+  // calendar-view state
+  appointmentsCache: [], // rows from the last GET /appointments
   // units-section view state
   view: 'dashboard', // 'dashboard' | 'units' | 'tenants'
   page: 1,
@@ -44,11 +68,13 @@ export const state = {
     placements: [], // normalized placed units
     blocks: [], // normalized decoration blocks (name+rect rectangles)
     unplaced: [], // normalized unplaced units (palette)
-    scale: 1, // zoom scale factor (grid units → px)
+    scale: 1, // zoom scale factor (feet → px)
     selected: null, // selected placement unitId
     selectedBlock: null, // selected block id
     canvasDefaults: { width: 20, height: 20 },
     liveDims: null, // live-typed canvas size from the W/H inputs (local, unsaved); null = use plan/server size
+    lockSqft: true, // resize snaps to the nearest rect preserving area≈sqft (ops can toggle off; server still enforces ±15%)
+    ghostRotated: false, // palette drag ghost orientation toggle (swaps W/H for rectangular footprints)
   },
 };
 

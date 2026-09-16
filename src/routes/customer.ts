@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import type Stripe from 'stripe';
 import { z } from 'zod';
 import { ok, created, fail } from '../lib/http';
 import {
@@ -21,6 +22,12 @@ import {
   submitCustomerRequest,
   submitCustomerNotice,
 } from '../core/customers';
+import {
+  applyCheckoutCompleted,
+  constructWebhookEvent,
+  createCheckoutSession,
+  getCheckoutSessionStatus,
+} from '../core/checkout';
 
 const router = Router();
 
@@ -76,6 +83,11 @@ const requestSchema = z.object({
 const noticeSchema = z.object({
   unitId: z.string().min(1),
   lastDay: z.string().datetime(),
+});
+
+const createCheckoutSessionSchema = z.object({
+  bookingRef: z.string().trim().min(1),
+  email: z.string().trim().email().optional(),
 });
 
 function customerFrom(req: Request) {
@@ -197,6 +209,51 @@ router.post('/notice', requireCustomerAuth, async (req: Request, res: Response) 
     return;
   }
   ok(res, await submitCustomerNotice(customerFrom(req), parsed.data));
+});
+
+// Stripe Checkout (TEST MODE only) — dual-mode like POST /bookings:
+//  - GUEST booking (owning customer is type GUEST) → no auth required.
+//  - Authed booking → the Bearer token must match the booking owner
+//    (a present-but-invalid token is a hard 401, never downgraded to guest).
+router.post('/checkout/sessions', async (req: Request, res: Response) => {
+  const parsed = createCheckoutSessionSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid checkout payload', parsed.error.flatten());
+    return;
+  }
+  const caller = hasAuthorizationHeader(req) ? extractCustomerPayload(req) : null;
+  ok(res, await createCheckoutSession(parsed.data, caller));
+});
+
+// Frontend return-page verification — reflects Stripe truth, not client claims.
+router.get('/checkout/sessions/:id', async (req: Request, res: Response) => {
+  const raw = req.params.id;
+  const sessionId = (Array.isArray(raw) ? raw[0] : raw ?? '').trim();
+  if (!sessionId) {
+    fail(res, 400, 'VALIDATION', 'A checkout session id is required');
+    return;
+  }
+  ok(res, await getCheckoutSessionStatus(sessionId));
+});
+
+// Stripe webhook — the raw body is preserved by the express.raw mount in
+// src/index.ts (registered BEFORE express.json); req.body is a Buffer here.
+router.post('/stripe/webhook', async (req: Request, res: Response) => {
+  const rawBody: Buffer = Buffer.isBuffer(req.body)
+    ? req.body
+    : Buffer.from(
+        typeof req.body === 'string' ? req.body : JSON.stringify(req.body ?? ''),
+        'utf8',
+      );
+  const event = constructWebhookEvent(rawBody, req.headers['stripe-signature'] as string | undefined);
+
+  if (event.type === 'checkout.session.completed') {
+    const session = event.data.object as Stripe.Checkout.Session;
+    const result = await applyCheckoutCompleted(session);
+    ok(res, { received: true, ...result });
+    return;
+  }
+  ok(res, { received: true, applied: false });
 });
 
 export default router;

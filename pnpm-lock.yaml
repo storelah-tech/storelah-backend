@@ -32,6 +32,9 @@ importers:
       serverless-http:
         specifier: ^4.0.0
         version: 4.0.0
+      stripe:
+        specifier: ^22.6.0
+        version: 22.6.2(@types/node@24.13.3)
       swagger-ui-dist:
         specifier: ^5.20
         version: 5.32.13
@@ -733,6 +736,15 @@ packages:
     resolution: {integrity: sha512-DvEy55V3DB7uknRo+4iOGT5fP1slR8wQohVdknigZPMpMstaKJQWhwiYBACJE3Ul2pTnATihhBYnRhZQHGBiRw==}
     engines: {node: '>= 0.8'}
 
+  stripe@22.6.2:
+    resolution: {integrity: sha512-PwRE2scocvXqDKPiskMa5vRJEAEkq46W69XyUYmAwrNSLr675lQnfqLwnsndAWizwgihOWw/irLmoFRo3ez7ew==}
+    engines: {node: '>=18'}
+    peerDependencies:
+      '@types/node': '>=18'
+    peerDependenciesMeta:
+      '@types/node':
+        optional: true
+
   swagger-ui-dist@5.32.13:
     resolution: {integrity: sha512-qQobzb3DeC2LeK0j3E8812Ef4aIq1y9flJxvZkimkqUC/w4u7wS+yCc+VakqGJLweUUBrI24effhwo8OsAvNAw==}
 
@@ -1431,6 +1443,10 @@ snapshots:
       side-channel-weakmap: 1.0.2
 
   statuses@2.0.2: {}
+
+  stripe@22.6.2(@types/node@24.13.3):
+    optionalDependencies:
+      '@types/node': 24.13.3
 
   swagger-ui-dist@5.32.13:
     dependencies:

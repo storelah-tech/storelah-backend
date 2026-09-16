@@ -25,7 +25,7 @@ export const openapiSpec = {
   openapi: '3.0.3',
   info: {
     title: 'StoreLah Booking API',
-    version: '1.1.0',
+    version: '1.2.0',
     description: [
       'Customer-facing booking API for the StoreLah self-storage business.',
       '',
@@ -41,6 +41,11 @@ export const openapiSpec = {
       'v1.1.0 is ADDITIVE-ONLY over 1.0.0 (no removals/renames/retypes): move-out notices are now ' +
         'persisted and readable via `GET /customer/portal` (`data.notice`), the portal snapshot gains ' +
         'a `data.tenancy` object, and portal units gain `climateControl`, `sizeCode` and `branch` details.',
+      '',
+      'v1.2.0 is ADDITIVE-ONLY over 1.1.0: Stripe Checkout (TEST MODE) for booking payment — ' +
+        '`POST /customer/checkout/sessions` creates a hosted session, ' +
+        '`GET /customer/checkout/sessions/{sessionId}` verifies it against Stripe truth, and ' +
+        '`POST /customer/stripe/webhook` applies `checkout.session.completed` (idempotent).',
     ].join('\n'),
   },
   servers: [
@@ -681,6 +686,114 @@ export const openapiSpec = {
           '400': openapiErrorResponse('Invalid notice payload.'),
           '401': openapiErrorResponse('Missing/invalid bearer token.'),
           '404': openapiErrorResponse('Unit not found for this customer.'),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+    },
+    '/customer/checkout/sessions': {
+      post: {
+        tags: ['Customer'],
+        summary: 'Create a Stripe Checkout Session',
+        description: [
+          'Creates a Stripe-hosted Checkout Session (TEST MODE only) for an existing booking and returns its id + redirect URL. ',
+          'The amount is computed SERVER-SIDE from the booking invoice/unit rate in SGD — the client never sends an amount. ',
+          'Success redirects to `{BOOKING_APP_URL}/checkout/success?session_id={CHECKOUT_SESSION_ID}`; cancel to ',
+          '`{BOOKING_APP_URL}/checkout/cancel`.',
+          '',
+          'Auth: dual-mode like POST /customer/bookings. GUEST bookings (owning customer is type GUEST) need no ',
+          'Authorization header; bookings owned by a registered customer require the owner Bearer token (401 without one, ',
+          '403 for a different customer; a present-but-invalid token is a hard 401).',
+          '',
+          'Errors: `400 VALIDATION` when `bookingRef` is missing, `404 NOT_FOUND` for an unknown bookingRef, ',
+          '`409 CONFLICT` when the booking is cancelled/already paid/has nothing due, `503 STRIPE_NOT_CONFIGURED` when ',
+          'Stripe env keys are missing.',
+        ].join('\n'),
+        operationId: 'createCheckoutSession',
+        security: [{ bearerAuth: [] }, []],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: { $ref: openapiSchemaRef('CheckoutSessionRequest') },
+            },
+          },
+        },
+        responses: {
+          '200': openapiResponse({ $ref: openapiSchemaRef('CheckoutSession') }),
+          '400': openapiErrorResponse(
+            'Invalid checkout payload (missing bookingRef).',
+          ),
+          '401': openapiErrorResponse(
+            'Bearer token was supplied but is invalid, or the booking needs owner auth. (Guest bookings need no header.)',
+          ),
+          '403': openapiErrorResponse(
+            'The booking belongs to a different customer.',
+          ),
+          '404': openapiErrorResponse('Booking not found.'),
+          '409': openapiErrorResponse(
+            'Booking is cancelled, already paid, or has no amount due.',
+          ),
+          '503': openapiErrorResponse(
+            'Stripe is not configured (STRIPE_SECRET_KEY / BOOKING_APP_URL missing).',
+          ),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+    },
+    '/customer/checkout/sessions/{sessionId}': {
+      get: {
+        tags: ['Customer'],
+        summary: 'Verify a Checkout Session',
+        description: [
+          'Retrieves the session from Stripe and returns its truth — used by the frontend return page to verify payment ',
+          '(never trusts client claims). `bookingRef` is echoed from the session metadata (null when absent). No auth required.',
+        ].join('\n'),
+        operationId: 'getCheckoutSession',
+        security: [],
+        parameters: [
+          {
+            name: 'sessionId',
+            in: 'path',
+            required: true,
+            description: 'Stripe Checkout Session id (cs_test_…).',
+            schema: { type: 'string' },
+          },
+        ],
+        responses: {
+          '200': openapiResponse({
+            $ref: openapiSchemaRef('CheckoutSessionStatus'),
+          }),
+          '400': openapiErrorResponse('Missing session id.'),
+          '503': openapiErrorResponse(
+            'Stripe is not configured (STRIPE_SECRET_KEY missing).',
+          ),
+          '500': openapiErrorResponse(
+            'Unexpected server error (includes unknown Stripe session ids).',
+          ),
+        },
+      },
+    },
+    '/customer/stripe/webhook': {
+      post: {
+        tags: ['Customer'],
+        summary: 'Stripe webhook receiver',
+        description: [
+          'Stripe event delivery (TEST MODE only). Verifies the `stripe-signature` header against `STRIPE_WEBHOOK_SECRET` ',
+          'using the raw request body — `400 INVALID_SIGNATURE` on mismatch. Handles `checkout.session.completed` by marking ',
+          'the booking CONFIRMED and its open invoices PAID (method `Card`); all other event types are acknowledged without ',
+          'writes. IDEMPOTENT: retried deliveries are safe no-ops once the booking/invoices are already paid. No auth header — ',
+          'the Stripe signature is the credential.',
+        ].join('\n'),
+        operationId: 'stripeWebhook',
+        security: [],
+        responses: {
+          '200': openapiResponse({ $ref: openapiSchemaRef('WebhookReceived') }),
+          '400': openapiErrorResponse(
+            'Missing/invalid stripe-signature header.',
+          ),
+          '503': openapiErrorResponse(
+            'Stripe is not configured (STRIPE_WEBHOOK_SECRET missing).',
+          ),
           '500': openapiErrorResponse('Unexpected server error'),
         },
       },
@@ -1386,6 +1499,77 @@ export const openapiSpec = {
         required: ['message'],
         properties: {
           message: { type: 'string' },
+        },
+      },
+      CheckoutSessionRequest: {
+        type: 'object',
+        required: ['bookingRef'],
+        properties: {
+          bookingRef: {
+            type: 'string',
+            minLength: 1,
+            description:
+              'Booking reference from POST /customer/bookings, e.g. SL-2026-0912.',
+          },
+          email: {
+            type: 'string',
+            format: 'email',
+            description:
+              'Receipt email. Optional — defaults to the booking customer email.',
+          },
+        },
+      },
+      CheckoutSession: {
+        type: 'object',
+        required: ['sessionId', 'url'],
+        properties: {
+          sessionId: {
+            type: 'string',
+            description: 'Stripe Checkout Session id (cs_test_…).',
+          },
+          url: {
+            type: 'string',
+            description:
+              'Stripe-hosted payment page URL — redirect the customer here.',
+          },
+        },
+      },
+      CheckoutSessionStatus: {
+        type: 'object',
+        required: ['status', 'paymentStatus', 'bookingRef'],
+        properties: {
+          status: {
+            type: 'string',
+            description:
+              'Stripe session status (open | complete | expired).',
+          },
+          paymentStatus: {
+            type: 'string',
+            description:
+              'Stripe payment status (unpaid | paid | no_payment_required).',
+          },
+          bookingRef: {
+            type: ['string', 'null'],
+            description:
+              'Booking reference from the session metadata, null when absent.',
+          },
+        },
+      },
+      WebhookReceived: {
+        type: 'object',
+        required: ['received', 'applied'],
+        properties: {
+          received: { type: 'boolean', enum: [true] },
+          bookingRef: {
+            type: ['string', 'null'],
+            description:
+              'Booking reference from the event metadata (null for non-checkout events).',
+          },
+          applied: {
+            type: 'boolean',
+            description:
+              'True when this delivery transitioned booking/invoices to paid; false for ignored event types, unknown bookings, or idempotent retries.',
+          },
         },
       },
       PlanBlock: {

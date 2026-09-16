@@ -15,6 +15,11 @@ import serverless from 'serverless-http';
 const app = express();
 
 app.use(cors());
+// Stripe webhook signature verification requires the EXACT raw bytes — this
+// raw mount MUST stay BEFORE express.json (body-parser skips re-parsing once
+// req._body is set, so the webhook path keeps its Buffer body while every
+// other route still gets parsed JSON).
+app.use('/api/v1/customer/stripe/webhook', express.raw({ type: 'application/json' }));
 app.use(express.json());
 app.use(cookieParser());
 

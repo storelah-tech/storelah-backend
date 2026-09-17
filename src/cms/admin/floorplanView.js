@@ -8,6 +8,7 @@ import { escapeHtml, $ } from './dom.js';
 import { confirmDialog } from './confirmDialog.js';
 import { get, request, describeError } from './api.js';
 import { state, branchByCode, branchFloors, selectedFacilityName } from './state.js';
+import { notifyMetricsFloorChanged } from './metricsView.js';
 
 // Ref-data retry hook — the entry hands its loadRefs() down here so fpOpen()'s
 // lazy guard keeps working without importing the entry.
@@ -68,13 +69,114 @@ function unitFootprint(u) {
 // Overlap policy: REJECT. Client pre-check mirroring the server's 409
 // PLACEMENT_OVERLAP (unit-vs-unit only — decoration blocks may underlay).
 // Touching edges are fine; only shared interior area collides.
-function fpOverlapAt(x, y, w, h, ignoreUnitId) {
+//
+// STACKING exemption (mirrors src/core/floorPlans.ts): two placements sharing
+// the EXACT same rect with differing tiers (0 + 1 locker pair) do NOT collide.
+// `tier` is the incoming write's tier; `ignore` is one unitId (string), several
+// (array, for paired stack moves), or null.
+function fpOverlapAt(x, y, w, h, ignore, tier) {
+  const t = tier === 1 ? 1 : 0;
+  const ignored = new Set(Array.isArray(ignore) ? ignore : ignore ? [ignore] : []);
   return (
-    state.fp.placements.find(
-      (o) =>
-        o.unitId !== ignoreUnitId && x < o.x + o.width && o.x < x + w && y < o.y + o.height && o.y < y + h,
-    ) || null
+    state.fp.placements.find((o) => {
+      if (ignored.has(o.unitId)) return false;
+      if (!(x < o.x + o.width && o.x < x + w && y < o.y + o.height && o.y < y + h)) return false;
+      const sameRect = x === o.x && y === o.y && w === o.width && h === o.height;
+      if (sameRect && (o.stackTier || 0) !== t) return false; // stacked pair shares one rect
+      return true;
+    }) || null
   );
+}
+
+// Stacking helpers: a stacked pair = two placements on the EXACT same rect
+// with tiers 0 (lower/ground) + 1 (upper). Rendered as ONE block split by a
+// middle divider line (upper code above, lower code below).
+function fpSameRect(a, b) {
+  return a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height;
+}
+
+function fpIsLockerPlacement(p) {
+  return String(p.sizeCode || '').toUpperCase() === 'LOCKER';
+}
+
+// The other tier on the same rect, if any (a rect holds at most one pair).
+function fpStackMate(pl) {
+  return state.fp.placements.find((o) => o.unitId !== pl.unitId && fpSameRect(o, pl)) || null;
+}
+
+// Locker stack-drop guard: a lone ground-tier locker moved EXACTLY onto a
+// lone ground-tier locker's rect may stack as the upper tier (tiers 0 + 1)
+// instead of reverting. Mirrors the server's same-rect rules in
+// src/core/floorPlans.ts (lockers-only, max 2-high, exact same rect) — the
+// PUT tier-1 write is still re-validated server-side, which stays the final
+// arbiter. `pairIds` is the moving unit(s); the mover already sits on the
+// target rect in local state, so the whole moving pair is excluded from the
+// third-placement check.
+function fpStackDropAllowed(pl, hit, pairIds) {
+  if (!pl || !hit) return false;
+  if (!Array.isArray(pairIds) || pairIds.length !== 1) return false; // singles only — pairs move as one block
+  if ((pl.stackTier || 0) !== 0 || (hit.stackTier || 0) !== 0) return false;
+  if (!fpIsLockerPlacement(pl) || !fpIsLockerPlacement(hit)) return false;
+  if (!fpSameRect(pl, hit)) return false;
+  return !state.fp.placements.some(
+    (o) => !pairIds.includes(o.unitId) && o.unitId !== hit.unitId && fpSameRect(o, hit),
+  );
+}
+
+// Stack a moved lone locker onto the lone locker it was dropped on: confirm,
+// then persist the moved unit as the upper tier (stackTier 1) on the shared
+// rect. Cancel (or a server rejection) restores the pre-drag position; a
+// server rejection surfaces the server's 400/409 message.
+async function fpStackMovedOn(pl, hit, orig) {
+  const restore = () => {
+    for (const o of orig) {
+      o.p.x = o.x;
+      o.p.y = o.y;
+    }
+    fpRenderCanvas();
+  };
+  const stackOk = await confirmDialog({
+    title: `Stack ${pl.unitCode} on ${hit.unitCode}?`,
+    message: `${pl.unitCode} becomes the UPPER tier and ${hit.unitCode} stays the LOWER tier — one block split by a divider line.`,
+    confirmLabel: 'Stack',
+  });
+  if (!stackOk) {
+    restore();
+    return;
+  }
+  try {
+    await request(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/units/${encodeURIComponent(pl.unitId)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ x: hit.x, y: hit.y, width: hit.width, height: hit.height, stackTier: 1 }),
+    });
+    pl.x = hit.x;
+    pl.y = hit.y;
+    pl.width = hit.width;
+    pl.height = hit.height;
+    pl.stackTier = 1;
+    fpToast(`Stacked ${pl.unitCode} (upper) over ${hit.unitCode} (lower)`, true);
+    fpRender();
+    notifyMetricsFloorChanged();
+  } catch (err) {
+    restore();
+    fpToast(`Stack ${pl.unitCode}: ${describeError(err)}`, false);
+    await fpFetch(); // revert local state to what the server has
+  }
+}
+
+// Group a placement list by exact rect so stacked pairs render as one block.
+// Returns [{ rect, members }] with members sorted ground-tier-first.
+function fpGroupByRect(list) {
+  const groups = new Map();
+  for (const pl of list || []) {
+    const k = `${pl.x},${pl.y},${pl.width},${pl.height}`;
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(pl);
+  }
+  return [...groups.values()].map((members) => ({
+    rect: members[0],
+    members: members.slice().sort((a, b) => (a.stackTier || 0) - (b.stackTier || 0)),
+  }));
 }
 
 function fpPx() {
@@ -107,6 +209,11 @@ function fpNormalizePlacements(plan) {
     y: p.y,
     width: p.width,
     height: p.height,
+    // Stacking tier: 0 = ground/sole tier, 1 = upper tier of a same-rect pair.
+    stackTier: p.stackTier === 1 ? 1 : 0,
+    // Authored door compass edges (editor N/S/E/W toggles); null = unauthored
+    // (metrics falls back to AUTO_ALL_EDGES for this unit).
+    doorEdges: Array.isArray(p.doorEdges) && p.doorEdges.length ? p.doorEdges.slice() : null,
   }));
 }
 
@@ -119,6 +226,7 @@ function fpNormalizeBlocks(plan) {
     width: b.width,
     height: b.height,
     color: b.color || null,
+    doorEdges: Array.isArray(b.doorEdges) && b.doorEdges.length ? b.doorEdges.slice() : null,
   }));
 }
 
@@ -290,6 +398,7 @@ async function fpFetch() {
     const d = fpCanvasDims();
     fpClampCanvasContent(d.w, d.h);
     fpRender();
+    notifyMetricsFloorChanged();
   } catch (err) {
     fpToast('Load floor plan: ' + describeError(err), false);
   }
@@ -426,11 +535,38 @@ function fpRenderCanvas() {
     el.appendChild(rs);
     canvas.appendChild(el);
   }
-  const statusDot = { OCCUPIED: '#0B4F5E', AVAILABLE: '#5A7A60', RESERVED: '#D4860A', OVERDUE: '#C0392B', MAINTENANCE: '#9C948D', INACTIVE: '#9C948D' };
-  for (const pl of state.fp.placements) {
+  const statusDot = { OCCUPIED: '#0B4F5E', AVAILABLE: '#5A7A60', RESERVED: '#D4860A', OVERDUE: '#C0392B', MAINTENANCE: '#9C948D', INACTIVE: '#9C948D', BLOCKED: '#8a8478' };
+  // Stacked pairs (same rect, tiers 0 + 1) render as ONE block split by a
+  // middle divider line: upper unit code above, lower code below.
+  for (const group of fpGroupByRect(state.fp.placements)) {
+    const r = group.rect;
+    if (group.members.length >= 2) {
+      const lower = group.members[0];
+      const upper = group.members[1];
+      const el = document.createElement('div');
+      const selected = state.fp.selected === lower.unitId || state.fp.selected === upper.unitId;
+      el.className = 'fp-placed fp-stacked' + (selected ? ' selected' : '');
+      el.dataset.unitId = lower.unitId;
+      el.dataset.stackMateId = upper.unitId;
+      el.style.left = r.x * u + 'px';
+      el.style.top = r.y * u + 'px';
+      el.style.width = r.width * u + 'px';
+      el.style.height = r.height * u + 'px';
+      el.title = `Stacked pair — upper ${upper.unitCode} (${upper.status}) / lower ${lower.unitCode} (${lower.status})`;
+      el.innerHTML =
+        `<div class="fp-status" style="background:${statusDot[lower.status] || '#9C948D'};"></div>` +
+        `<div class="fp-code fp-stack-upper">${escapeHtml(upper.unitCode)}</div>` +
+        `<div class="fp-stack-divider"></div>` +
+        `<div class="fp-code fp-stack-lower">${escapeHtml(lower.unitCode)}</div>` +
+        `<div class="fp-resize" title="Drag to resize"></div>`;
+      canvas.appendChild(el);
+      continue;
+    }
+    const pl = group.members[0];
     const el = document.createElement('div');
     el.className = 'fp-placed' + (state.fp.selected === pl.unitId ? ' selected' : '');
     el.dataset.unitId = pl.unitId;
+    el.dataset.stackTier = String(pl.stackTier || 0);
     el.style.left = pl.x * u + 'px';
     el.style.top = pl.y * u + 'px';
     el.style.width = pl.width * u + 'px';
@@ -453,7 +589,9 @@ function fpRenderSelInfo() {
   if (blk) {
     info.innerHTML =
       `<span class="t-type">Block · ${escapeHtml(blk.name)} · ${blk.x},${blk.y} · ${blk.width}×${blk.height}</span>` +
-      `<input type="text" id="fpBlockRename" class="tbl-search" maxlength="80" value="${escapeHtml(blk.name)}" style="width:150px;padding:3px 8px;font-size:10px;" placeholder="Rename block">` +
+      `<span class="fp-rename-wrap"><label class="fp-sr" for="fpBlockRename">Block name</label>` +
+      `<svg class="fp-name-icon" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M2.5 2.5H10l5.5 5.5-7.5 7.5-5.5-5.5V2.5z"/><circle cx="6.6" cy="6.6" r="1.3"/></svg>` +
+      `<input type="text" id="fpBlockRename" class="tbl-search fp-name-input" maxlength="80" value="${escapeHtml(blk.name)}" placeholder="Rename block" aria-label="Rename block" autocomplete="off" spellcheck="false"></span>` +
       `<button class="act-btn" id="fpBlockRenameBtn" style="padding:2px 9px;font-size:10px;">Rename</button>` +
       `<button class="act-btn danger" id="fpBlockRemoveBtn" style="padding:2px 9px;font-size:10px;">Remove block</button>`;
     return;
@@ -464,10 +602,173 @@ function fpRenderSelInfo() {
     return;
   }
   const lockNote = state.fp.lockSqft ? ' · 🔒 sqft' : '';
+  const mate = fpStackMate(pl);
+  if (mate) {
+    // One block, two tiers: unstack removes the UPPER tier (the ground tier
+    // stays as a single); drag/resize moves both tiers together.
+    const upper = (pl.stackTier || 0) === 1 ? pl : mate;
+    const lower = upper === pl ? mate : pl;
+    info.innerHTML =
+      `<span class="t-type">⧉ Stacked pair · ${escapeHtml(upper.unitCode)} (upper) over ${escapeHtml(lower.unitCode)} (lower) · ${pl.x},${pl.y} · ${pl.width}×${pl.height} ft${lockNote}</span>` +
+      `<button class="act-btn" id="fpRotateBtn" style="padding:2px 9px;font-size:10px;" title="Swap width/height (90° rotation) for both tiers">⟳ Rotate</button>` +
+      `<button class="act-btn" id="fpUnstackBtn" style="padding:2px 9px;font-size:10px;" title="Remove the upper tier — the lower tier stays as a single">Unstack</button>` +
+      `<button class="act-btn danger" id="fpRemoveBtn" style="padding:2px 9px;font-size:10px;">Remove from floor</button>`;
+    return;
+  }
+  // Lone locker placements offer Stack when exactly one same-rect partner is
+  // possible (one unplaced locker with a matching footprint).
+  const stackable = (pl.stackTier || 0) === 0 && fpIsLockerPlacement(pl) ? fpStackCandidates(pl) : [];
+  // Door authoring (Phase 3): N/S/E/W toggles persisted per placement via the
+  // existing PUT units endpoint (additive doorEdges). Null = unauthored (AUTO
+  // all edges in metrics); toggling one edge off authors the rest.
+  const authored = Array.isArray(pl.doorEdges) ? pl.doorEdges : null;
+  const effDoors = authored && authored.length ? authored : ['N', 'S', 'E', 'W'];
+  const doorBtns = ['N', 'S', 'E', 'W']
+    .map((e) => `<button class="act-btn${effDoors.includes(e) ? ' primary' : ''}" data-door="${e}" style="padding:2px 8px;font-size:10px;" title="Toggle ${e} door edge">${e}</button>`)
+    .join('');
   info.innerHTML =
     `<span class="t-type">${escapeHtml(pl.unitCode)} · ${pl.x},${pl.y} · ${pl.width}×${pl.height} ft · ${pl.sqft} sqft${lockNote}</span>` +
     `<button class="act-btn" id="fpRotateBtn" style="padding:2px 9px;font-size:10px;" title="Swap width/height (90° rotation)">⟳ Rotate</button>` +
+    (stackable.length === 1
+      ? `<button class="act-btn" id="fpStackBtn" style="padding:2px 9px;font-size:10px;" title="Stack ${escapeHtml(stackable[0].unitCode)} (upper) onto this block">⧉ Stack ${escapeHtml(stackable[0].unitCode)}</button>`
+      : '') +
+    `<span class="t-type">Doors${authored ? '' : ' (auto)'}:</span>` + doorBtns +
+    (authored ? `<button class="act-btn" id="fpDoorsAutoBtn" style="padding:2px 9px;font-size:10px;" title="Clear authored doors — fall back to all edges">Auto</button>` : '') +
     `<button class="act-btn danger" id="fpRemoveBtn" style="padding:2px 9px;font-size:10px;">Remove from floor</button>`;
+}
+
+// Persist one placement's authored door edges (null clears back to AUTO).
+// Stacked pairs share one rect and keep AUTO (their server-side door union is
+// already all edges), so toggles are singles-only.
+async function fpSaveDoors(pl, edges) {
+  try {
+    const res = await request(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/units/${encodeURIComponent(pl.unitId)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ x: pl.x, y: pl.y, width: pl.width, height: pl.height, stackTier: pl.stackTier || 0, doorEdges: edges }),
+    });
+    pl.doorEdges = res && res.data ? res.data.doorEdges : edges;
+    fpRenderSelInfo();
+    notifyMetricsFloorChanged();
+    fpToast(
+      pl.doorEdges ? `Doors ${pl.unitCode} → ${pl.doorEdges.join('')} (authored)` : `Doors ${pl.unitCode} → auto (all edges)`,
+      true,
+    );
+  } catch (err) {
+    fpToast(`Doors ${pl.unitCode}: ${describeError(err)}`, false);
+  }
+}
+
+async function fpToggleDoor(edge) {
+  const pl = state.fp.placements.find((p) => p.unitId === state.fp.selected);
+  if (!pl || fpStackMate(pl)) return;
+  const authored = Array.isArray(pl.doorEdges) ? pl.doorEdges.slice() : null;
+  let next;
+  if (!authored) {
+    next = ['N', 'S', 'E', 'W'].filter((e) => e !== edge); // turning one edge off authors the rest
+  } else if (authored.includes(edge)) {
+    next = authored.filter((e) => e !== edge);
+    if (!next.length) {
+      fpToast('A unit needs at least one door — use Auto to restore all edges.', false);
+      return;
+    }
+  } else {
+    next = authored.concat(edge);
+  }
+  await fpSaveDoors(pl, next);
+}
+
+async function fpResetDoors() {
+  const pl = state.fp.placements.find((p) => p.unitId === state.fp.selected);
+  if (!pl || fpStackMate(pl)) return;
+  await fpSaveDoors(pl, null);
+}
+
+// Unplaced lockers whose footprint (either orientation) exactly matches the
+// selected block's rect — i.e. units that could stack onto it as upper tier.
+function fpStackCandidates(pl) {
+  return state.fp.unplaced.filter((u) => {
+    if (String(u.sizeCode || '').toUpperCase() !== 'LOCKER') return false;
+    const fp = sizeFootprint(u.sizeCode, u.sqft);
+    return (fp.w === pl.width && fp.h === pl.height) || (fp.w === pl.height && fp.h === pl.width);
+  });
+}
+
+// Stack the single matching unplaced locker onto the selected block as the
+// upper tier (the selected placement stays the lower tier).
+async function fpStackSelected() {
+  const pl = state.fp.placements.find((p) => p.unitId === state.fp.selected);
+  if (!pl || fpStackMate(pl) || (pl.stackTier || 0) !== 0 || !fpIsLockerPlacement(pl)) return;
+  const cands = fpStackCandidates(pl);
+  if (cands.length !== 1) {
+    fpToast(
+      cands.length
+        ? 'Several lockers match this footprint — drag one from the palette onto this block to stack.'
+        : 'No unplaced locker matches this footprint — stacking needs a locker of the same size.',
+      false,
+    );
+    return;
+  }
+  const cand = cands[0];
+  const stackOk = await confirmDialog({
+    title: `Stack ${cand.unitCode} on ${pl.unitCode}?`,
+    message: `${cand.unitCode} becomes the UPPER tier and ${pl.unitCode} stays the LOWER tier — one block split by a divider line.`,
+    confirmLabel: 'Stack',
+  });
+  if (!stackOk) return;
+  try {
+    await request(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/units/${encodeURIComponent(cand.id)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ x: pl.x, y: pl.y, width: pl.width, height: pl.height, stackTier: 1 }),
+    });
+    state.fp.unplaced = state.fp.unplaced.filter((u) => u.id !== cand.id);
+    state.fp.placements.push({
+      id: '',
+      unitId: cand.id,
+      unitCode: cand.unitCode,
+      name: cand.name,
+      sizeCode: cand.sizeCode,
+      sizeName: cand.sizeName,
+      sqft: cand.sqft,
+      status: cand.status,
+      x: pl.x,
+      y: pl.y,
+      width: pl.width,
+      height: pl.height,
+      stackTier: 1,
+    });
+    fpToast(`Stacked ${cand.unitCode} (upper) over ${pl.unitCode} (lower)`, true);
+    fpRender();
+    notifyMetricsFloorChanged();
+  } catch (err) {
+    fpToast(`Stack ${cand.unitCode}: ${describeError(err)}`, false);
+  }
+}
+
+// Unstack a stacked pair: removes the UPPER tier's placement (geometry only —
+// the unit itself is unaffected) so the lower tier stays as a single.
+async function fpUnstackSelected() {
+  const pl = state.fp.placements.find((p) => p.unitId === state.fp.selected);
+  if (!pl) return;
+  const mate = fpStackMate(pl);
+  if (!mate) return;
+  const upper = (pl.stackTier || 0) === 1 ? pl : mate;
+  const lower = upper === pl ? mate : pl;
+  const unstackOk = await confirmDialog({
+    title: `Unstack ${upper.unitCode}?`,
+    message: `${upper.unitCode} is removed from the stack — ${lower.unitCode} remains as a single. The unit itself is unaffected.`,
+    confirmLabel: 'Unstack',
+    danger: true,
+  });
+  if (!unstackOk) return;
+  try {
+    await request(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/units/${encodeURIComponent(upper.unitId)}`, {
+      method: 'DELETE',
+    });
+    fpToast(`${upper.unitCode} unstacked — ${lower.unitCode} is now a single.`, true);
+    await fpFetch();
+  } catch (err) {
+    fpToast('Unstack: ' + describeError(err), false);
+  }
 }
 
 function fpRender() {
@@ -513,11 +814,31 @@ async function fpPersist(pl, verb) {
   try {
     await request(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/units/${encodeURIComponent(pl.unitId)}`, {
       method: 'PUT',
-      body: JSON.stringify({ x: pl.x, y: pl.y, width: pl.width, height: pl.height }),
+      body: JSON.stringify({ x: pl.x, y: pl.y, width: pl.width, height: pl.height, stackTier: pl.stackTier || 0 }),
     });
     fpToast(`${verb} ${pl.unitCode} → ${pl.x},${pl.y} · ${pl.width}×${pl.height} ft`, true);
+    notifyMetricsFloorChanged();
   } catch (err) {
     fpToast(`${verb} ${pl.unitCode}: ${describeError(err)}`, false);
+    await fpFetch(); // revert local state to what the server has
+  }
+}
+
+// Persist a stacked pair's shared rect. The ground tier goes first, then the
+// upper tier onto the same rect — the server's partner rule requires the
+// tier-0 placement to be present when the tier-1 write lands.
+async function fpPersistPair(lower, upper, verb) {
+  try {
+    for (const p of [lower, upper]) {
+      await request(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/units/${encodeURIComponent(p.unitId)}`, {
+        method: 'PUT',
+        body: JSON.stringify({ x: p.x, y: p.y, width: p.width, height: p.height, stackTier: p.stackTier || 0 }),
+      });
+    }
+    fpToast(`${verb} stack ${upper.unitCode}/${lower.unitCode} → ${lower.x},${lower.y} · ${lower.width}×${lower.height} ft`, true);
+    notifyMetricsFloorChanged();
+  } catch (err) {
+    fpToast(`${verb} stack ${upper.unitCode}/${lower.unitCode}: ${describeError(err)}`, false);
     await fpFetch(); // revert local state to what the server has
   }
 }
@@ -528,9 +849,78 @@ async function fpPlaceUnit(unit, footprint, gx, gy) {
     fpToast(`${unit.unitCode} (${footprint.w}×${footprint.h} ft) is too large for the ${cw}×${ch} ft canvas — enlarge the canvas first`, false);
     return;
   }
-  const x = Math.min(Math.max(0, gx), cw - footprint.w);
-  const y = Math.min(Math.max(0, gy), ch - footprint.h);
-  const hit = fpOverlapAt(x, y, footprint.w, footprint.h, null);
+  let x = Math.min(Math.max(0, gx), cw - footprint.w);
+  let y = Math.min(Math.max(0, gy), ch - footprint.h);
+  const unitIsLocker = String(unit.sizeCode || '').toUpperCase() === 'LOCKER';
+  // Snap-to-stack: a dropped locker overlapping a lone ground locker of the
+  // identical footprint snaps onto its exact rect so the Stack offer is precise.
+  if (unitIsLocker) {
+    const snap = state.fp.placements.find(
+      (o) =>
+        (o.stackTier || 0) === 0 &&
+        !fpStackMate(o) &&
+        fpIsLockerPlacement(o) &&
+        o.width === footprint.w &&
+        o.height === footprint.h &&
+        x < o.x + o.width &&
+        o.x < x + footprint.w &&
+        y < o.y + o.height &&
+        o.y < y + footprint.h,
+    );
+    if (snap) {
+      x = snap.x;
+      y = snap.y;
+    }
+  }
+  // Exact-rect drop: offer Stack for lone-locker-on-locker, explain otherwise.
+  const exact = state.fp.placements.find(
+    (o) => o.x === x && o.y === y && o.width === footprint.w && o.height === footprint.h,
+  );
+  if (exact) {
+    if (fpStackMate(exact)) {
+      fpToast(`${exact.unitCode} is already a stacked pair — lockers stack at most 2 high. Drop ${unit.unitCode} on a free spot.`, false);
+      return;
+    }
+    if (!unitIsLocker || !fpIsLockerPlacement(exact) || (exact.stackTier || 0) !== 0) {
+      fpToast(`Cannot stack ${unit.unitCode} onto ${exact.unitCode} — stacking is lockers-only (both units must be LOCKER size sharing one rect).`, false);
+      return;
+    }
+    const stackOk = await confirmDialog({
+      title: `Stack ${unit.unitCode} on ${exact.unitCode}?`,
+      message: `${unit.unitCode} becomes the UPPER tier and ${exact.unitCode} stays the LOWER tier — one block split by a divider line.`,
+      confirmLabel: 'Stack',
+    });
+    if (!stackOk) return;
+    try {
+      await request(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/units/${encodeURIComponent(unit.id)}`, {
+        method: 'PUT',
+        body: JSON.stringify({ x, y, width: footprint.w, height: footprint.h, stackTier: 1 }),
+      });
+      state.fp.unplaced = state.fp.unplaced.filter((u) => u.id !== unit.id);
+      state.fp.placements.push({
+        id: '',
+        unitId: unit.id,
+        unitCode: unit.unitCode,
+        name: unit.name,
+        sizeCode: unit.sizeCode,
+        sizeName: unit.sizeName,
+        sqft: unit.sqft,
+        status: unit.status,
+        x,
+        y,
+        width: footprint.w,
+        height: footprint.h,
+        stackTier: 1,
+      });
+      fpToast(`Stacked ${unit.unitCode} (upper) over ${exact.unitCode} (lower)`, true);
+      fpRender();
+      notifyMetricsFloorChanged();
+    } catch (err) {
+      fpToast(`Stack ${unit.unitCode}: ${describeError(err)}`, false);
+    }
+    return;
+  }
+  const hit = fpOverlapAt(x, y, footprint.w, footprint.h, null, 0);
   if (hit) {
     fpToast(`Cannot place ${unit.unitCode} at ${x},${y} — overlaps ${hit.unitCode} (${hit.x},${hit.y} · ${hit.width}×${hit.height} ft). Drop it on a free spot.`, false);
     return;
@@ -538,7 +928,7 @@ async function fpPlaceUnit(unit, footprint, gx, gy) {
   try {
     await request(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/units/${encodeURIComponent(unit.id)}`, {
       method: 'PUT',
-      body: JSON.stringify({ x, y, width: footprint.w, height: footprint.h }),
+      body: JSON.stringify({ x, y, width: footprint.w, height: footprint.h, stackTier: 0 }),
     });
     state.fp.unplaced = state.fp.unplaced.filter((u) => u.id !== unit.id);
     state.fp.placements.push({
@@ -554,9 +944,11 @@ async function fpPlaceUnit(unit, footprint, gx, gy) {
       y,
       width: footprint.w,
       height: footprint.h,
+      stackTier: 0,
     });
     fpToast(`Placed ${unit.unitCode} → ${x},${y} · ${footprint.w}×${footprint.h} ft`, true);
     fpRender();
+    notifyMetricsFloorChanged();
   } catch (err) {
     fpToast(`Place ${unit.unitCode}: ${describeError(err)}`, false);
   }
@@ -615,28 +1007,65 @@ function fpStartMove(e, el) {
   state.fp.selectedBlock = null;
   fpRenderCanvas();
   fpRenderSelInfo();
+  // Drag/resize moves both tiers of a stacked pair together (same-rect
+  // invariant): the pair shares one rect, so every pointer move writes both.
+  const mate = fpStackMate(pl);
+  const pair = mate ? [pl, mate].slice().sort((a, b) => (a.stackTier || 0) - (b.stackTier || 0)) : [pl];
+  const pairIds = pair.map((p) => p.unitId);
   const { w: cw, h: ch } = fpCanvasDims();
-  const origX = pl.x;
-  const origY = pl.y;
+  const orig = pair.map((p) => ({ p, x: p.x, y: p.y }));
   const move = (ev) => {
     const cell = fpCanvasCellAt(ev.clientX - offsetX, ev.clientY - offsetY);
     if (!cell) return;
-    pl.x = Math.min(Math.max(0, cell.gx), Math.max(0, cw - pl.width));
-    pl.y = Math.min(Math.max(0, cell.gy), Math.max(0, ch - pl.height));
+    const nx = Math.min(Math.max(0, cell.gx), Math.max(0, cw - pl.width));
+    const ny = Math.min(Math.max(0, cell.gy), Math.max(0, ch - pl.height));
+    for (const p of pair) {
+      p.x = nx;
+      p.y = ny;
+    }
     fpRenderCanvas();
   };
-  const up = () => {
+  const up = async () => {
     document.removeEventListener('pointermove', move);
     document.removeEventListener('pointerup', up);
-    const hit = fpOverlapAt(pl.x, pl.y, pl.width, pl.height, pl.unitId);
+    const hit = fpOverlapAt(pl.x, pl.y, pl.width, pl.height, pairIds, 0);
     if (hit) {
-      pl.x = origX;
-      pl.y = origY;
+      // Locker stack-drop: a lone locker moved EXACTLY onto a lone locker's
+      // rect stacks as the upper tier instead of reverting (lockers-only,
+      // max 2-high, same footprint — mirrors src/core/floorPlans.ts). Every
+      // other overlap keeps the revert below.
+      if (fpStackDropAllowed(pl, hit, pairIds)) {
+        await fpStackMovedOn(pl, hit, orig);
+        return;
+      }
+      // Capture exact-rect state BEFORE restoring: after the revert the mover
+      // no longer shares the target rect, so same-rect checks must run first.
+      const droppedExact = fpSameRect(pl, hit);
+      const targetPaired =
+        droppedExact &&
+        state.fp.placements.some(
+          (o) => !pairIds.includes(o.unitId) && o.unitId !== hit.unitId && fpSameRect(o, hit),
+        );
+      const moverLocker = fpIsLockerPlacement(pl);
+      const hitLocker = fpIsLockerPlacement(hit);
+      for (const o of orig) {
+        o.p.x = o.x;
+        o.p.y = o.y;
+      }
       fpRenderCanvas();
+      if (droppedExact && targetPaired) {
+        fpToast(`${hit.unitCode} is already a stacked pair — lockers stack at most 2 high. Move ${pl.unitCode} to a free spot.`, false);
+        return;
+      }
+      if (droppedExact && (!moverLocker || !hitLocker)) {
+        fpToast(`Cannot stack ${pl.unitCode} onto ${hit.unitCode} — stacking is lockers-only (both units must be LOCKER size sharing one rect).`, false);
+        return;
+      }
       fpToast(`Cannot move ${pl.unitCode} to ${pl.x},${pl.y} — overlaps ${hit.unitCode}. Reverted.`, false);
       return;
     }
-    fpPersist(pl, 'Moved');
+    if (!mate) fpPersist(pl, 'Moved');
+    else fpPersistPair(pair[0], pair[1], 'Moved');
   };
   document.addEventListener('pointermove', move);
   document.addEventListener('pointerup', up);
@@ -676,43 +1105,61 @@ function fpStartResize(e, pl) {
   const origW = pl.width;
   const origH = pl.height;
   const { w: cw, h: ch } = fpCanvasDims();
+  // A stacked pair resizes as one block (same-rect invariant) — the snap uses
+  // the ground tier's sqft and every pointer move writes both tiers.
+  const mate = fpStackMate(pl);
+  const pair = mate ? [pl, mate].slice().sort((a, b) => (a.stackTier || 0) - (b.stackTier || 0)) : [pl];
+  const pairIds = pair.map((p) => p.unitId);
   const move = (ev) => {
     const dx = Math.round((ev.clientX - startX) / u);
     const dy = Math.round((ev.clientY - startY) / u);
     const freeW = Math.max(1, Math.min(origW + dx, cw - origX));
     const freeH = Math.max(1, Math.min(origH + dy, ch - origY));
+    let w;
+    let h;
     if (state.fp.lockSqft && pl.sqft > 0) {
-      const snapped = fpSnapToSqft(freeW, freeH, pl.sqft, cw, ch, origX, origY);
-      pl.width = snapped.w;
-      pl.height = snapped.h;
+      const snapped = fpSnapToSqft(freeW, freeH, pair[0].sqft || pl.sqft, cw, ch, origX, origY);
+      w = snapped.w;
+      h = snapped.h;
     } else {
-      pl.width = freeW;
-      pl.height = freeH;
+      w = freeW;
+      h = freeH;
+    }
+    for (const p of pair) {
+      p.width = w;
+      p.height = h;
     }
     fpRenderCanvas();
   };
   const up = () => {
     document.removeEventListener('pointermove', move);
     document.removeEventListener('pointerup', up);
-    const hit = fpOverlapAt(pl.x, pl.y, pl.width, pl.height, pl.unitId);
+    const hit = fpOverlapAt(pl.x, pl.y, pl.width, pl.height, pairIds, 0);
     if (hit) {
-      pl.width = origW;
-      pl.height = origH;
+      for (const p of pair) {
+        p.width = origW;
+        p.height = origH;
+      }
       fpRenderCanvas();
       fpToast(`Cannot resize ${pl.unitCode} to ${pl.width}×${pl.height} ft — overlaps ${hit.unitCode}. Reverted.`, false);
       return;
     }
-    fpPersist(pl, 'Resized');
+    if (!mate) fpPersist(pl, 'Resized');
+    else fpPersistPair(pair[0], pair[1], 'Resized');
   };
   document.addEventListener('pointermove', move);
   document.addEventListener('pointerup', up);
 }
 
 // 90° rotation for rectangular placements: swaps W/H, clamps into the canvas,
-// rejects on overlap, persists. No Unit row writes.
+// rejects on overlap, persists. A stacked pair rotates as one block (both
+// tiers share the new rect). No Unit row writes.
 async function fpRotatePlacement() {
   const pl = state.fp.placements.find((p) => p.unitId === state.fp.selected);
   if (!pl) return;
+  const mate = fpStackMate(pl);
+  const pair = mate ? [pl, mate].slice().sort((a, b) => (a.stackTier || 0) - (b.stackTier || 0)) : [pl];
+  const pairIds = pair.map((p) => p.unitId);
   const { w: cw, h: ch } = fpCanvasDims();
   const w = pl.height;
   const h = pl.width;
@@ -720,20 +1167,25 @@ async function fpRotatePlacement() {
     fpToast(`Cannot rotate ${pl.unitCode} — ${w}×${h} ft does not fit the ${cw}×${ch} ft canvas.`, false);
     return;
   }
-  const prev = { x: pl.x, y: pl.y, w: pl.width, h: pl.height };
-  pl.width = w;
-  pl.height = h;
-  pl.x = Math.min(pl.x, Math.max(0, cw - w));
-  pl.y = Math.min(pl.y, Math.max(0, ch - h));
-  const hit = fpOverlapAt(pl.x, pl.y, pl.width, pl.height, pl.unitId);
+  const prev = pair.map((p) => ({ p, x: p.x, y: p.y, w: p.width, h: p.height }));
+  const nx = Math.min(pl.x, Math.max(0, cw - w));
+  const ny = Math.min(pl.y, Math.max(0, ch - h));
+  for (const p of pair) {
+    p.width = w;
+    p.height = h;
+    p.x = nx;
+    p.y = ny;
+  }
+  const hit = fpOverlapAt(pl.x, pl.y, pl.width, pl.height, pairIds, 0);
   if (hit) {
-    Object.assign(pl, { x: prev.x, y: prev.y, width: prev.w, height: prev.h });
+    for (const o of prev) Object.assign(o.p, { x: o.x, y: o.y, width: o.w, height: o.h });
     fpRenderCanvas();
     fpToast(`Cannot rotate ${pl.unitCode} — ${w}×${h} ft overlaps ${hit.unitCode}.`, false);
     return;
   }
   fpRender();
-  await fpPersist(pl, 'Rotated');
+  if (!mate) await fpPersist(pl, 'Rotated');
+  else await fpPersistPair(pair[0], pair[1], 'Rotated');
 }
 
 function fpToggleBlockForm(show) {
@@ -876,7 +1328,7 @@ async function fpAutoPlaceAll() {
       try {
         await request(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/units/${encodeURIComponent(unit.id)}`, {
           method: 'PUT',
-          body: JSON.stringify({ x: spot.x, y: spot.y, width: geom.w, height: geom.h }),
+          body: JSON.stringify({ x: spot.x, y: spot.y, width: geom.w, height: geom.h, stackTier: 0 }),
         });
         state.fp.unplaced = state.fp.unplaced.filter((u) => u.id !== unit.id);
         state.fp.placements.push({
@@ -892,6 +1344,7 @@ async function fpAutoPlaceAll() {
           y: spot.y,
           width: geom.w,
           height: geom.h,
+          stackTier: 0,
         });
         taken.push({ x: spot.x, y: spot.y, width: geom.w, height: geom.h });
         placed.push(unit.unitCode);
@@ -903,6 +1356,7 @@ async function fpAutoPlaceAll() {
     if (btn) btn.disabled = false;
   }
   fpRender();
+  notifyMetricsFloorChanged();
   if (!placed.length) {
     fpToast(
       `Auto-place: nothing fits on the ${cw}×${ch} ft canvas — enlarge the canvas first.` +
@@ -946,6 +1400,7 @@ async function fpAddBlock() {
     state.fp.selected = null;
     fpToggleBlockForm(false);
     fpRender();
+    notifyMetricsFloorChanged();
     fpToast(`Added block "${name}" (${size}×${size}) at ${x},${y} — drag it into place or resize from the corner.`, true);
   } catch (err) {
     fpToast('Add block: ' + describeError(err), false);
@@ -959,6 +1414,7 @@ async function fpPersistBlock(blk, verb) {
       body: JSON.stringify({ name: blk.name, x: blk.x, y: blk.y, width: blk.width, height: blk.height, color: blk.color || null }),
     });
     fpToast(`${verb} block "${blk.name}" → ${blk.x},${blk.y} · ${blk.width}×${blk.height}`, true);
+    notifyMetricsFloorChanged();
   } catch (err) {
     fpToast(`${verb} block: ${describeError(err)}`, false);
     await fpFetch(); // revert local state to what the server has
@@ -1053,6 +1509,7 @@ async function fpRenameBlock() {
     fpToast(`Renamed block to "${name}".`, true);
     fpRenderCanvas();
     fpRenderSelInfo();
+    notifyMetricsFloorChanged();
   } catch (err) {
     blk.name = prev;
     fpToast('Rename block: ' + describeError(err), false);
@@ -1252,8 +1709,33 @@ function fpViewRender() {
     el.appendChild(name);
     canvas.appendChild(el);
   }
-  const statusDot = { OCCUPIED: '#0B4F5E', AVAILABLE: '#5A7A60', RESERVED: '#D4860A', OVERDUE: '#C0392B', MAINTENANCE: '#9C948D', INACTIVE: '#9C948D' };
-  for (const pl of fpView.placements) {
+  const statusDot = { OCCUPIED: '#0B4F5E', AVAILABLE: '#5A7A60', RESERVED: '#D4860A', OVERDUE: '#C0392B', MAINTENANCE: '#9C948D', INACTIVE: '#9C948D', BLOCKED: '#8a8478' };
+  // Read-only mirror of the editor canvas: stacked pairs (same rect, tiers
+  // 0 + 1) render as ONE block split by a middle divider line so booking-side
+  // consumers see the stack identically (upper code above, lower code below).
+  for (const group of fpGroupByRect(fpView.placements)) {
+    const r = group.rect;
+    if (group.members.length >= 2) {
+      const lower = group.members[0];
+      const upper = group.members[1];
+      const el = document.createElement('div');
+      el.className = 'fp-placed fp-stacked';
+      el.dataset.unitId = lower.unitId;
+      el.dataset.stackMateId = upper.unitId;
+      el.style.left = r.x * u + 'px';
+      el.style.top = r.y * u + 'px';
+      el.style.width = r.width * u + 'px';
+      el.style.height = r.height * u + 'px';
+      el.title = `Stacked pair — upper ${upper.unitCode} (${upper.status}) / lower ${lower.unitCode} (${lower.status})`;
+      el.innerHTML =
+        `<div class="fp-status" style="background:${statusDot[lower.status] || '#9C948D'};"></div>` +
+        `<div class="fp-code fp-stack-upper">${escapeHtml(upper.unitCode)}</div>` +
+        `<div class="fp-stack-divider"></div>` +
+        `<div class="fp-code fp-stack-lower">${escapeHtml(lower.unitCode)}</div>`;
+      canvas.appendChild(el);
+      continue;
+    }
+    const pl = group.members[0];
     const el = document.createElement('div');
     el.className = 'fp-placed';
     el.dataset.unitId = pl.unitId;
@@ -1386,8 +1868,12 @@ export function fpInitEvents() {
   $('#fpSelInfo').addEventListener('click', (e) => {
     if (e.target && e.target.id === 'fpRemoveBtn') fpRemovePlacement();
     else if (e.target && e.target.id === 'fpRotateBtn') fpRotatePlacement();
+    else if (e.target && e.target.id === 'fpStackBtn') fpStackSelected();
+    else if (e.target && e.target.id === 'fpUnstackBtn') fpUnstackSelected();
     else if (e.target && e.target.id === 'fpBlockRemoveBtn') fpRemoveBlock();
     else if (e.target && e.target.id === 'fpBlockRenameBtn') fpRenameBlock();
+    else if (e.target && e.target.id === 'fpDoorsAutoBtn') fpResetDoors();
+    else if (e.target && e.target.dataset && e.target.dataset.door) fpToggleDoor(e.target.dataset.door);
   });
   $('#fpSelInfo').addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && e.target && e.target.id === 'fpBlockRename') {

@@ -152,6 +152,44 @@ export async function deletePromotion(id: string) {
   return { id };
 }
 
+// --- Additive promo type/scope helpers (live promo demo slice) ---
+//
+// The booking frontend parses a tolerant set of tokens:
+//   type: PERCENTAGE | DOLLAR | FLAT | CREDITS
+//   scope: FIRST_MONTH | ONE_TIME | DUE_TODAY (anything else = recurring).
+// These helpers derive those tokens from the stored Promotion (+ its backing
+// PromotionPlan when present). Discount math is intentionally untouched.
+
+type PromoTypeSource = {
+  discountType: Promotion['discountType'];
+  benefitType: Promotion['benefitType'];
+  plan?: { kind: string; appliesTo: string | null } | null;
+};
+
+function resolvePromoType(p: PromoTypeSource): string {
+  if (p.benefitType === 'CREDITS' || p.plan?.kind === 'CREDITS') return 'CREDITS';
+  if (p.benefitType === 'DOLLAR') return 'DOLLAR';
+  return p.discountType === 'PERCENTAGE' ? 'PERCENTAGE' : 'FLAT';
+}
+
+function normalizeDurationScope(raw: string | null | undefined): string {
+  const s = (raw ?? '').toLowerCase();
+  if (/every invoice|recurr|can combine/.test(s)) return 'RECURRING';
+  if (/due today|due-today|today|upfront|move-?in/.test(s)) return 'DUE_TODAY';
+  if (/one-?time|single/.test(s)) return 'ONE_TIME';
+  return 'FIRST_MONTH';
+}
+
+function resolvePromoScope(p: PromoTypeSource): string {
+  return normalizeDurationScope(p.plan?.appliesTo ?? (p as { applyTo?: string | null }).applyTo ?? null);
+}
+
+// Defaults used when no promo row can be resolved (unknown / inactive /
+// out-of-window / below-minMonths / malformed body). Shape stays stable so
+// the frontend can always read the additive fields.
+export const DEFAULT_PROMO_TYPE = 'PERCENTAGE';
+export const DEFAULT_PROMO_SCOPE = 'FIRST_MONTH';
+
 function isWithinWindow(p: Promotion, now = new Date()): boolean {
   if (!p.active) return false;
   if (p.startDate && p.startDate > now) return false;
@@ -160,6 +198,8 @@ function isWithinWindow(p: Promotion, now = new Date()): boolean {
 }
 
 // Customer-facing list: only active promotions inside their date window.
+// Additive type/scope fields ride along (sourced from the promo row, falling
+// back to the backing plan's appliesTo when present).
 export async function listActivePromotions() {
   const now = new Date();
   const rows = await prisma.promotion.findMany({
@@ -170,30 +210,51 @@ export async function listActivePromotions() {
         { OR: [{ endDate: null }, { endDate: { gte: now } }] },
       ],
     },
+    include: { plan: true },
     orderBy: { createdAt: 'desc' },
   });
 
-  return rows.map((p) => ({
-    code: p.code,
-    name: p.name,
-    description: p.description,
-    discountType: p.discountType,
-    discountValue: toNum(p.discountValue),
-    minMonths: p.minMonths,
-  }));
+  return rows.map((p) => {
+    const scope = resolvePromoScope(p);
+    return {
+      code: p.code,
+      name: p.name,
+      description: p.description,
+      discountType: p.discountType,
+      discountValue: toNum(p.discountValue),
+      minMonths: p.minMonths,
+      type: resolvePromoType(p),
+      appliesTo: scope,
+      durationScope: scope,
+    };
+  });
 }
 
 export interface PromotionValidationResult {
   valid: boolean;
   discountAmt: number;
   monthlyAfterPromo: number;
+  // Additive (live promo demo slice): tolerant tokens for the booking
+  // frontend. Always present, including on the invalid path.
+  type: string;
+  appliesTo: string;
+  durationScope: string;
 }
 
 // Returns { valid: false } (not an error) for unknown / inactive / out-of-window
 // / below-minMonths codes. STORELAH10 → discountAmt = 10% of rate.
+// Discount math is unchanged; only the additive type/scope fields are new.
 export async function validatePromotion(code: string, rate: number, months: number): Promise<PromotionValidationResult> {
-  const invalid = { valid: false, discountAmt: 0, monthlyAfterPromo: toNum(rate) };
-  const promo = await prisma.promotion.findUnique({ where: { code } });
+  const invalid = {
+    valid: false,
+    discountAmt: 0,
+    monthlyAfterPromo: toNum(rate),
+    type: DEFAULT_PROMO_TYPE,
+    appliesTo: DEFAULT_PROMO_SCOPE,
+    durationScope: DEFAULT_PROMO_SCOPE,
+  };
+  // Include the backing plan so plan-backed codes resolve type/scope from it.
+  const promo = await prisma.promotion.findUnique({ where: { code }, include: { plan: true } });
   if (!promo || !isWithinWindow(promo)) return invalid;
   if (promo.minMonths != null && months < promo.minMonths) return invalid;
 
@@ -203,9 +264,13 @@ export async function validatePromotion(code: string, rate: number, months: numb
       ? toNum((rate * value) / 100)
       : toNum(Math.min(value, rate));
 
+  const scope = resolvePromoScope(promo);
   return {
     valid: true,
     discountAmt,
     monthlyAfterPromo: toNum(rate - discountAmt),
+    type: resolvePromoType(promo),
+    appliesTo: scope,
+    durationScope: scope,
   };
 }

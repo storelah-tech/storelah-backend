@@ -79,6 +79,8 @@ function renderUnitMap(map) {
       ['Reserved', L.reserved, 'var(--amber)'],
       ['Overdue', L.overdue, 'var(--red)'],
       ['Maintenance', L.maintenance, 'var(--light)'],
+      // P1 item 3: BLOCKED legend parity with the UnitStatus enum.
+      ['Blocked', L.blocked || 0, '#8a8478'],
     ];
     legend.innerHTML = items
       .map(
@@ -100,8 +102,25 @@ function renderUnitMap(map) {
 
 export async function fetchUnitMap() {
   if (isAllFacilities()) return; // syncFacilityDashboard renders the ALL placeholder instead
-  const map = await get(`/units/map?branch=${encodeURIComponent(state.branchCode)}&level=${state.level}`);
+  // P1 item 3: Near-lift + Size filters ride the map read path.
+  const qs = new URLSearchParams({ branch: state.branchCode, level: String(state.level) });
+  if (state.mapSize) qs.set('size', state.mapSize);
+  if (state.mapNearLift) qs.set('nearLift', '1');
+  const map = await get(`/units/map?${qs}`);
   renderUnitMap(map);
+}
+
+// P1 item 3: populate the map Size filter from /sizes (once per boot).
+let mapSizesLoaded = false;
+export async function ensureMapSizeFilter() {
+  const sel = $('#mapSizeFilter');
+  if (!sel || mapSizesLoaded) return;
+  try {
+    const sizes = await get('/sizes');
+    sel.innerHTML = '<option value="">All sizes</option>' +
+      (sizes || []).map((s) => `<option value="${escapeHtml(s.code)}">${escapeHtml(s.name)}</option>`).join('');
+    mapSizesLoaded = true;
+  } catch (e) { /* filter stays size-less; map still loads */ }
 }
 
 // Dashboard unit-map card under the facility filter: ALL shows a placeholder

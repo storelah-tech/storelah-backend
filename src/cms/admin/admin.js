@@ -8,7 +8,7 @@ import { state, isAllFacilities } from './state.js';
 import { createDateFilter, withDateQuery, isRangeActive, rangeLabel, rangeEmptyText } from './dateFilter.js';
 import { refreshBookingsView, bindBookingsTable, refreshMoveinsView } from './bookingsView.js';
 import {
-  initCharts, bindKpis, bindCharts, renderFloorTabs, fetchUnitMap, syncFacilityDashboard,
+  initCharts, bindKpis, bindCharts, renderFloorTabs, fetchUnitMap, syncFacilityDashboard, ensureMapSizeFilter,
 } from './dashboardView.js';
 import {
   setRefreshAll as tenantsSetRefreshAll, bindTenantsView, refreshTenantsView,
@@ -20,7 +20,18 @@ import {
   populateFloorSelect, openCreateForm, openEditForm, closeUnitModal,
   submitUnitForm, deleteUnit, openRateForm, closeRateModal, submitRateForm,
 } from './unitsView.js';
+import { bindPortfolio, wirePortfolio } from './portfolioView.js';
+import { bindQuotes, bindMoveouts, wireOpsQueues } from './opsQueuesView.js';
+import { bindFeesSection, bindBusinessRulesSection, bindUsersSection, wireSettingsExt } from './settingsExtView.js';
+import {
+  setRefreshAll as leadDrawerSetRefreshAll, setLeadDrawerActions, openLeadDrawer, wireLeadDrawer,
+} from './leadsDetailDrawer.js';
 import { setRefsLoader as fpSetRefsLoader, fpInitEvents, fpOpen, fpViewClose, getFpViewFloorId } from './floorplanView.js';
+import { wireMetricsPanel, refreshMetricsView } from './metricsView.js';
+import {
+  bindMaintenance, bindAssets, bindIncidents, bindAccess, bindInspections,
+  wireFacilitiesOps, updateFacilityBadge,
+} from './facilitiesOps.js';
 
 // ====================== TOAST ======================
 function toast(msg) {
@@ -35,6 +46,7 @@ function toast(msg) {
 // ====================== V8 NAVIGATION ======================
 const coreMap = {
   command: 'command',
+  portfolio: 'command',
   leads: 'leads', pipeline: 'leads', inbox: 'leads', calendar: 'leads', automation: 'leads',
   analytics: 'command',
   customers: 'customers',
@@ -45,13 +57,16 @@ const coreMap = {
 };
 
 const sideNav = {
-  command: [['Command centre', 'command'], ['Performance dashboards', 'analytics']],
+  command: [['Command centre', 'command'], ['Facility portfolio', 'portfolio'], ['Performance dashboards', 'analytics']],
   leads: [['Lead database', 'leads'], ['Pipeline', 'pipeline'], ['Conversations', 'inbox'],
-    ['Appointments', 'calendar'], ['Sales analytics', 'analytics'], ['Automation', 'automation']],
+    ['Appointments', 'calendar'], ['Automation', 'automation']],
   customers: [['Tenants', 'customers', 'customer-tenants'], ['Bookings', 'customers', 'customer-bookings'],
-    ['Move-ins', 'customers', 'customer-moveins']],
+    ['Move-ins', 'customers', 'customer-moveins'], ['Quotes', 'customers', 'customer-quotes'],
+    ['Move-outs', 'customers', 'customer-moveouts']],
   facilities: [['Unit map', 'facilities', 'facility-map'], ['Units', 'facilities', 'facility-units'],
-    ['Floor plans', 'facilities', 'facility-floorplans']],
+    ['Floor plans', 'facilities', 'facility-floorplans'], ['Maintenance', 'facilities', 'facility-maintenance'],
+    ['Assets & vendors', 'facilities', 'facility-assets'], ['Incidents', 'facilities', 'facility-incidents'],
+    ['Access control', 'facilities', 'facility-access'], ['Inspections', 'facilities', 'facility-inspections']],
   promotions: [['Dashboard', 'promotions', 'promo-overview'], ['Discount plan builder', 'promotions', 'promo-discount-matrix'], ['Free months', 'promotions', 'promo-free-months'], ['Promo code builder', 'promotions', 'promo-code-builder'], ['Promotions library', 'promotions', 'promo-library'], ['History', 'promotions', 'promo-history'], ['Safeguards', 'promotions', 'promo-safeguards'], ['Performance', 'promotions', 'promo-performance']],
   billing: [['Overview', 'billing', 'bill-overview'], ['Invoices', 'billing', 'bill-invoices'],
     ['Arrears', 'billing', 'bill-arrears']],
@@ -104,7 +119,12 @@ function openPage(id) {
     n.classList.toggle('active', n.getAttribute('data-core-page') === core));
   expandCore(core);
   const first = document.querySelector('[data-side-menu="' + core + '"] [data-side-page="' + id + '"]');
-  if (first) activateSide(id, first.dataset.sidePanel);
+  if (first) {
+    // Exact-element activation (not page-wide): each submenu entry maps to a
+    // distinct page, so only the clicked entry lights up.
+    document.querySelectorAll('.nav-subitem').forEach((b) => b.classList.remove('active'));
+    first.classList.add('active');
+  }
   document.getElementById('sidebar')?.classList.remove('open');
   document.body.classList.remove('sb-open');
   window.scrollTo(0, 0);
@@ -112,7 +132,12 @@ function openPage(id) {
   // Notify admin state
   state.view = id;
   // Lazy load content
-  if (id === 'command') refreshCommandPage();
+  if (id === 'command') {
+    refreshCommandPage();
+  }
+  else if (id === 'portfolio') {
+    bindPortfolio().catch((err) => showBanner('Portfolio: ' + describeError(err)));
+  }
   else if (id === 'leads') bindLeadTable();
   else if (id === 'pipeline') bindPipeline();
   else if (id === 'inbox') bindInbox();
@@ -128,6 +153,7 @@ function openPage(id) {
   else if (id === 'settings') bindSettings();
   else if (id === 'facilities') {
     syncFacilityDashboard();
+    updateFacilityBadge().catch(() => {});
     // Activate first facility tab
     const firstTab = document.querySelector('[data-tabs="facility"] button');
     if (firstTab) firstTab.click();
@@ -139,6 +165,14 @@ function openPanel(page, panel) {
   setTimeout(() => {
     const tab = document.querySelector('[data-tab="' + panel + '"],[data-settings-tab="' + panel + '"]');
     if (tab) tab.click();
+    else {
+      // Scroll-anchor targets with no data-tab button — scroll to the panel.
+      // Legacy anchor: the portfolio lived under #command as #command-portfolio
+      // and is now its own #portfolio page; redirect stale callers there.
+      if (panel === 'command-portfolio') { openPage('portfolio'); return; }
+      const anchor = document.getElementById(panel);
+      if (anchor && anchor.scrollIntoView) anchor.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
     activateSide(page, panel);
   }, 0);
 }
@@ -423,7 +457,7 @@ async function bindLeadTable() {
     tbody.innerHTML = rows.map((l) => {
       const initial = (l.name || '?').charAt(0).toUpperCase();
       const heat = stageLabel[l.stage] || l.stage;
-      return '<tr data-lead-id="' + escapeHtml(l.id) + '"><td><input class="check" type="checkbox"></td><td><div class="contact"><div class="avatar">' + initial + '</div><div><b>' + escapeHtml(l.name) + '</b><small>' + (l.type === 'BUSINESS' ? 'Business' : 'Personal') + (l.segment ? ' · ' + escapeHtml(l.segment) : '') + '</small></div></div></td>' +
+      return '<tr data-lead-id="' + escapeHtml(l.id) + '" tabindex="0"><td><input class="check" type="checkbox"></td><td><div class="contact"><div class="avatar">' + initial + '</div><div><b>' + escapeHtml(l.name) + '</b><small>' + (l.type === 'BUSINESS' ? 'Business' : 'Personal') + (l.segment ? ' · ' + escapeHtml(l.segment) : '') + '</small></div></div></td>' +
         '<td><span class="pill ' + (l.stage === 'NEW_ENQUIRY' ? 'red' : l.stage === 'WON' ? 'green' : l.stage === 'LOST' ? '' : 'amber') + '">' + heat + '</span></td>' +
         '<td>' + leadHeatHtml(l.stage, l.monthlyRate) + '</td>' +
         '<td>' + escapeHtml(l.size || '—') + (l.branchCode ? ' · ' + escapeHtml(l.branchCode) : '') + '</td>' +
@@ -1422,7 +1456,7 @@ function toDateTimeLocalValue(iso) {
   return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + 'T' + pad(d.getHours()) + ':' + pad(d.getMinutes());
 }
 
-async function openCreateAppointment() {
+async function openCreateAppointment(presetLeadId) {
   apptMode = 'create';
   apptEditId = null;
   $('#apptModalTitle').textContent = 'Schedule Appointment';
@@ -1439,7 +1473,10 @@ async function openCreateAppointment() {
     const data = await get('/leads');
     state.leadsCache = flattenLeads(data);
   } catch (e) { /* keep cache */ }
-  populateApptSelects(null, null);
+  // Drawer-schedule path pre-selects the drawer lead (plain Schedule keeps none).
+  populateApptSelects(null, presetLeadId || null);
+  const person = presetLeadId && (state.leadsCache || []).find((l) => l.id === presetLeadId);
+  if (person) $('#af-person').value = person.name || '';
   $('#apptModal').hidden = false;
 }
 
@@ -1770,6 +1807,10 @@ async function bindSettings() {
   } catch (e) {
     grid.innerHTML = '<div class="card"><div class="card-body"><div class="section-empty">Settings failed to load: ' + escapeHtml(describeError(e)) + '</div></div></div>';
   }
+  // P1 settings extensions (independent sections — failures never break scalars).
+  bindFeesSection().catch((e) => showBanner('Fees: ' + describeError(e)));
+  bindBusinessRulesSection().catch((e) => showBanner('Business rules: ' + describeError(e)));
+  bindUsersSection().catch((e) => showBanner('Users: ' + describeError(e)));
 }
 
 async function saveSettings() {
@@ -2013,7 +2054,7 @@ function collectFreeMonthsPayload() {
 
 async function saveFreeMonthsPlan() {
   const payload = collectFreeMonthsPayload();
-  if (!payload.freeMonths.length) { showBanner('Select at least one free month on the month strip.'); return; }
+  if (!payload.freeMonths.length) { showBanner('Select at least one free month on the month strip.'); return null; }
   try {
     if (promoState.freePlanId) {
       await put('/promotion-plans/' + encodeURIComponent(promoState.freePlanId), payload);
@@ -2023,8 +2064,10 @@ async function saveFreeMonthsPlan() {
     }
     toast('Free-months plan saved: ' + payload.name);
     bindPromotionsOverview().catch(function () {});
+    return promoState.freePlanId;
   } catch (e) {
     showBanner('Free-months save: ' + describeError(e));
+    return null;
   }
 }
 
@@ -2035,6 +2078,7 @@ async function loadFreeMonthsPlan() {
   const plan = (plans || []).filter((p) => p.kind === 'FREE_MONTHS')[0];
   if (!plan) return;
   promoState.freePlanId = plan.id;
+  setPromoStatusPill('freePlanStatus', plan.status);
   const f = freePanelFields();
   if (f.name) f.name.value = plan.name || '';
   if (f.count) f.count.value = String(plan.freeMonthCount || 1);
@@ -2067,10 +2111,19 @@ async function loadFreeMonthsPlan() {
 // ("BENEFIT: percentage 25%") and re-parsed on reload by leading token; the
 // plan's structured fields carry dates, caps, stacking and eligibility rules.
 // Rule groupIds: rows joined by OR start a new group, AND rows extend it.
+// The code builder offers only PERCENTAGE / DOLLAR / CREDITS — the FREE_MONTHS
+// choice stays hidden in markup (standalone promo-free-months section owns it).
+// Map via data-benefit on the ACTIVE visible choice so the hidden button can
+// never leak a 'free' benefit into a PROMO_CODE payload.
 function codePanelBenefit() {
   const choices = Array.from(document.querySelectorAll('#benefitChoices .choice'));
-  const idx = choices.findIndex((c) => c.classList.contains('active'));
-  return ['percentage', 'dollar', 'free', 'credits'][idx < 0 ? 0 : idx];
+  const active = choices.find((c) => c.classList.contains('active'));
+  const raw = active && active.dataset ? active.dataset.benefit : null;
+  if (raw === 'percentage' || raw === 'dollar' || raw === 'credits') return raw;
+  // Fallback: index among VISIBLE choices only (hidden free-months excluded).
+  const visible = choices.filter((c) => !c.hidden && c.style.display !== 'none');
+  const idx = visible.indexOf(active);
+  return ['percentage', 'dollar', 'credits'][idx < 0 ? 0 : idx] || 'percentage';
 }
 
 function collectCodePlanPayload() {
@@ -2104,7 +2157,8 @@ function collectCodePlanPayload() {
   const capInput = usageCard ? usageCard.querySelector('input[type="number"]') : null;
   const stackChoices = Array.from(document.querySelectorAll('#promo-code-builder .builder-section .choice-grid .choice'));
   // Stacking grid is the second .choice-grid on the panel (index offset by the
-  // 4 benefit choices): active among the last two.
+  // 4 benefit choices — the hidden free-months choice stays in the DOM, so the
+  // offset is unchanged): active among the last two.
   const stackActive = stackChoices.slice(4).findIndex((c) => c.classList.contains('active'));
   return {
     kind: 'PROMO_CODE',
@@ -2125,7 +2179,7 @@ function collectCodePlanPayload() {
 
 async function saveCodePlan() {
   const payload = collectCodePlanPayload();
-  if (!payload.code) { showBanner('Customer-facing code is required.'); return; }
+  if (!payload.code) { showBanner('Customer-facing code is required.'); return null; }
   try {
     if (promoState.codePlanId) {
       await put('/promotion-plans/' + encodeURIComponent(promoState.codePlanId), payload);
@@ -2135,8 +2189,10 @@ async function saveCodePlan() {
     }
     toast('Promo code plan saved: ' + payload.code);
     bindPromotionsOverview().catch(function () {});
+    return promoState.codePlanId;
   } catch (e) {
     showBanner('Code-builder save: ' + describeError(e));
+    return null;
   }
 }
 
@@ -2146,6 +2202,7 @@ async function loadCodePlan() {
   const plan = (plans || []).filter((p) => p.kind === 'PROMO_CODE')[0];
   if (!plan) return;
   promoState.codePlanId = plan.id;
+  setPromoStatusPill('codePlanStatus', plan.status);
   const nameEl = document.getElementById('promoName');
   const codeEl = document.getElementById('promoCode');
   const valueEl = document.getElementById('promoValue');
@@ -2173,27 +2230,148 @@ async function loadCodePlan() {
   }
 }
 
-// Inject Save-draft bars into the free-months + code-builder summary cards
-// (those panels ship no save buttons in markup). Idempotent.
+// ---- Generic publish flow for the free-months + code-builder tabs ----
+// Mirrors the discount-matrix tab wiring (Save draft → Validate → SCHEDULED →
+// ACTIVE) through the EXISTING state machine only: POST :id/validate
+// (read-only checks) and PATCH :id/status (DRAFT→VALIDATED→SCHEDULED→ACTIVE).
+// No new contract fields, no second data path, no Prisma enum changes.
+const PROMO_PUBLISH_TABS = {
+  free: { idKey: 'freePlanId', pillId: 'freePlanStatus', save: () => saveFreeMonthsPlan(), label: 'Free-months plan' },
+  code: { idKey: 'codePlanId', pillId: 'codePlanStatus', save: () => saveCodePlan(), label: 'Promo code plan' },
+};
+
+function setPromoStatusPill(elId, status) {
+  const el = document.getElementById(elId);
+  if (!el) return;
+  const s = status || 'DRAFT';
+  const tone = s === 'ACTIVE' || s === 'VALIDATED' ? 'green' : s === 'SCHEDULED' ? 'amber' : 'grey';
+  el.textContent = s.charAt(0) + s.slice(1).toLowerCase();
+  el.className = 'pill ' + tone;
+}
+
+// Validate = save (if needed), then render live POST .../validate results in
+// the shared validation modal. Does not change plan status.
+async function validatePromoPlan(kind) {
+  const tab = PROMO_PUBLISH_TABS[kind];
+  if (!tab) return;
+  let pid = promoState[tab.idKey];
+  if (!pid) {
+    pid = await tab.save();
+    if (!pid) return;
+  }
+  const modal = document.getElementById('validationModal');
+  if (modal) modal.classList.add('open');
+  renderValidationResults(null); // loading state
+  try {
+    const result = await post('/promotion-plans/' + encodeURIComponent(pid) + '/validate', {});
+    renderValidationResults(result);
+    if (result && result.valid) toast(tab.label + ' passed validation — schedule when ready.');
+    else showBanner('Validation found ' + (result ? result.blockers : '?') + ' blocker(s) — see Plan validation.');
+  } catch (e) {
+    renderValidationResults({ valid: false, blockers: 1, warnings: 0, checks: [{ status: 'blocker', message: 'Validation request failed: ' + describeError(e) }], overlaps: [], samples: [] });
+  }
+}
+
+// Schedule = save draft, then VALIDATED (if needed) → SCHEDULED through the
+// status state machine. Blockers reject with a surfaced error + modal.
+async function schedulePromoPlan(kind) {
+  const tab = PROMO_PUBLISH_TABS[kind];
+  if (!tab) return;
+  let pid = promoState[tab.idKey] || await tab.save();
+  if (!pid) return;
+  pid = promoState[tab.idKey];
+  if (!pid) return;
+  try {
+    if (!promoState.validated[pid]) {
+      await patch('/promotion-plans/' + encodeURIComponent(pid) + '/status', { status: 'VALIDATED' });
+      promoState.validated[pid] = true;
+    }
+    await patch('/promotion-plans/' + encodeURIComponent(pid) + '/status', { status: 'SCHEDULED' });
+    setPromoStatusPill(tab.pillId, 'SCHEDULED');
+    toast(tab.label + ' scheduled');
+    bindPromotionsOverview().catch(function () {});
+  } catch (e) {
+    showBanner('Schedule: ' + describeError(e));
+    validatePromoPlan(kind).catch(function () {});
+  }
+}
+
+// Publish = walk the plan to ACTIVE through the state machine (DRAFT →
+// VALIDATED → SCHEDULED → ACTIVE as needed). Server re-validates on the
+// VALIDATED edge, so blockers surface instead of slipping through.
+async function publishPromoPlan(kind) {
+  const tab = PROMO_PUBLISH_TABS[kind];
+  if (!tab) return;
+  let pid = promoState[tab.idKey];
+  if (!pid) {
+    pid = await tab.save();
+    if (!pid) return;
+  }
+  try {
+    let status = null;
+    try {
+      const current = await get('/promotion-plans/' + encodeURIComponent(pid));
+      status = current && current.status;
+    } catch (e) { status = null; }
+    if (status === 'ACTIVE') {
+      setPromoStatusPill(tab.pillId, 'ACTIVE');
+      toast(tab.label + ' is already active');
+      return;
+    }
+    if (!status || status === 'DRAFT') {
+      await patch('/promotion-plans/' + encodeURIComponent(pid) + '/status', { status: 'VALIDATED' });
+      promoState.validated[pid] = true;
+      status = 'VALIDATED';
+    }
+    if (status === 'VALIDATED') {
+      await patch('/promotion-plans/' + encodeURIComponent(pid) + '/status', { status: 'SCHEDULED' });
+      status = 'SCHEDULED';
+    }
+    await patch('/promotion-plans/' + encodeURIComponent(pid) + '/status', { status: 'ACTIVE' });
+    setPromoStatusPill(tab.pillId, 'ACTIVE');
+    toast(tab.label + ' is now active');
+    bindPromotionsOverview().catch(function () {});
+  } catch (e) {
+    showBanner('Publish: ' + describeError(e));
+  }
+}
+
+// Inject save + publish bars into the free-months + code-builder summary cards
+// (those panels ship no action buttons in markup). Idempotent: each button is
+// created once and wired once; re-runs are no-ops.
 function ensurePromoSaveBars() {
-  const freeSummary = document.querySelector('#promo-free-months .builder-summary');
-  if (freeSummary && !document.getElementById('freeSaveBtn')) {
-    const bar = document.createElement('div');
-    bar.style.cssText = 'display:flex;gap:8px;margin-top:14px';
-    bar.innerHTML = '<button class="primary" id="freeSaveBtn" style="flex:1">Save draft</button><button class="btn" id="freeReloadBtn">Reload</button>';
-    freeSummary.appendChild(bar);
-    document.getElementById('freeSaveBtn').addEventListener('click', saveFreeMonthsPlan);
-    document.getElementById('freeReloadBtn').addEventListener('click', loadFreeMonthsPlan);
-  }
-  const codeSummary = document.querySelector('#promo-code-builder .builder-summary');
-  if (codeSummary && !document.getElementById('codeSaveBtn')) {
-    const bar = document.createElement('div');
-    bar.style.cssText = 'display:flex;gap:8px;margin-top:14px';
-    bar.innerHTML = '<button class="primary" id="codeSaveBtn" style="flex:1">Save draft</button><button class="btn" id="codeReloadBtn">Reload</button>';
-    codeSummary.appendChild(bar);
-    document.getElementById('codeSaveBtn').addEventListener('click', saveCodePlan);
-    document.getElementById('codeReloadBtn').addEventListener('click', loadCodePlan);
-  }
+  const bars = [
+    { summarySel: '#promo-free-months .builder-summary', kind: 'free', prefix: 'free' },
+    { summarySel: '#promo-code-builder .builder-summary', kind: 'code', prefix: 'code' },
+  ];
+  bars.forEach(function (b) {
+    const summary = document.querySelector(b.summarySel);
+    if (!summary) return;
+    if (!document.getElementById(b.prefix + 'SaveBtn')) {
+      const bar = document.createElement('div');
+      bar.style.cssText = 'display:flex;gap:8px;margin-top:14px';
+      bar.innerHTML = '<button class="primary" id="' + b.prefix + 'SaveBtn" style="flex:1">Save draft</button><button class="btn" id="' + b.prefix + 'ReloadBtn">Reload</button>';
+      summary.appendChild(bar);
+      document.getElementById(b.prefix + 'SaveBtn').addEventListener('click', function () {
+        (b.kind === 'free' ? saveFreeMonthsPlan() : saveCodePlan()).catch(function () {});
+      });
+      document.getElementById(b.prefix + 'ReloadBtn').addEventListener('click', function () {
+        (b.kind === 'free' ? loadFreeMonthsPlan() : loadCodePlan()).catch(function () {});
+      });
+    }
+    // Validate → Schedule → Publish row (mirrors the discount-matrix tab).
+    if (!document.getElementById(b.prefix + 'ValidateBtn')) {
+      const bar = document.createElement('div');
+      bar.style.cssText = 'display:flex;gap:8px;margin-top:8px;flex-wrap:wrap';
+      bar.innerHTML = '<button class="btn" id="' + b.prefix + 'ValidateBtn" style="flex:1">Validate</button>' +
+        '<button class="btn" id="' + b.prefix + 'ScheduleBtn" style="flex:1">Schedule</button>' +
+        '<button class="btn" id="' + b.prefix + 'PublishBtn" style="flex:1">Publish</button>';
+      summary.appendChild(bar);
+      document.getElementById(b.prefix + 'ValidateBtn').addEventListener('click', function () { validatePromoPlan(b.kind).catch(function () {}); });
+      document.getElementById(b.prefix + 'ScheduleBtn').addEventListener('click', function () { schedulePromoPlan(b.kind).catch(function () {}); });
+      document.getElementById(b.prefix + 'PublishBtn').addEventListener('click', function () { publishPromoPlan(b.kind).catch(function () {}); });
+    }
+  });
 }
 
 // ---- Safeguards panel: live CRUD against /safeguards ----
@@ -2441,13 +2619,9 @@ function bootPromotions() {
       applyLabel.textContent = 'Apply discount to';
       applySelect.innerHTML = '<option>First invoice only</option><option>First 3 invoices</option><option>Every invoice during commitment</option>';
       preview.textContent = promoValue.value + ' off first invoice';
-    } else if (promoBenefit === 'free') {
-      label.textContent = 'Number of free months';
-      promoValue.value = '1';
-      applyLabel.textContent = 'Month allocation';
-      applySelect.innerHTML = '<option>Upfront</option><option>Spread out</option><option>Back-loaded</option><option>Custom</option>';
-      preview.textContent = '1 free month';
     } else {
+      // 'credits' (free-months benefit lives in the standalone section)
+      promoBenefit = 'credits';
       label.textContent = 'StoreLah Credit value';
       promoValue.value = '$25';
       applyLabel.textContent = 'Issue credits when';
@@ -2456,11 +2630,13 @@ function bootPromotions() {
     }
   }
 
-  var benefitLabels = ['percentage', 'dollar', 'free', 'credits'];
+  // Benefit switching reads data-benefit (hidden free-months choice excluded —
+  // clicking it is impossible, and codePanelBenefit() maps visible-only).
   if (benefitChoices) {
-    benefitChoices.querySelectorAll('.choice').forEach(function (btn, i) {
+    benefitChoices.querySelectorAll('.choice').forEach(function (btn) {
       btn.addEventListener('click', function () {
-        promoBenefit = benefitLabels[i];
+        var b = btn.dataset ? btn.dataset.benefit : null;
+        promoBenefit = (b === 'percentage' || b === 'dollar' || b === 'credits') ? b : 'percentage';
         renderPromoBenefit();
       });
     });
@@ -2474,7 +2650,7 @@ function bootPromotions() {
   if (promoValue) {
     promoValue.addEventListener('input', function () {
       var p = document.getElementById('benefitPreview');
-      if (p) p.textContent = promoBenefit === 'credits' ? (promoValue.value || '$0') + ' StoreLah Credits' : promoBenefit === 'free' ? (promoValue.value || '0') + ' free month(s)' : (promoValue.value || '0') + ' off first invoice';
+      if (p) p.textContent = promoBenefit === 'credits' ? (promoValue.value || '$0') + ' StoreLah Credits' : (promoValue.value || '0') + ' off first invoice';
     });
   }
 
@@ -2946,15 +3122,30 @@ function wireEvents() {
     b.addEventListener('click', function () {
       document.querySelectorAll('[data-tabs="facility"] [data-tab]').forEach((x) => x.classList.remove('active'));
       this.classList.add('active');
-      document.querySelectorAll('[data-tabs="facility"] ~ .module-panel, #facilities .module-panel').forEach((p) => {
+      // Toggle only the TOP-LEVEL facility panels (direct children of the
+      // facilities section) — the access sub-panels live inside
+      // #facility-access and are owned by the access tab handler.
+      document.querySelectorAll('#facilities > .module-panel').forEach((p) => {
         p.classList.toggle('active', p.id === this.dataset.tab);
       });
       const panel = this.dataset.tab;
       activateSide('facilities', panel);
       // Lazy load
-      if (panel === 'facility-map') syncFacilityDashboard();
+      if (panel === 'facility-map') { ensureMapSizeFilter().catch(() => {}); syncFacilityDashboard(); }
       else if (panel === 'facility-units') refreshUnitsView();
-      else if (panel === 'facility-floorplans') fpOpen();
+      else if (panel === 'facility-floorplans') { fpOpen(); refreshMetricsView().catch((err) => showBanner('Metrics: ' + describeError(err))); }
+      else if (panel === 'facility-maintenance') bindMaintenance();
+      else if (panel === 'facility-assets') bindAssets();
+      else if (panel === 'facility-incidents') bindIncidents();
+      else if (panel === 'facility-access') {
+        // Restore the access inner tab (the toggle above only touches
+        // top-level panels) and load all five sub-panels.
+        const inner = document.querySelector('[data-tabs="access"] [data-tab].active') ||
+          document.querySelector('[data-tabs="access"] [data-tab]');
+        if (inner) inner.click();
+        bindAccess();
+      }
+      else if (panel === 'facility-inspections') bindInspections();
     });
   });
   // Customer tabs (data-tabs="customer")
@@ -2971,6 +3162,8 @@ function wireEvents() {
       if (panel === 'customer-tenants') refreshTenantsView();
       else if (panel === 'customer-bookings') refreshBookingsView();
       else if (panel === 'customer-moveins') refreshMoveinsView();
+      else if (panel === 'customer-quotes') bindQuotes().catch((err) => showBanner('Quotes: ' + describeError(err)));
+      else if (panel === 'customer-moveouts') bindMoveouts().catch((err) => showBanner('Move-outs: ' + describeError(err)));
     });
   });
   // Billing tabs
@@ -3101,6 +3294,17 @@ function wireEvents() {
   });
   // Floor plan events
   fpInitEvents();
+  // Area-metrics panel (read-only live reads under the floor-plan editor)
+  wireMetricsPanel();
+  // Facility operations (maintenance / assets / incidents / access / inspections)
+  wireFacilitiesOps();
+  // P1: portfolio cards, quotes/move-outs queues, settings extensions
+  wirePortfolio();
+  wireOpsQueues();
+  wireSettingsExt();
+  // P1 item 3: unit-map read-path filters (Size + Near lift).
+  $('#mapSizeFilter')?.addEventListener('change', (e) => { state.mapSize = e.target.value; fetchUnitMap().catch(() => {}); });
+  $('#mapNearLiftFilter')?.addEventListener('change', (e) => { state.mapNearLift = !!e.target.checked; fetchUnitMap().catch(() => {}); });
   // Close modals on overlay click
   $$('.modal-overlay').forEach((ov) => {
     ov.addEventListener('click', function (e) {
@@ -3158,12 +3362,27 @@ function wireEvents() {
   $('#leadsPagePrev')?.addEventListener('click', () => { if (state.leadPage > 1) { state.leadPage--; bindLeadTable().catch(() => {}); } });
   $('#leadsPageNext')?.addEventListener('click', () => { state.leadPage++; bindLeadTable().catch(() => {}); });
   $('#leadRows')?.addEventListener('click', (e) => {
+    // Checkbox toggles must not open the drawer — only row intent does.
+    if (e.target.closest('input[type="checkbox"]')) return;
     const btn = e.target.closest('button[data-act]');
-    if (!btn) return;
-    const { act } = btn.dataset;
-    const id = btn.dataset.leadId;
-    if (act === 'edit') openEditLead(id);
-    else if (act === 'delete') deleteLeadRow(id);
+    if (btn) {
+      const { act } = btn.dataset;
+      const id = btn.dataset.leadId;
+      if (act === 'edit') openEditLead(id);
+      else if (act === 'delete') deleteLeadRow(id);
+      return;
+    }
+    // Row-click (any cell) → right detail drawer (Lead Database only).
+    const tr = e.target.closest('tr[data-lead-id]');
+    if (tr) openLeadDrawer(tr.dataset.leadId, tr);
+  });
+  // Keyboard parity: Enter/Space on a focused row opens the same drawer.
+  $('#leadRows')?.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    const tr = e.target.closest && e.target.closest('tr[data-lead-id]');
+    if (!tr || e.target.closest('button[data-act],input[type="checkbox"]')) return;
+    e.preventDefault();
+    openLeadDrawer(tr.dataset.leadId, tr);
   });
   // Leads: import / export
   $('#leadExportBtn')?.addEventListener('click', exportLeadsCsv);
@@ -3173,12 +3392,21 @@ function wireEvents() {
     this.value = '';
     if (f) importLeadsCsv(f).catch((e) => showBanner('Import: ' + describeError(e)));
   });
-  // Lead modal
-  $('#addLeadBtn')?.addEventListener('click', openCreateLead);
-  $('#addLeadBtn2')?.addEventListener('click', openCreateLead);
+  // Lead modal (topbar #addLeadBtn removed — only pipeline + leads-page remain;
+  // bind every match so duplicate IDs / missing nodes never null-throw on boot)
+  $$('#addLeadBtn, #addLeadBtn2').forEach((el) => el?.addEventListener('click', openCreateLead));
   $('#leadModalClose')?.addEventListener('click', closeLeadModal);
   $('#leadFormCancel')?.addEventListener('click', closeLeadModal);
   $('#leadForm')?.addEventListener('submit', submitLeadForm);
+  // Lead detail drawer (row-click → right sidebar): shell wiring + DI so the
+  // view can refresh lists and delegate to the entry-owned modals.
+  wireLeadDrawer();
+  setLeadDrawerActions({ onEditLead: openEditLead, onSchedule: (lead) => openCreateAppointment(lead && lead.id).catch((e) => showBanner('Schedule: ' + describeError(e))) });
+  leadDrawerSetRefreshAll(async () => {
+    await refreshAll().catch(() => {});
+    await refreshLeadsViews().catch(() => {});
+    await bindCalendar().catch(() => {});
+  });
   // Pipeline filter
   $('#pipelineFilter')?.addEventListener('change', (e) => { state.pipelineFilter = e.target.value; bindPipeline().catch(() => {}); });
   // Inbox
@@ -3267,9 +3495,11 @@ async function boot() {
     await Promise.all([loadRefs(), refreshAll()]);
     // Navigate to initial page from hash
     const hash = location.hash ? location.hash.slice(1) : 'command';
-    if (['command', 'leads', 'pipeline', 'inbox', 'calendar', 'analytics', 'automation', 'customers', 'facilities', 'promotions', 'billing', 'settings'].includes(hash)) {
+    if (['command', 'portfolio', 'leads', 'pipeline', 'inbox', 'calendar', 'analytics', 'automation', 'customers', 'facilities', 'promotions', 'billing', 'settings'].includes(hash)) {
       if (hash === 'command') openPage('command');
-      else if (['leads', 'pipeline', 'inbox', 'calendar', 'analytics', 'automation'].includes(hash)) openCoreDefault('leads');
+      else if (hash === 'portfolio') openPage('portfolio');
+      else if (hash === 'analytics') openPage('analytics');
+      else if (['leads', 'pipeline', 'inbox', 'calendar', 'automation'].includes(hash)) openCoreDefault('leads');
       else if (hash === 'customers') openCoreDefault('customers');
       else if (hash === 'facilities') openCoreDefault('facilities');
       else if (hash === 'promotions') openCoreDefault('promotions');

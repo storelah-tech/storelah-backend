@@ -278,10 +278,10 @@ export async function updatePlan(id: string, input: Partial<PlanInput>) {
 // - VALIDATED → SCHEDULED, SCHEDULED → ACTIVE: no extra data checks; the
 //   operator performing the step is recorded on the version row (changedBy) and
 //   an optional approverRole label (e.g. "MANAGER", "COMMERCIAL") is stored in
-//   the version snapshot for audit. There is NO users/roles model in this repo,
-//   so approverRole is a self-declared label, NOT a verified permission —
-//   documented here deliberately: enforcing real RBAC needs an operator-role
-//   source (Auth/ops decision, follow-up).
+//   the version snapshot for audit. P1 item 6 adds a GATED verified check:
+//   actors that hold any Permission row must also hold 'promotions.approve'
+//   for these go-live edges (see the requirePermission call below); actors
+//   without rows keep the legacy label-only behavior.
 // - SCHEDULED → ENDED and ACTIVE → ENDED: early termination.
 // - VALIDATED → DRAFT and SCHEDULED → DRAFT: safe rollback for rework.
 //   ACTIVE → DRAFT is FORBIDDEN (a live plan must END, never silently revert);
@@ -303,7 +303,7 @@ export function allowedTransitions(from: PlanStatus): PlanStatus[] {
 export async function setPlanStatus(
   id: string,
   status: PlanStatus,
-  opts?: { changedBy?: string; approverRole?: string },
+  opts?: { changedBy?: string; approverRole?: string; actorId?: string },
 ) {
   const existing = await prisma.promotionPlan.findUnique({ where: { id }, include: INCLUDE });
   if (!existing) throw new AppError(404, 'NOT_FOUND', `Promotion plan ${id} not found`);
@@ -316,6 +316,16 @@ export async function setPlanStatus(
       `Cannot move plan from ${from} to ${status}`,
       { from, to: status, allowed: allowedTransitions(from) },
     );
+  }
+
+  // P1 item 6 (gated): go-live transitions (→ SCHEDULED / → ACTIVE) require
+  // the verified 'promotions.approve' permission — but ONLY for actors that
+  // have permission rows at all. Actors without rows keep the legacy behavior
+  // (free-text approverRole label, no check), so existing auth flows never
+  // break. Import is lazy to avoid a core/users ⇄ core/promotionPlans cycle.
+  if ((status === 'SCHEDULED' || status === 'ACTIVE') && from !== status && opts?.actorId) {
+    const { requirePermission } = await import('./users');
+    await requirePermission(opts.actorId, 'promotions.approve');
   }
 
   // Gate: scheduling-line transitions require a clean validation.

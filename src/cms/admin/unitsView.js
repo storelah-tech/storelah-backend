@@ -61,6 +61,7 @@ function normalizeUnit(u) {
     climateControl: u.climateControl,
     tenant,
     rateHistory: u.rateHistory || [],
+    operations: u.operations || null,
   };
 }
 
@@ -208,11 +209,47 @@ export async function showUnitDetail(code) {
     const last = u.rateHistory[0];
     setVal('#udLastChange', last ? (last.changePct >= 0 ? '+' : '') + last.changePct + '%' : '—');
     setVal('#udLastChangeSub', last ? new Date(last.date).toLocaleDateString('en-SG', { day: '2-digit', month: 'short', year: 'numeric' }) + ' · ' + (last.reason || '') : '—');
+    renderUnitOps(u.operations);
     currentEditCode = u.code;
     state.selectedCode = u.code;
     setUnitsBanner('');
   } catch (err) {
     showBanner('Detail: ' + describeError(err));
+  }
+}
+
+// P1 item 3: unit-drawer facility-ops sections (read from the in-tree P0
+// tables via GET /units/:code → data.operations). Branch-scoped where the P0
+// model carries no unit FK (inspections / certificates / access history);
+// unit-scoped work orders + incidents where the FK exists.
+function renderUnitOps(ops) {
+  const insp = $('#udInspections');
+  if (insp) {
+    const rows = (ops && ops.inspections) || [];
+    insp.innerHTML = rows.length
+      ? rows.map((c) => `<div class="alert-item"><div class="alert-body"><div class="alert-title">${escapeHtml(c.title)}</div><div class="alert-desc">${escapeHtml(c.frequency || '')} · ${escapeHtml(c.status || '')} · ${c.percentComplete || 0}%</div></div></div>`).join('')
+      : '<div class="ud-history-empty">No inspections for this facility yet.</div>';
+  }
+  const cert = $('#udCertificates');
+  if (cert) {
+    const rows = (ops && ops.certificates) || [];
+    cert.innerHTML = rows.length
+      ? rows.map((c) => `<div class="alert-item"><div class="alert-body"><div class="alert-title">${escapeHtml(c.name)}</div><div class="alert-desc">${escapeHtml(c.type || '')} · expires ${c.expiryDate ? new Date(c.expiryDate).toLocaleDateString('en-SG', { day: '2-digit', month: 'short', year: 'numeric' }) : '—'} · ${escapeHtml(c.status || '')}</div></div></div>`).join('')
+      : '<div class="ud-history-empty">No compliance certificates for this facility yet.</div>';
+  }
+  const acc = $('#udAccess');
+  if (acc) {
+    const rows = (ops && ops.accessHistory) || [];
+    acc.innerHTML = rows.length
+      ? rows.map((e) => `<div class="alert-item"><div class="alert-body"><div class="alert-title">${escapeHtml(e.holder || e.door?.code || 'Event')} · ${escapeHtml(e.result || '')}</div><div class="alert-desc">${e.occurredAt ? new Date(e.occurredAt).toLocaleString('en-SG', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : ''}${e.door?.name ? ' · ' + escapeHtml(e.door.name) : ''}</div></div></div>`).join('')
+      : '<div class="ud-history-empty">No access history for this facility yet.</div>';
+  }
+  const wo = $('#udWorkOrders');
+  if (wo) {
+    const rows = (ops && ops.workOrders) || [];
+    wo.innerHTML = rows.length
+      ? rows.map((w) => `<div class="alert-item"><div class="alert-body"><div class="alert-title">${escapeHtml(w.title)}</div><div class="alert-desc">${escapeHtml(w.status || '')}${w.priority ? ' · ' + escapeHtml(w.priority) : ''}</div></div></div>`).join('')
+      : '<div class="ud-history-empty">No work orders for this unit yet.</div>';
   }
 }
 
@@ -248,8 +285,8 @@ function populateSizeSelect(selected) {
 
 function populateStatusSelect(mode, selected) {
   const sel = $('#f-status');
-  const createOnly = ['AVAILABLE', 'RESERVED', 'MAINTENANCE'];
-  const all = ['OCCUPIED', 'AVAILABLE', 'RESERVED', 'OVERDUE', 'MAINTENANCE', 'INACTIVE'];
+  const createOnly = ['AVAILABLE', 'RESERVED', 'MAINTENANCE', 'BLOCKED'];
+  const all = ['OCCUPIED', 'AVAILABLE', 'RESERVED', 'OVERDUE', 'MAINTENANCE', 'INACTIVE', 'BLOCKED'];
   const list = mode === 'create' ? createOnly : all;
   sel.innerHTML = list.map((s) => `<option value="${s}">${STATUS_LABEL[s]}</option>`).join('');
   if (selected && list.includes(selected)) sel.value = selected;

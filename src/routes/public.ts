@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { ok, fail } from '../lib/http';
 import { listPublicBranches } from '../core/branches';
 import { getUnitMap, listPublicUnits } from '../core/units';
-import { listActivePromotions, validatePromotion } from '../core/promotions';
+import { listActivePromotions, validatePromotion, DEFAULT_PROMO_TYPE, DEFAULT_PROMO_SCOPE } from '../core/promotions';
 import { getPublicFloorPlan } from '../core/floorPlans';
 
 const router = Router();
@@ -63,8 +63,16 @@ router.post('/promotions/validate', async (req: Request, res: Response) => {
   const parsed = validateSchema.safeParse(req.body);
   if (!parsed.success) {
     // Invalid input is reported as an invalid promo, not an error response.
+    // Additive type/scope fields ride along with stable defaults.
     const rate = typeof req.body?.rate === 'number' ? req.body.rate : 0;
-    ok(res, { valid: false, discountAmt: 0, monthlyAfterPromo: rate });
+    ok(res, {
+      valid: false,
+      discountAmt: 0,
+      monthlyAfterPromo: rate,
+      type: DEFAULT_PROMO_TYPE,
+      appliesTo: DEFAULT_PROMO_SCOPE,
+      durationScope: DEFAULT_PROMO_SCOPE,
+    });
     return;
   }
   ok(res, await validatePromotion(parsed.data.code, parsed.data.rate, parsed.data.months));

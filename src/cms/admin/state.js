@@ -56,6 +56,9 @@ export const state = {
   branchCode: 'BM', // drives map + table filter (sidebar branch switcher)
   level: 1, // drives map + table filter (floor tabs)
   statusFilter: '',
+  // P1 item 3: unit-map read-path filters (size code + near-lift proximity).
+  mapSize: '',
+  mapNearLift: false,
   selectedCode: null,
   // floor-plan editor state (facility setup view)
   fp: {
@@ -75,6 +78,16 @@ export const state = {
     liveDims: null, // live-typed canvas size from the W/H inputs (local, unsaved); null = use plan/server size
     lockSqft: true, // resize snaps to the nearest rect preserving area≈sqft (ops can toggle off; server still enforces ±15%)
     ghostRotated: false, // palette drag ghost orientation toggle (swaps W/H for rectangular footprints)
+  },
+  // Area-metrics panel state (facility setup view; read-only live reads of
+  // the Phase-2 endpoints for the editor's selected floor).
+  metrics: {
+    floorId: null, // floor the panel last rendered (follows state.fp.floorId)
+    report: null, // last GET /floor-plans/:floorId/metrics payload
+    snapshots: [], // last GET .../metrics/snapshots rows
+    loading: false,
+    error: '', // last load failure message ('' when healthy)
+    seq: 0, // response sequence guard: stale out-of-order responses are dropped
   },
 };
 

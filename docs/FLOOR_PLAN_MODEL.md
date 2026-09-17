@@ -123,8 +123,17 @@ nearest integer rect preserving area ≈ sqft (keeps the dragged width, derives
 `h = round(sqft/w)`, clamped to canvas). The toolbar `🔒/🔓 sqft` toggle is the
 ops override — turning it off shows a warning because the server still
 enforces the area rule. A `⟳ Rotate` button (selection strip) plus a palette
-ghost orientation toggle cover rectangular units (swap W/H, clamped +
-overlap-checked + persisted).
+ ghost orientation toggle cover rectangular units (swap W/H, clamped +
+overlap-checked + persisted). Decoration blocks resize free-form (no sqft to
+preserve): every rendered `.fp-block` shows a 16×16 corner handle
+(`.fp-block .fp-resize`, always visible, full opacity on select/hover —
+a precision control under 44px like the zoom buttons), dragging it live-snaps
+W/H in grid feet (min 1×1, clamped to canvas at the block's origin so the rect
+stays in-bounds, mirroring `fpClampCanvasContent`), and resize-end persists via
+`PUT /floor-plans/:floorId/blocks/:blockId` with toast + refetch-revert on
+failure (same pattern as unit resize; cross-plan id → 404, bad geometry → 400).
+Blocks stay below units (z-index 1 vs 2) and the read-only preview renders no
+handles (`pointer-events:none`).
 
 **Server area-vs-sqft validation (P3) — 400.** `setUnitPlacement` rejects
 writes whose drawn area deviates more than **±15%** (`AREA_TOLERANCE`) from
@@ -146,6 +155,37 @@ runs it, old rows render as-is and validate-on-write nudges them to true size.
 same fields as before — canvas numbers are now feet and placement rects are ft
 rects, which is exactly what the booking renderer already consumes, so booking
 stays compatible with zero client changes.
+
+## Stackable locker placements (`stackTier`)
+
+Locker units are physically stacked upper/lower sharing one footprint, so the
+editor supports stacking: two **LOCKER** placements may share the EXACT same
+rect as an upper/lower pair, distinguished by `UnitPlacement.stackTier`
+(migration `20260916130000_unit_placement_stack_tier`, `DEFAULT 0` — every
+pre-existing placement is a ground tier, no data migration needed).
+
+- Tiers are 0 (ground/sole) or 1 (upper) only — lockers stack at most 2 high.
+  `@unique(unitId)` is unchanged: a unit is still placed at most once.
+- `PUT /floor-plans/:floorId/units/:unitId` accepts optional `stackTier`
+  (omitted keeps the tier on update, 0 on create). Every placement shape
+  (CMS + public-safe) returns `stackTier`.
+- Server rules (`setUnitPlacement`): tier 1 requires a tier-0 partner on the
+  same rect (lone tier 1 → 400); a rect holding both tiers rejects a third
+  placement (409); both units sharing a rect must be LOCKER size (→ 400,
+  stacking is lockers-only). Same-rect stack rules are checked before the
+  area/overlap rules so attempts get the specific error. All other overlaps
+  still 409 — the guard exempts only same-rect pairs whose tiers differ.
+- Unstacking: deleting the upper tier (or the `Unstack` action) restores the
+  ground placement to a single; moving/deleting a ground tier demotes a
+  leftover upper to a standalone ground single (never a lone tier 1).
+- Editor (`floorplanView.js`): dropping a locker onto a lone locker's exact
+  rect (snap-to-stack) offers `Stack` via confirm; a lone locker with exactly
+  one matching unplaced locker shows `⧉ Stack <code>` (`#fpStackBtn`);
+  stacked pairs render as ONE `.fp-placed.fp-stacked` block split by a
+  `.fp-stack-divider` line (upper code above, lower below) with an `#fpUnstackBtn`
+  action; drag/resize/rotate moves both tiers together (ground persisted first,
+  then upper). The read-only preview (`#fpViewModal`) renders the identical
+  split-block treatment. Non-locker stack attempts are rejected with a toast.
 
 ## Decisions and tradeoffs
 

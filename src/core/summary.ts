@@ -38,6 +38,26 @@ export async function getSummary() {
 
   const overdueTenants = await prisma.tenant.count({ where: { status: 'OVERDUE' } });
 
+  // P1 item 1: portfolio rollup computed from the same Unit rows (sqft-based).
+  // BLOCKED units contribute to totals but never to leased/MRR/PSF.
+  const totalSqft = units.reduce((s, u) => s + u.sqft, 0);
+  const leasedUnits = units.filter(
+    (u) => u.status === 'OCCUPIED' || u.status === 'OVERDUE' || u.status === 'RESERVED',
+  );
+  const leasedSqft = leasedUnits.reduce((s, u) => s + u.sqft, 0);
+  const sqftByBranch = units.reduce<Record<string, { name: string; totalSqft: number; leasedSqft: number }>>(
+    (acc, u) => {
+      const b = u.branch;
+      acc[b.code] ??= { name: b.name, totalSqft: 0, leasedSqft: 0 };
+      acc[b.code].totalSqft += u.sqft;
+      if (u.status === 'OCCUPIED' || u.status === 'OVERDUE' || u.status === 'RESERVED') {
+        acc[b.code].leasedSqft += u.sqft;
+      }
+      return acc;
+    },
+    {},
+  );
+
   return {
     kpis: {
       totalUnits: total,
@@ -63,5 +83,23 @@ export async function getSummary() {
       code,
       amount: Math.round(amount),
     })),
+    // P1 item 1: portfolio overview (computed only — same Unit rows as above).
+    portfolio: {
+      totalUnits: total,
+      leasedUnits: leased,
+      occupancyPct: pct(leased, total),
+      totalSqft,
+      leasedSqft,
+      availableSqft: Math.max(0, totalSqft - leasedSqft),
+      sqftOccupancyPct: pct(leasedSqft, totalSqft),
+      mrr: Math.round(mrr),
+      byBranch: Object.entries(sqftByBranch).map(([code, b]) => ({
+        branch: code,
+        name: b.name,
+        totalSqft: b.totalSqft,
+        leasedSqft: b.leasedSqft,
+        sqftOccupancyPct: pct(b.leasedSqft, b.totalSqft),
+      })),
+    },
   };
 }

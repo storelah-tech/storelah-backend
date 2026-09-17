@@ -30,6 +30,9 @@ enum UnitStatus {
   OVERDUE
   MAINTENANCE
   INACTIVE
+  // P1: unit is physically held out of inventory (fit-out, damage, audit hold).
+  // Not rentable, not browseable, counts toward totals but never toward leased.
+  BLOCKED
 }
 
 enum TenantStatus {
@@ -113,6 +116,11 @@ model AdminUser {
   role         Role     @default(MANAGER)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
+
+  // P1 item 6: facility scoping + verified permissions. Empty rows = legacy
+  // role behavior (fallback); enforcement is gated behind these rows.
+  facilityAccess OperatorFacilityAccess[]
+  permissions    Permission[]
 }
 
 model Customer {
@@ -144,6 +152,18 @@ model Branch {
   leads           Lead[]
   appointments    Appointment[]
   safeguardRules  SafeguardRule[]
+  workOrders      WorkOrder[]
+  preventiveTasks PreventiveTask[]
+  assets          Asset[]
+  incidents       Incident[]
+  accessDoors     AccessDoor[]
+  accessCredentials AccessCredential[]
+  accessEvents    AccessEvent[]
+  checklists      InspectionChecklist[]
+  certificates    ComplianceCertificate[]
+  facilityFees    FacilityFee[]
+  operatorAccess  OperatorFacilityAccess[]
+  metricsSnapshots FloorplanMetricsSnapshot[]
   createdAt       DateTime     @default(now())
   updatedAt       DateTime     @updatedAt
 }
@@ -159,6 +179,7 @@ model Floor {
 
   units      Unit[]
   floorPlan  FloorPlan? // one-to-one: a floor has exactly one plan (see FloorPlan)
+  metricsSnapshots FloorplanMetricsSnapshot[]
 
   @@unique([branchId, level])
 }
@@ -228,6 +249,11 @@ model FloorPlanBlock {
   width       Int // rendered bounding box in FEET (drag / resize)
   height      Int
   color       String? // optional render tint (hex); renderers default to a neutral tone when null
+  // Authored door compass edges (Phase 3: unit/region door side selection).
+  // Canonical CSV subset of N/S/E/W in compass order (e.g. "N,S"); NULL means
+  // unauthored — the metrics bridge falls back to AUTO_ALL_EDGES for that
+  // region. Additive, nullable, no backfill needed.
+  doorEdges   String?
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 
@@ -252,6 +278,7 @@ model UnitSize {
   units      Unit[]
   promotions Promotion[]
   safeguardRules SafeguardRule[]
+  facilityFees FacilityFee[]
 
   @@map("UnitSize")
 }
@@ -280,6 +307,8 @@ model Unit {
   invoices       Invoice[]
   notices        Notice[]
   placement      UnitPlacement? // one-to-one: a unit appears on its floor's plan at most once
+  workOrders     WorkOrder[]
+  incidents      Incident[]
 
   @@unique([branchId, unitCode])
   @@index([branchId, floorId])
@@ -307,6 +336,12 @@ model Unit {
 //     only soft-deletes via `deletedAt`, so Restrict never fires);
 //   - reads render a plan by joining placement → unit and FILTERING OUT placements
 //     whose unit has `deletedAt != null`, so stale geometry never surfaces.
+//
+// STACKING (lockers only): two locker placements may share the exact same rect
+// (x/y/width/height) as a stacked upper/lower pair, distinguished by `stackTier`
+// (0 = ground/sole, 1 = upper). A unit is still placed at most once
+// (`@@unique([unitId])`). The overlap guard exempts same-rect pairs whose tiers
+// differ; all other overlaps are still rejected. See src/core/floorPlans.ts.
 model UnitPlacement {
   id          String    @id @default(cuid())
   floorPlanId String
@@ -317,6 +352,12 @@ model UnitPlacement {
   y           Int
   width       Int // rendered bounding box in FEET (drag / resize)
   height      Int
+  stackTier   Int       @default(0) // stacking tier: 0 = ground/sole tier, 1 = upper tier of a same-rect locker pair
+  // Authored door compass edges (Phase 3: unit door side selection, N/S/E/W
+  // toggles in the editor). Canonical CSV subset in compass order (e.g.
+  // "E,S"); NULL means unauthored — the metrics bridge falls back to
+  // AUTO_ALL_EDGES for that unit. Additive, nullable, no backfill needed.
+  doorEdges   String?
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 
@@ -349,6 +390,8 @@ model Tenant {
   bookings  Booking[]
   invoices  Invoice[]
   notices   Notice[]
+  // P1 item 5: per-tenant exception overrides on fees/deposits.
+  feeExceptions FacilityFee[]
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
 }
@@ -726,4 +769,419 @@ model Setting {
   value     Json
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+// ---------------------------------------------------------------------------
+// Facility operations (CMS "Facilities Management" sidebar modules 2–6).
+// Additive only: brand-new tables, no changes to existing models beyond the
+// back-relation arrays on Branch/Unit above.
+// ---------------------------------------------------------------------------
+
+enum WorkOrderStatus {
+  OPEN
+  IN_PROGRESS
+  DONE
+}
+
+enum PreventiveCategory {
+  HVAC
+  FIRE
+  DOORS
+  CCTV
+}
+
+enum AssetStatus {
+  ACTIVE
+  IN_SERVICE
+  RETIRED
+}
+
+enum VendorStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum IncidentSeverity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum IncidentStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+  CLOSED
+}
+
+enum AccessEventResult {
+  GRANTED
+  DENIED
+}
+
+enum CredentialType {
+  PERMANENT
+  TEMPORARY
+  VISITOR
+}
+
+enum CredentialStatus {
+  ACTIVE
+  REVOKED
+  EXPIRED
+}
+
+enum DoorStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum InspectionFrequency {
+  DAILY
+  WEEKLY
+  MONTHLY
+  QUARTERLY
+  ANNUAL
+}
+
+enum ChecklistStatus {
+  OPEN
+  IN_PROGRESS
+  DONE
+}
+
+enum CertificateStatus {
+  VALID
+  EXPIRING
+  EXPIRED
+}
+
+// Maintenance work order: branch/unit scope, OPEN → IN_PROGRESS → DONE
+// lifecycle, monetary value of the job.
+model WorkOrder {
+  id          String          @id @default(cuid())
+  title       String
+  description String?
+  branchId    String?
+  branch      Branch?         @relation(fields: [branchId], references: [id])
+  unitId      String?
+  unit        Unit?           @relation(fields: [unitId], references: [id])
+  status      WorkOrderStatus @default(OPEN)
+  priority    String? // Low / Medium / High
+  value       Decimal         @default(0) @db.Decimal(10, 2)
+  assignee    String?
+  dueDate     DateTime?
+  completedAt DateTime? // set when the order transitions to DONE
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  @@index([branchId])
+  @@index([status])
+}
+
+// Preventive-maintenance checklist task, grouped by trade category
+// (HVAC / Fire / Doors / CCTV) with a % complete per task.
+model PreventiveTask {
+  id              String             @id @default(cuid())
+  title           String
+  category        PreventiveCategory
+  branchId        String?
+  branch          Branch?            @relation(fields: [branchId], references: [id])
+  percentComplete Int                @default(0)
+  dueDate         DateTime?
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+
+  @@index([branchId])
+  @@index([category])
+}
+
+// Asset register row: stable operator code (e.g. AST-WDL-HVAC-04) + branch link.
+model Asset {
+  id           String      @id @default(cuid())
+  code         String      @unique // e.g. AST-WDL-HVAC-04
+  name         String
+  category     String // HVAC / Fire / Doors / CCTV / ...
+  branchId     String?
+  branch       Branch?     @relation(fields: [branchId], references: [id])
+  status       AssetStatus @default(ACTIVE)
+  purchaseDate DateTime?
+  value        Decimal?    @db.Decimal(10, 2)
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  @@index([branchId])
+  @@index([status])
+}
+
+// Vendor register row: SLA commitment + year-to-date spend.
+model Vendor {
+  id        String       @id @default(cuid())
+  name      String
+  service   String? // e.g. "HVAC servicing"
+  sla       String? // e.g. "4h response"
+  ytdSpend  Decimal      @default(0) @db.Decimal(12, 2)
+  status    VendorStatus @default(ACTIVE)
+  contact   String?
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  @@index([status])
+}
+
+// Operational incident: severity, lifecycle status, branch/unit link and a
+// multi-step resolution checklist stored as JSON
+// ([{ label, done }, ...] — presentational, never queried individually).
+model Incident {
+  id          String           @id @default(cuid())
+  title       String
+  description String?
+  severity    IncidentSeverity @default(MEDIUM)
+  status      IncidentStatus   @default(OPEN)
+  branchId    String?
+  branch      Branch?          @relation(fields: [branchId], references: [id])
+  unitId      String?
+  unit        Unit?            @relation(fields: [unitId], references: [id])
+  checklist   Json? // multi-step resolution checklist
+  reportedBy  String?
+  resolvedAt  DateTime? // set when the incident transitions to RESOLVED/CLOSED
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  @@index([branchId])
+  @@index([severity])
+  @@index([status])
+}
+
+// Access-control door (one row per controlled entry point).
+model AccessDoor {
+  id        String     @id @default(cuid())
+  code      String     @unique // e.g. WDL-GATE-01
+  name      String
+  branchId  String?
+  branch    Branch?    @relation(fields: [branchId], references: [id])
+  location  String?
+  status    DoorStatus @default(ACTIVE)
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  events AccessEvent[]
+
+  @@index([branchId])
+}
+
+// Access credential (fob / card / PIN holder). TEMPORARY/VISITOR rows carry a
+// validTo expiry and back the "Temporary" sub-panel.
+model AccessCredential {
+  id         String           @id @default(cuid())
+  holderName String
+  type       CredentialType   @default(PERMANENT)
+  status     CredentialStatus @default(ACTIVE)
+  branchId   String?
+  branch     Branch?          @relation(fields: [branchId], references: [id])
+  validFrom  DateTime?
+  validTo    DateTime? // expiry for TEMPORARY / VISITOR credentials
+  createdAt  DateTime         @default(now())
+  updatedAt  DateTime         @updatedAt
+
+  events AccessEvent[]
+
+  @@index([branchId])
+  @@index([status])
+}
+
+// Access policy (named rule set, e.g. "Contractor hours").
+model AccessPolicy {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  scope       String? // e.g. "WD · all doors"
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+// Access event (entry log). result DENIED rows back the "Exceptions"
+// sub-panel; the "Live" sub-panel reads the most recent rows.
+model AccessEvent {
+  id           String            @id @default(cuid())
+  doorId       String?
+  door         AccessDoor?       @relation(fields: [doorId], references: [id])
+  credentialId String?
+  credential   AccessCredential? @relation(fields: [credentialId], references: [id])
+  branchId     String?
+  branch       Branch?           @relation(fields: [branchId], references: [id])
+  result       AccessEventResult @default(GRANTED)
+  occurredAt   DateTime          @default(now())
+  note         String?
+  createdAt    DateTime          @default(now())
+
+  @@index([branchId])
+  @@index([doorId])
+  @@index([occurredAt])
+}
+
+// Recurring inspection checklist (daily / monthly / ...). items is a JSON
+// step list ([{ label, done }, ...]); percentComplete is operator-maintained.
+model InspectionChecklist {
+  id              String              @id @default(cuid())
+  title           String
+  frequency       InspectionFrequency @default(DAILY)
+  branchId        String?
+  branch          Branch?             @relation(fields: [branchId], references: [id])
+  items           Json? // checklist steps
+  percentComplete Int                 @default(0)
+  status          ChecklistStatus     @default(OPEN)
+  dueDate         DateTime?
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  @@index([branchId])
+  @@index([frequency])
+}
+
+// Compliance certificate (Fire Safety / Lift / Public Liability / ...) with
+// an expiry date. Expiry surfacing reads expiryDate (plus the status mirror).
+model ComplianceCertificate {
+  id         String            @id @default(cuid())
+  name       String
+  type       String // e.g. "Fire Safety" / "Lift" / "Public Liability"
+  branchId   String?
+  branch     Branch?           @relation(fields: [branchId], references: [id])
+  issuer     String?
+  expiryDate DateTime
+  status     CertificateStatus @default(VALID)
+  createdAt  DateTime          @default(now())
+  updatedAt  DateTime          @updatedAt
+
+  @@index([branchId])
+  @@index([expiryDate])
+}
+
+// ---------------------------------------------------------------------------
+// P1 facility extensions (additive): fees/deposits with per-facility override,
+// business rules, operator facility scoping + permissions.
+// ---------------------------------------------------------------------------
+
+enum FeeScope {
+  GLOBAL
+  FACILITY
+  PRODUCT
+  EXCEPTION
+}
+
+enum FeeKind {
+  FEE
+  DEPOSIT
+}
+
+// Fee / deposit rule with a Global → Facility → Product → Exception priority
+// chain. The scalar Setting store cannot hold this shape (a fee needs a key +
+// a scope + an optional branch/size/tenant target), so it is relational.
+// Resolution order (see resolveFee in src/core/fees.ts): the most specific
+// ACTIVE row matching (kind, key) wins — EXCEPTION (tenantId) > PRODUCT
+// (sizeId) > FACILITY (branchId) > GLOBAL (no target). amountKind is FLAT
+// (SGD), PCT (% of monthly rate) or MONTHS (multiples of monthly rate,
+// deposits only).
+model FacilityFee {
+  id         String   @id @default(cuid())
+  kind       FeeKind  @default(FEE)
+  key        String // e.g. "lateFee" / "adminFee" / "deposit" / "insurance"
+  scope      FeeScope @default(GLOBAL)
+  branchId   String?
+  branch     Branch?  @relation(fields: [branchId], references: [id])
+  sizeId     String?
+  unitSize   UnitSize? @relation(fields: [sizeId], references: [id])
+  tenantId   String?
+  tenant     Tenant?  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  amount     Decimal  @db.Decimal(10, 2)
+  amountKind String   @default("FLAT") // FLAT | PCT | MONTHS
+  active     Boolean  @default(true)
+  note       String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([kind, key, active])
+  @@index([branchId])
+  @@index([sizeId])
+  @@index([tenantId])
+}
+
+// Org + booking business rules beyond the scalar booking settings
+// (booking.autoConfirm / minAdvanceHours / maxStayMonths). Typed key/value
+// rows (see DEFAULT_BUSINESS_RULES in src/core/businessRules.ts): reads merge
+// stored rows over code defaults so a fresh DB behaves like a seeded one;
+// writes validate against the def (boolean | number | text).
+model BusinessRule {
+  id          String   @id @default(cuid())
+  key         String   @unique // e.g. "booking.moveOutNoticeDays"
+  category    String // "org" | "booking" | ...
+  value       Json
+  active      Boolean  @default(true)
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([category])
+}
+
+// P1 item 6: which facilities an operator may act on. One row per
+// (admin, branch); scope "ALL" with branchId NULL grants every facility.
+// An operator with NO rows is unscoped (legacy behavior — full access).
+model OperatorFacilityAccess {
+  id          String   @id @default(cuid())
+  adminUserId String
+  adminUser   AdminUser @relation(fields: [adminUserId], references: [id], onDelete: Cascade)
+  branchId    String?
+  branch      Branch?  @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  scope       String   @default("FACILITY") // FACILITY | ALL
+  createdAt   DateTime @default(now())
+
+  @@unique([adminUserId, branchId])
+  @@index([adminUserId])
+}
+
+// Floor-plan area-metrics snapshots (Phase 2: Floor Plan Area Metrics).
+//
+// APPEND-ONLY history of published metric reports, one row per POST
+// /api/v1/cms/floor-plans/:floorId/metrics/snapshots. There is deliberately
+// NO unique constraint on (floor, effective_date): publishing the same date
+// twice creates two rows (history, not state). There is no PUT/PATCH route.
+// Rows whose geometry failed validation are never persisted (the service
+// throws 422 before writing). payload is the full live report at publish
+// time (areas as exact decimal-string Q + sqft floats; money as integer
+// cents + 2dp SGD — JSON-safe, no BigInt). The lookup key for history reads
+// is (branchId, floorId, effectiveDate); schemaVersion tags the payload shape
+// (see METRICS_SCHEMA_VERSION in src/core/floorPlanMetrics.ts).
+model FloorplanMetricsSnapshot {
+  id            String   @id @default(cuid())
+  branchId      String
+  branch        Branch   @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  floorId       String
+  floor         Floor    @relation(fields: [floorId], references: [id], onDelete: Cascade)
+  effectiveDate DateTime // UTC midnight of the operator-supplied YYYY-MM-DD effective_date
+  schemaVersion Int      @default(1)
+  geometryHash  String // SHA-256 over the canonicalised sorted region set
+  payload       Json // full FloorMetricsReport at publish time
+  createdAt     DateTime @default(now())
+
+  @@index([branchId, floorId, effectiveDate])
+  @@index([floorId])
+}
+
+// P1 item 6: verified permission grants (replaces free-text approverRole ONLY
+// where gated — see mayAct in src/core/users.ts). Catalog: promotions.approve,
+// fees.manage, businessRules.manage, users.manage. An operator with NO
+// permission rows is unchecked (legacy fallback); enforcement applies only to
+// operators that have at least one row.
+model Permission {
+  id          String   @id @default(cuid())
+  adminUserId String
+  adminUser   AdminUser @relation(fields: [adminUserId], references: [id], onDelete: Cascade)
+  permission  String
+  createdAt   DateTime @default(now())
+
+  @@unique([adminUserId, permission])
+  @@index([adminUserId])
 }

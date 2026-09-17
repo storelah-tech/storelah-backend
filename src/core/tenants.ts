@@ -210,3 +210,89 @@ export async function listTenants(opts?: { from?: Date; to?: Date }) {
 
   return rows;
 }
+
+// ---------- move-outs queue (P1 item 4) ----------
+//
+// Read-model over the existing Notice rows + TenantStatus.NOTICE — no
+// migration. Workflow/state machine with EXPLICIT operator transitions only:
+//   - submitting a Notice (customer portal) never flips tenant status
+//     (unchanged — see the Notice model docs);
+//   - the operator moves a tenant out via PATCH /move-outs/:tenantId
+//     { action: 'complete' } (NOTICE → INACTIVE + unit released) or withdraws
+//     the notice via { action: 'cancel' } (NOTICE → ACTIVE, unit untouched).
+// There is no auto-transition anywhere in this path.
+export interface MoveOutRow {
+  tenantId: string;
+  name: string;
+  email: string | null;
+  mobile: string | null;
+  status: TenantStatus;
+  unitCode: string | null;
+  branchCode: string | null;
+  branchName: string | null;
+  monthlyRate: number;
+  lastDay: Date | null;
+  noticeCount: number;
+  submittedAt: Date | null;
+}
+
+export async function listMoveOuts(): Promise<MoveOutRow[]> {
+  const tenants = await prisma.tenant.findMany({
+    where: { status: 'NOTICE' },
+    include: {
+      unit: { include: { size: true, branch: true } },
+      notices: { orderBy: { createdAt: 'desc' } },
+    },
+    orderBy: { name: 'asc' },
+  });
+  return tenants.map((t) => {
+    const latest = t.notices[0] ?? null;
+    return {
+      tenantId: t.id,
+      name: t.name,
+      email: t.email,
+      mobile: t.mobile,
+      status: t.status,
+      unitCode: t.unit?.unitCode ?? null,
+      branchCode: t.unit?.branch?.code ?? null,
+      branchName: t.unit?.branch?.name ?? null,
+      monthlyRate: toNum(t.monthlyRate),
+      lastDay: latest?.lastDay ?? null,
+      noticeCount: t.notices.length,
+      submittedAt: latest?.createdAt ?? null,
+    };
+  });
+}
+
+export type MoveOutAction = 'complete' | 'cancel';
+
+export async function transitionMoveOut(tenantId: string, action: MoveOutAction) {
+  const tenant = await prisma.tenant.findUnique({
+    where: { id: tenantId },
+    include: { unit: true },
+  });
+  if (!tenant) throw new AppError(404, 'NOT_FOUND', `Tenant ${tenantId} not found`);
+  if (tenant.status !== 'NOTICE') {
+    throw new AppError(
+      409,
+      'CONFLICT',
+      `Tenant ${tenant.name} is ${tenant.status}, not NOTICE — only tenants on notice can move out`,
+    );
+  }
+  if (action === 'complete') {
+    // Explicit operator action: end the tenancy and release the unit.
+    await prisma.$transaction([
+      prisma.tenant.update({ where: { id: tenantId }, data: { status: 'INACTIVE', unitId: null } }),
+      ...(tenant.unitId
+        ? [prisma.unit.update({ where: { id: tenant.unitId }, data: { status: 'AVAILABLE' } })]
+        : []),
+    ]);
+    return { tenantId, action, status: 'INACTIVE' as const, unitReleased: tenant.unitId !== null };
+  }
+  // cancel: withdraw the notice, tenancy continues, unit untouched.
+  const updated = await prisma.tenant.update({
+    where: { id: tenantId },
+    data: { status: 'ACTIVE' },
+  });
+  return { tenantId, action, status: updated.status, unitReleased: false };
+}

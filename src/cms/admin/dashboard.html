@@ -371,12 +371,14 @@ main{min-width:0;display:flex;flex-direction:column;min-height:100vh}
 .u-cell.reserved{background:var(--amber-light);border-color:var(--amber)}
 .u-cell.overdue{background:var(--red-light);border-color:var(--red)}
 .u-cell.maintenance{background:var(--cream);border-color:var(--line)}
+.u-cell.blocked{background:#e8e4de;border-color:#8a8478;border-style:dashed}
 .u-cell.selected{border-color:var(--terra)!important;box-shadow:0 0 0 2px var(--terra-light)}
 .u-dot{position:absolute;top:4px;right:4px;width:5px;height:5px;border-radius:50%}
 .u-cell.occupied .u-dot{background:var(--olive2)}
 .u-cell.available .u-dot{background:var(--olive)}
 .u-cell.reserved .u-dot{background:var(--amber)}
 .u-cell.overdue .u-dot{background:var(--red)}
+.u-cell.blocked .u-dot{background:#8a8478}
 .u-id{font-size:10px;font-weight:800;color:var(--ink)}
 .u-size{font-size:8.5px;font-weight:600;color:var(--muted);margin-top:1px}
 .u-psf{font-size:8.5px;font-weight:700;color:var(--terra);margin-top:1px}
@@ -423,9 +425,14 @@ main{min-width:0;display:flex;flex-direction:column;min-height:100vh}
 .fp-placed.selected{border-color:var(--terra);box-shadow:0 0 0 2px var(--terra-light)}
 .fp-placed .fp-resize{position:absolute;right:2px;bottom:2px;width:11px;height:11px;background:var(--ink);border-radius:2px;cursor:nwse-resize;opacity:0}
 .fp-placed.selected .fp-resize{opacity:1}
+.fp-placed.fp-stacked{justify-content:center}
+.fp-stack-upper,.fp-stack-lower{font-size:10px;line-height:1.2;padding:0 2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}
+.fp-stack-divider{width:82%;height:2px;background:var(--olive2);border-radius:1px;margin:2px 0;flex:none}
 .fp-block{position:absolute;background:var(--line);border:1.5px dashed var(--muted);border-radius:4px;display:flex;align-items:center;justify-content:center;cursor:grab;box-sizing:border-box;z-index:1}
 .fp-block .fp-block-name{font-size:10px;font-weight:800;color:var(--muted);text-align:center}
 .fp-block.selected{border-color:var(--terra);border-style:solid;background:var(--terra-light);box-shadow:0 0 0 2px var(--terra-light)}
+.fp-block .fp-resize{position:absolute;right:1px;bottom:1px;width:16px;height:16px;background:var(--ink);border-radius:3px;cursor:nwse-resize;opacity:.6;touch-action:none}
+.fp-block.selected .fp-resize,.fp-block:hover .fp-resize{opacity:1}
 .fp-structure{margin-top:4px}
 .fp-structure summary{cursor:pointer;color:var(--muted);font-size:12px}
 .fp-structure-input{width:100%;font-family:Menlo,Consolas,monospace;font-size:11px;border:1.5px solid var(--line);border-radius:7px;padding:8px;background:var(--white);color:var(--ink);resize:vertical;margin-top:6px}
@@ -537,6 +544,25 @@ main{min-width:0;display:flex;flex-direction:column;min-height:100vh}
   .month-strip{max-width:100%}
 }
 
+/* ============ LEAD DETAIL DRAWER (Lead Database row → right sidebar) ============ */
+#leadDrawer[hidden]{display:none}
+#leadDrawer .drawer-panel{width:min(560px,94vw)}
+#leadDrawerTitle{margin:0;font-size:18px;letter-spacing:-.02em}
+#leadDrawerSub{color:var(--muted);font-size:12px}
+#leadDrawer .detail-tabs button{font-size:12px;font-weight:650;color:var(--muted)}
+#leadDrawer .drawer-body .composer textarea{font-size:12px}
+#leadDrawer .rulebox{font-size:11px}
+#leadDrawer .timeline{margin-top:14px}
+#leadRows tr[data-lead-id]{cursor:pointer}
+#leadRows tr[data-lead-id]:focus-visible{outline:2px solid var(--terra);outline-offset:-2px}
+body.lead-drawer-open{overflow-x:hidden}
+@media(max-width:768px){
+  #leadDrawer .drawer-panel{width:100vw;max-width:100vw}
+  #leadDrawer .drawer-body{padding:16px;overflow-x:hidden}
+  #leadDrawer .info-grid{grid-template-columns:1fr}
+  #leadDrawer .composer-foot{flex-wrap:wrap;gap:8px}
+}
+
 /* ============ RESPONSIVE (v8 from prototype + admin accumulation) ============ */
 @media(max-width:1100px){
   .stats{grid-template-columns:repeat(3,1fr)}
@@ -645,9 +671,7 @@ main{min-width:0;display:flex;flex-direction:column;min-height:100vh}
     <button class="iconbtn nav-toggle" id="navToggle" aria-label="Open navigation">☰</button>
     <div class="search"><svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="7.5" cy="7.5" r="5"/><path d="M11.5 11.5L16 16"/></svg><input id="globalSearch" placeholder="Search leads, phone, unit, conversation…"><kbd class="shortcut">⌘K</kbd></div>
     <div class="top-actions">
-      <button class="iconbtn" title="Tasks"><svg viewBox="0 0 18 18" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l4 4 8-8"/></svg></button>
       <button class="iconbtn" title="Notifications"><svg viewBox="0 0 18 18" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2a5 5 0 00-5 5v3l-1 2h12l-1-2V7a5 5 0 00-5-5z"/><path d="M6 14a3 3 0 006 0"/></svg></button>
-      <button class="primary" id="addLeadBtn">＋ Add lead</button>
     </div>
     <div id="errorBanner"></div>
   </header>
@@ -676,6 +700,23 @@ main{min-width:0;display:flex;flex-direction:column;min-height:100vh}
         <div class="card"><div class="card-head"><h3>Occupancy by Branch</h3></div><div class="card-body"><canvas id="branchChart" height="110"></canvas></div></div>
       </div>
       <div class="card" style="margin-bottom:16px"><div class="card-head"><h3>Latest Unit Activity</h3></div><div class="card-body"><div class="alert-list" id="activityFeed"></div></div></div>
+    </section>
+
+    <!-- ============ FACILITY PORTFOLIO (own page; split out of OVERVIEW) ============ -->
+    <section class="page" id="portfolio">
+      <div class="head"><div><h1>Facility portfolio</h1><p>Per-facility footprint, rates and recent area figures.</p></div><div class="actions"><button class="btn" data-page-jump="command">Back to Command centre</button></div></div>
+      <div id="portfolio-wrap" style="scroll-margin-top:80px;">
+        <div class="tbl-card">
+          <div class="sec-hdr"><div><div class="sec-title">Facility portfolio</div><div class="sec-sub" id="portfolioSub">Per-facility sqft · computed from live units</div></div><div style="display:flex;gap:7px;"><button class="tb-btn primary" id="portfolioReportBtn">⭳ Report</button></div></div>
+          <div id="portfolioCards"></div>
+          <div id="portfolioReport"></div>
+        </div>
+        <div class="tbl-card">
+          <div class="sec-hdr"><div><div class="sec-title">Net rental rate / sqft</div><div class="sec-sub">Occupied + overdue units · market PSF as reference</div></div></div>
+          <table class="data-tbl" id="netRateTable"><thead><tr><th>Facility</th><th>Units</th><th>Sqft</th><th>MRR</th><th>Net PSF</th></tr></thead><tbody id="netRateBody"></tbody></table>
+          <div class="t-type" id="netRateRef" style="padding:8px 2px;"></div>
+        </div>
+      </div>
     </section>
 
     <!-- ============ LEADS DATABASE ============ -->
@@ -732,7 +773,7 @@ main{min-width:0;display:flex;flex-direction:column;min-height:100vh}
     <!-- ============ CUSTOMERS (subtabs: Tenants, Bookings, Move-ins) ============ -->
     <section class="page" id="customers">
       <div class="head"><div><h1>Customers &amp; agreements</h1><p>Every tenant, unit and service record.</p></div><div class="actions"><button class="primary">＋ New customer</button></div></div>
-      <div class="subtabs" data-tabs="customer"><button class="active" data-tab="customer-tenants">Tenants</button><button data-tab="customer-bookings">Bookings</button><button data-tab="customer-moveins">Move-ins</button></div>
+      <div class="subtabs" data-tabs="customer"><button class="active" data-tab="customer-tenants">Tenants</button><button data-tab="customer-bookings">Bookings</button><button data-tab="customer-moveins">Move-ins</button><button data-tab="customer-quotes">Quotes</button><button data-tab="customer-moveouts">Move-outs</button></div>
       <!-- Tenants Table -->
       <div class="module-panel active" id="customer-tenants">
         <div class="tbl-card">
@@ -758,15 +799,32 @@ main{min-width:0;display:flex;flex-direction:column;min-height:100vh}
           <table class="data-tbl" id="moveinsViewTable"><thead><tr><th>Ref</th><th>Customer</th><th>Unit</th><th>Move-in</th><th>Duration</th><th>$/mo</th><th>Paid/Due</th><th>Status</th></tr></thead><tbody id="moveinsViewBody"></tbody></table>
         </div>
       </div>
+      <!-- Quotes queue (P1): PROPOSAL_SENT leads + live inventory -->
+      <div class="module-panel" id="customer-quotes">
+        <div class="tbl-card">
+          <div class="sec-hdr"><div><div class="sec-title">Quotes</div><div class="sec-sub" id="quotesSub">Quoted leads · stages move in Leads</div></div></div>
+          <table class="data-tbl" id="quotesTable"><thead><tr><th>Lead</th><th>Stage</th><th>Facility/Size</th><th>Est. value</th><th>Inventory</th><th>Owner</th><th></th></tr></thead><tbody id="quotesBody"></tbody></table>
+          <div id="quoteDetail"></div>
+        </div>
+      </div>
+      <!-- Move-outs queue (P1): NOTICE tenants + latest notice · explicit transitions -->
+      <div class="module-panel" id="customer-moveouts">
+        <div class="tbl-card">
+          <div class="sec-hdr"><div><div class="sec-title">Move-outs</div><div class="sec-sub" id="moveoutsSub">Tenants on notice · explicit complete/cancel only</div></div></div>
+          <div class="modal-alert" id="moveoutsBanner" hidden></div>
+          <table class="data-tbl" id="moveoutsTable"><thead><tr><th>Tenant</th><th>Unit</th><th>Rate</th><th>Last day</th><th>Status</th><th></th></tr></thead><tbody id="moveoutsBody"></tbody></table>
+        </div>
+      </div>
     </section>
 
     <!-- ============ FACILITIES ============ -->
     <section class="page" id="facilities">
-      <div class="subtabs" data-tabs="facility"><button class="active" data-tab="facility-map">Unit Map</button><button data-tab="facility-units">Units</button><button data-tab="facility-floorplans">Floor Plans</button></div>
+      <div class="subtabs" data-tabs="facility"><button class="active" data-tab="facility-map">Unit Map</button><button data-tab="facility-units">Units</button><button data-tab="facility-floorplans">Floor Plans</button><button data-tab="facility-maintenance">Maintenance</button><button data-tab="facility-assets">Assets &amp; Vendors</button><button data-tab="facility-incidents">Incidents</button><button data-tab="facility-access">Access Control</button><button data-tab="facility-inspections">Inspections</button></div>
       <!-- Unit Map -->
       <div class="module-panel active" id="facility-map">
         <div class="unit-map-card">
           <div class="sec-hdr"><div><div class="sec-title" id="unitMapTitle">Unit Map — All Facilities</div><div class="sec-sub">Click any unit to view details</div></div><div style="display:flex;gap:8px;"><button class="tb-btn ghost" style="font-size:10px;" id="unitShowFloorPlan">👁 Show Floor Plan</button></div></div>
+          <div class="tbl-toolbar"><select id="mapSizeFilter" class="tbl-select"><option value="">All sizes</option></select><label class="t-type" style="display:flex;align-items:center;gap:5px;"><input type="checkbox" id="mapNearLiftFilter"> Near lift</label></div>
           <div class="unit-legend" id="mapLegend"></div>
           <div class="floor-tabs" id="floorTabs"></div>
           <div class="unit-grid" id="unitGrid"></div>
@@ -775,25 +833,165 @@ main{min-width:0;display:flex;flex-direction:column;min-height:100vh}
           <div class="ud-hdr"><div><div class="ud-id" id="udId">Select a unit</div><div class="ud-badges" id="udBadges"></div></div><div class="ud-actions"><button class="act-btn" id="viewHistoryBtn">📋 History</button><button class="act-btn" id="editUnitBtn">✏️ Edit</button><button class="act-btn primary" id="adjustRateBtn">⚡ Adjust Rate</button><button class="act-btn danger" id="deleteUnitBtn">🗑 Delete</button></div></div>
           <div class="ud-stats"><div class="ud-stat"><div class="ud-stat-lbl">Tenant</div><div class="ud-stat-val" id="udTenant" style="font-size:14px;">—</div><div class="ud-stat-sub" id="udTenantSub"></div></div><div class="ud-stat"><div class="ud-stat-lbl">Rate</div><div class="ud-stat-val" id="udRate">—</div><div class="ud-stat-sub" id="udRateSub"></div></div><div class="ud-stat"><div class="ud-stat-lbl">Status</div><div class="ud-stat-val" id="udStatus" style="font-size:16px;">—</div></div><div class="ud-stat"><div class="ud-stat-lbl">Branch</div><div class="ud-stat-val" id="udBranch" style="font-size:14px;">—</div><div class="ud-stat-sub" id="udLevel"></div></div><div class="ud-stat"><div class="ud-stat-lbl">Size</div><div class="ud-stat-val" id="udSize" style="font-size:14px;">—</div><div class="ud-stat-sub" id="udSizeSub"></div></div><div class="ud-stat"><div class="ud-stat-lbl">PSF</div><div class="ud-stat-val" id="udPsf">—</div></div><div class="ud-stat"><div class="ud-stat-lbl">Rate history</div><div class="ud-stat-val" id="udRateHistCount" style="font-size:16px;">0</div></div><div class="ud-stat"><div class="ud-stat-lbl">Last change</div><div class="ud-stat-val" id="udLastChange" style="font-size:14px;">—</div></div></div>
           <div class="ud-history"><div class="ud-history-title">Tenant History</div><div class="ud-history-empty" id="tenantHistoryEmpty">No tenant history recorded for this unit yet.</div></div>
+          <div class="ud-history"><div class="ud-history-title">Inspections (facility)</div><div id="udInspections"><div class="ud-history-empty">Select a unit to view inspections.</div></div></div>
+          <div class="ud-history"><div class="ud-history-title">Compliance (facility)</div><div id="udCertificates"><div class="ud-history-empty">Select a unit to view certificates.</div></div></div>
+          <div class="ud-history"><div class="ud-history-title">Access history (facility)</div><div id="udAccess"><div class="ud-history-empty">Select a unit to view access history.</div></div></div>
+          <div class="ud-history"><div class="ud-history-title">Work orders (unit)</div><div id="udWorkOrders"><div class="ud-history-empty">Select a unit to view work orders.</div></div></div>
         </div>
       </div>
       <!-- Units Table -->
       <div class="module-panel" id="facility-units">
         <div class="tbl-card">
           <div class="sec-hdr"><div><div class="sec-title">Units</div><div class="sec-sub" id="unitsSub">All units across branches</div></div><div style="display:flex;gap:7px;"><button class="tb-btn primary" id="addUnitBtn">+ Add Unit</button></div></div>
-          <div class="tbl-toolbar"><select id="statusFilter" class="tbl-select"><option value="">All statuses</option><option value="OCCUPIED">Occupied</option><option value="AVAILABLE">Available</option><option value="RESERVED">Reserved</option><option value="OVERDUE">Overdue</option><option value="MAINTENANCE">Maintenance</option><option value="INACTIVE">Inactive</option></select></div>
+          <div class="tbl-toolbar"><select id="statusFilter" class="tbl-select"><option value="">All statuses</option><option value="OCCUPIED">Occupied</option><option value="AVAILABLE">Available</option><option value="RESERVED">Reserved</option><option value="OVERDUE">Overdue</option><option value="MAINTENANCE">Maintenance</option><option value="INACTIVE">Inactive</option><option value="BLOCKED">Blocked</option></select></div>
           <div class="modal-alert" id="unitsBanner" hidden></div>
           <table class="data-tbl" id="unitsTable"><thead><tr><th>Code</th><th>Name</th><th>Size</th><th>Branch</th><th>Floor</th><th>Sqft</th><th>Rate/mo</th><th>PSF</th><th>Status</th><th>Tenant</th><th></th></tr></thead><tbody></tbody></table>
           <div class="tbl-pager"><div class="tbl-pager-info" id="pageInfo">Page 1 of 1</div><div class="tbl-pager-btns"><button class="tb-btn ghost" id="pagePrev">‹ Prev</button><button class="tb-btn ghost" id="pageNext">Next ›</button></div></div>
         </div>
       </div>
       <!-- Floor Plan Editor -->
+      <style>
+      /* Floor-plan block NAME inputs only (add #fpBlockName + rename #fpBlockRename).
+         v8 treatment scoped to #facility-floorplans — no global input reset.
+         Border stays 1.5px in every state (ring via box-shadow) so focus never shifts layout. */
+      #facility-floorplans .fp-name-label{display:block;font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);margin:6px 0 4px}
+      #facility-floorplans .fp-name-wrap{position:relative;display:flex;align-items:center}
+      #facility-floorplans .fp-name-icon{position:absolute;left:10px;width:15px;height:15px;color:var(--muted);pointer-events:none;flex:none;transition:color .15s ease}
+      #facility-floorplans .fp-name-wrap:focus-within .fp-name-icon{color:var(--terra)}
+      #facility-floorplans #fpBlockName{width:100%;box-sizing:border-box;background:var(--white);border:1.5px solid var(--line);border-radius:9px;padding:9px 10px 9px 32px;font-family:Manrope,system-ui,sans-serif;font-size:12px;font-weight:600;color:var(--ink);outline:none;transition:border-color .15s ease,box-shadow .15s ease,background-color .15s ease}
+      #facility-floorplans #fpBlockName::placeholder{color:var(--muted);opacity:.85;font-weight:500}
+      #facility-floorplans #fpBlockName:hover{border-color:#c7bbae}
+      #facility-floorplans #fpBlockName:focus{border-color:var(--terra);box-shadow:0 0 0 3px var(--terra-light);background:#fff}
+      #facility-floorplans #fpBlockName:focus-visible{border-color:var(--terra);box-shadow:0 0 0 3px var(--terra-light)}
+      #facility-floorplans #fpBlockName:disabled{opacity:.55;cursor:not-allowed;background:var(--cream)}
+      #facility-floorplans .fp-name-hint{font-size:10px;color:var(--muted);margin:5px 1px 0}
+      #facility-floorplans #fpSelInfo .fp-rename-wrap{position:relative;display:inline-flex;align-items:center;vertical-align:middle}
+      #facility-floorplans #fpSelInfo .fp-rename-wrap .fp-name-icon{left:8px;width:13px;height:13px}
+      #facility-floorplans #fpSelInfo .fp-rename-wrap:focus-within .fp-name-icon{color:var(--terra)}
+      #facility-floorplans #fpBlockRename{box-sizing:border-box;width:170px;background:var(--white);border:1.5px solid var(--line);border-radius:9px;padding:6px 9px 6px 27px;font-family:Manrope,system-ui,sans-serif;font-size:11px;font-weight:600;color:var(--ink);outline:none;transition:border-color .15s ease,box-shadow .15s ease}
+      #facility-floorplans #fpBlockRename::placeholder{color:var(--muted);opacity:.85;font-weight:500}
+      #facility-floorplans #fpBlockRename:hover{border-color:#c7bbae}
+      #facility-floorplans #fpBlockRename:focus{border-color:var(--terra);box-shadow:0 0 0 3px var(--terra-light)}
+      #facility-floorplans #fpBlockRename:focus-visible{border-color:var(--terra);box-shadow:0 0 0 3px var(--terra-light)}
+      #facility-floorplans #fpBlockRename:disabled{opacity:.55;cursor:not-allowed;background:var(--cream)}
+      #facility-floorplans .fp-sr{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
+      @media(max-width:768px){
+        #facility-floorplans #fpBlockName,#facility-floorplans #fpBlockRename{min-height:44px}
+        #facility-floorplans #fpBlockRename{width:min(46vw,200px)}
+      }
+      @media(prefers-reduced-motion:reduce){
+        #facility-floorplans #fpBlockName,#facility-floorplans #fpBlockRename,#facility-floorplans .fp-name-icon{transition:none}
+      }
+      </style>
       <div class="module-panel" id="facility-floorplans">
         <div class="unit-map-card">
           <div class="sec-hdr"><div><div class="sec-title" id="fpTitle">Floor Plan Editor</div><div class="sec-sub" id="fpSub">Design the layout: drag units onto the canvas</div></div><div style="display:flex;gap:8px;flex-wrap:wrap;"><select id="fpBranch" class="tbl-select"></select><select id="fpFloor" class="tbl-select"></select><button class="tb-btn ghost" id="fpDeletePlan">🗑 Delete plan</button><button class="tb-btn primary" id="fpSaveCanvas">💾 Save Canvas</button></div></div>
           <div class="modal-alert" id="fpBanner" hidden></div>
-          <div class="fp-layout"><div class="fp-palette"><div class="chart-title">Units</div><div class="t-type" id="fpPaletteSub">Drag a unit onto the canvas</div><div class="fp-unit-list" id="fpPalette"></div><div class="fp-block-form" id="fpBlockForm" hidden><div class="chart-title" style="font-size:11px;margin-bottom:4px;">New block</div><input type="text" id="fpBlockName" maxlength="80" spellcheck="false" placeholder='Name — e.g. "Lift", "Stair"'><div style="display:flex;gap:6px;margin-top:6px;"><button class="act-btn primary" id="fpBlockAdd" style="flex:1;text-align:center;">Add block</button><button class="act-btn" id="fpBlockCancel" style="flex:1;text-align:center;">Cancel</button></div></div></div><div class="fp-editor"><div class="fp-toolbar"><span class="t-type">Canvas (ft)</span><input type="number" id="fpWidth" class="tbl-search" min="1" max="500" step="1" title="Canvas width in feet" style="width:80px;"><span class="t-type">×</span><input type="number" id="fpHeight" class="tbl-search" min="1" max="500" step="1" title="Canvas height in feet" style="width:80px;"><button class="tb-btn ghost" id="fpAddBlock">＋ Block</button><button class="tb-btn ghost" id="fpRotateGhost" title="Swap palette ghost orientation (W×H ↔ H×W) for rectangular units" aria-pressed="false">⟳ Rotate</button><button class="tb-btn ghost on" id="fpLockSqft" title="Lock resize to the nearest rect preserving area ≈ sqft (toggle off for free resize; server rejects >15% deviation)" aria-pressed="true">🔒 sqft</button><button class="tb-btn ghost" id="fpAutoPlace" title="Place all unplaced units of this floor at the first free spot (asks for confirmation first)">⤵ Auto-place all</button><span class="fp-zoom"><button class="tb-btn ghost" id="fpZoomOut">−</button><span class="t-type" id="fpZoomLbl">100%</span><button class="tb-btn ghost" id="fpZoomIn">+</button></span><span class="fp-sel-info" id="fpSelInfo"></span></div><div class="fp-canvas-wrap" id="fpCanvasWrap"><div class="fp-canvas" id="fpCanvas"></div></div></div></div>
+          <div class="fp-layout"><div class="fp-palette"><div class="chart-title">Units</div><div class="t-type" id="fpPaletteSub">Drag a unit onto the canvas</div><div class="fp-unit-list" id="fpPalette"></div><div class="fp-block-form fp-name" id="fpBlockForm" hidden><div class="chart-title" style="font-size:11px;margin-bottom:4px;">New block</div><label class="fp-name-label" for="fpBlockName">Block name</label><div class="fp-name-wrap"><svg class="fp-name-icon" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M2.5 2.5H10l5.5 5.5-7.5 7.5-5.5-5.5V2.5z"/><circle cx="6.6" cy="6.6" r="1.3"/></svg><input type="text" id="fpBlockName" class="fp-name-input" maxlength="80" spellcheck="false" autocomplete="off" placeholder='Name — e.g. "Lift", "Stair"' aria-describedby="fpBlockNameHint"></div><div class="fp-name-hint" id="fpBlockNameHint">Lift · Stairs · Walking area · Exit</div><div style="display:flex;gap:6px;margin-top:6px;"><button class="act-btn primary" id="fpBlockAdd" style="flex:1;text-align:center;">Add block</button><button class="act-btn" id="fpBlockCancel" style="flex:1;text-align:center;">Cancel</button></div></div></div><div class="fp-editor"><div class="fp-toolbar"><span class="t-type">Canvas (ft)</span><input type="number" id="fpWidth" class="tbl-search" min="1" max="500" step="1" title="Canvas width in feet" style="width:80px;"><span class="t-type">×</span><input type="number" id="fpHeight" class="tbl-search" min="1" max="500" step="1" title="Canvas height in feet" style="width:80px;"><button class="tb-btn ghost" id="fpAddBlock">＋ Block</button><button class="tb-btn ghost" id="fpRotateGhost" title="Swap palette ghost orientation (W×H ↔ H×W) for rectangular units" aria-pressed="false">⟳ Rotate</button><button class="tb-btn ghost on" id="fpLockSqft" title="Lock resize to the nearest rect preserving area ≈ sqft (toggle off for free resize; server rejects >15% deviation)" aria-pressed="true">🔒 sqft</button><button class="tb-btn ghost" id="fpAutoPlace" title="Place all unplaced units of this floor at the first free spot (asks for confirmation first)">⤵ Auto-place all</button><span class="fp-zoom"><button class="tb-btn ghost" id="fpZoomOut">−</button><span class="t-type" id="fpZoomLbl">100%</span><button class="tb-btn ghost" id="fpZoomIn">+</button></span><span class="fp-sel-info" id="fpSelInfo"></span></div><div class="fp-canvas-wrap" id="fpCanvasWrap"><div class="fp-canvas" id="fpCanvas"></div></div></div></div>
           <details class="fp-structure"><summary>Advanced — legacy structure JSON <span class="t-type">(walls / corridors)</span></summary><textarea id="fpStructure" class="fp-structure-input" rows="6" spellcheck="false"></textarea><div class="fp-legacy-note" id="fpLegacyNote" hidden>Legacy structure attached.</div></details>
+        </div>
+        <div class="unit-map-card" id="metricsCard">
+          <div class="sec-hdr"><div><div class="sec-title" id="metricsTitle">Area metrics</div><div class="sec-sub" id="metricsSub">Live compute from the current canvas — the published snapshot is authoritative</div></div><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;"><label class="t-type" for="metricsPublishDate">Effective date</label><input type="date" id="metricsPublishDate" class="tbl-select"><button class="tb-btn primary" id="metricsPublishBtn">Publish snapshot</button><button class="tb-btn ghost" id="metricsRefreshBtn">Refresh</button></div></div>
+          <div class="modal-alert" id="metricsBanner" hidden></div>
+          <div class="stats" id="metricsKpis"></div>
+          <div class="tbl-card"><div class="sec-hdr"><div><div class="sec-title">Snapshot history</div><div class="sec-sub" id="metricsSnapshotsSub">Append-only · newest effective date first</div></div></div><div class="table-wrap"><table class="data-tbl" id="metricsSnapshotsTable"><thead><tr><th>Effective date</th><th>Schema</th><th>Geometry hash</th><th>Published</th></tr></thead><tbody id="metricsSnapshotsBody"></tbody></table></div></div>
+        </div>
+      </div>
+      <!-- Maintenance: work orders + preventive checklist tasks -->
+      <div class="module-panel" id="facility-maintenance">
+        <div class="stats" id="maintStats"></div>
+        <div class="tbl-card">
+          <div class="sec-hdr"><div><div class="sec-title">Work orders</div><div class="sec-sub" id="workOrdersSub">Branch/unit scope · OPEN → IN_PROGRESS → DONE</div></div><div style="display:flex;gap:7px;"><button class="tb-btn primary" id="addWorkOrderBtn">+ New Work Order</button></div></div>
+          <div class="tbl-toolbar"><select id="workOrderStatusFilter" class="tbl-select"><option value="">All statuses</option><option value="OPEN">Open</option><option value="IN_PROGRESS">In progress</option><option value="DONE">Done</option></select></div>
+          <div class="modal-alert" id="workOrdersBanner" hidden></div>
+          <table class="data-tbl" id="workOrdersTable"><thead><tr><th>Title</th><th>Branch/Unit</th><th>Status</th><th>Priority</th><th>Value</th><th>Assignee</th><th>Due</th><th></th></tr></thead><tbody id="workOrdersBody"></tbody></table>
+        </div>
+        <div class="tbl-card">
+          <div class="sec-hdr"><div><div class="sec-title">Preventive checklist</div><div class="sec-sub">% complete per trade category</div></div><div style="display:flex;gap:7px;"><button class="tb-btn primary" id="addPreventiveBtn">+ New Task</button></div></div>
+          <div class="modal-alert" id="preventiveBanner" hidden></div>
+          <div id="preventiveProgress"></div>
+          <table class="data-tbl" id="preventiveTable"><thead><tr><th>Task</th><th>Category</th><th>Branch</th><th>% Complete</th><th>Due</th><th></th></tr></thead><tbody id="preventiveBody"></tbody></table>
+        </div>
+      </div>
+      <!-- Assets & vendors -->
+      <div class="module-panel" id="facility-assets">
+        <div class="tbl-card">
+          <div class="sec-hdr"><div><div class="sec-title">Asset register</div><div class="sec-sub" id="assetsSub">Stable codes (e.g. AST-WDL-HVAC-04) + branch link</div></div><div style="display:flex;gap:7px;"><button class="tb-btn primary" id="addAssetBtn">+ New Asset</button></div></div>
+          <div class="modal-alert" id="assetsBanner" hidden></div>
+          <table class="data-tbl" id="assetsTable"><thead><tr><th>Code</th><th>Name</th><th>Category</th><th>Branch</th><th>Status</th><th>Value</th><th></th></tr></thead><tbody id="assetsBody"></tbody></table>
+        </div>
+        <div class="tbl-card">
+          <div class="sec-hdr"><div><div class="sec-title">Vendor register</div><div class="sec-sub">SLA + YTD spend</div></div><div style="display:flex;gap:7px;"><button class="tb-btn primary" id="addVendorBtn">+ New Vendor</button></div></div>
+          <div class="modal-alert" id="vendorsBanner" hidden></div>
+          <table class="data-tbl" id="vendorsTable"><thead><tr><th>Vendor</th><th>Service</th><th>SLA</th><th>YTD Spend</th><th>Status</th><th></th></tr></thead><tbody id="vendorsBody"></tbody></table>
+        </div>
+      </div>
+      <!-- Incidents -->
+      <div class="module-panel" id="facility-incidents">
+        <div class="stats" id="incidentStats"></div>
+        <div class="tbl-card">
+          <div class="sec-hdr"><div><div class="sec-title">Incidents</div><div class="sec-sub" id="incidentsSub">Severity · multi-step checklist · branch/unit link</div></div><div style="display:flex;gap:7px;"><button class="tb-btn primary" id="addIncidentBtn">+ New Incident</button></div></div>
+          <div class="tbl-toolbar"><select id="incidentSeverityFilter" class="tbl-select"><option value="">All severities</option><option value="LOW">Low</option><option value="MEDIUM">Medium</option><option value="HIGH">High</option><option value="CRITICAL">Critical</option></select><select id="incidentStatusFilter" class="tbl-select"><option value="">All statuses</option><option value="OPEN">Open</option><option value="IN_PROGRESS">In progress</option><option value="RESOLVED">Resolved</option><option value="CLOSED">Closed</option></select></div>
+          <div class="modal-alert" id="incidentsBanner" hidden></div>
+          <table class="data-tbl" id="incidentsTable"><thead><tr><th>Title</th><th>Severity</th><th>Status</th><th>Branch/Unit</th><th>Checklist</th><th>Reported</th><th></th></tr></thead><tbody id="incidentsBody"></tbody></table>
+        </div>
+      </div>
+      <!-- Access control: 5 sub-panels -->
+      <div class="module-panel" id="facility-access">
+        <div class="stats" id="accessStats"><div class="stat"><div class="label">Entries logged</div><div class="val" id="accessStatEntries">—</div></div><div class="stat"><div class="label">Credentials</div><div class="val" id="accessStatCreds">—</div></div><div class="stat"><div class="label">Doors</div><div class="val" id="accessStatDoors">—</div></div><div class="stat"><div class="label">Denied (exceptions)</div><div class="val" id="accessStatDenied">—</div></div><div class="stat"><div class="label">Temporary passes</div><div class="val" id="accessStatTemp">—</div></div></div>
+        <div class="subtabs" data-tabs="access"><button class="active" data-tab="access-live">Live</button><button data-tab="access-credentials">Credentials</button><button data-tab="access-temporary">Temporary</button><button data-tab="access-exceptions">Exceptions</button><button data-tab="access-policies">Policies</button></div>
+        <div class="module-panel active" id="access-live">
+          <div class="tbl-card">
+            <div class="sec-hdr"><div><div class="sec-title">Live entry log</div><div class="sec-sub">Most recent access events</div></div><div style="display:flex;gap:7px;"><button class="tb-btn primary" id="addAccessEventBtn">+ Log Event</button></div></div>
+            <div class="modal-alert" id="accessEventsBanner" hidden></div>
+            <table class="data-tbl" id="accessEventsTable"><thead><tr><th>When</th><th>Door</th><th>Holder</th><th>Result</th><th>Branch</th></tr></thead><tbody id="accessEventsBody"></tbody></table>
+          </div>
+        </div>
+        <div class="module-panel" id="access-credentials">
+          <div class="tbl-card">
+            <div class="sec-hdr"><div><div class="sec-title">Credentials</div><div class="sec-sub">Fobs / cards / PIN holders</div></div><div style="display:flex;gap:7px;"><button class="tb-btn primary" id="addCredentialBtn">+ New Credential</button></div></div>
+            <div class="modal-alert" id="credentialsBanner" hidden></div>
+            <table class="data-tbl" id="credentialsTable"><thead><tr><th>Holder</th><th>Type</th><th>Status</th><th>Valid To</th><th>Branch</th><th></th></tr></thead><tbody id="credentialsBody"></tbody></table>
+          </div>
+        </div>
+        <div class="module-panel" id="access-temporary">
+          <div class="tbl-card">
+            <div class="sec-hdr"><div><div class="sec-title">Temporary passes</div><div class="sec-sub">Credentials carrying an expiry window</div></div></div>
+            <table class="data-tbl" id="temporaryTable"><thead><tr><th>Holder</th><th>Type</th><th>Status</th><th>Valid To</th><th>Expired</th><th></th></tr></thead><tbody id="temporaryBody"></tbody></table>
+          </div>
+        </div>
+        <div class="module-panel" id="access-exceptions">
+          <div class="tbl-card">
+            <div class="sec-hdr"><div><div class="sec-title">Exceptions</div><div class="sec-sub">Denied entry attempts</div></div></div>
+            <table class="data-tbl" id="exceptionsTable"><thead><tr><th>When</th><th>Door</th><th>Holder</th><th>Branch</th><th>Note</th></tr></thead><tbody id="exceptionsBody"></tbody></table>
+          </div>
+        </div>
+        <div class="module-panel" id="access-policies">
+          <div class="tbl-card">
+            <div class="sec-hdr"><div><div class="sec-title">Access policies</div><div class="sec-sub">Named rule sets (e.g. contractor hours)</div></div><div style="display:flex;gap:7px;"><button class="tb-btn primary" id="addPolicyBtn">+ New Policy</button></div></div>
+            <div class="modal-alert" id="policiesBanner" hidden></div>
+            <table class="data-tbl" id="policiesTable"><thead><tr><th>Policy</th><th>Scope</th><th>Active</th><th></th></tr></thead><tbody id="policiesBody"></tbody></table>
+          </div>
+          <div class="tbl-card">
+            <div class="sec-hdr"><div><div class="sec-title">Doors</div><div class="sec-sub">Controlled entry points</div></div><div style="display:flex;gap:7px;"><button class="tb-btn primary" id="addDoorBtn">+ New Door</button></div></div>
+            <div class="modal-alert" id="doorsBanner" hidden></div>
+            <table class="data-tbl" id="doorsTable"><thead><tr><th>Code</th><th>Name</th><th>Branch</th><th>Status</th><th></th></tr></thead><tbody id="doorsBody"></tbody></table>
+          </div>
+        </div>
+      </div>
+      <!-- Inspections & compliance -->
+      <div class="module-panel" id="facility-inspections">
+        <div class="stats" id="inspectionStats"></div>
+        <div class="tbl-card">
+          <div class="sec-hdr"><div><div class="sec-title">Inspection checklists</div><div class="sec-sub" id="checklistsSub">Daily / monthly routines</div></div><div style="display:flex;gap:7px;"><button class="tb-btn primary" id="addChecklistBtn">+ New Checklist</button></div></div>
+          <div class="tbl-toolbar"><select id="checklistFreqFilter" class="tbl-select"><option value="">All frequencies</option><option value="DAILY">Daily</option><option value="WEEKLY">Weekly</option><option value="MONTHLY">Monthly</option><option value="QUARTERLY">Quarterly</option><option value="ANNUAL">Annual</option></select></div>
+          <div class="modal-alert" id="checklistsBanner" hidden></div>
+          <table class="data-tbl" id="checklistsTable"><thead><tr><th>Title</th><th>Frequency</th><th>Branch</th><th>Steps</th><th>% Complete</th><th>Status</th><th></th></tr></thead><tbody id="checklistsBody"></tbody></table>
+        </div>
+        <div class="tbl-card">
+          <div class="sec-hdr"><div><div class="sec-title">Compliance certificates</div><div class="sec-sub">Fire Safety · Lift · Public Liability — expiry surfacing</div></div><div style="display:flex;gap:7px;"><button class="tb-btn primary" id="addCertificateBtn">+ New Certificate</button></div></div>
+          <div class="modal-alert" id="certificatesBanner" hidden></div>
+          <table class="data-tbl" id="certificatesTable"><thead><tr><th>Certificate</th><th>Type</th><th>Branch</th><th>Expiry</th><th>Status</th><th></th></tr></thead><tbody id="certificatesBody"></tbody></table>
         </div>
       </div>
     </section>
@@ -927,7 +1125,7 @@ main{min-width:0;display:flex;flex-direction:column;min-height:100vh}
             </div>
           </div>
           <div class="card builder-summary">
-            <h3>Free months summary</h3>
+            <h3>Free months summary <span class="pill amber" id="freePlanStatus" style="margin-left:8px">Draft</span></h3>
             <div class="summary-line"><span>Offer</span><b id="freeOfferSummary">2 free months</b></div>
             <div class="summary-line"><span>Commitment</span><b id="freeCommitmentSummary">12 months</b></div>
             <div class="summary-line"><span>Applied to</span><b id="freeAppliedSummary">Months 6 and 11</b></div>
@@ -951,10 +1149,11 @@ main{min-width:0;display:flex;flex-direction:column;min-height:100vh}
               <h3>1. Promotion benefit</h3>
               <p>Choose the commercial benefit. Festive promotions use the same engine; "festive" is a campaign label, not a separate discount type.</p>
               <div class="choice-grid" id="benefitChoices">
-                <button class="choice active"><b>Percentage off</b><small>One invoice or recurring</small></button>
-                <button class="choice"><b>Dollar value off</b><small>Fixed amount</small></button>
-                <button class="choice"><b>Free months</b><small>Allocated months</small></button>
-                <button class="choice"><b>StoreLah Credits</b><small>Wallet reward</small></button>
+                <button class="choice active" data-benefit="percentage"><b>Percentage off</b><small>One invoice or recurring</small></button>
+                <button class="choice" data-benefit="dollar"><b>Dollar value off</b><small>Fixed amount</small></button>
+                <!-- Free months is a separate standalone section (promo-free-months tab). Hidden here so the code builder offers only PERCENTAGE / DOLLAR / CREDITS. Kept in DOM (hidden) so legacy index-based wiring stays aligned; JS maps only visible choices. -->
+                <button class="choice" data-benefit="free" hidden style="display:none" aria-hidden="true" tabindex="-1"><b>Free months</b><small>Allocated months</small></button>
+                <button class="choice" data-benefit="credits"><b>StoreLah Credits</b><small>Wallet reward</small></button>
               </div>
               <div class="form-grid" style="margin-top:14px">
                 <div class="field"><label>Promotion name</label><input id="promoName" value="Deepavali Storage Special"></div>
@@ -992,7 +1191,7 @@ main{min-width:0;display:flex;flex-direction:column;min-height:100vh}
             </div>
           </div>
           <div class="card builder-summary">
-            <h3>Code preview</h3>
+            <h3>Code preview <span class="pill amber" id="codePlanStatus" style="margin-left:8px">Draft</span></h3>
             <div class="code-preview" id="codePreview">FESTIVE25</div>
             <div class="summary-line"><span>Benefit</span><b id="benefitPreview">25% off first invoice</b></div>
             <div class="summary-line"><span>Eligibility</span><b>New customers · S/M/L</b></div>
@@ -1130,6 +1329,50 @@ main{min-width:0;display:flex;flex-direction:column;min-height:100vh}
       <div class="head"><div><h1>Global Settings</h1><p>Business rules, fees, alerts and platform-wide policies. Changes apply app-wide on save.</p></div><div class="actions"><span class="dirty-dot" id="settingsDirty"><i></i>Unsaved changes</span><button class="primary" id="settingsSaveBtn" disabled>Save changes</button></div></div>
       <div class="modal-alert" id="settingsBanner" hidden></div>
       <div id="settingsGrid"></div>
+      <!-- Fees & deposits (P1 item 5): Global → Facility → Product → Exception chain -->
+      <div class="tbl-card" id="feesSection" style="margin-top:16px;">
+        <div class="sec-hdr"><div><div class="sec-title">Fees &amp; deposits</div><div class="sec-sub">Global → Facility → Product → Exception priority · scalar settings untouched</div></div></div>
+        <table class="data-tbl" id="feesTable"><thead><tr><th>Key</th><th>Scope</th><th>Target</th><th>Amount</th><th>Active</th><th></th></tr></thead><tbody id="feesBody"></tbody></table>
+        <div class="tbl-toolbar" style="margin-top:10px;flex-wrap:wrap;">
+          <select id="ff-kind" class="tbl-select"><option value="FEE">Fee</option><option value="DEPOSIT">Deposit</option></select>
+          <input type="text" id="ff-key" class="tbl-search" placeholder="Key — e.g. deposit" style="max-width:150px;">
+          <select id="ff-scope" class="tbl-select"><option value="GLOBAL">Global</option><option value="FACILITY">Facility</option><option value="PRODUCT">Product</option><option value="EXCEPTION">Exception</option></select>
+          <select id="ff-branch" class="tbl-select"><option value="">— facility —</option></select>
+          <select id="ff-size" class="tbl-select"><option value="">— size —</option></select>
+          <select id="ff-tenant" class="tbl-select"><option value="">— tenant —</option></select>
+          <select id="ff-amountKind" class="tbl-select"><option value="FLAT">Flat $</option><option value="PCT">% of rate</option><option value="MONTHS">× months</option></select>
+          <input type="number" id="ff-amount" class="tbl-search" placeholder="Amount" min="0" step="0.01" style="max-width:110px;">
+          <input type="text" id="ff-note" class="tbl-search" placeholder="Note (optional)" style="max-width:150px;">
+          <button class="tb-btn primary" id="ff-add">+ Add rule</button>
+        </div>
+        <div class="tbl-toolbar" style="margin-top:6px;flex-wrap:wrap;">
+          <span class="t-type">Effective-rule preview:</span>
+          <select id="fr-kind" class="tbl-select"><option value="FEE">Fee</option><option value="DEPOSIT">Deposit</option></select>
+          <input type="text" id="fr-key" class="tbl-search" placeholder="Key — e.g. deposit" value="deposit" style="max-width:150px;">
+          <select id="fr-branch" class="tbl-select"><option value="">— facility —</option></select>
+          <select id="fr-size" class="tbl-select"><option value="">— size —</option></select>
+          <button class="tb-btn ghost" id="fr-resolveBtn">Resolve</button>
+          <span class="t-type" id="fr-result"></span>
+        </div>
+      </div>
+      <!-- Business rules (P1 item 7): org + booking rules beyond the 3 booking scalars -->
+      <div class="tbl-card" id="businessRulesSection" style="margin-top:16px;">
+        <div class="sec-hdr"><div><div class="sec-title">Business rules</div><div class="sec-sub">Org + booking policies · typed values · saved together</div></div><div style="display:flex;gap:7px;"><button class="tb-btn primary" id="businessRulesSaveBtn">Save rules</button></div></div>
+        <div id="businessRulesBody"></div>
+      </div>
+      <!-- Users & roles (P1 item 6): facility scoping + verified permissions -->
+      <div class="tbl-card" id="usersSection" style="margin-top:16px;">
+        <div class="sec-hdr"><div><div class="sec-title">Users &amp; roles</div><div class="sec-sub">Facility scoping + verified grants · empty grants = legacy role behavior</div></div></div>
+        <table class="data-tbl" id="usersTable"><thead><tr><th>Operator</th><th>Facilities</th><th>Grants</th><th></th></tr></thead><tbody id="usersBody"></tbody></table>
+        <div class="tbl-toolbar" style="margin-top:10px;flex-wrap:wrap;">
+          <input type="email" id="uf-email" class="tbl-search" placeholder="Email" style="max-width:200px;">
+          <input type="text" id="uf-name" class="tbl-search" placeholder="Name" style="max-width:150px;">
+          <input type="password" id="uf-password" class="tbl-search" placeholder="Password (8+ chars)" style="max-width:150px;">
+          <select id="uf-role" class="tbl-select"><option value="MANAGER">Manager</option><option value="OWNER">Owner</option><option value="VIEWER">Viewer</option></select>
+          <button class="tb-btn primary" id="uf-add">+ Add operator</button>
+        </div>
+        <div class="t-type" style="padding:8px 2px;" id="usersNote">Facility access editor: pick branches or All facilities per operator. Grants gate go-live approvals, fee/rule writes and user admin — only for operators that hold at least one grant.</div>
+      </div>
     </section>
 
   </div><!-- .content -->
@@ -1252,6 +1495,23 @@ main{min-width:0;display:flex;flex-direction:column;min-height:100vh}
       <div class="modal-foot"><button class="act-btn" type="button" id="apptFormCancel">Cancel</button><button class="act-btn primary" type="submit" id="apptFormSubmit">Save Appointment</button></div>
     </form>
   </div>
+</div>
+
+<!-- Lead detail drawer (Lead Database row-click → right sidebar; single instance) -->
+<div class="drawer" id="leadDrawer" hidden>
+  <div class="overlay" id="leadDrawerOverlay"></div>
+  <aside class="drawer-panel" id="leadDrawerPanel" role="dialog" aria-modal="true" aria-labelledby="leadDrawerTitle">
+    <div class="drawer-head">
+      <div class="detail-top"><div class="avatar" id="leadDrawerAvatar">—</div><div><h2 id="leadDrawerTitle">Lead</h2><small id="leadDrawerSub"></small></div></div>
+      <button class="iconbtn" id="leadDrawerClose" type="button" aria-label="Close lead details">✕</button>
+    </div>
+    <div class="detail-tabs" role="tablist" aria-label="Lead detail sections">
+      <button type="button" data-lead-tab="details" class="active" role="tab">Details</button>
+      <button type="button" data-lead-tab="conversations" role="tab">Conversations</button>
+      <button type="button" data-lead-tab="appointments" role="tab">Appointments</button>
+    </div>
+    <div class="drawer-body" id="leadDrawerBody"></div>
+  </aside>
 </div>
 
 <!-- Confirm dialog (shared shell, populated per invocation by confirmDialog.js) -->

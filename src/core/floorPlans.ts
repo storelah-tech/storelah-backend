@@ -123,18 +123,23 @@ function serializeUnitSummary(u: PlacementUnit) {
   };
 }
 
-function serializePlacement(p: { id: string; x: number; y: number; width: number; height: number; unit: PlacementUnit }) {
+function serializePlacement(p: { id: string; x: number; y: number; width: number; height: number; stackTier: number; doorEdges: string | null; unit: PlacementUnit }) {
   return {
     id: p.id,
     x: p.x,
     y: p.y,
     width: p.width,
     height: p.height,
+    // Stacking tier: 0 = ground/sole tier, 1 = upper tier of a same-rect locker pair.
+    stackTier: p.stackTier,
+    // Authored door compass edges (N/S/E/W toggles); null = unauthored
+    // (metrics bridge falls back to AUTO_ALL_EDGES for this unit).
+    doorEdges: doorEdgesToArray(p.doorEdges),
     unit: serializeUnitSummary(p.unit),
   };
 }
 
-type BlockRow = { id: string; name: string; x: number; y: number; width: number; height: number; color: string | null };
+type BlockRow = { id: string; name: string; x: number; y: number; width: number; height: number; color: string | null; doorEdges: string | null };
 
 function serializeBlock(b: BlockRow) {
   return {
@@ -145,6 +150,9 @@ function serializeBlock(b: BlockRow) {
     width: b.width,
     height: b.height,
     color: b.color,
+    // Authored door edges round-trip per region; blocks are non-leasable so
+    // the metrics bridge ignores them (placements carry unit doors).
+    doorEdges: doorEdgesToArray(b.doorEdges),
   };
 }
 
@@ -195,6 +203,43 @@ function checkBlockName(name: string): string {
     throw new AppError(400, 'VALIDATION', 'Block name must be a non-empty string of at most 80 characters');
   }
   return trimmed;
+}
+
+// ---------- authored door edges (Phase 3) ----------
+
+const DOOR_EDGE_ORDER = ['N', 'S', 'E', 'W'] as const;
+export type DoorEdge = (typeof DOOR_EDGE_ORDER)[number];
+
+/**
+ * Normalise an authored door-edge selection for storage. `undefined` means
+ * "not supplied — keep the current value" (upsert endpoints); `null` clears
+ * back to unauthored; an array stores the canonical CSV subset in compass
+ * order (e.g. ["S","N"] -> "N,S"). Anything outside N/S/E/W is 400.
+ */
+export function normalizeDoorEdges(input: readonly string[] | null | undefined): string | null | undefined {
+  if (input === undefined) return undefined;
+  if (input === null) return null;
+  const set = new Set<string>();
+  for (const e of input) {
+    if (e !== 'N' && e !== 'S' && e !== 'E' && e !== 'W') {
+      throw new AppError(400, 'VALIDATION', `doorEdges must be a subset of ["N","S","E","W"] — got ${JSON.stringify(e)}`);
+    }
+    set.add(e);
+  }
+  if (set.size === 0) {
+    throw new AppError(400, 'VALIDATION', 'doorEdges must list at least one compass edge, or be null to clear');
+  }
+  return DOOR_EDGE_ORDER.filter((e) => set.has(e)).join(',');
+}
+
+/** Stored canonical CSV ("N,S") -> authored edge array; NULL/empty -> null (unauthored). */
+export function doorEdgesToArray(stored: string | null | undefined): DoorEdge[] | null {
+  if (stored == null) return null;
+  const parts = stored
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s === 'N' || s === 'S' || s === 'E' || s === 'W') as DoorEdge[];
+  return parts.length > 0 ? parts : null;
 }
 
 // ---------- API ----------
@@ -284,6 +329,67 @@ export interface PlacementGeometry {
   y: number;
   width: number;
   height: number;
+  // Stacking tier: 0 = ground/sole tier (default), 1 = upper tier of a
+  // same-rect locker pair. Omitted on update keeps the placement's tier.
+  stackTier?: number;
+  // Authored door compass edges (editor N/S/E/W toggles): omitted keeps the
+  // placement's edges, null clears back to unauthored (AUTO_ALL_EDGES in
+  // metrics), an array replaces. Additive — old clients simply omit it.
+  doorEdges?: DoorEdge[] | null;
+}
+
+// Only tiers 0 and 1 exist — lockers stack at most 2 high (upper + lower).
+
+// Stacking is lockers-only (per owner): both units sharing a rect must be
+// LOCKER size. Compared case-insensitively against the UnitSize code.
+function isLockerSize(sizeCode: string | null | undefined): boolean {
+  return String(sizeCode || '').toUpperCase() === 'LOCKER';
+}
+
+function checkStackTier(tier: number): 0 | 1 {
+  if (tier !== 0 && tier !== 1) {
+    throw new AppError(400, 'VALIDATION', `stackTier must be 0 (ground/sole tier) or 1 (upper tier of a stacked pair) — got ${tier}`);
+  }
+  return tier;
+}
+
+/**
+ * Demote orphaned upper tiers on one rect back to ground singles. Called after
+ * a ground-tier placement moves off (or is deleted from) its rect: any tier-1
+ * placement left on that rect with no tier-0 partner would otherwise be a lone
+ * upper, which writes reject — so it becomes a standalone tier-0 single.
+ * Keeps "delete tier-1 or move restores single" true with a single write.
+ */
+async function demoteOrphanedUppers(
+  floorPlanId: string,
+  rect: { x: number; y: number; width: number; height: number },
+): Promise<void> {
+  const orphans = await prisma.unitPlacement.findMany({
+    where: {
+      floorPlanId,
+      stackTier: 1,
+      x: rect.x,
+      y: rect.y,
+      width: rect.width,
+      height: rect.height,
+    },
+    select: { id: true },
+  });
+  for (const orphan of orphans) {
+    const groundRemains = await prisma.unitPlacement.count({
+      where: {
+        floorPlanId,
+        stackTier: 0,
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height,
+      },
+    });
+    if (groundRemains === 0) {
+      await prisma.unitPlacement.update({ where: { id: orphan.id }, data: { stackTier: 0 } });
+    }
+  }
 }
 
 // Lazy-initialize the plan for a floor if an operator drops the first unit/block
@@ -314,6 +420,18 @@ async function ensureCanvasPlan(floorId: string) {
  * unit's sqft (P3), and that the rect does not overlap another unit's
  * placement (409 PLACEMENT_OVERLAP — client pre-checks the same rule and
  * rejects with a toast). Never touches the Unit row.
+ *
+ * STACKING (lockers only): two locker placements may share the EXACT same
+ * rect as an upper/lower pair (`stackTier` 0 + 1). Rules enforced here:
+ *   - `stackTier` is 0 or 1 only (anything else is 400 VALIDATION);
+ *   - omitted on update keeps the placement's current tier (0 on create);
+ *   - tier 1 requires a tier-0 partner on the same rect (lone tier 1 is 400);
+ *   - a rect holding tiers 0 + 1 rejects any further placement (409);
+ *   - both units sharing a rect must be LOCKER size (else 400, lockers-only);
+ *   - paired drag/resize moves the ground tier first, then the upper tier
+ *     onto the same new rect (the upper's write needs its partner present).
+ * Moving a ground tier off its rect (or deleting it) demotes a leftover upper
+ * to a standalone tier-0 single, so "move restores single" holds.
  */
 export async function setUnitPlacement(floorId: string, unitId: string, geom: PlacementGeometry) {
   checkGeometry(geom);
@@ -327,9 +445,105 @@ export async function setUnitPlacement(floorId: string, unitId: string, geom: Pl
     throw new AppError(400, 'VALIDATION', `Unit ${unit.unitCode} does not belong to floor ${floorId}`);
   }
 
+  const existing = await prisma.unitPlacement.findUnique({ where: { unitId } });
+  const tier = geom.stackTier === undefined ? (existing?.stackTier ?? 0) : checkStackTier(geom.stackTier);
+  const doorEdges = normalizeDoorEdges(geom.doorEdges); // undefined = keep, null = clear, CSV = replace
+
+  const plan = await ensureCanvasPlan(floorId);
+
+  // Sibling placements on this plan (self excluded — the upsert key is unitId,
+  // so this covers both place and move). Carries each sibling's tier + size
+  // for the stacking rules below.
+  const siblings = await prisma.unitPlacement.findMany({
+    where: { floorPlanId: plan.id, unitId: { not: unitId } },
+    select: {
+      id: true,
+      x: true,
+      y: true,
+      width: true,
+      height: true,
+      stackTier: true,
+      unit: { select: { unitCode: true, size: { select: { code: true } } } },
+    },
+  });
+  const isSameRect = (s: { x: number; y: number; width: number; height: number }) =>
+    s.x === geom.x && s.y === geom.y && s.width === geom.width && s.height === geom.height;
+  const sameRect = siblings.filter(isSameRect);
+  const rectLabel = `${geom.x},${geom.y} ${geom.width}×${geom.height}`;
+  const selfIsLocker = isLockerSize(unit.size.code);
+
+  // Same-rect stacking rules run BEFORE the area/canvas/overlap checks so a
+  // stack attempt gets its specific error (lone tier 1, third tier,
+  // lockers-only) rather than a generic area/overlap message. Same-rect writes
+  // were always rejected before stacking existed, so no valid write changes
+  // meaning — only the error gets more precise.
+  if (tier === 1) {
+    const ground = sameRect.find((s) => s.stackTier === 0);
+    if (!ground) {
+      throw new AppError(
+        400,
+        'VALIDATION',
+        `Cannot place ${unit.unitCode} as upper tier (stackTier 1) at ${rectLabel} — no ground-tier (stackTier 0) placement shares that exact rect. Place the ground locker first, then stack onto it.`,
+      );
+    }
+    if (sameRect.some((s) => s.stackTier === 1)) {
+      throw new AppError(
+        409,
+        'PLACEMENT_OVERLAP',
+        `Placement ${rectLabel} already holds a stacked pair (${ground.unit.unitCode} + upper tier) — lockers stack at most 2 high. Move to a free spot`,
+      );
+    }
+    if (!selfIsLocker || !isLockerSize(ground.unit.size.code)) {
+      throw new AppError(
+        400,
+        'VALIDATION',
+        `Cannot stack ${unit.unitCode} with ${ground.unit.unitCode} at ${rectLabel} — stacking is lockers-only (both units must be LOCKER size)`,
+      );
+    }
+  } else {
+    const ground = sameRect.find((s) => s.stackTier === 0);
+    if (ground) {
+      throw new AppError(
+        409,
+        'PLACEMENT_OVERLAP',
+        `Placement ${rectLabel} overlaps ${ground.unit.unitCode} (${ground.x},${ground.y} ${ground.width}×${ground.height}) — move to a free spot`,
+      );
+    }
+    const upper = sameRect.find((s) => s.stackTier === 1);
+    if (upper && (!selfIsLocker || !isLockerSize(upper.unit.size.code))) {
+      throw new AppError(
+        400,
+        'VALIDATION',
+        `Cannot share rect ${rectLabel} with ${upper.unit.unitCode} — stacking is lockers-only (both units must be LOCKER size)`,
+      );
+    }
+    if (sameRect.length > 1) {
+      throw new AppError(
+        409,
+        'PLACEMENT_OVERLAP',
+        `Placement ${rectLabel} already holds a stacked pair — lockers stack at most 2 high. Move to a free spot`,
+      );
+    }
+  }
+
+  // General overlap: every overlapping sibling rejects, EXCEPT the same-rect
+  // stack mate (same rect, differing tier — allowed by the rules above).
+  // Blocks are decoration and may underlay, so only unit-vs-unit is checked.
+  const exemptIds = new Set(sameRect.filter((s) => s.stackTier !== tier).map((s) => s.id));
+  const hit = siblings.find((s) => !exemptIds.has(s.id) && rectsOverlap(geom, s));
+  if (hit) {
+    throw new AppError(
+      409,
+      'PLACEMENT_OVERLAP',
+      `Placement ${rectLabel} overlaps ${hit.unit.unitCode} (${hit.x},${hit.y} ${hit.width}×${hit.height}) — move to a free spot`,
+    );
+  }
+
   // P3: drawn area (square feet, 1 unit = 1 ft) must approximate the unit's
   // real sqft. Grandfathered rows only hit this when re-saved — the editor's
   // lock-to-sqft resize and true-size ghost keep new writes inside the band.
+  // Runs after the stacking/overlap rules so stack attempts report their
+  // specific error first.
   const area = geom.width * geom.height;
   const deviation = Math.abs(area - unit.sqft) / Math.max(1, unit.sqft);
   if (deviation > AREA_TOLERANCE) {
@@ -342,8 +556,6 @@ export async function setUnitPlacement(floorId: string, unitId: string, geom: Pl
     );
   }
 
-  const plan = await ensureCanvasPlan(floorId);
-
   if (geom.x + geom.width > plan.width || geom.y + geom.height > plan.height) {
     throw new AppError(
       400,
@@ -352,32 +564,47 @@ export async function setUnitPlacement(floorId: string, unitId: string, geom: Pl
     );
   }
 
-  // Overlap policy: REJECT (units must not stack; blocks are decoration and
-  // may underlay, so only unit-vs-unit is checked). The upsert key is unitId,
-  // so excluding the unit itself covers both place and move.
-  const siblings = await prisma.unitPlacement.findMany({
-    where: { floorPlanId: plan.id, unitId: { not: unitId } },
-    select: { x: true, y: true, width: true, height: true, unit: { select: { unitCode: true } } },
-  });
-  const hit = siblings.find((s) => rectsOverlap(geom, s));
-  if (hit) {
-    throw new AppError(
-      409,
-      'PLACEMENT_OVERLAP',
-      `Placement ${geom.x},${geom.y} ${geom.width}×${geom.height} overlaps ${hit.unit.unitCode} (${hit.x},${hit.y} ${hit.width}×${hit.height}) — move to a free spot`,
-    );
-  }
-
   const placement = await prisma.unitPlacement.upsert({
     where: { unitId },
-    create: { floorPlanId: plan.id, unitId, x: geom.x, y: geom.y, width: geom.width, height: geom.height },
-    update: { x: geom.x, y: geom.y, width: geom.width, height: geom.height },
+    create: {
+      floorPlanId: plan.id,
+      unitId,
+      x: geom.x,
+      y: geom.y,
+      width: geom.width,
+      height: geom.height,
+      stackTier: tier,
+      ...(doorEdges !== undefined ? { doorEdges } : {}),
+    },
+    update: {
+      x: geom.x,
+      y: geom.y,
+      width: geom.width,
+      height: geom.height,
+      stackTier: tier,
+      ...(doorEdges !== undefined ? { doorEdges } : {}),
+    },
     include: { unit: { include: { size: true } } },
   });
+
+  // A ground tier moving off its rect orphans its upper tier — demote the
+  // leftover upper to a standalone ground single (never leave a lone tier 1).
+  if (
+    existing &&
+    existing.floorPlanId === plan.id &&
+    existing.stackTier === 0 &&
+    (existing.x !== geom.x || existing.y !== geom.y || existing.width !== geom.width || existing.height !== geom.height)
+  ) {
+    await demoteOrphanedUppers(plan.id, { x: existing.x, y: existing.y, width: existing.width, height: existing.height });
+  }
+
   return serializePlacement(placement);
 }
 
-/** Remove a unit's placement (geometry only — never soft-deletes the Unit). */
+/** Remove a unit's placement (geometry only — never soft-deletes the Unit).
+ * Deleting a ground tier demotes a leftover upper tier on the same rect to a
+ * standalone ground single (never leaves a lone tier 1); deleting the upper
+ * tier restores the ground placement to a single. */
 export async function removeUnitPlacement(floorId: string, unitId: string) {
   const plan = await prisma.floorPlan.findUnique({ where: { floorId } });
   if (!plan) throw new AppError(404, 'NOT_FOUND', `No floor plan exists for floor ${floorId}`);
@@ -386,6 +613,9 @@ export async function removeUnitPlacement(floorId: string, unitId: string) {
     throw new AppError(404, 'NOT_FOUND', `Unit ${unitId} has no placement on the floor ${floorId} plan`);
   }
   await prisma.unitPlacement.delete({ where: { unitId } });
+  if (placement.stackTier === 0) {
+    await demoteOrphanedUppers(plan.id, { x: placement.x, y: placement.y, width: placement.width, height: placement.height });
+  }
   return { floorId, unitId, removed: true };
 }
 
@@ -396,6 +626,9 @@ export interface BlockInput {
   width: number;
   height: number;
   color?: string | null; // optional render tint (hex); renderers default when null
+  // Authored door compass edges, same keep/clear/replace semantics as
+  // placements (round-tripped per region; non-leasable so metrics ignores).
+  doorEdges?: DoorEdge[] | null;
 }
 
 /**
@@ -406,6 +639,7 @@ export interface BlockInput {
 export async function createFloorPlanBlock(floorId: string, input: BlockInput) {
   checkBlockName(input.name);
   checkGeometry(input);
+  const doorEdges = normalizeDoorEdges(input.doorEdges);
   const plan = await ensureCanvasPlan(floorId);
   if (input.x + input.width > plan.width || input.y + input.height > plan.height) {
     throw new AppError(
@@ -423,6 +657,7 @@ export async function createFloorPlanBlock(floorId: string, input: BlockInput) {
       width: input.width,
       height: input.height,
       color: input.color ?? null,
+      ...(doorEdges !== undefined ? { doorEdges } : {}),
     },
   });
   return serializeBlock(block);
@@ -437,6 +672,7 @@ export async function createFloorPlanBlock(floorId: string, input: BlockInput) {
 export async function setFloorPlanBlock(floorId: string, blockId: string, input: BlockInput) {
   checkBlockName(input.name);
   checkGeometry(input);
+  const doorEdges = normalizeDoorEdges(input.doorEdges);
   const plan = await ensureCanvasPlan(floorId);
   if (input.x + input.width > plan.width || input.y + input.height > plan.height) {
     throw new AppError(
@@ -460,6 +696,7 @@ export async function setFloorPlanBlock(floorId: string, blockId: string, input:
         width: input.width,
         height: input.height,
         color: input.color ?? null,
+        ...(doorEdges !== undefined ? { doorEdges } : {}),
       },
     });
     return serializeBlock(block);
@@ -475,6 +712,7 @@ export async function setFloorPlanBlock(floorId: string, blockId: string, input:
       width: input.width,
       height: input.height,
       color: input.color ?? null,
+      ...(doorEdges !== undefined ? { doorEdges } : {}),
     },
   });
   return serializeBlock(block);

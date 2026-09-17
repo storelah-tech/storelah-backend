@@ -18,7 +18,7 @@ import {
   listSizes,
   getUnitActivity,
 } from '../core/units';
-import { listTenants, createTenant, updateTenant, deactivateTenant } from '../core/tenants';
+import { listTenants, createTenant, updateTenant, deactivateTenant, listMoveOuts, transitionMoveOut } from '../core/tenants';
 import { listLeads, getLeadStats, getWeeklyAnalytics, createLead, updateLead, deleteLead } from '../core/leads';
 import {
   listConversations,
@@ -30,9 +30,23 @@ import {
 } from '../core/conversations';
 import { getActionItems } from '../core/actionCenter';
 import { listBookings, listInvoices } from '../core/finance';
-import { listBranches, getMoveIns } from '../core/branches';
+import { listBranches, getMoveIns, getPortfolio } from '../core/branches';
 import { getSettings, upsertSettings } from '../core/settings';
-import { adjustRate } from '../core/rates';
+import { adjustRate, getNetPsf } from '../core/rates';
+import { listQuotes, getQuote } from '../core/quotes';
+import { listFees, createFee, updateFee, deleteFee, resolveFee } from '../core/fees';
+import { listBusinessRules, upsertBusinessRules } from '../core/businessRules';
+import {
+  listUsers,
+  createUser,
+  updateUser,
+  deleteUser,
+  setFacilityAccess,
+  grantPermission,
+  revokePermission,
+  requirePermission,
+  PERMISSIONS,
+} from '../core/users';
 import {
   listPromotions,
   getPromotion,
@@ -62,6 +76,64 @@ import {
 } from '../core/promotionPlans';
 import { listAppointments, createAppointment, updateAppointment, deleteAppointment, findAppointmentConflicts } from '../core/appointments';
 import {
+  listWorkOrders,
+  getWorkOrder,
+  createWorkOrder,
+  updateWorkOrder,
+  deleteWorkOrder,
+  listPreventiveTasks,
+  getPreventiveProgress,
+  createPreventiveTask,
+  updatePreventiveTask,
+  deletePreventiveTask,
+} from '../core/maintenance';
+import {
+  listAssets,
+  getAsset,
+  createAsset,
+  updateAsset,
+  deleteAsset,
+  listVendors,
+  getVendor,
+  createVendor,
+  updateVendor,
+  deleteVendor,
+} from '../core/assets';
+import {
+  listIncidents,
+  getIncident,
+  createIncident,
+  updateIncident,
+  deleteIncident,
+} from '../core/incidents';
+import {
+  listDoors,
+  createDoor,
+  updateDoor,
+  deleteDoor,
+  listCredentials,
+  createCredential,
+  updateCredential,
+  deleteCredential,
+  listPolicies,
+  createPolicy,
+  updatePolicy,
+  deletePolicy,
+  listAccessEvents,
+  createAccessEvent,
+  getAccessStats,
+} from '../core/access';
+import {
+  listChecklists,
+  createChecklist,
+  updateChecklist,
+  deleteChecklist,
+  listCertificates,
+  createCertificate,
+  updateCertificate,
+  deleteCertificate,
+} from '../core/inspections';
+import {
   upsertFloorPlan,
   getFloorPlan,
   listFloorPlans,
@@ -72,6 +144,11 @@ import {
   setFloorPlanBlock,
   removeFloorPlanBlock,
 } from '../core/floorPlans';
+import {
+  getFloorMetrics,
+  createMetricsSnapshot,
+  listMetricsSnapshots,
+} from '../core/floorPlanMetricsService';
 
 const router = Router();
 
@@ -93,7 +170,7 @@ const createUnitSchema = z.object({
   sizeId: z.string().min(1),
   sqft: z.number().positive(),
   monthlyRate: z.number().nonnegative(),
-  status: z.enum(['AVAILABLE', 'RESERVED', 'MAINTENANCE', 'INACTIVE']).optional(),
+  status: z.enum(['AVAILABLE', 'RESERVED', 'MAINTENANCE', 'INACTIVE', 'BLOCKED']).optional(),
   climateControl: z.string().optional(),
   name: z.string().trim().max(80).optional(),
 });
@@ -102,7 +179,7 @@ const updateUnitSchema = z.object({
   sqft: z.number().positive().optional(),
   monthlyRate: z.number().nonnegative().optional(),
   status: z
-    .enum(['OCCUPIED', 'AVAILABLE', 'RESERVED', 'OVERDUE', 'MAINTENANCE', 'INACTIVE'])
+    .enum(['OCCUPIED', 'AVAILABLE', 'RESERVED', 'OVERDUE', 'MAINTENANCE', 'INACTIVE', 'BLOCKED'])
     .optional(),
   climateControl: z.string().nullable().optional(),
   name: z.string().trim().max(80).nullable().optional(),
@@ -112,7 +189,7 @@ const unitListQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
   perPage: z.coerce.number().int().min(1).max(200).default(25),
   status: z
-    .enum(['OCCUPIED', 'AVAILABLE', 'RESERVED', 'OVERDUE', 'MAINTENANCE', 'INACTIVE'])
+    .enum(['OCCUPIED', 'AVAILABLE', 'RESERVED', 'OVERDUE', 'MAINTENANCE', 'INACTIVE', 'BLOCKED'])
     .optional(),
   branch: z.string().trim().min(1).optional(),
   level: z.coerce.number().int().min(1).optional(),
@@ -184,6 +261,13 @@ const floorPlanPlacementSchema = z.object({
   y: z.number().int().min(0),
   width: z.number().int().min(1),
   height: z.number().int().min(1),
+  // Stacking tier: 0 = ground/sole tier (default), 1 = upper tier of a
+  // same-rect locker pair. Anything else is 400; omitted keeps the tier on update.
+  stackTier: z.number().int().min(0).max(1).optional(),
+  // Authored door compass edges (editor N/S/E/W toggles): omitted keeps the
+  // placement's edges, null clears back to unauthored (AUTO_ALL_EDGES in
+  // metrics), an array replaces. Additive — old clients simply omit it.
+  doorEdges: z.array(z.enum(['N', 'S', 'E', 'W'])).max(4).nullish(),
 });
 
 const floorPlanBlockSchema = z.object({
@@ -193,6 +277,9 @@ const floorPlanBlockSchema = z.object({
   width: z.number().int().min(1),
   height: z.number().int().min(1),
   color: z.string().trim().max(20).nullish(), // optional render tint (hex)
+  // Authored door edges round-trip per region (same keep/clear/replace
+  // semantics as placements; blocks are non-leasable so metrics ignores them).
+  doorEdges: z.array(z.enum(['N', 'S', 'E', 'W'])).max(4).nullish(),
 });
 
 router.get('/config', (req: Request, res: Response) => {
@@ -242,7 +329,10 @@ router.get('/summary', requireAuth, async (_req: Request, res: Response) => {
 router.get('/units/map', requireAuth, async (req: Request, res: Response) => {
   const branch = (req.query.branch as string) || 'BM';
   const level = Number(req.query.level) || 1;
-  ok(res, await getUnitMap(branch, level));
+  // P1 item 3: map filters — ?size=SMALL and ?nearLift=1.
+  const size = typeof req.query.size === 'string' && req.query.size.trim() ? req.query.size.trim() : undefined;
+  const nearLift = req.query.nearLift === '1' || req.query.nearLift === 'true';
+  ok(res, await getUnitMap(branch, level, { size, nearLift }));
 });
 
 router.get('/units', requireAuth, async (req: Request, res: Response) => {
@@ -521,6 +611,51 @@ router.get('/branches', requireAuth, async (_req: Request, res: Response) => {
   ok(res, await listBranches());
 });
 
+// P1 item 1: portfolio overview — per-facility sqft cards + portfolio rollup
+// (computed from Unit rows; no stored state).
+router.get('/portfolio', requireAuth, async (_req: Request, res: Response) => {
+  ok(res, await getPortfolio());
+});
+
+// P1 item 2: net rental rate per sqft per facility (computed aggregation).
+router.get('/rates/net-psf', requireAuth, async (_req: Request, res: Response) => {
+  ok(res, await getNetPsf());
+});
+
+// P1 item 4: quotes queue (PROPOSAL_SENT leads + live inventory) — read-model,
+// no quote table by design (see src/core/quotes.ts).
+router.get('/quotes', requireAuth, async (_req: Request, res: Response) => {
+  const { rows, meta } = await listQuotes();
+  ok(res, rows, meta);
+});
+
+router.get('/quotes/:id', requireAuth, async (req: Request, res: Response) => {
+  const branchId = typeof req.query.branchId === 'string' ? req.query.branchId : undefined;
+  const size = typeof req.query.size === 'string' ? req.query.size : undefined;
+  ok(res, await getQuote(String(req.params.id), { branchId, size }));
+});
+
+// P1 item 4: operator move-outs queue over Notice + TenantStatus.NOTICE.
+// Transitions are explicit operator actions (complete/cancel) — nothing here
+// auto-flips tenant status.
+router.get('/move-outs', requireAuth, async (_req: Request, res: Response) => {
+  const rows = await listMoveOuts();
+  ok(res, rows, { count: rows.length });
+});
+
+const moveOutTransitionSchema = z.object({
+  action: z.enum(['complete', 'cancel']),
+});
+
+router.patch('/move-outs/:tenantId', requireAuth, async (req: Request, res: Response) => {
+  const parsed = moveOutTransitionSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid move-out action', parsed.error.flatten());
+    return;
+  }
+  ok(res, await transitionMoveOut(String(req.params.tenantId), parsed.data.action));
+});
+
 router.get('/floors', requireAuth, async (_req: Request, res: Response) => {
   const rows = await listFloors();
   ok(res, rows, { count: rows.length });
@@ -729,7 +864,9 @@ router.post('/floor-plans/:floorId', requireAuth, async (req: Request, res: Resp
 
 // Upsert one unit placement keyed by (floorPlanId, unitId): the unit must
 // belong to the plan's floor, must not be soft-deleted, and the geometry must
-// fit inside the canvas.
+// fit inside the canvas. `stackTier` (0 = ground/sole, 1 = upper) allows two
+// lockers to share the exact same rect as a stacked pair (lockers-only,
+// at most 2 high); all other overlaps are 409.
 router.put('/floor-plans/:floorId/units/:unitId', requireAuth, async (req: Request, res: Response) => {
   const parsed = floorPlanPlacementSchema.safeParse(req.body);
   if (!parsed.success) {
@@ -753,7 +890,7 @@ router.post('/floor-plans/:floorId/blocks', requireAuth, async (req: Request, re
     return;
   }
   const { name, x, y, width, height, color } = parsed.data;
-  created(res, await createFloorPlanBlock(String(req.params.floorId), { name, x, y, width, height, color }));
+  created(res, await createFloorPlanBlock(String(req.params.floorId), { name, x, y, width, height, color, doorEdges: parsed.data.doorEdges ?? undefined }));
 });
 
 // Upsert a block by id, scoped to the plan: updates an existing block on this
@@ -766,7 +903,7 @@ router.put('/floor-plans/:floorId/blocks/:blockId', requireAuth, async (req: Req
     return;
   }
   const { name, x, y, width, height, color } = parsed.data;
-  ok(res, await setFloorPlanBlock(String(req.params.floorId), String(req.params.blockId), { name, x, y, width, height, color }));
+  ok(res, await setFloorPlanBlock(String(req.params.floorId), String(req.params.blockId), { name, x, y, width, height, color, doorEdges: parsed.data.doorEdges ?? undefined }));
 });
 
 // Remove a layout-decoration block (scoped to the plan; cross-plan ids 404).
@@ -910,6 +1047,9 @@ router.patch('/promotion-plans/:id/status', requireAuth, async (req: Request, re
   ok(res, await setPlanStatus(String(req.params.id), parsed.data.status, {
     changedBy: parsed.data.changedBy,
     approverRole: parsed.data.approverRole,
+    // P1 item 6: verified-permission gate for go-live edges (legacy fallback
+    // when the actor holds no permission rows — see core/users.ts mayAct).
+    actorId: (req as any).user?.sub,
   }));
 });
 
@@ -1019,6 +1159,844 @@ router.post('/promotions', requireAuth, async (req: Request, res: Response) => {
 // Delete the floor plan (cascades its placements; Unit rows untouched).
 router.delete('/floor-plans/:floorId', requireAuth, async (req: Request, res: Response) => {
   ok(res, await deleteFloorPlan(String(req.params.floorId)));
+});
+
+// --- Floor-plan area metrics (Phase 2) ---
+// Live compute runs over the current canvas geometry (placements + blocks)
+// joined to Unit status/rates/sizes; snapshots are append-only history rows.
+// There is deliberately no PUT/PATCH on snapshots (updates forbidden by
+// design) and non-rectangular geometry is rejected at the boundary (400).
+
+const metricsSnapshotSchema = z.object({
+  effective_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'effective_date must be YYYY-MM-DD'),
+});
+
+// Live metrics for a floor: full payload with the assumptions block
+// (measurement_basis CENTERLINE, pricing_basis, gla_convention,
+// wall_thickness, residual_tolerance 0.25, min_aisle_width 3.0) plus
+// facility + floor + coverage + geometry/occupancy/revenue/unit_mix/
+// volumetric + units + circulation + reachability + validation.
+router.get('/floor-plans/:floorId/metrics', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await getFloorMetrics(String(req.params.floorId)));
+});
+
+// Publish an append-only snapshot for an effective date. Validation ERRORs
+// block with 422 + the validation array (invalid geometry is never persisted).
+// Publishing the same date twice creates two rows (history, not state).
+router.post('/floor-plans/:floorId/metrics/snapshots', requireAuth, async (req: Request, res: Response) => {
+  const parsed = metricsSnapshotSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid snapshot payload', parsed.error.flatten());
+    return;
+  }
+  created(res, await createMetricsSnapshot(String(req.params.floorId), parsed.data.effective_date));
+});
+
+// Snapshot history for a floor (newest effective date first, payloads included).
+router.get('/floor-plans/:floorId/metrics/snapshots', requireAuth, async (req: Request, res: Response) => {
+  const rows = await listMetricsSnapshots(String(req.params.floorId));
+  ok(res, rows, { count: rows.length });
+});
+
+// --- Maintenance (facilities sidebar module 2) ---
+// Work orders: branch/unit scope, OPEN → IN_PROGRESS → DONE, monetary value.
+// Preventive tasks: HVAC / Fire / Doors / CCTV trade categories with % complete.
+
+const workOrderPayloadSchema = z.object({
+  title: z.string().trim().min(1).max(160),
+  description: z.string().max(2000).nullable().optional(),
+  branchId: z.string().min(1).nullable().optional(),
+  unitId: z.string().min(1).nullable().optional(),
+  status: z.enum(['OPEN', 'IN_PROGRESS', 'DONE']).optional(),
+  priority: z.string().trim().max(20).nullable().optional(),
+  value: z.number().nonnegative().optional(),
+  assignee: z.string().trim().max(80).nullable().optional(),
+  dueDate: z.string().datetime().nullable().optional(),
+});
+
+const workOrderUpdateSchema = workOrderPayloadSchema.partial();
+
+function toWorkOrderInput(parsed: z.infer<typeof workOrderPayloadSchema>) {
+  return {
+    ...parsed,
+    dueDate:
+      parsed.dueDate === undefined ? undefined : parsed.dueDate ? new Date(parsed.dueDate) : null,
+  };
+}
+
+router.get('/work-orders', requireAuth, async (req: Request, res: Response) => {
+  const rows = await listWorkOrders({
+    status: typeof req.query.status === 'string' ? req.query.status : undefined,
+    branchId: typeof req.query.branchId === 'string' ? req.query.branchId : undefined,
+  });
+  ok(res, rows, { count: rows.length });
+});
+
+router.post('/work-orders', requireAuth, async (req: Request, res: Response) => {
+  const parsed = workOrderPayloadSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid work order payload', parsed.error.flatten());
+    return;
+  }
+  created(res, await createWorkOrder(toWorkOrderInput(parsed.data)));
+});
+
+router.get('/work-orders/:id', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await getWorkOrder(String(req.params.id)));
+});
+
+router.patch('/work-orders/:id', requireAuth, async (req: Request, res: Response) => {
+  const parsed = workOrderUpdateSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid work order payload', parsed.error.flatten());
+    return;
+  }
+  ok(
+    res,
+    await updateWorkOrder(
+      String(req.params.id),
+      toWorkOrderInput(parsed.data as z.infer<typeof workOrderPayloadSchema>),
+    ),
+  );
+});
+
+router.delete('/work-orders/:id', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await deleteWorkOrder(String(req.params.id)));
+});
+
+const preventiveTaskPayloadSchema = z.object({
+  title: z.string().trim().min(1).max(160),
+  category: z.enum(['HVAC', 'FIRE', 'DOORS', 'CCTV']),
+  branchId: z.string().min(1).nullable().optional(),
+  percentComplete: z.number().int().min(0).max(100).optional(),
+  dueDate: z.string().datetime().nullable().optional(),
+});
+
+const preventiveTaskUpdateSchema = preventiveTaskPayloadSchema.partial();
+
+function toPreventiveInput(parsed: z.infer<typeof preventiveTaskPayloadSchema>) {
+  return {
+    ...parsed,
+    dueDate:
+      parsed.dueDate === undefined ? undefined : parsed.dueDate ? new Date(parsed.dueDate) : null,
+  };
+}
+
+router.get('/preventive-tasks', requireAuth, async (req: Request, res: Response) => {
+  const rows = await listPreventiveTasks({
+    category: typeof req.query.category === 'string' ? req.query.category : undefined,
+    branchId: typeof req.query.branchId === 'string' ? req.query.branchId : undefined,
+  });
+  ok(res, rows, { count: rows.length });
+});
+
+// % complete per category (HVAC / Fire / Doors / CCTV). Registered BEFORE
+// /preventive-tasks/:id so "progress" is not parsed as a task id.
+router.get('/preventive-tasks/progress', requireAuth, async (req: Request, res: Response) => {
+  ok(
+    res,
+    await getPreventiveProgress(
+      typeof req.query.branchId === 'string' ? req.query.branchId : undefined,
+    ),
+  );
+});
+
+router.post('/preventive-tasks', requireAuth, async (req: Request, res: Response) => {
+  const parsed = preventiveTaskPayloadSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid preventive task payload', parsed.error.flatten());
+    return;
+  }
+  created(res, await createPreventiveTask(toPreventiveInput(parsed.data)));
+});
+
+router.patch('/preventive-tasks/:id', requireAuth, async (req: Request, res: Response) => {
+  const parsed = preventiveTaskUpdateSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid preventive task payload', parsed.error.flatten());
+    return;
+  }
+  ok(
+    res,
+    await updatePreventiveTask(
+      String(req.params.id),
+      toPreventiveInput(parsed.data as z.infer<typeof preventiveTaskPayloadSchema>),
+    ),
+  );
+});
+
+router.delete('/preventive-tasks/:id', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await deletePreventiveTask(String(req.params.id)));
+});
+
+// --- Assets & vendors (facilities sidebar module 3) ---
+
+const assetPayloadSchema = z.object({
+  code: z.string().trim().min(1).max(40),
+  name: z.string().trim().min(1).max(160),
+  category: z.string().trim().min(1).max(40),
+  branchId: z.string().min(1).nullable().optional(),
+  status: z.enum(['ACTIVE', 'IN_SERVICE', 'RETIRED']).optional(),
+  purchaseDate: z.string().datetime().nullable().optional(),
+  value: z.number().nonnegative().nullable().optional(),
+});
+
+const assetUpdateSchema = assetPayloadSchema.partial().omit({ code: true });
+
+function toAssetInput(parsed: z.infer<typeof assetPayloadSchema>) {
+  return {
+    ...parsed,
+    purchaseDate:
+      parsed.purchaseDate === undefined
+        ? undefined
+        : parsed.purchaseDate
+          ? new Date(parsed.purchaseDate)
+          : null,
+  };
+}
+
+router.get('/assets', requireAuth, async (req: Request, res: Response) => {
+  const rows = await listAssets({
+    status: typeof req.query.status === 'string' ? req.query.status : undefined,
+    branchId: typeof req.query.branchId === 'string' ? req.query.branchId : undefined,
+  });
+  ok(res, rows, { count: rows.length });
+});
+
+router.post('/assets', requireAuth, async (req: Request, res: Response) => {
+  const parsed = assetPayloadSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid asset payload', parsed.error.flatten());
+    return;
+  }
+  created(res, await createAsset(toAssetInput(parsed.data)));
+});
+
+router.get('/assets/:id', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await getAsset(String(req.params.id)));
+});
+
+router.patch('/assets/:id', requireAuth, async (req: Request, res: Response) => {
+  const parsed = assetUpdateSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid asset payload', parsed.error.flatten());
+    return;
+  }
+  const { purchaseDate, ...rest } = parsed.data;
+  ok(
+    res,
+    await updateAsset(String(req.params.id), {
+      ...rest,
+      ...(purchaseDate !== undefined
+        ? { purchaseDate: purchaseDate ? new Date(purchaseDate) : null }
+        : {}),
+    }),
+  );
+});
+
+router.delete('/assets/:id', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await deleteAsset(String(req.params.id)));
+});
+
+const vendorPayloadSchema = z.object({
+  name: z.string().trim().min(1).max(160),
+  service: z.string().trim().max(160).nullable().optional(),
+  sla: z.string().trim().max(160).nullable().optional(),
+  ytdSpend: z.number().nonnegative().optional(),
+  status: z.enum(['ACTIVE', 'INACTIVE']).optional(),
+  contact: z.string().trim().max(160).nullable().optional(),
+});
+
+const vendorUpdateSchema = vendorPayloadSchema.partial();
+
+router.get('/vendors', requireAuth, async (req: Request, res: Response) => {
+  const rows = await listVendors({
+    status: typeof req.query.status === 'string' ? req.query.status : undefined,
+  });
+  ok(res, rows, { count: rows.length });
+});
+
+router.post('/vendors', requireAuth, async (req: Request, res: Response) => {
+  const parsed = vendorPayloadSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid vendor payload', parsed.error.flatten());
+    return;
+  }
+  created(res, await createVendor(parsed.data));
+});
+
+router.get('/vendors/:id', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await getVendor(String(req.params.id)));
+});
+
+router.patch('/vendors/:id', requireAuth, async (req: Request, res: Response) => {
+  const parsed = vendorUpdateSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid vendor payload', parsed.error.flatten());
+    return;
+  }
+  ok(res, await updateVendor(String(req.params.id), parsed.data));
+});
+
+router.delete('/vendors/:id', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await deleteVendor(String(req.params.id)));
+});
+
+// --- Incidents (facilities sidebar module 4) ---
+
+const incidentPayloadSchema = z.object({
+  title: z.string().trim().min(1).max(160),
+  description: z.string().max(2000).nullable().optional(),
+  severity: z.enum(['LOW', 'MEDIUM', 'HIGH', 'CRITICAL']).optional(),
+  status: z.enum(['OPEN', 'IN_PROGRESS', 'RESOLVED', 'CLOSED']).optional(),
+  branchId: z.string().min(1).nullable().optional(),
+  unitId: z.string().min(1).nullable().optional(),
+  checklist: z.unknown().optional(),
+  reportedBy: z.string().trim().max(80).nullable().optional(),
+});
+
+const incidentUpdateSchema = incidentPayloadSchema.partial();
+
+router.get('/incidents', requireAuth, async (req: Request, res: Response) => {
+  const rows = await listIncidents({
+    severity: typeof req.query.severity === 'string' ? req.query.severity : undefined,
+    status: typeof req.query.status === 'string' ? req.query.status : undefined,
+    branchId: typeof req.query.branchId === 'string' ? req.query.branchId : undefined,
+  });
+  ok(res, rows, { count: rows.length });
+});
+
+router.post('/incidents', requireAuth, async (req: Request, res: Response) => {
+  const parsed = incidentPayloadSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid incident payload', parsed.error.flatten());
+    return;
+  }
+  created(res, await createIncident(parsed.data));
+});
+
+router.get('/incidents/:id', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await getIncident(String(req.params.id)));
+});
+
+router.patch('/incidents/:id', requireAuth, async (req: Request, res: Response) => {
+  const parsed = incidentUpdateSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid incident payload', parsed.error.flatten());
+    return;
+  }
+  ok(res, await updateIncident(String(req.params.id), parsed.data));
+});
+
+router.delete('/incidents/:id', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await deleteIncident(String(req.params.id)));
+});
+
+// --- Access control (facilities sidebar module 5) ---
+// Sub-panels: Live (events) / Credentials / Temporary (expiring credentials) /
+// Exceptions (DENIED events) / Policies.
+
+const doorPayloadSchema = z.object({
+  code: z.string().trim().min(1).max(40),
+  name: z.string().trim().min(1).max(160),
+  branchId: z.string().min(1).nullable().optional(),
+  location: z.string().trim().max(160).nullable().optional(),
+  status: z.enum(['ACTIVE', 'INACTIVE']).optional(),
+});
+
+const doorUpdateSchema = doorPayloadSchema.partial().omit({ code: true });
+
+router.get('/access/doors', requireAuth, async (req: Request, res: Response) => {
+  const rows = await listDoors({
+    branchId: typeof req.query.branchId === 'string' ? req.query.branchId : undefined,
+    status: typeof req.query.status === 'string' ? req.query.status : undefined,
+  });
+  ok(res, rows, { count: rows.length });
+});
+
+router.post('/access/doors', requireAuth, async (req: Request, res: Response) => {
+  const parsed = doorPayloadSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid door payload', parsed.error.flatten());
+    return;
+  }
+  created(res, await createDoor(parsed.data));
+});
+
+router.patch('/access/doors/:id', requireAuth, async (req: Request, res: Response) => {
+  const parsed = doorUpdateSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid door payload', parsed.error.flatten());
+    return;
+  }
+  ok(res, await updateDoor(String(req.params.id), parsed.data));
+});
+
+router.delete('/access/doors/:id', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await deleteDoor(String(req.params.id)));
+});
+
+const credentialPayloadSchema = z.object({
+  holderName: z.string().trim().min(1).max(160),
+  type: z.enum(['PERMANENT', 'TEMPORARY', 'VISITOR']).optional(),
+  status: z.enum(['ACTIVE', 'REVOKED', 'EXPIRED']).optional(),
+  branchId: z.string().min(1).nullable().optional(),
+  validFrom: z.string().datetime().nullable().optional(),
+  validTo: z.string().datetime().nullable().optional(),
+});
+
+const credentialUpdateSchema = credentialPayloadSchema.partial();
+
+function toCredentialInput(parsed: z.infer<typeof credentialPayloadSchema>) {
+  return {
+    ...parsed,
+    validFrom:
+      parsed.validFrom === undefined
+        ? undefined
+        : parsed.validFrom
+          ? new Date(parsed.validFrom)
+          : null,
+    validTo:
+      parsed.validTo === undefined ? undefined : parsed.validTo ? new Date(parsed.validTo) : null,
+  };
+}
+
+router.get('/access/credentials', requireAuth, async (req: Request, res: Response) => {
+  const rows = await listCredentials({
+    status: typeof req.query.status === 'string' ? req.query.status : undefined,
+    type: typeof req.query.type === 'string' ? req.query.type : undefined,
+    temporary: req.query.temporary === '1' || req.query.temporary === 'true',
+  });
+  ok(res, rows, { count: rows.length });
+});
+
+router.post('/access/credentials', requireAuth, async (req: Request, res: Response) => {
+  const parsed = credentialPayloadSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid credential payload', parsed.error.flatten());
+    return;
+  }
+  created(res, await createCredential(toCredentialInput(parsed.data)));
+});
+
+router.patch('/access/credentials/:id', requireAuth, async (req: Request, res: Response) => {
+  const parsed = credentialUpdateSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid credential payload', parsed.error.flatten());
+    return;
+  }
+  ok(
+    res,
+    await updateCredential(
+      String(req.params.id),
+      toCredentialInput(parsed.data as z.infer<typeof credentialPayloadSchema>),
+    ),
+  );
+});
+
+router.delete('/access/credentials/:id', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await deleteCredential(String(req.params.id)));
+});
+
+const policyPayloadSchema = z.object({
+  name: z.string().trim().min(1).max(160),
+  description: z.string().max(2000).nullable().optional(),
+  scope: z.string().trim().max(160).nullable().optional(),
+  active: z.boolean().optional(),
+});
+
+const policyUpdateSchema = policyPayloadSchema.partial();
+
+router.get('/access/policies', requireAuth, async (_req: Request, res: Response) => {
+  const rows = await listPolicies();
+  ok(res, rows, { count: rows.length });
+});
+
+router.post('/access/policies', requireAuth, async (req: Request, res: Response) => {
+  const parsed = policyPayloadSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid policy payload', parsed.error.flatten());
+    return;
+  }
+  created(res, await createPolicy(parsed.data));
+});
+
+router.patch('/access/policies/:id', requireAuth, async (req: Request, res: Response) => {
+  const parsed = policyUpdateSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid policy payload', parsed.error.flatten());
+    return;
+  }
+  ok(res, await updatePolicy(String(req.params.id), parsed.data));
+});
+
+router.delete('/access/policies/:id', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await deletePolicy(String(req.params.id)));
+});
+
+const accessEventPayloadSchema = z.object({
+  doorId: z.string().min(1).nullable().optional(),
+  credentialId: z.string().min(1).nullable().optional(),
+  branchId: z.string().min(1).nullable().optional(),
+  result: z.enum(['GRANTED', 'DENIED']).optional(),
+  occurredAt: z.string().datetime().optional(),
+  note: z.string().max(1000).nullable().optional(),
+});
+
+router.get('/access/events', requireAuth, async (req: Request, res: Response) => {
+  const limit = req.query.limit !== undefined ? Number(req.query.limit) : undefined;
+  if (limit !== undefined && (!Number.isFinite(limit) || limit < 1 || limit > 200)) {
+    fail(res, 400, 'VALIDATION', 'limit must be an integer 1..200');
+    return;
+  }
+  const rows = await listAccessEvents({
+    result: typeof req.query.result === 'string' ? req.query.result : undefined,
+    branchId: typeof req.query.branchId === 'string' ? req.query.branchId : undefined,
+    limit,
+  });
+  ok(res, rows, { count: rows.length });
+});
+
+router.post('/access/events', requireAuth, async (req: Request, res: Response) => {
+  const parsed = accessEventPayloadSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid access event payload', parsed.error.flatten());
+    return;
+  }
+  created(
+    res,
+    await createAccessEvent({
+      ...parsed.data,
+      occurredAt: parsed.data.occurredAt ? new Date(parsed.data.occurredAt) : undefined,
+    }),
+  );
+});
+
+// Header stats (entries / credentials / doors). Registered BEFORE any
+// /access/:param route would shadow it (none exist today — kept explicit).
+router.get('/access/stats', requireAuth, async (req: Request, res: Response) => {
+  ok(
+    res,
+    await getAccessStats(
+      typeof req.query.branchId === 'string' ? req.query.branchId : undefined,
+    ),
+  );
+});
+
+// --- Inspections & compliance (facilities sidebar module 6) ---
+
+const checklistPayloadSchema = z.object({
+  title: z.string().trim().min(1).max(160),
+  frequency: z.enum(['DAILY', 'WEEKLY', 'MONTHLY', 'QUARTERLY', 'ANNUAL']).optional(),
+  branchId: z.string().min(1).nullable().optional(),
+  items: z.unknown().optional(),
+  percentComplete: z.number().int().min(0).max(100).optional(),
+  status: z.enum(['OPEN', 'IN_PROGRESS', 'DONE']).optional(),
+  dueDate: z.string().datetime().nullable().optional(),
+});
+
+const checklistUpdateSchema = checklistPayloadSchema.partial();
+
+function toChecklistInput(parsed: z.infer<typeof checklistPayloadSchema>) {
+  return {
+    ...parsed,
+    dueDate:
+      parsed.dueDate === undefined ? undefined : parsed.dueDate ? new Date(parsed.dueDate) : null,
+  };
+}
+
+router.get('/inspections/checklists', requireAuth, async (req: Request, res: Response) => {
+  const rows = await listChecklists({
+    frequency: typeof req.query.frequency === 'string' ? req.query.frequency : undefined,
+    branchId: typeof req.query.branchId === 'string' ? req.query.branchId : undefined,
+  });
+  ok(res, rows, { count: rows.length });
+});
+
+router.post('/inspections/checklists', requireAuth, async (req: Request, res: Response) => {
+  const parsed = checklistPayloadSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid checklist payload', parsed.error.flatten());
+    return;
+  }
+  created(res, await createChecklist(toChecklistInput(parsed.data)));
+});
+
+router.patch('/inspections/checklists/:id', requireAuth, async (req: Request, res: Response) => {
+  const parsed = checklistUpdateSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid checklist payload', parsed.error.flatten());
+    return;
+  }
+  ok(
+    res,
+    await updateChecklist(
+      String(req.params.id),
+      toChecklistInput(parsed.data as z.infer<typeof checklistPayloadSchema>),
+    ),
+  );
+});
+
+router.delete('/inspections/checklists/:id', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await deleteChecklist(String(req.params.id)));
+});
+
+const certificatePayloadSchema = z.object({
+  name: z.string().trim().min(1).max(160),
+  type: z.string().trim().min(1).max(80),
+  branchId: z.string().min(1).nullable().optional(),
+  issuer: z.string().trim().max(160).nullable().optional(),
+  expiryDate: z.string().datetime(),
+  status: z.enum(['VALID', 'EXPIRING', 'EXPIRED']).optional(),
+});
+
+const certificateUpdateSchema = certificatePayloadSchema.partial();
+
+function toCertificateInput(parsed: z.infer<typeof certificatePayloadSchema>) {
+  return {
+    ...parsed,
+    expiryDate: new Date(parsed.expiryDate),
+  };
+}
+
+router.get('/inspections/certificates', requireAuth, async (req: Request, res: Response) => {
+  const rows = await listCertificates({
+    branchId: typeof req.query.branchId === 'string' ? req.query.branchId : undefined,
+    expiring: req.query.expiring === '1' || req.query.expiring === 'true',
+  });
+  ok(res, rows, { count: rows.length });
+});
+
+router.post('/inspections/certificates', requireAuth, async (req: Request, res: Response) => {
+  const parsed = certificatePayloadSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid certificate payload', parsed.error.flatten());
+    return;
+  }
+  created(res, await createCertificate(toCertificateInput(parsed.data)));
+});
+
+router.patch('/inspections/certificates/:id', requireAuth, async (req: Request, res: Response) => {
+  const parsed = certificateUpdateSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid certificate payload', parsed.error.flatten());
+    return;
+  }
+  const { expiryDate, ...rest } = parsed.data;
+  ok(
+    res,
+    await updateCertificate(String(req.params.id), {
+      ...rest,
+      ...(expiryDate !== undefined ? { expiryDate: new Date(expiryDate) } : {}),
+    }),
+  );
+});
+
+router.delete('/inspections/certificates/:id', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await deleteCertificate(String(req.params.id)));
+});
+
+// --- Fees & deposits (P1 item 5) ---
+// FacilityFee rows express the Global → Facility → Product → Exception chain;
+// GET /fees/resolve collapses it to the effective rule for a context.
+
+const feePayloadSchema = z.object({
+  kind: z.enum(['FEE', 'DEPOSIT']).optional(),
+  key: z.string().trim().min(1).max(80),
+  scope: z.enum(['GLOBAL', 'FACILITY', 'PRODUCT', 'EXCEPTION']).optional(),
+  branchId: z.string().min(1).nullable().optional(),
+  sizeId: z.string().min(1).nullable().optional(),
+  tenantId: z.string().min(1).nullable().optional(),
+  amount: z.number().nonnegative(),
+  amountKind: z.enum(['FLAT', 'PCT', 'MONTHS']).optional(),
+  active: z.boolean().optional(),
+  note: z.string().trim().max(500).nullable().optional(),
+});
+
+const feeUpdateSchema = feePayloadSchema.partial();
+
+router.get('/fees', requireAuth, async (req: Request, res: Response) => {
+  const active =
+    req.query.active === undefined ? undefined : req.query.active === '1' || req.query.active === 'true';
+  const rows = await listFees({
+    kind: typeof req.query.kind === 'string' ? req.query.kind : undefined,
+    key: typeof req.query.key === 'string' ? req.query.key : undefined,
+    branchId: typeof req.query.branchId === 'string' ? req.query.branchId : undefined,
+    active,
+  });
+  ok(res, rows, { count: rows.length });
+});
+
+// Effective-rule lookup. Registered BEFORE /fees/:id so "resolve" is not
+// parsed as a fee id.
+router.get('/fees/resolve', requireAuth, async (req: Request, res: Response) => {
+  const key = typeof req.query.key === 'string' ? req.query.key : '';
+  if (!key.trim()) {
+    fail(res, 400, 'VALIDATION', 'Query param key is required');
+    return;
+  }
+  const kind = typeof req.query.kind === 'string' ? req.query.kind : 'FEE';
+  if (kind !== 'FEE' && kind !== 'DEPOSIT') {
+    fail(res, 400, 'VALIDATION', 'kind must be FEE or DEPOSIT');
+    return;
+  }
+  ok(
+    res,
+    await resolveFee({
+      kind,
+      key: key.trim(),
+      branchId: typeof req.query.branchId === 'string' ? req.query.branchId : undefined,
+      sizeId: typeof req.query.sizeId === 'string' ? req.query.sizeId : undefined,
+      tenantId: typeof req.query.tenantId === 'string' ? req.query.tenantId : undefined,
+    }),
+  );
+});
+
+router.post('/fees', requireAuth, async (req: Request, res: Response) => {
+  const parsed = feePayloadSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid fee payload', parsed.error.flatten());
+    return;
+  }
+  // P1 item 6 (gated): operators with permission rows need 'fees.manage'.
+  await requirePermission((req as any).user?.sub, 'fees.manage');
+  created(res, await createFee(parsed.data));
+});
+
+router.patch('/fees/:id', requireAuth, async (req: Request, res: Response) => {
+  const parsed = feeUpdateSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid fee payload', parsed.error.flatten());
+    return;
+  }
+  await requirePermission((req as any).user?.sub, 'fees.manage');
+  ok(res, await updateFee(String(req.params.id), parsed.data));
+});
+
+router.delete('/fees/:id', requireAuth, async (req: Request, res: Response) => {
+  await requirePermission((req as any).user?.sub, 'fees.manage');
+  ok(res, await deleteFee(String(req.params.id)));
+});
+
+// --- Business rules (P1 item 7) ---
+// Typed org + booking rules beyond the 3 scalar booking settings.
+
+router.get('/business-rules', requireAuth, async (_req: Request, res: Response) => {
+  const rows = await listBusinessRules();
+  ok(res, rows, { count: rows.length });
+});
+
+const businessRulesBatchSchema = z.record(z.string(), z.unknown());
+
+router.put('/business-rules', requireAuth, async (req: Request, res: Response) => {
+  const parsed = businessRulesBatchSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Business-rules payload must be an object of { key: value }', parsed.error.flatten());
+    return;
+  }
+  // P1 item 6 (gated): operators with permission rows need 'businessRules.manage'.
+  await requirePermission((req as any).user?.sub, 'businessRules.manage');
+  ok(res, await upsertBusinessRules(parsed.data));
+});
+
+// --- Users & roles (P1 item 6) ---
+// Facility scoping + verified permissions. Reads are never gated; writes use
+// the gated requirePermission (legacy fallback when the actor has no rows).
+
+const createUserSchema = z.object({
+  email: z.string().email(),
+  name: z.string().trim().min(1).max(120),
+  password: z.string().min(8).max(200),
+  role: z.enum(['OWNER', 'MANAGER', 'VIEWER']).optional(),
+});
+
+const updateUserSchema = z.object({
+  name: z.string().trim().min(1).max(120).optional(),
+  role: z.enum(['OWNER', 'MANAGER', 'VIEWER']).optional(),
+  password: z.string().min(8).max(200).optional(),
+});
+
+const facilityAccessSchema = z.object({
+  access: z.array(
+    z.object({
+      branchId: z.string().min(1).nullable().optional(),
+      scope: z.enum(['FACILITY', 'ALL']).optional(),
+    }),
+  ),
+});
+
+const grantPermissionSchema = z.object({
+  permission: z.string().trim().min(1).max(80),
+});
+
+router.get('/users', requireAuth, async (_req: Request, res: Response) => {
+  const rows = await listUsers();
+  ok(res, rows, { count: rows.length });
+});
+
+router.get('/users/permissions', requireAuth, async (_req: Request, res: Response) => {
+  // Permission catalog (reference for the Settings Users section).
+  ok(res, [...PERMISSIONS]);
+});
+
+router.post('/users', requireAuth, async (req: Request, res: Response) => {
+  const parsed = createUserSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid user payload', parsed.error.flatten());
+    return;
+  }
+  await requirePermission((req as any).user?.sub, 'users.manage');
+  created(res, await createUser(parsed.data));
+});
+
+router.patch('/users/:id', requireAuth, async (req: Request, res: Response) => {
+  const parsed = updateUserSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid user payload', parsed.error.flatten());
+    return;
+  }
+  await requirePermission((req as any).user?.sub, 'users.manage');
+  ok(res, await updateUser(String(req.params.id), parsed.data));
+});
+
+router.delete('/users/:id', requireAuth, async (req: Request, res: Response) => {
+  await requirePermission((req as any).user?.sub, 'users.manage');
+  ok(res, await deleteUser(String(req.params.id), { actorId: (req as any).user?.sub }));
+});
+
+router.get('/users/:id/access', requireAuth, async (req: Request, res: Response) => {
+  const rows = await listUsers();
+  const user = rows.find((u) => u.id === String(req.params.id));
+  if (!user) {
+    fail(res, 404, 'NOT_FOUND', `User ${String(req.params.id)} not found`);
+    return;
+  }
+  ok(res, user.facilityAccess);
+});
+
+router.put('/users/:id/access', requireAuth, async (req: Request, res: Response) => {
+  const parsed = facilityAccessSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid access payload', parsed.error.flatten());
+    return;
+  }
+  await requirePermission((req as any).user?.sub, 'users.manage');
+  ok(res, await setFacilityAccess(String(req.params.id), parsed.data.access));
+});
+
+router.post('/users/:id/permissions', requireAuth, async (req: Request, res: Response) => {
+  const parsed = grantPermissionSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid permission payload', parsed.error.flatten());
+    return;
+  }
+  await requirePermission((req as any).user?.sub, 'users.manage');
+  created(res, await grantPermission(String(req.params.id), parsed.data.permission));
+});
+
+router.delete('/users/:id/permissions/:permission', requireAuth, async (req: Request, res: Response) => {
+  await requirePermission((req as any).user?.sub, 'users.manage');
+  ok(res, await revokePermission(String(req.params.id), String(req.params.permission)));
 });
 
 export default router;

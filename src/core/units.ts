@@ -227,31 +227,87 @@ export async function softDeleteUnit(code: string) {
   return serializeUnit(updated);
 }
 
-export async function getUnitMap(branchCode: string, level: number, opts?: { public?: boolean }) {
+export interface UnitMapQuery {
+  public?: boolean;
+  // P1 item 3: map filters — size code (e.g. SMALL) and near-lift proximity.
+  size?: string;
+  nearLift?: boolean;
+}
+
+// Foot-distance threshold for the near-lift filter: a unit counts as near a
+// lift when its placement rect centre is within this many feet of a "Lift"
+// block centre on the same plan canvas (1 grid unit = 1 ft).
+const NEAR_LIFT_FT = 8;
+
+export async function getUnitMap(branchCode: string, level: number, opts?: UnitMapQuery) {
   const isPublic = opts?.public ?? false;
+  const floor = await prisma.floor.findFirst({
+    where: { branch: { code: branchCode }, level },
+    include: {
+      floorPlan: { include: { placements: true, blocks: true } },
+    },
+  });
   const units = await prisma.unit.findMany({
-    where: { deletedAt: null, branch: { code: branchCode }, floor: { level } },
+    where: {
+      deletedAt: null,
+      branch: { code: branchCode },
+      floor: { level },
+      ...(opts?.size ? { size: { code: opts.size } } : {}),
+    },
     include: { size: true, tenant: true },
     orderBy: { unitCode: 'asc' },
   });
 
+  // Near-lift proximity resolves against the floor's plan geometry: placements
+  // joined by unitId, lift blocks matched by name. No plan / no lift blocks /
+  // unplaced unit → not near-lift (never an error — the filter just matches
+  // nothing when the operator hasn't drawn lifts yet).
+  let nearLiftIds: Set<string> | null = null;
+  if (opts?.nearLift) {
+    nearLiftIds = new Set();
+    const plan = floor?.floorPlan ?? null;
+    const lifts = (plan?.blocks ?? []).filter((b) => b.name.toLowerCase().includes('lift'));
+    if (plan && lifts.length) {
+      const placementByUnit = new Map(plan.placements.map((p) => [p.unitId, p]));
+      for (const u of units) {
+        const p = placementByUnit.get(u.id);
+        if (!p) continue;
+        const cx = p.x + p.width / 2;
+        const cy = p.y + p.height / 2;
+        const near = lifts.some((b) => {
+          const bx = b.x + b.width / 2;
+          const by = b.y + b.height / 2;
+          return Math.hypot(cx - bx, cy - by) <= NEAR_LIFT_FT;
+        });
+        if (near) nearLiftIds.add(u.id);
+      }
+    }
+  }
+  const visible = nearLiftIds ? units.filter((u) => nearLiftIds.has(u.id)) : units;
+
   const legend = {
-    occupied: units.filter((u) => u.status === 'OCCUPIED').length,
-    available: units.filter((u) => u.status === 'AVAILABLE').length,
-    reserved: units.filter((u) => u.status === 'RESERVED').length,
-    overdue: units.filter((u) => u.status === 'OVERDUE').length,
-    maintenance: units.filter((u) => u.status === 'MAINTENANCE').length,
+    occupied: visible.filter((u) => u.status === 'OCCUPIED').length,
+    available: visible.filter((u) => u.status === 'AVAILABLE').length,
+    reserved: visible.filter((u) => u.status === 'RESERVED').length,
+    overdue: visible.filter((u) => u.status === 'OVERDUE').length,
+    maintenance: visible.filter((u) => u.status === 'MAINTENANCE').length,
+    blocked: visible.filter((u) => u.status === 'BLOCKED').length,
   };
 
   return {
     branch: branchCode,
     level,
     legend,
-    units: units.map((u) => ({
+    filters: {
+      size: opts?.size ?? null,
+      nearLift: opts?.nearLift ?? false,
+    },
+    units: visible.map((u) => ({
       id: u.unitCode,
       code: u.unitCode,
       short: u.unitCode.split('-').slice(1).join('-'),
       size: u.size.name,
+      sizeCode: u.size.code,
       psf: u.sqft ? toNum(u.monthlyRate) / u.sqft : 0,
       rate: toNum(u.monthlyRate),
       sqft: u.sqft,
@@ -308,6 +364,39 @@ export async function getUnitDetail(code: string) {
   });
   if (!unit) throw new AppError(404, 'NOT_FOUND', `Unit ${code} not found`);
 
+  // P1 item 3: facility-ops sections for the unit drawer, read from the
+  // in-tree P0 tables. Checklists / certificates / access events are
+  // branch-scoped (those models carry branchId, not unitId); work orders and
+  // incidents are unit-scoped where the FK exists. All capped for drawer use.
+  const [checklists, certificates, accessEvents, workOrders, incidents] = await Promise.all([
+    prisma.inspectionChecklist.findMany({
+      where: { branchId: unit.branchId },
+      orderBy: { updatedAt: 'desc' },
+      take: 5,
+    }),
+    prisma.complianceCertificate.findMany({
+      where: { branchId: unit.branchId },
+      orderBy: { expiryDate: 'asc' },
+      take: 5,
+    }),
+    prisma.accessEvent.findMany({
+      where: { branchId: unit.branchId },
+      include: { door: { select: { code: true, name: true } }, credential: { select: { holderName: true } } },
+      orderBy: { occurredAt: 'desc' },
+      take: 10,
+    }),
+    prisma.workOrder.findMany({
+      where: { unitId: unit.id },
+      orderBy: { updatedAt: 'desc' },
+      take: 5,
+    }),
+    prisma.incident.findMany({
+      where: { unitId: unit.id },
+      orderBy: { updatedAt: 'desc' },
+      take: 5,
+    }),
+  ]);
+
   return {
     id: unit.unitCode,
     code: unit.unitCode,
@@ -348,6 +437,46 @@ export async function getUnitDetail(code: string) {
       reason: r.reason,
       by: r.appliedBy,
     })),
+    // P1 item 3: drawer sections (branch-scoped where the P0 model has no
+    // unit FK — see the query above).
+    operations: {
+      inspections: checklists.map((c) => ({
+        id: c.id,
+        title: c.title,
+        frequency: c.frequency,
+        status: c.status,
+        percentComplete: c.percentComplete,
+        dueDate: c.dueDate,
+      })),
+      certificates: certificates.map((c) => ({
+        id: c.id,
+        name: c.name,
+        type: c.type,
+        expiryDate: c.expiryDate,
+        status: c.status,
+      })),
+      accessHistory: accessEvents.map((e) => ({
+        id: e.id,
+        door: e.door ? { code: e.door.code, name: e.door.name } : null,
+        holder: e.credential?.holderName ?? null,
+        result: e.result,
+        occurredAt: e.occurredAt,
+        note: e.note,
+      })),
+      workOrders: workOrders.map((w) => ({
+        id: w.id,
+        title: w.title,
+        status: w.status,
+        priority: w.priority,
+        value: toNum(w.value),
+      })),
+      incidents: incidents.map((i) => ({
+        id: i.id,
+        title: i.title,
+        severity: i.severity,
+        status: i.status,
+      })),
+    },
   };
 }
 

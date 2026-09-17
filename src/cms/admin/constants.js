@@ -9,6 +9,7 @@ export const STATUS_TONE = {
   OVERDUE: 'over',
   MAINTENANCE: 'neutral',
   INACTIVE: 'neutral',
+  BLOCKED: 'neutral',
 };
 
 export const STATUS_LABEL = {
@@ -18,6 +19,7 @@ export const STATUS_LABEL = {
   OVERDUE: 'Overdue',
   MAINTENANCE: 'Maintenance',
   INACTIVE: 'Inactive',
+  BLOCKED: 'Blocked',
 };
 
 export const MAP_TONE = {
@@ -27,6 +29,7 @@ export const MAP_TONE = {
   OVERDUE: 'overdue',
   MAINTENANCE: 'maintenance',
   INACTIVE: 'maintenance',
+  BLOCKED: 'blocked',
 };
 
 export const TENANT_STATUS_TONE = {

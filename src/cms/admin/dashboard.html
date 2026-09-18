@@ -433,6 +433,16 @@ main{min-width:0;display:flex;flex-direction:column;min-height:100vh}
 .fp-block.selected{border-color:var(--terra);border-style:solid;background:var(--terra-light);box-shadow:0 0 0 2px var(--terra-light)}
 .fp-block .fp-resize{position:absolute;right:1px;bottom:1px;width:16px;height:16px;background:var(--ink);border-radius:3px;cursor:nwse-resize;opacity:.6;touch-action:none}
 .fp-block.selected .fp-resize,.fp-block:hover .fp-resize{opacity:1}
+.fp-boundary-layer{position:absolute;left:0;top:0;z-index:1;pointer-events:none;overflow:visible}
+.fp-boundary{fill:rgba(11,79,94,.07);stroke:var(--olive2);stroke-width:2.5;stroke-linejoin:round;stroke-linecap:round}
+.fp-boundary.open{fill:none;stroke-dasharray:7 5}
+.fp-boundary.draft{fill:none;stroke:var(--terra);stroke-width:2.5;stroke-dasharray:7 5}
+.fp-boundary.selected{stroke:var(--terra);stroke-width:3}
+.fp-boundary-label{font-size:10px;font-weight:800;fill:var(--olive);paint-order:stroke;stroke:var(--cream);stroke-width:3px}
+.fp-bvertex{fill:var(--white);stroke:var(--terra);stroke-width:2;cursor:grab;pointer-events:auto;touch-action:none}
+.fp-bvertex.first{fill:var(--terra)}
+.fp-bvertex:hover{fill:var(--terra-light)}
+.fp-boundary-metrics{white-space:nowrap}
 .fp-structure{margin-top:4px}
 .fp-structure summary{cursor:pointer;color:var(--muted);font-size:12px}
 .fp-structure-input{width:100%;font-family:Menlo,Consolas,monospace;font-size:11px;border:1.5px solid var(--line);border-radius:7px;padding:8px;background:var(--white);color:var(--ink);resize:vertical;margin-top:6px}
@@ -887,7 +897,7 @@ body.lead-drawer-open{overflow-x:hidden}
         <div class="unit-map-card">
           <div class="sec-hdr"><div><div class="sec-title" id="fpTitle">Floor Plan Editor</div><div class="sec-sub" id="fpSub">Design the layout: drag units onto the canvas</div></div><div style="display:flex;gap:8px;flex-wrap:wrap;"><select id="fpBranch" class="tbl-select"></select><select id="fpFloor" class="tbl-select"></select><button class="tb-btn ghost" id="fpDeletePlan">🗑 Delete plan</button><button class="tb-btn primary" id="fpSaveCanvas">💾 Save Canvas</button></div></div>
           <div class="modal-alert" id="fpBanner" hidden></div>
-          <div class="fp-layout"><div class="fp-palette"><div class="chart-title">Units</div><div class="t-type" id="fpPaletteSub">Drag a unit onto the canvas</div><div class="fp-unit-list" id="fpPalette"></div><div class="fp-block-form fp-name" id="fpBlockForm" hidden><div class="chart-title" style="font-size:11px;margin-bottom:4px;">New block</div><label class="fp-name-label" for="fpBlockName">Block name</label><div class="fp-name-wrap"><svg class="fp-name-icon" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M2.5 2.5H10l5.5 5.5-7.5 7.5-5.5-5.5V2.5z"/><circle cx="6.6" cy="6.6" r="1.3"/></svg><input type="text" id="fpBlockName" class="fp-name-input" maxlength="80" spellcheck="false" autocomplete="off" placeholder='Name — e.g. "Lift", "Stair"' aria-describedby="fpBlockNameHint"></div><div class="fp-name-hint" id="fpBlockNameHint">Lift · Stairs · Walking area · Exit</div><div style="display:flex;gap:6px;margin-top:6px;"><button class="act-btn primary" id="fpBlockAdd" style="flex:1;text-align:center;">Add block</button><button class="act-btn" id="fpBlockCancel" style="flex:1;text-align:center;">Cancel</button></div></div></div><div class="fp-editor"><div class="fp-toolbar"><span class="t-type">Canvas (ft)</span><input type="number" id="fpWidth" class="tbl-search" min="1" max="500" step="1" title="Canvas width in feet" style="width:80px;"><span class="t-type">×</span><input type="number" id="fpHeight" class="tbl-search" min="1" max="500" step="1" title="Canvas height in feet" style="width:80px;"><button class="tb-btn ghost" id="fpAddBlock">＋ Block</button><button class="tb-btn ghost" id="fpRotateGhost" title="Swap palette ghost orientation (W×H ↔ H×W) for rectangular units" aria-pressed="false">⟳ Rotate</button><button class="tb-btn ghost on" id="fpLockSqft" title="Lock resize to the nearest rect preserving area ≈ sqft (toggle off for free resize; server rejects >15% deviation)" aria-pressed="true">🔒 sqft</button><button class="tb-btn ghost" id="fpAutoPlace" title="Place all unplaced units of this floor at the first free spot (asks for confirmation first)">⤵ Auto-place all</button><span class="fp-zoom"><button class="tb-btn ghost" id="fpZoomOut">−</button><span class="t-type" id="fpZoomLbl">100%</span><button class="tb-btn ghost" id="fpZoomIn">+</button></span><span class="fp-sel-info" id="fpSelInfo"></span></div><div class="fp-canvas-wrap" id="fpCanvasWrap"><div class="fp-canvas" id="fpCanvas"></div></div></div></div>
+          <div class="fp-layout"><div class="fp-palette"><div class="chart-title">Units</div><div class="t-type" id="fpPaletteSub">Drag a unit onto the canvas</div><div class="fp-unit-list" id="fpPalette"></div><div class="fp-block-form fp-name" id="fpBlockForm" hidden><div class="chart-title" style="font-size:11px;margin-bottom:4px;">New block</div><label class="fp-name-label" for="fpBlockName">Block name</label><div class="fp-name-wrap"><svg class="fp-name-icon" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M2.5 2.5H10l5.5 5.5-7.5 7.5-5.5-5.5V2.5z"/><circle cx="6.6" cy="6.6" r="1.3"/></svg><input type="text" id="fpBlockName" class="fp-name-input" maxlength="80" spellcheck="false" autocomplete="off" placeholder='Name — e.g. "Lift", "Stair"' aria-describedby="fpBlockNameHint"></div><div class="fp-name-hint" id="fpBlockNameHint">Lift · Stairs · Walking area · Exit</div><div style="display:flex;gap:6px;margin-top:6px;"><button class="act-btn primary" id="fpBlockAdd" style="flex:1;text-align:center;">Add block</button><button class="act-btn" id="fpBlockCancel" style="flex:1;text-align:center;">Cancel</button></div></div></div><div class="fp-editor"><div class="fp-toolbar"><span class="t-type">Canvas (ft)</span><input type="number" id="fpWidth" class="tbl-search" min="1" max="500" step="1" title="Canvas width in feet" style="width:80px;"><span class="t-type">×</span><input type="number" id="fpHeight" class="tbl-search" min="1" max="500" step="1" title="Canvas height in feet" style="width:80px;"><button class="tb-btn ghost" id="fpAddBlock">＋ Block</button><button class="tb-btn ghost" id="fpRotateGhost" title="Swap palette ghost orientation (W×H ↔ H×W) for rectangular units" aria-pressed="false">⟳ Rotate</button><button class="tb-btn ghost on" id="fpLockSqft" title="Lock resize to the nearest rect preserving area ≈ sqft (toggle off for free resize; server rejects >15% deviation)" aria-pressed="true">🔒 sqft</button><button class="tb-btn ghost" id="fpBoundaryTool" title="Line tool — press and drag on the canvas to draw a straight grid-ft line, release to save (Escape cancels). Click a drawn line to select and remove it." aria-pressed="false">✎ Line</button><button class="tb-btn ghost" id="fpAutoPlace" title="Place all unplaced units of this floor at the first free spot (asks for confirmation first)">⤵ Auto-place all</button><span class="fp-zoom"><button class="tb-btn ghost" id="fpZoomOut">−</button><span class="t-type" id="fpZoomLbl">100%</span><button class="tb-btn ghost" id="fpZoomIn">+</button></span><span class="t-type fp-boundary-metrics" id="fpBoundaryMetrics" role="status"></span><span class="fp-sel-info" id="fpSelInfo"></span></div><div class="fp-canvas-wrap" id="fpCanvasWrap"><div class="fp-canvas" id="fpCanvas"></div></div></div></div>
           <details class="fp-structure"><summary>Advanced — legacy structure JSON <span class="t-type">(walls / corridors)</span></summary><textarea id="fpStructure" class="fp-structure-input" rows="6" spellcheck="false"></textarea><div class="fp-legacy-note" id="fpLegacyNote" hidden>Legacy structure attached.</div></details>
         </div>
         <div class="unit-map-card" id="metricsCard">
@@ -998,45 +1008,30 @@ body.lead-drawer-open{overflow-x:hidden}
 
     <!-- ============ PROMOTIONS ============ -->
     <section class="page" id="promotions">
-      <div class="head"><div><h1>Promotion engine</h1><p>Build controlled discounts and free-month offers by facility, unit, duration and customer eligibility.</p></div><div class="actions"><button class="btn">Import matrix</button><button class="btn">Settings</button><button class="primary" data-tab-jump="promo-code-builder">＋ Build promotion</button></div></div>
+      <div class="head"><div><h1>Promotion engine</h1><p>Build controlled discounts and free-month offers by facility, unit, duration and customer eligibility.</p></div></div>
       <div class="subtabs" data-tabs="promo"><button class="active" data-tab="promo-overview">Dashboard</button><button data-tab="promo-discount-matrix">Discount plan builder</button><button data-tab="promo-free-months">Free months</button><button data-tab="promo-code-builder">Promo code builder</button><button data-tab="promo-library">Promotions library</button><button data-tab="promo-history">History</button><button data-tab="promo-safeguards">Safeguards</button><button data-tab="promo-performance">Performance</button></div>
 
       <!-- OVERVIEW panel -->
       <div class="module-panel active" id="promo-overview">
-        <div class="stats">
+        <div class="stats" style="grid-template-columns:repeat(4,1fr)">
           <div class="stat"><div class="label">Active rule sets</div><div class="val" id="promoActiveCount">8</div><div class="trend">3 discount · 2 free-month · 3 code</div></div>
-          <div class="stat"><div class="label">Bookings discounted</div><div class="val" id="promoBookingsDiscounted">82</div><div class="trend">35% of monthly bookings</div></div>
           <div class="stat"><div class="label">Discount cost</div><div class="val" id="promoDiscountCost">$9.8k</div><div class="trend">6.8% of booked value</div></div>
           <div class="stat"><div class="label">Effective revenue</div><div class="val" id="promoEffectiveRevenue">$24.6k</div><div class="trend">After estimated discount cost</div></div>
           <div class="stat"><div class="label">Conflicts detected</div><div class="val" id="promoConflicts">3</div><div class="trend bad">Need resolution before publish</div></div>
         </div>
-        <div class="promo-grid" id="promoGrid">
-          <div class="card promo-card">
-            <div class="promo-status"><span class="pill green">Active</span><small>Rule plan</small></div>
-            <div class="promo-code">LONGER STAY</div>
-            <p>Percentage matrix by facility, unit category, location type and committed duration.</p>
-            <div class="promo-stats"><div><small>Facilities</small><b>3</b></div><div><small>Rules</small><b>144</b></div><div><small>Avg discount</small><b>24%</b></div></div>
-            <button class="btn" style="width:100%" data-tab-jump="promo-discount-matrix">Manage matrix</button>
+        <div class="analytics-grid" id="promoDashboardCharts" style="margin-top:16px">
+          <div class="card">
+            <div class="card-head"><h3>Discount cost by plan</h3><small style="color:var(--muted)">Live · GET /promotion-plans/performance</small></div>
+            <div class="card-body"><div style="position:relative;height:220px"><canvas id="promoDiscountChart"></canvas></div><div class="section-empty" id="promoDiscountEmpty" hidden>No discount data yet — performance appears once plans and redemptions exist.</div></div>
           </div>
-          <div class="card promo-card">
-            <div class="promo-status"><span class="pill green">Active</span><small>Rule plan</small></div>
-            <div class="promo-code">STAY 12, PAY 10</div>
-            <p>Two free months for eligible 12-month commitments, allocated to months 6 and 12.</p>
-            <div class="promo-stats"><div><small>Bookings</small><b>18</b></div><div><small>Free months</small><b>36</b></div><div><small>Value</small><b>$22.4k</b></div></div>
-            <button class="btn" style="width:100%" data-tab-jump="promo-free-months">Manage allocation</button>
-          </div>
-          <div class="card promo-card">
-            <div class="promo-status"><span class="pill amber">Scheduled</span><small>15 Sep–31 Oct</small></div>
-            <div class="promo-code">FESTIVE25</div>
-            <p>Deepavali storage special — 25% off for new customers, 6 months minimum commitment, S/M/L units only.</p>
-            <div class="promo-stats"><div><small>Capacity</small><b>200</b></div><div><small>Used</small><b>0</b></div><div><small>Budget</small><b>$5,000</b></div></div>
-            <button class="btn" style="width:100%" data-tab-jump="promo-code-builder">Manage code</button>
+          <div class="card">
+            <div class="card-head"><h3>Promotions by status</h3><small style="color:var(--muted)">Live · plans + promo codes</small></div>
+            <div class="card-body"><div style="position:relative;height:220px"><canvas id="promoStatusChart"></canvas></div><div class="section-empty" id="promoStatusEmpty" hidden>No promotions yet — build one from the Discount, Free-months or Code panels.</div></div>
           </div>
         </div>
         <div class="card" style="margin-top:16px">
           <div class="card-head"><h3>What needs attention</h3></div>
           <div class="card-body queue" id="promoAttentionList">
-            <div class="qitem"><i style="color:var(--amber);font-weight:800;width:20px">!</i><div><b>Promo code FESTIVE25 is a draft</b><br><small>Review and activate before campaign start on 1 Oct.</small></div><span class="pill amber">Draft</span></div>
             <div class="qitem"><i style="color:var(--red);font-weight:800;width:20px">!</i><div><b>Conflict: Concurrent free-month plans</b><br><small>Stay 12 Pay 10 and ReferralFreeMonth may overlap for 8 bookings.</small></div><span class="pill red">Resolve</span></div>
             <div class="qitem"><i style="color:var(--olive2);font-weight:800;width:20px">✓</i><div><b>Version v4 of Longer Stay active since 1 Sep</b><br><small>No issues detected in latest audit.</small></div><span class="pill green">OK</span></div>
           </div>
@@ -1059,16 +1054,16 @@ body.lead-drawer-open{overflow-x:hidden}
             <div class="matrix-wrap">
               <table class="discount-matrix">
                 <thead>
-                  <tr><th rowspan="2">Size category</th><th class="group" colspan="3">Ground floor / premium access</th><th class="group" colspan="3">Standard unit</th></tr>
-                  <tr><th>3 months</th><th>6 months</th><th>12 months</th><th>3 months</th><th>6 months</th><th>12 months</th></tr>
+                  <tr><th rowspan="2">Size category</th><th class="group" colspan="4">Ground floor / premium access</th><th class="group" colspan="4">Standard unit</th></tr>
+                  <tr><th>1 month</th><th>3 months</th><th>6 months</th><th>12 months</th><th>1 month</th><th>3 months</th><th>6 months</th><th>12 months</th></tr>
                 </thead>
                 <tbody>
-                  <tr><td class="rowhead">XS · ≤15 sqft</td><td><input class="mid" value="20%"></td><td><input class="mid" value="25%"></td><td><input class="hot" value="35%"></td><td><input class="mid" value="20%"></td><td><input class="hot" value="40%"></td><td><input class="hot" value="45%"></td></tr>
-                  <tr><td class="rowhead">S · 16–25 sqft</td><td><input class="mid" value="20%"></td><td><input class="mid" value="25%"></td><td><input class="hot" value="35%"></td><td><input class="mid" value="20%"></td><td><input class="hot" value="40%"></td><td><input class="hot" value="45%"></td></tr>
-                  <tr><td class="rowhead">M · 26–60 sqft</td><td><input value="15%"></td><td><input class="mid" value="20%"></td><td><input class="mid" value="25%"></td><td><input value="15%"></td><td><input class="mid" value="20%"></td><td><input class="mid" value="30%"></td></tr>
-                  <tr><td class="rowhead">L · 61–100 sqft</td><td><input value="12%"></td><td><input value="15%"></td><td><input class="mid" value="20%"></td><td><input value="10%"></td><td><input value="15%"></td><td><input class="mid" value="20%"></td></tr>
-                  <tr><td class="rowhead">XL · 101–300 sqft</td><td><input value="10%"></td><td><input value="12%"></td><td><input value="15%"></td><td><input value="10%"></td><td><input value="12%"></td><td><input value="15%"></td></tr>
-                  <tr><td class="rowhead">XXL · ≥301 sqft</td><td><input value="8%"></td><td><input value="10%"></td><td><input value="12%"></td><td><input value="8%"></td><td><input value="10%"></td><td><input value="12%"></td></tr>
+                  <tr><td class="rowhead">LOCKER · ≤15 sqft</td><td><input value="15%"></td><td><input class="mid" value="20%"></td><td><input class="mid" value="25%"></td><td><input class="hot" value="35%"></td><td><input value="15%"></td><td><input class="mid" value="20%"></td><td><input class="hot" value="40%"></td><td><input class="hot" value="45%"></td></tr>
+                  <tr><td class="rowhead">SMALL · 16–25 sqft</td><td><input value="15%"></td><td><input class="mid" value="20%"></td><td><input class="mid" value="25%"></td><td><input class="hot" value="35%"></td><td><input value="15%"></td><td><input class="mid" value="20%"></td><td><input class="hot" value="40%"></td><td><input class="hot" value="45%"></td></tr>
+                  <tr><td class="rowhead">MEDIUM · 26–60 sqft</td><td><input value="10%"></td><td><input value="15%"></td><td><input class="mid" value="20%"></td><td><input class="mid" value="25%"></td><td><input value="10%"></td><td><input value="15%"></td><td><input class="mid" value="20%"></td><td><input class="mid" value="30%"></td></tr>
+                  <tr><td class="rowhead">LARGE · 61–100 sqft</td><td><input value="8%"></td><td><input value="12%"></td><td><input value="15%"></td><td><input class="mid" value="20%"></td><td><input value="8%"></td><td><input value="10%"></td><td><input value="15%"></td><td><input class="mid" value="20%"></td></tr>
+                  <tr><td class="rowhead">XL · 101–300 sqft</td><td><input value="8%"></td><td><input value="10%"></td><td><input value="12%"></td><td><input value="15%"></td><td><input value="8%"></td><td><input value="10%"></td><td><input value="12%"></td><td><input value="15%"></td></tr>
+                  <tr><td class="rowhead">XXL · ≥301 sqft</td><td><input value="5%"></td><td><input value="8%"></td><td><input value="10%"></td><td><input value="12%"></td><td><input value="5%"></td><td><input value="8%"></td><td><input value="10%"></td><td><input value="12%"></td></tr>
                 </tbody>
               </table>
             </div>
@@ -1078,7 +1073,8 @@ body.lead-drawer-open{overflow-x:hidden}
             <div style="display:flex;gap:8px;justify-content:flex-end">
               <button class="btn" data-open-validation>Validate plan</button>
               <button class="btn" data-save-discount-plan>Save Draft</button>
-              <button class="primary" data-schedule-plan>Schedule next month</button>
+              <button class="btn" data-schedule-plan>Schedule next month</button>
+              <button class="primary" data-publish-plan>Publish</button>
             </div>
           </div>
         </div>
@@ -1094,10 +1090,10 @@ body.lead-drawer-open{overflow-x:hidden}
               <div class="form-grid">
                 <div class="field"><label>Plan name</label><input id="freePlanName" value="Stay 12, Pay 10"></div>
                 <div class="field"><label>Free months</label><select id="freeMonthCount"><option value="1">1 free month</option><option value="2" selected>2 free months</option><option value="3">3 free months</option><option value="custom">Custom</option></select></div>
-                <div class="field"><label>Required commitment</label><select id="freeCommitment"><option>3 months</option><option>6 months</option><option selected>12 months</option></select></div>
+                <div class="field"><label>Required commitment</label><select id="freeCommitment"><option>1 month</option><option>3 months</option><option>6 months</option><option selected>12 months</option></select></div>
                 <div class="field"><label>Facility</label><select><option>All facilities</option><option selected>Woodlands</option><option>Ubi</option><option>Jurong East</option></select></div>
                 <div class="field"><label>Storage type</label><select><option>Self Storage</option><option>Business Storage</option><option>Wine Storage</option></select></div>
-                <div class="field"><label>Size categories</label><select><option>All eligible sizes</option><option selected>M, L and XL</option><option>Choose individually…</option></select></div>
+                <div class="field"><label>Size categories</label><select><option>All eligible sizes</option><option selected>MEDIUM, LARGE and XL</option><option>Choose individually…</option></select></div>
               </div>
             </div>
             <div class="card builder-section">
@@ -1194,7 +1190,7 @@ body.lead-drawer-open{overflow-x:hidden}
             <h3>Code preview <span class="pill amber" id="codePlanStatus" style="margin-left:8px">Draft</span></h3>
             <div class="code-preview" id="codePreview">FESTIVE25</div>
             <div class="summary-line"><span>Benefit</span><b id="benefitPreview">25% off first invoice</b></div>
-            <div class="summary-line"><span>Eligibility</span><b>New customers · S/M/L</b></div>
+            <div class="summary-line"><span>Eligibility</span><b>New customers · SMALL/MEDIUM/LARGE</b></div>
             <div class="summary-line"><span>Validity</span><b>1–31 Oct 2026</b></div>
             <div class="summary-line"><span>Capacity</span><b>200 total</b></div>
             <div class="rulebox" style="margin-top:14px;font-size:11px"><b>Festive:</b> labelled as such in reporting, using same engine and rules.</div>
@@ -1207,9 +1203,9 @@ body.lead-drawer-open{overflow-x:hidden}
         <div class="card">
           <div class="card-head"><h3>All promotions and rule plans</h3><div class="actions"><button class="filter">Type: All</button><button class="filter">Status: All</button><button class="filter">Facility: All</button><button class="filter">Storage type: All</button></div></div>
           <div class="table-wrap"><table class="lead-table"><thead><tr><th>Name / code</th><th>Benefit type</th><th>Eligibility</th><th>Commitment</th><th>Validity</th><th>Usage</th><th>Effective discount</th><th>Status</th><th>Action</th></tr></thead><tbody id="promoLibraryBody">
-            <tr><td><b>Longer Stay Plan</b><br><small>Automatic rule matrix</small></td><td>% discount</td><td>Facility × unit × size</td><td>3 / 6 / 12m</td><td>15 Sep–31 Dec</td><td>Automatic</td><td>5–45%</td><td><span class="pill green">Active</span></td><td><button class="btn" data-tab-jump="promo-discount-matrix">Open</button></td></tr>
-            <tr><td><b>Stay 12, Pay 10</b><br><small>Automatic plan</small></td><td>2 free months</td><td>Woodlands · M/L/XL</td><td>12m</td><td>Ongoing</td><td>Once per agreement</td><td>16.67%</td><td><span class="pill green">Active</span></td><td><button class="btn" data-tab-jump="promo-free-months">Open</button></td></tr>
-            <tr><td><b>FESTIVE25</b><br><small>Deepavali Storage Special</small></td><td>25% off</td><td>New customers · S/M/L</td><td>6m+</td><td>1–31 Oct</td><td>0 / 200</td><td>25% first invoice</td><td><span class="pill amber">Draft</span></td><td><button class="btn" data-tab-jump="promo-code-builder">Edit</button></td></tr>
+            <tr><td><b>Longer Stay Plan</b><br><small>Automatic rule matrix</small></td><td>% discount</td><td>Facility × unit × size</td><td>1 / 3 / 6 / 12m</td><td>15 Sep–31 Dec</td><td>Automatic</td><td>5–45%</td><td><span class="pill green">Active</span></td><td><button class="btn" data-tab-jump="promo-discount-matrix">Open</button></td></tr>
+            <tr><td><b>Stay 12, Pay 10</b><br><small>Automatic plan</small></td><td>2 free months</td><td>Woodlands · MEDIUM/LARGE/XL</td><td>12m</td><td>Ongoing</td><td>Once per agreement</td><td>16.67%</td><td><span class="pill green">Active</span></td><td><button class="btn" data-tab-jump="promo-free-months">Open</button></td></tr>
+            <tr><td><b>FESTIVE25</b><br><small>Deepavali Storage Special</small></td><td>25% off</td><td>New customers · SMALL/MEDIUM/LARGE</td><td>6m+</td><td>1–31 Oct</td><td>0 / 200</td><td>25% first invoice</td><td><span class="pill amber">Draft</span></td><td><button class="btn" data-tab-jump="promo-code-builder">Edit</button></td></tr>
             <tr><td><b>BIRTHDAY30</b><br><small>Customer birthday</small></td><td>$30 off</td><td>Active customers · Birthday month</td><td>None</td><td>Ongoing</td><td>Once yearly</td><td>Variable</td><td><span class="pill green">Active</span></td><td><button class="btn">Open</button></td></tr>
             <tr><td><b>LOYAL50</b><br><small>12-month tenure reward</small></td><td>$50 credit</td><td>Tenure ≥12 months</td><td>Active agreement</td><td>Ongoing</td><td>Once yearly</td><td>Variable</td><td><span class="pill green">Active</span></td><td><button class="btn">Open</button></td></tr>
           </tbody></table></div>

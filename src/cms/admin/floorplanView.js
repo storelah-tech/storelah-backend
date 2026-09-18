@@ -20,6 +20,9 @@ export function setRefsLoader(fn) {
 // ---------- floor-plan constants & private module state ----------
 const FP_BASE = 24; // px per foot at zoom 1 (BLUEPRINT SCALE: 1 grid unit = 1 ft)
 let fpDimsTimer = null;
+// In-flight pencil draft (line tool ON): { x1, y1, x2, y2 } in grid-ft units.
+// Transient drag state only — persisted lines live in state.fp.boundaries.
+let fpDraftLine = null;
 
 // ---------- blueprint footprints (P1): 1 grid unit = 1 ft ----------
 // Canonical dims mirror the UnitSize.widthFt/heightFt catalogue backfill (see
@@ -230,6 +233,33 @@ function fpNormalizeBlocks(plan) {
   }));
 }
 
+// Boundary vertices as [x, y] integer pairs in grid-ft units — mirrors
+// boundaryPointsOf() in src/core/floorPlans.ts (keep the two in sync). Rows
+// that fail validation normalise to [] so a malformed row can never break a read.
+function fpBoundaryPoints(points) {
+  if (!Array.isArray(points)) return [];
+  const out = [];
+  for (const p of points) {
+    if (!Array.isArray(p) || p.length < 2) continue;
+    const x = Number(p[0]);
+    const y = Number(p[1]);
+    if (!Number.isInteger(x) || !Number.isInteger(y)) continue;
+    out.push([x, y]);
+  }
+  return out;
+}
+
+function fpNormalizeBoundaries(plan) {
+  return (plan && plan.boundaries ? plan.boundaries : []).map((b) => ({
+    id: b.id,
+    label: b.label,
+    kind: b.kind,
+    points: fpBoundaryPoints(b.points),
+    closed: !!b.closed,
+    sortOrder: b.sortOrder || 0,
+  }));
+}
+
 function fpCanvasDims() {
   // A live-typed size (unsaved W/H input edits) wins while the operator is
   // editing; "Save Canvas" is the explicit commit that persists it.
@@ -273,6 +303,15 @@ function fpClampCanvasContent(w, h) {
   };
   state.fp.placements.forEach(clampItem);
   state.fp.blocks.forEach(clampItem);
+  // Boundary vertices clamp edge-INCLUSIVE (0..w / 0..h — the same contract as
+  // checkBoundaryPoints in src/core/floorPlans.ts) so drawn lines never render
+  // off-grid after a canvas shrink.
+  (state.fp.boundaries || []).forEach((b) => {
+    b.points = fpBoundaryPoints(b.points).map(([x, y]) => [
+      Math.min(Math.max(0, x), w),
+      Math.min(Math.max(0, y), h),
+    ]);
+  });
 }
 
 function fpApplyLiveDims() {
@@ -385,11 +424,13 @@ async function fpFetch() {
     state.fp.structure = body.plan ? body.plan.structure : null;
     state.fp.placements = fpNormalizePlacements(body.plan);
     state.fp.blocks = fpNormalizeBlocks(body.plan);
+    state.fp.boundaries = fpNormalizeBoundaries(body.plan);
     state.fp.unplaced = (body.unplacedUnits || []).map(fpNormalizeUnit);
     state.fp.branchName = body.branch && body.branch.name;
     state.fp.floorName = body.floor ? `Level ${body.floor.level}` : '';
     state.fp.selected = null;
     state.fp.selectedBlock = null;
+    state.fp.selectedBoundary = null;
     state.fp.scale = 1;
     // A (re)load resets the live-typed canvas size back to server state, and
     // shrink-fits any placements/blocks the server may hold beyond a (possibly
@@ -505,6 +546,45 @@ function fpRenderStructure(canvas, u, structure) {
   );
 }
 
+// Facility-boundary line items as an SVG overlay under the blocks/units (the
+// .fp-boundary-layer CSS is pointer-events:none z-index 1, so canvas pointer
+// interactions are untouched). Closed loops render as filled <polygon>s, open
+// polylines as dashed <polyline>s, the in-flight pencil draft as a dashed
+// preview. Reused by the editor canvas AND the read-only fpView canvas.
+// Pencil lines (kind 'PENCIL') only show their label while selected.
+function fpRenderBoundaryLayer(canvas, u, dims, boundaries, draft, selectedId) {
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(SVG_NS, 'svg');
+  svg.setAttribute('class', 'fp-boundary-layer');
+  svg.setAttribute('width', String(dims.w * u));
+  svg.setAttribute('height', String(dims.h * u));
+  svg.setAttribute('viewBox', `0 0 ${dims.w * u} ${dims.h * u}`);
+  const addShape = (points, closed, cls) => {
+    const el = document.createElementNS(SVG_NS, closed ? 'polygon' : 'polyline');
+    el.setAttribute('points', points.map(([x, y]) => `${x * u},${y * u}`).join(' '));
+    el.setAttribute('class', cls);
+    svg.appendChild(el);
+  };
+  for (const b of boundaries || []) {
+    const pts = fpBoundaryPoints(b.points);
+    if (pts.length < 2) continue;
+    addShape(pts, b.closed, 'fp-boundary' + (b.closed ? '' : ' open') + (b.id && b.id === selectedId ? ' selected' : ''));
+    if (String(b.kind || '').toUpperCase() !== 'PENCIL' || b.id === selectedId) {
+      const [lx, ly] = pts[0];
+      const label = document.createElementNS(SVG_NS, 'text');
+      label.setAttribute('class', 'fp-boundary-label');
+      label.setAttribute('x', String(lx * u + 4));
+      label.setAttribute('y', String(ly * u - 4));
+      label.textContent = b.label || 'Line';
+      svg.appendChild(label);
+    }
+  }
+  if (draft && (draft.x1 !== draft.x2 || draft.y1 !== draft.y2)) {
+    addShape([[draft.x1, draft.y1], [draft.x2, draft.y2]], false, 'fp-boundary draft');
+  }
+  canvas.appendChild(svg);
+}
+
 function fpRenderCanvas() {
   const canvas = $('#fpCanvas');
   if (!canvas) return;
@@ -515,6 +595,7 @@ function fpRenderCanvas() {
   canvas.style.backgroundSize = `${u}px ${u}px`;
   canvas.innerHTML = '';
   fpRenderStructure(canvas, u);
+  fpRenderBoundaryLayer(canvas, u, fpCanvasDims(), state.fp.boundaries || [], fpDraftLine, state.fp.selectedBoundary);
   // Decoration blocks — BELOW units in z-order (blocks z-index 1, units 2).
   for (const blk of state.fp.blocks) {
     const el = document.createElement('div');
@@ -578,6 +659,9 @@ function fpRenderCanvas() {
       `<div class="fp-resize" title="Drag to resize"></div>`;
     canvas.appendChild(el);
   }
+  // Line-tool affordance: crosshair while draw mode is armed (mode-gated —
+  // placement/block drags only run when the tool is toggled off).
+  canvas.style.cursor = state.fp.drawMode ? 'crosshair' : '';
   fpZoomLabel();
 }
 
@@ -594,6 +678,26 @@ function fpRenderSelInfo() {
       `<input type="text" id="fpBlockRename" class="tbl-search fp-name-input" maxlength="80" value="${escapeHtml(blk.name)}" placeholder="Rename block" aria-label="Rename block" autocomplete="off" spellcheck="false"></span>` +
       `<button class="act-btn" id="fpBlockRenameBtn" style="padding:2px 9px;font-size:10px;">Rename</button>` +
       `<button class="act-btn danger" id="fpBlockRemoveBtn" style="padding:2px 9px;font-size:10px;">Remove block</button>`;
+    return;
+  }
+  // A selected boundary line item (incl. pencil-drawn lines) renders like the
+  // block branch: a short descriptor plus the remove action.
+  const bnd = (state.fp.boundaries || []).find((b) => b.id === state.fp.selectedBoundary);
+  if (bnd) {
+    const pts = fpBoundaryPoints(bnd.points);
+    let len = 0;
+    for (let i = 1; i < pts.length; i++) len += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
+    const isPencil = String(bnd.kind || '').toUpperCase() === 'PENCIL';
+    const meta = [
+      `${pts.length} vertex${pts.length === 1 ? '' : 'es'}`,
+      len ? `${Math.round(len)} ft` : null,
+      bnd.closed ? 'closed loop (feeds GLA/UFA)' : 'open polyline — decoration, no metrics impact',
+    ]
+      .filter(Boolean)
+      .join(' · ');
+    info.innerHTML =
+      `<span class="t-type">${isPencil ? '✎ Line' : '⌒ Boundary'} · ${escapeHtml(bnd.label || 'Line')} · ${meta}</span>` +
+      `<button class="act-btn danger" id="fpBoundaryRemoveBtn" style="padding:2px 9px;font-size:10px;">Remove line</button>`;
     return;
   }
   const pl = state.fp.placements.find((p) => p.unitId === state.fp.selected);
@@ -810,6 +914,136 @@ function fpCanvasCellAt(clientX, clientY) {
   return { gx, gy };
 }
 
+// Nearest integer grid-ft point for a pointer position, clamped into the
+// canvas with edges INCLUSIVE (0..w / 0..h — boundary vertices may sit on the
+// canvas edge, same contract as checkBoundaryPoints in src/core/floorPlans.ts).
+function fpCanvasPointAt(clientX, clientY) {
+  const canvas = $('#fpCanvas');
+  if (!canvas) return null;
+  const rect = canvas.getBoundingClientRect();
+  const u = fpPx();
+  const { w: cw, h: ch } = fpCanvasDims();
+  return {
+    x: Math.min(Math.max(0, Math.round((clientX - rect.left) / u)), cw),
+    y: Math.min(Math.max(0, Math.round((clientY - rect.top) / u)), ch),
+  };
+}
+
+// Pencil draw interaction (line tool ON): mousedown arms the draft at the
+// snapped grid point, pointermove previews the straight segment, mouseup
+// persists it; Escape cancels mid-draft. Same document-listener drag pattern
+// as fpStartMove/fpBlockStartMove — no new interaction paradigm.
+function fpDrawStart(e) {
+  if (e.button !== 0) return;
+  const start = fpCanvasPointAt(e.clientX, e.clientY);
+  if (!start) return;
+  e.preventDefault();
+  state.fp.selected = null;
+  state.fp.selectedBlock = null;
+  state.fp.selectedBoundary = null;
+  fpDraftLine = { x1: start.x, y1: start.y, x2: start.x, y2: start.y };
+  fpRenderCanvas();
+  fpRenderSelInfo();
+  const move = (ev) => {
+    const p = fpCanvasPointAt(ev.clientX, ev.clientY);
+    if (!p || !fpDraftLine) return;
+    fpDraftLine.x2 = p.x;
+    fpDraftLine.y2 = p.y;
+    fpRenderCanvas();
+  };
+  const cleanup = () => {
+    document.removeEventListener('pointermove', move);
+    document.removeEventListener('pointerup', up);
+    document.removeEventListener('keydown', onKey);
+  };
+  const onKey = (ev) => {
+    if (ev.key !== 'Escape') return;
+    ev.preventDefault();
+    fpDraftLine = null;
+    cleanup();
+    fpRenderCanvas();
+  };
+  const up = () => {
+    cleanup();
+    const d = fpDraftLine;
+    fpDraftLine = null;
+    if (!d) return;
+    // A zero-length click draws nothing — a 2-vertex polyline must be meaningful.
+    if (d.x1 === d.x2 && d.y1 === d.y2) {
+      fpRenderCanvas();
+      return;
+    }
+    fpPersistLine(d.x1, d.y1, d.x2, d.y2);
+  };
+  document.addEventListener('pointermove', move);
+  document.addEventListener('pointerup', up);
+  document.addEventListener('keydown', onKey);
+}
+
+// Persist a drawn line as an OPEN boundary polyline (kind 'PENCIL') via the
+// existing boundary endpoints — ZERO contract change (label/kind/points/closed
+// are long-standing fields). Open polylines never feed boundaryMetrics, so
+// drawn lines are display-only and the public payload schema is untouched.
+async function fpPersistLine(x1, y1, x2, y2) {
+  try {
+    const res = await request(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/boundaries`, {
+      method: 'POST',
+      body: JSON.stringify({ label: 'Line', kind: 'PENCIL', points: [[x1, y1], [x2, y2]], closed: false }),
+    });
+    const b = res.data;
+    // The plan is lazily created server-side when a floor has none yet (same
+    // lazy adoption as fpAddBlock) — give the new line a local surface.
+    if (!state.fp.plan) {
+      state.fp.plan = { width: state.fp.canvasDefaults.width, height: state.fp.canvasDefaults.height };
+    }
+    state.fp.boundaries.push({ id: b.id, label: b.label, kind: b.kind, points: fpBoundaryPoints(b.points), closed: !!b.closed, sortOrder: b.sortOrder || 0 });
+    state.fp.selectedBoundary = b.id;
+    state.fp.selected = null;
+    state.fp.selectedBlock = null;
+    fpRender();
+    notifyMetricsFloorChanged();
+    fpToast(`Line added — ${Math.round(Math.hypot(x2 - x1, y2 - y1))} ft at ${x1},${y1} → ${x2},${y2}. Click it to select/remove.`, true);
+  } catch (err) {
+    fpRenderCanvas();
+    fpToast('Draw line: ' + describeError(err), false);
+  }
+}
+
+// Nearest persisted boundary line to a pointer position within ~8px — powers
+// click-to-select (mirror of how blocks select on click). The SVG layer is
+// pointer-events:none, so the segment hit-test runs here against grid-ft
+// points scaled by the live px-per-foot.
+function fpBoundaryHitAt(clientX, clientY) {
+  const canvas = $('#fpCanvas');
+  if (!canvas) return null;
+  const rect = canvas.getBoundingClientRect();
+  const u = fpPx();
+  const px = clientX - rect.left;
+  const py = clientY - rect.top;
+  const THRESHOLD = 8;
+  let best = null;
+  let bestDist = Infinity;
+  for (const b of state.fp.boundaries || []) {
+    const pts = fpBoundaryPoints(b.points);
+    for (let i = 1; i < pts.length; i++) {
+      const x1 = pts[i - 1][0] * u;
+      const y1 = pts[i - 1][1] * u;
+      const x2 = pts[i][0] * u;
+      const y2 = pts[i][1] * u;
+      const dx = x2 - x1;
+      const dy = y2 - y1;
+      const lenSq = dx * dx + dy * dy;
+      const t = lenSq ? Math.min(1, Math.max(0, ((px - x1) * dx + (py - y1) * dy) / lenSq)) : 0;
+      const dist = Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy));
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = b.id;
+      }
+    }
+  }
+  return bestDist <= THRESHOLD ? best : null;
+}
+
 async function fpPersist(pl, verb) {
   try {
     await request(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/units/${encodeURIComponent(pl.unitId)}`, {
@@ -1005,6 +1239,7 @@ function fpStartMove(e, el) {
   // strip would keep showing the stale block while the operator is acting on
   // the unit (fpRenderSelInfo gives a selected block priority over a unit).
   state.fp.selectedBlock = null;
+  state.fp.selectedBoundary = null;
   fpRenderCanvas();
   fpRenderSelInfo();
   // Drag/resize moves both tiers of a stacked pair together (same-rect
@@ -1094,6 +1329,7 @@ function fpStartResize(e, pl) {
   if (state.fp.selected !== pl.unitId) {
     state.fp.selected = pl.unitId;
     state.fp.selectedBlock = null;
+    state.fp.selectedBoundary = null;
     fpRenderCanvas();
     fpRenderSelInfo();
   }
@@ -1437,6 +1673,7 @@ function fpBlockStartMove(e, el) {
   const offsetY = e.clientY - startRect.top;
   state.fp.selectedBlock = bid;
   state.fp.selected = null;
+  state.fp.selectedBoundary = null;
   fpRenderCanvas();
   fpRenderSelInfo();
   const { w: cw, h: ch } = fpCanvasDims();
@@ -1462,6 +1699,7 @@ function fpBlockStartResize(e, blk) {
   if (state.fp.selectedBlock !== blk.id) {
     state.fp.selectedBlock = blk.id;
     state.fp.selected = null;
+    state.fp.selectedBoundary = null;
     fpRenderCanvas();
     fpRenderSelInfo();
   }
@@ -1534,6 +1772,29 @@ async function fpRemoveBlock() {
     await fpFetch();
   } catch (err) {
     fpToast('Remove block: ' + describeError(err), false);
+  }
+}
+
+// Remove a drawn/selected boundary line item (same select → confirm → DELETE
+// flow as blocks; scoped server-side to this floor's plan).
+async function fpRemoveBoundary() {
+  const bnd = (state.fp.boundaries || []).find((b) => b.id === state.fp.selectedBoundary);
+  if (!bnd) return;
+  const removeOk = await confirmDialog({
+    title: `Remove line "${bnd.label || 'Line'}" from the plan?`,
+    message: 'The line is removed from the canvas. Units, blocks and metrics are unaffected.',
+    confirmLabel: 'Remove',
+    danger: true,
+  });
+  if (!removeOk) return;
+  try {
+    await request(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/boundaries/${encodeURIComponent(bnd.id)}`, {
+      method: 'DELETE',
+    });
+    fpToast(`Line "${bnd.label || 'Line'}" removed.`, true);
+    await fpFetch();
+  } catch (err) {
+    fpToast('Remove line: ' + describeError(err), false);
   }
 }
 
@@ -1614,6 +1875,7 @@ const fpView = {
   structure: null,
   placements: [], // normalized placed units
   blocks: [], // normalized decoration blocks
+  boundaries: [], // normalized boundary line items (incl. pencil-drawn lines)
   dims: { w: 20, h: 20 }, // plan grid size (plan dims, else canvas defaults)
   floorId: null, // floor whose level === state.level (for the current branch)
 };
@@ -1659,6 +1921,7 @@ async function fpViewFetch(floorId) {
   fpView.structure = body.plan ? body.plan.structure : null;
   fpView.placements = fpNormalizePlacements(body.plan);
   fpView.blocks = fpNormalizeBlocks(body.plan);
+  fpView.boundaries = fpNormalizeBoundaries(body.plan);
   const defs = body.canvasDefaults || { width: 20, height: 20 };
   fpView.dims = {
     w: body.plan && body.plan.width > 0 ? body.plan.width : defs.width,
@@ -1694,6 +1957,7 @@ function fpViewRender() {
   canvas.style.backgroundSize = `${u}px ${u}px`;
   canvas.innerHTML = '';
   fpRenderStructure(canvas, u, fpView.structure);
+  fpRenderBoundaryLayer(canvas, u, fpView.dims, fpView.boundaries || [], null, null);
   for (const blk of fpView.blocks) {
     const el = document.createElement('div');
     el.className = 'fp-block';
@@ -1814,6 +2078,32 @@ export function fpInitEvents() {
       }
     });
   }
+  // Pencil (line) tool: toggles draw mode like the other ghost toggles. While
+  // ON, canvas press-drag draws a straight grid-ft line persisted as an OPEN
+  // boundary polyline (kind 'PENCIL') via POST /floor-plans/:id/boundaries —
+  // display-only: open polylines never feed GLA/UFA/NLA (those need closed
+  // loops), so the metrics panel and the public payload stay untouched.
+  const pencilBtn = $('#fpBoundaryTool');
+  const syncPencilBtn = () => {
+    if (!pencilBtn) return;
+    pencilBtn.classList.toggle('on', state.fp.drawMode);
+    pencilBtn.setAttribute('aria-pressed', String(state.fp.drawMode));
+  };
+  if (pencilBtn) {
+    syncPencilBtn();
+    pencilBtn.addEventListener('click', () => {
+      state.fp.drawMode = !state.fp.drawMode;
+      fpDraftLine = null;
+      syncPencilBtn();
+      fpRenderCanvas();
+      fpToast(
+        state.fp.drawMode
+          ? 'Line tool ON — press and drag on the canvas to draw a line, release to save. Click a drawn line to select it.'
+          : 'Line tool OFF — unit and block interactions restored.',
+        true,
+      );
+    });
+  }
   // Live canvas resizing: W/H edits re-render the canvas immediately (debounced
   // while typing); change/blur commits the typed value or reverts an invalid one.
   $('#fpWidth').addEventListener('input', fpOnDimInput);
@@ -1849,6 +2139,14 @@ export function fpInitEvents() {
     }
   });
   $('#fpCanvasWrap').addEventListener('pointerdown', (e) => {
+    // Line tool active: canvas press-drag draws a straight line and the
+    // placement/block interactions below are mode-gated off until the tool
+    // toggles off. Only canvas surfaces start a line (wrap padding is inert).
+    if (state.fp.drawMode) {
+      const canvas = $('#fpCanvas');
+      if (canvas && canvas.contains(e.target)) fpDrawStart(e);
+      return;
+    }
     const placed = e.target.closest('.fp-placed');
     if (placed) {
       fpStartMove(e, placed);
@@ -1859,9 +2157,21 @@ export function fpInitEvents() {
       fpBlockStartMove(e, blk);
       return;
     }
+    // click near a drawn boundary line → select it (the SVG layer is
+    // pointer-events:none, so the segment hit-test runs here)
+    const bndHit = fpBoundaryHitAt(e.clientX, e.clientY);
+    if (bndHit) {
+      state.fp.selectedBoundary = bndHit;
+      state.fp.selected = null;
+      state.fp.selectedBlock = null;
+      fpRenderCanvas();
+      fpRenderSelInfo();
+      return;
+    }
     // click on empty canvas → deselect
     state.fp.selected = null;
     state.fp.selectedBlock = null;
+    state.fp.selectedBoundary = null;
     fpRenderCanvas();
     fpRenderSelInfo();
   });
@@ -1871,6 +2181,7 @@ export function fpInitEvents() {
     else if (e.target && e.target.id === 'fpStackBtn') fpStackSelected();
     else if (e.target && e.target.id === 'fpUnstackBtn') fpUnstackSelected();
     else if (e.target && e.target.id === 'fpBlockRemoveBtn') fpRemoveBlock();
+    else if (e.target && e.target.id === 'fpBoundaryRemoveBtn') fpRemoveBoundary();
     else if (e.target && e.target.id === 'fpBlockRenameBtn') fpRenameBlock();
     else if (e.target && e.target.id === 'fpDoorsAutoBtn') fpResetDoors();
     else if (e.target && e.target.dataset && e.target.dataset.door) fpToggleDoor(e.target.dataset.door);

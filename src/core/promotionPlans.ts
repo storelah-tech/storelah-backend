@@ -7,6 +7,80 @@ export interface CellInput { sizeCategory: string; accessType: string; commitmen
 export interface FreeInput { monthIndex: number; free: boolean; discountPct?: number }
 export interface RuleInput { groupId: number; field: string; operator: string; value: string }
 
+// Discount commitment tiers offered by the Discount plan builder matrix:
+// 1 / 3 / 6 / 12 months × 6 size categories × 2 access types = 48 cells.
+// The 1-month tier is additive — existing 3/6/12 plans validate unchanged.
+export const ALLOWED_COMMITMENT_MONTHS = [1, 3, 6, 12] as const;
+
+// Canonical discount-matrix size categories, unified with the booking
+// frontend: LOCKER, SMALL, MEDIUM, LARGE, XL (+ XXL, retained — it pre-exists
+// in builder/matrix rows and is NOT invented here). Legacy single-letter
+// codes (XS / S / M / L) are accepted on write AND read and mapped here —
+// the SINGLE canonical mapping layer — so XS is retired (LOCKER canonical)
+// without breaking stored rows. The builder UI + public surface always emit
+// canonical codes.
+export const CANONICAL_SIZE_CATEGORIES = ['LOCKER', 'SMALL', 'MEDIUM', 'LARGE', 'XL', 'XXL'] as const;
+export type CanonicalSizeCategory = (typeof CANONICAL_SIZE_CATEGORIES)[number];
+
+const LEGACY_SIZE_ALIASES: Record<string, string> = {
+  XS: 'LOCKER', LOCKER: 'LOCKER',
+  S: 'SMALL', SMALL: 'SMALL',
+  M: 'MEDIUM', MEDIUM: 'MEDIUM',
+  L: 'LARGE', LARGE: 'LARGE',
+  XL: 'XL', XXL: 'XXL',
+};
+
+// Lenient read-path mapping: known codes (incl. legacy XS / S / M / L) map
+// to canonical; unknown values pass through upper-cased so reads never throw.
+export function toCanonicalSizeCategory(raw: unknown): string {
+  const key = String(raw ?? '').trim().toUpperCase();
+  return LEGACY_SIZE_ALIASES[key] ?? key;
+}
+
+// Strict write-path mapping: unknown codes reject with the canonical tier
+// list (surfaces as 400 VALIDATION via AppError).
+export function assertCanonicalSizeCategory(raw: unknown): string {
+  const v = toCanonicalSizeCategory(raw);
+  if (!(CANONICAL_SIZE_CATEGORIES as readonly string[]).includes(v)) {
+    throw new AppError(
+      400,
+      'VALIDATION',
+      `Unknown size category "${String(raw)}" — expected one of ${CANONICAL_SIZE_CATEGORIES.join(' / ')} (legacy XS / S / M / L also accepted)`,
+    );
+  }
+  return v;
+}
+
+// Post-normalization collision handling (the owner-reported 500).
+//
+// The @@unique([planId, sizeCategory, accessType, commitmentMonths]) key
+// compares RAW strings, so a legacy code and its canonical twin (e.g. "S"
+// and "SMALL") can coexist as distinct stored rows — and builder payloads can
+// mix both forms. After assertCanonicalSizeCategory collapses aliases, such
+// pairs share one unique key and a naive nested create dies with a Prisma
+// P2002 that escapes as 500 INTERNAL. This helper collapses exact-key
+// collisions BEFORE the write: rows already in canonical form win over
+// legacy-alias rows (mirrors the backfill "canonical wins" rule); ties keep
+// first occurrence. Pure + total — the only throw is the honest 400 from
+// assertCanonicalSizeCategory on unknown codes.
+export function normalizeMatrixCellsForWrite<
+  T extends { sizeCategory: string; accessType: string; commitmentMonths: number },
+>(cells: T[]): T[] {
+  const seen = new Map<string, { cell: T; canonical: boolean }>();
+  for (const c of cells) {
+    const sizeCategory = assertCanonicalSizeCategory(c.sizeCategory);
+    const key = `${sizeCategory}${c.accessType}${c.commitmentMonths}`;
+    const canonical = (CANONICAL_SIZE_CATEGORIES as readonly string[]).includes(
+      String(c.sizeCategory ?? '').trim().toUpperCase(),
+    );
+    const prev = seen.get(key);
+    if (!prev || (!prev.canonical && canonical)) {
+      seen.set(key, { cell: { ...c, sizeCategory }, canonical });
+    }
+  }
+  return [...seen.values()].map((e) => e.cell);
+}
+
 export interface PlanInput {
   kind: PlanKind;
   name: string;
@@ -58,7 +132,8 @@ function serialize(plan: any) {
     version: plan.version,
     matrixCells: (plan.matrixCells || []).map((c: any) => ({
       id: c.id,
-      sizeCategory: c.sizeCategory,
+      // Lenient: legacy XS rows read as LOCKER (backward-compat).
+      sizeCategory: toCanonicalSizeCategory(c.sizeCategory),
       accessType: c.accessType,
       commitmentMonths: c.commitmentMonths,
       discountPct: toNum(c.discountPct),
@@ -144,7 +219,12 @@ export async function createPlan(input: PlanInput) {
       earlyExitTreatment: input.earlyExitTreatment,
       minStayPct: input.minStayPct,
       matrixCells: input.matrixCells ? {
-        create: input.matrixCells.map(c => ({
+        create: normalizeMatrixCellsForWrite(input.matrixCells).map(c => ({
+          // Strict: legacy XS / S / M / L normalize to canonical LOCKER /
+          // SMALL / MEDIUM / LARGE; unknown codes 400. Exact-key collisions
+          // after normalization are collapsed in normalizeMatrixCellsForWrite
+          // (P2002 → 500 fix), so the nested create cannot violate the
+          // @@unique([planId, sizeCategory, accessType, commitmentMonths]) key.
           sizeCategory: c.sizeCategory,
           accessType: c.accessType,
           commitmentMonths: c.commitmentMonths,
@@ -226,7 +306,10 @@ export async function updatePlan(id: string, input: Partial<PlanInput>) {
       minStayPct: input.minStayPct,
       version: newVersion,
       matrixCells: input.matrixCells ? {
-        create: input.matrixCells.map(c => ({
+        create: normalizeMatrixCellsForWrite(input.matrixCells).map(c => ({
+          // Strict write-path normalization + collision collapse (see
+          // createPlan) — without it a payload mixing legacy + canonical
+          // twins (S + SMALL) P2002s into a 500 after deleteMany.
           sizeCategory: c.sizeCategory,
           accessType: c.accessType,
           commitmentMonths: c.commitmentMonths,
@@ -393,13 +476,16 @@ export async function duplicatePlan(id: string) {
       earlyExitTreatment: existing.earlyExitTreatment,
       minStayPct: existing.minStayPct,
       description: existing.description,
+      // Re-canonicalize on copy so legacy XS rows duplicate as LOCKER;
+      // collapse legacy/canonical twins (S + SMALL) that coexist as distinct
+      // raw strings — without it the copy P2002s into a 500.
       matrixCells: existing.matrixCells.length ? {
-        create: existing.matrixCells.map(c => ({
+        create: normalizeMatrixCellsForWrite(existing.matrixCells.map((c) => ({
           sizeCategory: c.sizeCategory,
           accessType: c.accessType,
           commitmentMonths: c.commitmentMonths,
           discountPct: c.discountPct,
-        })),
+        }))),
       } : undefined,
       freeMonths: existing.freeMonths.length ? {
         create: existing.freeMonths.map(f => ({
@@ -448,7 +534,8 @@ export interface PlanOverlap { planId: string; planName: string; status: string;
 // DIFFICULTY LOG (validation engine simplifications — see return Note):
 // 1. Rate floors are per (facility, size) but matrix cells are per (size
 //    CATEGORY, access, commitment) and UnitSize codes (LOCKER/SMALL/...) do not
-//    map 1:1 to categories (XS–XXL). So floors are applied against a
+//    map 1:1 to categories (LOCKER/SMALL/MEDIUM/LARGE/XL/XXL canonical, legacy
+//    XS/S/M/L aliased in toCanonicalSizeCategory). So floors are applied against a
 //    REPRESENTATIVE base rate (median available-unit monthlyRate, fallback $300)
 //    rather than per-unit exact pricing. A global safeguard (null facility/size)
 //    applies to every plan; a scoped one applies when the plan scope includes
@@ -498,6 +585,26 @@ export async function validatePlan(id: string) {
       });
       if (bad.length) push('blocker', `${bad.length} matrix cell(s) outside 0–100%`);
       else push('pass', `${cells.length} matrix cells defined (all within 0–100%)`);
+      // Size tiers: legacy XS / S / M / L read as canonical LOCKER / SMALL /
+      // MEDIUM / LARGE, so migrated and unmigrated rows both pass; anything
+      // outside the canonical set blocks with the tier list.
+      const canonicalSizes = cells.map((c) => toCanonicalSizeCategory(c.sizeCategory));
+      const unknownSizes = [...new Set(canonicalSizes)].filter(
+        (s) => !(CANONICAL_SIZE_CATEGORIES as readonly string[]).includes(s),
+      );
+      if (unknownSizes.length) {
+        push('blocker', `Unknown size categor${unknownSizes.length === 1 ? 'y' : 'ies'} ${unknownSizes.join(', ')} — expected one of ${CANONICAL_SIZE_CATEGORIES.join(' / ')}`);
+      } else {
+        const tiers = [...new Set(canonicalSizes)].sort();
+        push('pass', `Size categories covered: ${tiers.join(' / ')}`);
+      }
+      const allowed = ALLOWED_COMMITMENT_MONTHS as readonly number[];
+      const offTier = cells.filter((c) => !allowed.includes(c.commitmentMonths));
+      if (offTier.length) push('blocker', `${offTier.length} matrix cell(s) outside commitment tiers 1 / 3 / 6 / 12 months`);
+      else {
+        const tiers = [...new Set(cells.map((c) => c.commitmentMonths))].sort((a, b) => a - b);
+        push('pass', `Commitment tiers covered: ${tiers.join(' / ')} months`);
+      }
       headlinePct = Math.max(...cells.map((c) => toNum(c.discountPct)));
       if (headlinePct > 40) {
         push('warning', `Headline discount ${headlinePct}% exceeds 40% — requires Commercial/Finance approval before activation`);
@@ -738,7 +845,7 @@ export async function listVersions(planId: string, opts?: { from?: Date; to?: Da
 // Field-level diff between two version snapshots (used by the History Compare
 // view). Compares only JSON-scalar keys present in either snapshot; nested
 // arrays are compared by length + JSON hash, not per-row (per-row matrix diffs
-// of 36 cells are follow-up).
+// of 48 cells are follow-up).
 export function diffSnapshots(a: unknown, b: unknown): { field: string; from: unknown; to: unknown }[] {
   const ra = (a ?? {}) as Record<string, unknown>;
   const rb = (b ?? {}) as Record<string, unknown>;
@@ -803,12 +910,17 @@ export async function restoreVersion(planId: string, version: number, changedBy 
   }
   if (Array.isArray(snap.matrixCells)) {
     data.matrixCells = {
-      create: (snap.matrixCells as any[]).map((c) => ({
-        sizeCategory: String(c.sizeCategory),
-        accessType: String(c.accessType),
-        commitmentMonths: Number(c.commitmentMonths),
-        discountPct: Number(c.discountPct),
-      })),
+      // Re-canonicalize on restore so legacy XS snapshots restore as LOCKER;
+      // collapse legacy/canonical twins sharing a post-normalization key
+      // (P2002 → 500 fix, same as createPlan).
+      create: normalizeMatrixCellsForWrite(
+        (snap.matrixCells as any[]).map((c) => ({
+          sizeCategory: String(c.sizeCategory),
+          accessType: String(c.accessType),
+          commitmentMonths: Number(c.commitmentMonths),
+          discountPct: Number(c.discountPct),
+        })),
+      ),
     };
   }
   if (Array.isArray(snap.freeMonths)) {
@@ -942,4 +1054,41 @@ export async function getPerformance() {
     totalDiscountCost: perPlan.reduce((s, p) => s + p.discountCost, 0),
   };
   return { plans: perPlan, totals };
+}
+
+// --- Public booking surface (additive) ---
+//
+// GET /api/v1/public/promotion-plans exposes the ACTIVE Discount Plan matrix
+// to the booking frontend so Expected Stay tiles (size × 1/3/6/12 months) can
+// apply it. Served from the existing PromotionPlan / DiscountMatrixCell rows
+// (no schema change): ACTIVE plans only — DRAFT / SCHEDULED / ENDED are
+// excluded — and an honest empty array when no plan is ACTIVE. Cells carry
+// sizeCategory + commitmentMonths + discountPct (accessType rides along so the
+// frontend can disambiguate the two access tiers sharing a size × month key).
+// No auth, no PII, no CMS behaviour change.
+export async function listActivePublicPromotionPlans() {
+  const rows = await prisma.promotionPlan.findMany({
+    where: { status: 'ACTIVE' },
+    include: { matrixCells: true },
+    orderBy: { createdAt: 'asc' },
+  });
+  return rows.map((p) => ({
+    id: p.id,
+    name: p.name,
+    status: p.status,
+    cells: p.matrixCells
+      .map((c) => ({
+        // Canonical on the wire; legacy XS rows read as LOCKER.
+        sizeCategory: toCanonicalSizeCategory(c.sizeCategory),
+        commitmentMonths: c.commitmentMonths,
+        discountPct: toNum(c.discountPct),
+        accessType: c.accessType,
+      }))
+      .sort(
+        (a, b) =>
+          a.commitmentMonths - b.commitmentMonths ||
+          (a.sizeCategory < b.sizeCategory ? -1 : a.sizeCategory > b.sizeCategory ? 1 : 0) ||
+          (a.accessType < b.accessType ? -1 : a.accessType > b.accessType ? 1 : 0),
+      ),
+  }));
 }

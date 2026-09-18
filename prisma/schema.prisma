@@ -224,6 +224,7 @@ model FloorPlan {
 
   placements UnitPlacement[]
   blocks     FloorPlanBlock[]
+  boundaries FloorPlanBoundary[]
 }
 
 // Operator-authored layout-decoration rectangles on a plan canvas — e.g. lift,
@@ -254,6 +255,37 @@ model FloorPlanBlock {
   // unauthored — the metrics bridge falls back to AUTO_ALL_EDGES for that
   // region. Additive, nullable, no backfill needed.
   doorEdges   String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([floorPlanId])
+}
+
+// Facility-boundary line items on a plan canvas — the operator-drawn polyline
+// loop(s) marking the facility boundary for NLA / GLA / UFA measurement.
+//
+// One row per drawn line (cf. FloorPlanBlock's one-row-per-rect): a polyline of
+// grid-ft vertices (`points` = [[x,y],...] in the same integer-foot space as
+// UnitPlacement), an operator label, a kind tag (default BOUNDARY), a `closed`
+// flag (true once the loop is closed — only closed loops feed metrics), and a
+// `sortOrder` for stable editor ordering.
+//
+// `points` is JSONB (not relational rows) because vertices are only ever
+// consumed as a whole polyline by the renderer/metrics math and are never
+// queried or filtered individually — the same presentational-geometry argument
+// as the legacy `structure` JSON.
+//
+// Delete semantics: deleting a FloorPlan cascades its boundaries (geometry is
+// subordinate to the plan).
+model FloorPlanBoundary {
+  id          String    @id @default(cuid())
+  floorPlanId String
+  floorPlan   FloorPlan @relation(fields: [floorPlanId], references: [id], onDelete: Cascade)
+  label       String    @default("Boundary") // operator-given line name ("North wing boundary", ...)
+  kind        String    @default("BOUNDARY") // line-kind tag (BOUNDARY today; additive for future kinds)
+  points      Json // polyline vertices [[x,y],...] in grid-ft units (1 grid unit = 1 ft)
+  closed      Boolean   @default(false) // true once the loop is closed — only closed loops feed metrics
+  sortOrder   Int       @default(0) // stable editor ordering (lowest first)
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 
@@ -673,9 +705,9 @@ model DiscountMatrixCell {
   id              String   @id @default(cuid())
   planId          String
   plan            PromotionPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
-  sizeCategory    String   // XS / S / M / L / XL / XXL
+  sizeCategory    String   // LOCKER / SMALL / MEDIUM / LARGE / XL / XXL (canonical; legacy XS reads as LOCKER)
   accessType      String   // "Ground floor" / "Standard"
-  commitmentMonths Int     // 3 / 6 / 12
+  commitmentMonths Int     // 1 / 3 / 6 / 12
   discountPct     Decimal  @db.Decimal(5, 2)
 
   @@unique([planId, sizeCategory, accessType, commitmentMonths])

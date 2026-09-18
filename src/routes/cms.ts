@@ -143,6 +143,10 @@ import {
   createFloorPlanBlock,
   setFloorPlanBlock,
   removeFloorPlanBlock,
+  listFloorPlanBoundaries,
+  createFloorPlanBoundary,
+  updateFloorPlanBoundary,
+  removeFloorPlanBoundary,
 } from '../core/floorPlans';
 import {
   getFloorMetrics,
@@ -280,6 +284,18 @@ const floorPlanBlockSchema = z.object({
   // Authored door edges round-trip per region (same keep/clear/replace
   // semantics as placements; blocks are non-leasable so metrics ignores them).
   doorEdges: z.array(z.enum(['N', 'S', 'E', 'W'])).max(4).nullish(),
+});
+
+// Facility-boundary line items: polylines in grid-ft units marking the
+// facility boundary for NLA / GLA / UFA measurement. `points` is the full
+// vertex list ([[x,y],...], integers); `closed` marks a finished loop — only
+// closed loops feed `boundaryMetrics` on plan reads.
+const floorPlanBoundarySchema = z.object({
+  label: z.string().trim().min(1).max(80).optional(), // operator line name; defaults to "Boundary" on create
+  kind: z.string().trim().min(1).max(24).nullish(), // line-kind tag; defaults to "BOUNDARY" on create
+  points: z.array(z.tuple([z.number().int(), z.number().int()])).min(2).max(500).optional(),
+  closed: z.boolean().optional(), // true once the loop is closed (3+ distinct vertices required)
+  sortOrder: z.number().int().min(0).max(100000).nullish(), // stable editor ordering
 });
 
 router.get('/config', (req: Request, res: Response) => {
@@ -911,6 +927,45 @@ router.delete('/floor-plans/:floorId/blocks/:blockId', requireAuth, async (req: 
   ok(res, await removeFloorPlanBlock(String(req.params.floorId), String(req.params.blockId)));
 });
 
+// --- Floor-plan boundary line items (facility boundary for NLA/GLA/UFA) ---
+// Polylines in grid-ft units drawn with the editor's Line-item tool. Reads
+// (CMS GET plan + public plan GET) embed `boundaries` plus the derived
+// `boundaryMetrics { gla, ufa, nla, unit, boundaryClosed }`; open polylines
+// persist honestly and report no metrics until the loop is closed.
+
+// List a floor's boundary line items (editor sort order; [] when no plan yet).
+router.get('/floor-plans/:floorId/boundaries', requireAuth, async (req: Request, res: Response) => {
+  const rows = await listFloorPlanBoundaries(String(req.params.floorId));
+  ok(res, rows, { count: rows.length });
+});
+
+// Create a boundary line item on the floor's plan (lazily creates the canvas
+// when the floor has none yet). 201 (created).
+router.post('/floor-plans/:floorId/boundaries', requireAuth, async (req: Request, res: Response) => {
+  const parsed = floorPlanBoundarySchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid boundary payload', parsed.error.flatten());
+    return;
+  }
+  created(res, await createFloorPlanBoundary(String(req.params.floorId), parsed.data));
+});
+
+// Update a boundary line item scoped to the plan: vertex drag / close-loop /
+// rename persistence. Omitted fields keep their values. Cross-plan ids 404.
+router.put('/floor-plans/:floorId/boundaries/:boundaryId', requireAuth, async (req: Request, res: Response) => {
+  const parsed = floorPlanBoundarySchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid boundary payload', parsed.error.flatten());
+    return;
+  }
+  ok(res, await updateFloorPlanBoundary(String(req.params.floorId), String(req.params.boundaryId), parsed.data));
+});
+
+// Remove a boundary line item (scoped to the plan; cross-plan ids 404).
+router.delete('/floor-plans/:floorId/boundaries/:boundaryId', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await removeFloorPlanBoundary(String(req.params.floorId), String(req.params.boundaryId)));
+});
+
 // --- Promotion Plans ---
 
 const planSchema = z.object({
@@ -930,12 +985,20 @@ const planSchema = z.object({
   stackingRule: z.string().optional(),
   budgetCap: z.number().nonnegative().optional(),
   freeMonthCount: z.number().int().positive().optional(),
+  // Discount commitment tiers: 1 / 3 / 6 / 12 months. Kept as positive-int
+  // (not an enum) so legacy plans round-trip; the tier set itself is enforced
+  // by validatePlan() in core/promotionPlans.ts (ALLOWED_COMMITMENT_MONTHS).
   commitmentMonths: z.number().int().positive().optional(),
   earlyExitTreatment: z.string().optional(),
   minStayPct: z.number().int().min(0).max(100).optional(),
   matrixCells: z.array(z.object({
+    // Canonical size tiers LOCKER / SMALL / MEDIUM / LARGE / XL / XXL.
+    // Legacy XS / S / M / L are still accepted and normalized to canonical
+    // in core/promotionPlans.ts (assertCanonicalSizeCategory); unknown codes
+    // 400 there with the tier list.
     sizeCategory: z.string().min(1),
     accessType: z.string().min(1),
+    // 1 / 3 / 6 / 12 — see ALLOWED_COMMITMENT_MONTHS in core/promotionPlans.ts.
     commitmentMonths: z.number().int().positive(),
     discountPct: z.number().nonnegative(),
   })).optional(),

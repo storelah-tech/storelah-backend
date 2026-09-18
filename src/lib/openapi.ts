@@ -25,11 +25,11 @@ export const openapiSpec = {
   openapi: '3.0.3',
   info: {
     title: 'StoreLah Booking API',
-    version: '1.5.2',
+    version: '1.5.4',
     description: [
       'Customer-facing booking API for the StoreLah self-storage business.',
       '',
-      'Public endpoints under `/public/branches`, `/public/units`, `/public/promotions` need no ' +
+      'Public endpoints under `/public/branches`, `/public/units`, `/public/promotions`, `/public/promotion-plans` need no ' +
         'authentication. Customer endpoints under `/customer/*` require ',
       '`Authorization: Bearer <token>` with a JWT issued by `POST /customer/register` or ',
       '`POST /customer/login` (default lifetime 12h).',
@@ -89,6 +89,23 @@ export const openapiSpec = {
         'ONE_TIME / DUE_TODAY, anything else treated as recurring). All pre-existing fields, the ' +
         '`{ valid, discountAmt, monthlyAfterPromo }` discount math, the `{ valid: false }`-not-an-error ' +
         'contract, and the `Promotion.required` lists are unchanged.',
+      '',
+      'v1.5.3 is ADDITIVE-ONLY over 1.5.2: public discount-plan matrix for the booking Expected Stay ' +
+        'tiles — new unauthenticated `GET /public/promotion-plans` returns ACTIVE plans only ' +
+        '(`{ id, name, status, cells: [{ sizeCategory, commitmentMonths, discountPct, accessType? }] }`; ' +
+        'DRAFT / SCHEDULED / ENDED excluded, honest empty array when none is ACTIVE). Legacy ' +
+        '`GET /public/promotions` and `POST /public/promotions/validate` shapes are unchanged.',
+      '',
+      'v1.5.4 is ADDITIVE-ONLY over 1.5.3: floor-plan boundary line items — operator-drawn ' +
+        'facility-boundary polylines (`FloorPlanBoundary`: label/kind/points/closed/sortOrder, ' +
+        'grid-ft vertices) with CMS CRUD ' +
+        '`GET|POST /cms/floor-plans/{floorId}/boundaries` + ' +
+        '`PUT|DELETE /cms/floor-plans/{floorId}/boundaries/{boundaryId}` (Bearer JWT). Plan reads ' +
+        '(CMS + `GET /public/floor-plans/{branchCode}/{level}`) gain `boundaries` plus derived ' +
+        '`boundaryMetrics { gla, ufa, nla, unit, boundaryClosed }`: GLA = closed-loop area, ' +
+        'UFA = GLA minus block + solid-structure footprints, NLA = placed-unit footprints inside ' +
+        'the loops (clamped, 1dp); all-zero with `boundaryClosed: false` when no loop is closed. ' +
+        'All pre-existing plan shapes, metrics endpoints, and promotion/booking/customer APIs are unchanged.',
     ].join('\n'),
   },
   servers: [
@@ -278,6 +295,27 @@ export const openapiSpec = {
         responses: {
           '200': openapiResponse({
             $ref: openapiSchemaRef('PromotionValidationResult'),
+          }),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+    },
+    '/public/promotion-plans': {
+      get: {
+        tags: ['Public'],
+        summary: 'List active promotion plans (discount matrix)',
+        description: [
+          'ACTIVE promotion plans with their discount-matrix cells, for the booking frontend Expected Stay ',
+          'tiles (size × 1/3/6/12 months). DRAFT / SCHEDULED / ENDED plans are excluded; an honest empty ',
+          'array is returned when no plan is ACTIVE. No authentication. This surface is additive — ',
+          '`GET /public/promotions` and `POST /public/promotions/validate` are unchanged.',
+        ].join('\n'),
+        operationId: 'listActivePromotionPlans',
+        security: [],
+        responses: {
+          '200': openapiResponse({
+            type: 'array',
+            items: { $ref: openapiSchemaRef('PublicPromotionPlan') },
           }),
           '500': openapiErrorResponse('Unexpected server error'),
         },
@@ -657,6 +695,170 @@ export const openapiSpec = {
           }),
           '404': openapiErrorResponse(
             'No plan for this floor, or block belongs to a different plan.',
+          ),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+    },
+    '/cms/floor-plans/{floorId}/boundaries': {
+      get: {
+        tags: ['Operator CMS'],
+        summary: 'List floor-plan boundary line items',
+        description: [
+          'Lists the facility-boundary line-item polylines on the floor\'s plan in editor sort order ' +
+            '([] when the floor has no plan yet). Plan reads also embed `boundaries` plus derived ' +
+            '`boundaryMetrics { gla, ufa, nla, unit, boundaryClosed }`.',
+          '',
+          'Operator CMS endpoints are documented here for reference only; they are served on the CMS host under ',
+          '`/api/v1/cms` and require a Bearer JWT issued by `/api/v1/cms/login` (auto-login via `/api/v1/cms/config`).',
+        ].join('\n'),
+        operationId: 'listFloorPlanBoundaries',
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          {
+            name: 'floorId',
+            in: 'path',
+            required: true,
+            description: 'Floor row id (the plan upsert key).',
+            schema: { type: 'string' },
+          },
+        ],
+        responses: {
+          '200': openapiResponse({
+            type: 'array',
+            items: { $ref: openapiSchemaRef('PlanBoundary') },
+          }),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+      post: {
+        tags: ['Operator CMS'],
+        summary: 'Create a floor-plan boundary line item',
+        description: [
+          'Creates a facility-boundary line-item polyline (grid-ft vertices `[[x, y], ...]`, 2+ vertices; ' +
+            '`closed: true` needs 3+ distinct vertices) on the floor\'s plan. Vertices must sit on the canvas. ' +
+            'The plan is lazily created at the default canvas if the floor has none yet. Open polylines persist ' +
+            'honestly and report no metrics until the loop is closed.',
+          '',
+          'Operator CMS endpoints are documented here for reference only; they are served on the CMS host under ',
+          '`/api/v1/cms` and require a Bearer JWT issued by `/api/v1/cms/login` (auto-login via `/api/v1/cms/config`).',
+        ].join('\n'),
+        operationId: 'createFloorPlanBoundary',
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          {
+            name: 'floorId',
+            in: 'path',
+            required: true,
+            description: 'Floor row id (the plan upsert key).',
+            schema: { type: 'string' },
+          },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: { $ref: openapiSchemaRef('BoundaryInput') },
+            },
+          },
+        },
+        responses: {
+          '201': openapiCreatedResponse({ $ref: openapiSchemaRef('PlanBoundary') }),
+          '400': openapiErrorResponse(
+            'Invalid boundary payload, or vertices sit outside the plan canvas.',
+          ),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+    },
+    '/cms/floor-plans/{floorId}/boundaries/{boundaryId}': {
+      put: {
+        tags: ['Operator CMS'],
+        summary: 'Update a floor-plan boundary line item',
+        description: [
+          'Updates a boundary line item scoped to the floor\'s plan (vertex drag / close-loop / rename ' +
+            'persistence). Omitted fields keep their values; `points` replaces the whole polyline. ' +
+            'A boundary id belonging to a different plan is rejected.',
+          '',
+          'Operator CMS endpoints are documented here for reference only; they are served on the CMS host under ',
+          '`/api/v1/cms` and require a Bearer JWT issued by `/api/v1/cms/login` (auto-login via `/api/v1/cms/config`).',
+        ].join('\n'),
+        operationId: 'updateFloorPlanBoundary',
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          {
+            name: 'floorId',
+            in: 'path',
+            required: true,
+            description: 'Floor row id (the plan upsert key).',
+            schema: { type: 'string' },
+          },
+          {
+            name: 'boundaryId',
+            in: 'path',
+            required: true,
+            description: 'Boundary id (cuid).',
+            schema: { type: 'string' },
+          },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: { $ref: openapiSchemaRef('BoundaryInput') },
+            },
+          },
+        },
+        responses: {
+          '200': openapiResponse({ $ref: openapiSchemaRef('PlanBoundary') }),
+          '400': openapiErrorResponse(
+            'Invalid boundary payload, or vertices sit outside the plan canvas.',
+          ),
+          '404': openapiErrorResponse(
+            'Boundary belongs to a different plan (cross-plan ids are rejected).',
+          ),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+      delete: {
+        tags: ['Operator CMS'],
+        summary: 'Delete a floor-plan boundary line item',
+        description: [
+          'Removes a boundary line item from the floor\'s plan. Cross-plan ids 404.',
+          '',
+          'Operator CMS endpoints are documented here for reference only; they are served on the CMS host under ',
+          '`/api/v1/cms` and require a Bearer JWT issued by `/api/v1/cms/login` (auto-login via `/api/v1/cms/config`).',
+        ].join('\n'),
+        operationId: 'deleteFloorPlanBoundary',
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          {
+            name: 'floorId',
+            in: 'path',
+            required: true,
+            description: 'Floor row id (the plan upsert key).',
+            schema: { type: 'string' },
+          },
+          {
+            name: 'boundaryId',
+            in: 'path',
+            required: true,
+            description: 'Boundary id (cuid).',
+            schema: { type: 'string' },
+          },
+        ],
+        responses: {
+          '200': openapiResponse({
+            type: 'object',
+            required: ['floorId', 'boundaryId', 'removed'],
+            properties: {
+              floorId: { type: 'string' },
+              boundaryId: { type: 'string' },
+              removed: { type: 'boolean', enum: [true] },
+            },
+          }),
+          '404': openapiErrorResponse(
+            'No plan for this floor, or boundary belongs to a different plan.',
           ),
           '500': openapiErrorResponse('Unexpected server error'),
         },
@@ -2655,6 +2857,47 @@ export const openapiSpec = {
           },
         },
       },
+      PublicPromotionPlanCell: {
+        type: 'object',
+        required: ['sizeCategory', 'commitmentMonths', 'discountPct'],
+        properties: {
+          sizeCategory: {
+            type: 'string',
+            description: 'Size category (LOCKER / SMALL / MEDIUM / LARGE / XL / XXL; legacy XS reads as LOCKER).',
+          },
+          commitmentMonths: {
+            type: 'integer',
+            enum: [1, 3, 6, 12],
+            description: 'Commitment tier in months.',
+          },
+          discountPct: {
+            type: 'number',
+            description: 'Discount percent (0–100).',
+          },
+          accessType: {
+            type: 'string',
+            description: 'Additive: access tier (e.g. Ground floor / Standard) disambiguating the two cells that share a size × month key.',
+          },
+        },
+      },
+      PublicPromotionPlan: {
+        type: 'object',
+        required: ['id', 'name', 'status', 'cells'],
+        properties: {
+          id: { type: 'string' },
+          name: { type: 'string' },
+          status: {
+            type: 'string',
+            enum: ['ACTIVE'],
+            description: 'Always ACTIVE on this surface — DRAFT / SCHEDULED / ENDED plans are excluded.',
+          },
+          cells: {
+            type: 'array',
+            items: { $ref: openapiSchemaRef('PublicPromotionPlanCell') },
+            description: 'Discount-matrix cells, sorted by commitmentMonths, then sizeCategory, then accessType.',
+          },
+        },
+      },
       RegisterRequest: {
         type: 'object',
         required: ['name', 'email', 'password'],
@@ -3285,6 +3528,72 @@ export const openapiSpec = {
           },
         },
       },
+      PlanBoundary: {
+        type: 'object',
+        required: ['id', 'label', 'kind', 'points', 'closed', 'sortOrder'],
+        description:
+          'A facility-boundary line item on a floor plan: an operator-drawn polyline marking the facility boundary for NLA / GLA / UFA measurement. Vertices are grid-ft [x, y] pairs (1 grid unit = 1 ft); only closed loops feed boundaryMetrics.',
+        properties: {
+          id: { type: 'string', description: 'FloorPlanBoundary row id (cuid).' },
+          label: {
+            type: 'string',
+            description: 'Operator-given line name (e.g. "North wing boundary").',
+          },
+          kind: {
+            type: 'string',
+            description: 'Line-kind tag (BOUNDARY today; additive for future kinds).',
+          },
+          points: {
+            type: 'array',
+            description: 'Polyline vertices [[x, y], ...] in grid-ft units.',
+            items: {
+              type: 'array',
+              minItems: 2,
+              maxItems: 2,
+              items: { type: 'integer' },
+            },
+          },
+          closed: {
+            type: 'boolean',
+            description: 'True once the loop is closed — only closed loops feed boundaryMetrics.',
+          },
+          sortOrder: { type: 'integer', description: 'Stable editor ordering (lowest first).' },
+        },
+      },
+      BoundaryInput: {
+        type: 'object',
+        description: 'Payload for creating/updating a plan boundary line item (update: omitted fields keep their values).',
+        properties: {
+          label: { type: 'string', minLength: 1, maxLength: 80 },
+          kind: { type: 'string', minLength: 1, maxLength: 24 },
+          points: {
+            type: 'array',
+            minItems: 2,
+            maxItems: 500,
+            items: {
+              type: 'array',
+              minItems: 2,
+              maxItems: 2,
+              items: { type: 'integer' },
+            },
+          },
+          closed: { type: 'boolean' },
+          sortOrder: { type: 'integer', minimum: 0, maximum: 100000 },
+        },
+      },
+      BoundaryMetrics: {
+        type: 'object',
+        required: ['gla', 'ufa', 'nla', 'unit', 'boundaryClosed'],
+        description:
+          'NLA / GLA / UFA derived from CLOSED boundary loops: GLA = closed-loop area; UFA = GLA minus block + solid-structure footprints (thin wall lines excluded); NLA = placed-unit footprints inside the loops, clamped to UFA. All-zero with boundaryClosed: false when no loop is closed — never fabricated. Rounded to 1 decimal.',
+        properties: {
+          gla: { type: 'number', description: 'Gross lettable area (sqft).' },
+          ufa: { type: 'number', description: 'Usable floor area (sqft).' },
+          nla: { type: 'number', description: 'Net lettable area (sqft).' },
+          unit: { type: 'string', enum: ['sqft'] },
+          boundaryClosed: { type: 'boolean', description: 'True when at least one closed loop exists.' },
+        },
+      },
       PublicFloorPlan: {
         type: 'object',
         required: ['branch', 'floor', 'plan'],
@@ -3312,7 +3621,7 @@ export const openapiSpec = {
           plan: {
             type: 'object',
             nullable: true,
-            required: ['id', 'floorId', 'width', 'height', 'structure', 'placements', 'blocks'],
+            required: ['id', 'floorId', 'width', 'height', 'structure', 'placements', 'blocks', 'boundaries', 'boundaryMetrics'],
             description:
               'The canvas + decorations when a plan has been authored; null when the floor has no plan yet (renderers should fall back to a synthesized grid).',
             properties: {
@@ -3329,6 +3638,17 @@ export const openapiSpec = {
                 description:
                   'Operator-authored decoration rectangles (lift, stairs, exit, walking area, ...) as uniform name+rect primitives. Display only.',
                 items: { $ref: openapiSchemaRef('PlanBlock') },
+              },
+              boundaries: {
+                type: 'array',
+                description:
+                  'Facility-boundary line-item polylines (grid-ft vertices) in editor sort order.',
+                items: { $ref: openapiSchemaRef('PlanBoundary') },
+              },
+              boundaryMetrics: {
+                description:
+                  'NLA / GLA / UFA derived from CLOSED boundary loops (all-zero with boundaryClosed: false when no loop is closed).',
+                $ref: openapiSchemaRef('BoundaryMetrics'),
               },
               placements: {
                 type: 'array',

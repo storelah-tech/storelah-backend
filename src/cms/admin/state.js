@@ -78,6 +78,9 @@ export const state = {
     liveDims: null, // live-typed canvas size from the W/H inputs (local, unsaved); null = use plan/server size
     lockSqft: true, // resize snaps to the nearest rect preserving area≈sqft (ops can toggle off; server still enforces ±15%)
     ghostRotated: false, // palette drag ghost orientation toggle (swaps W/H for rectangular footprints)
+    boundaries: [], // normalized boundary line items (grid-ft polylines; kind 'PENCIL' = pencil-drawn lines)
+    drawMode: false, // ✎ line tool active — canvas press-drag draws a line, placement/block drags gated off
+    selectedBoundary: null, // selected boundary line-item id (info strip shows Remove line)
   },
   // Area-metrics panel state (facility setup view; read-only live reads of
   // the Phase-2 endpoints for the editor's selected floor).

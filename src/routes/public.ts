@@ -4,6 +4,7 @@ import { ok, fail } from '../lib/http';
 import { listPublicBranches } from '../core/branches';
 import { getUnitMap, listPublicUnits } from '../core/units';
 import { listActivePromotions, validatePromotion, DEFAULT_PROMO_TYPE, DEFAULT_PROMO_SCOPE } from '../core/promotions';
+import { listActivePublicPromotionPlans } from '../core/promotionPlans';
 import { getPublicFloorPlan } from '../core/floorPlans';
 
 const router = Router();
@@ -36,7 +37,10 @@ router.get('/units/map', async (req: Request, res: Response) => {
 
 // PUBLIC floor-plan read for the future booking renderer (see FLOOR_PLAN_MODEL.md
 // "Forward compatibility"). Additive contract: branch + floor + plan canvas
-// (width/height/legacy structure) + blocks (name+rect decorations) + placements
+// (width/height/legacy structure) + blocks (name+rect decorations) +
+// boundaries (facility-boundary line-item polylines) + boundaryMetrics
+// ({ gla, ufa, nla, unit, boundaryClosed } derived from CLOSED loops; all-zero
+// with boundaryClosed: false when no loop is closed) + placements
 // joined to unit unitCode/name/size/status, soft-deleted units filtered out.
 // No tenant/PII anywhere.
 router.get('/floor-plans/:branchCode/:level', async (req: Request, res: Response) => {
@@ -76,6 +80,14 @@ router.post('/promotions/validate', async (req: Request, res: Response) => {
     return;
   }
   ok(res, await validatePromotion(parsed.data.code, parsed.data.rate, parsed.data.months));
+});
+
+// PUBLIC discount-plan matrix for the booking frontend Expected Stay tiles
+// (size × 1/3/6/12 months). Additive: ACTIVE plans only (DRAFT / SCHEDULED /
+// ENDED excluded), honest empty array when none is ACTIVE. No auth. Legacy
+// GET /promotions + POST /promotions/validate are untouched above.
+router.get('/promotion-plans', async (_req: Request, res: Response) => {
+  ok(res, await listActivePublicPromotionPlans());
 });
 
 export default router;

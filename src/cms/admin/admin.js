@@ -1850,11 +1850,8 @@ async function bindPromotionsOverview() {
     const activePlans = plans.filter(p => p.status === 'ACTIVE' || p.status === 'SCHEDULED').length;
     const activePromos = promos.filter(p => p.active).length;
     const totalActive = activePlans + activePromos;
-    const draftCount = plans.filter(p => p.status === 'DRAFT').length;
     const elActive = $('#promoActiveCount');
     if (elActive) elActive.textContent = totalActive || '—';
-    const elBookings = $('#promoBookingsDiscounted');
-    if (elBookings) elBookings.textContent = activePromos > 0 ? Math.round(activePromos * 12) + '' : '—';
     // Fill promo library table — combine plans + promotions
     const libBody = $('#promoLibraryBody');
     if (libBody) {
@@ -1876,11 +1873,17 @@ async function bindPromotionsOverview() {
           Math.max.apply(null, p.matrixCells.map(function(c) { return c.discountPct; })) + '%' : 
           p.kind === 'FREE_MONTHS' && p.freeMonthCount && p.commitmentMonths ? 
           ((p.freeMonthCount / p.commitmentMonths) * 100).toFixed(1) + '%' : 'Variable';
+        // DELETE /promotion-plans/:id is DRAFT-only (400 INVALID_STATUS
+        // otherwise), so only drafts get an enabled Delete; non-drafts show
+        // a disabled button whose tooltip explains why.
+        var delBtn = p.status === 'DRAFT'
+          ? '<button class="btn" data-del-plan="' + escapeHtml(p.id) + '" data-del-label="' + escapeHtml(codeLabel) + '" title="Delete this draft plan">Delete</button>'
+          : '<button class="btn" disabled title="Only draft plans can be deleted">Delete</button>';
         libRows.push('<tr><td><b>' + escapeHtml(codeLabel) + '</b><br><small>' + escapeHtml(p.name || '') + ' · v' + (p.version || 1) + '</small></td>' +
           '<td>' + benefitLabel + '</td><td>' + eligibility + '</td><td>' + commitment + '</td>' +
           '<td>' + validFrom + validTo + '</td><td>' + usage + '</td><td>' + effDisc + '</td>' +
           '<td><span class="pill ' + statusColor + '">' + p.status + '</span></td>' +
-          '<td><button class="btn" data-tab-jump="' + tabJump + '">Open</button></td></tr>');
+          '<td><button class="btn" data-tab-jump="' + tabJump + '" data-open-plan="' + escapeHtml(p.id) + '" data-plan-kind="' + p.kind + '" title="Open this plan in its builder">Open</button> ' + delBtn + '</td></tr>');
       });
       // Legacy promotions
       (promos || []).forEach(function (p) {
@@ -1893,8 +1896,44 @@ async function bindPromotionsOverview() {
           '<td><button class="btn" data-tab-jump="promo-discount-matrix">Open</button></td></tr>');
       });
       libBody.innerHTML = libRows.length ? libRows.join('') : '<tr><td colspan="9"><div class="section-empty">' + escapeHtml(rangeEmptyText('promotions', state.promoLibDate, 'No promotions or plans yet.')) + '</div></td></tr>';
+      libBody.querySelectorAll('[data-del-plan]').forEach(function (b) {
+        b.addEventListener('click', function () {
+          deletePromoPlan(b.dataset.delPlan, b.dataset.delLabel).catch(function () {});
+        });
+      });
     }
   } catch (e) { showBanner('Promotions overview: ' + describeError(e)); }
+}
+
+// Promotion Library: DRAFT-only delete via DELETE /promotion-plans/:id.
+// The API rejects non-DRAFT with 400 INVALID_STATUS — surfaced through
+// showBanner so a stale-row race never fails silently.
+async function deletePromoPlan(id, label) {
+  if (!id) return;
+  const name = label || 'draft plan';
+  const okConfirm = await confirmDialog({
+    title: 'Delete draft plan ' + name + '?',
+    message: 'This permanently removes the draft. Published or scheduled versions are never affected.',
+    confirmLabel: 'Delete',
+    danger: true,
+  });
+  if (!okConfirm) return;
+  try {
+    await del('/promotion-plans/' + encodeURIComponent(id));
+  } catch (e) {
+    showBanner('Delete: ' + describeError(e));
+    return;
+  }
+  // Drop stale working-draft pointers at the deleted plan so the builders
+  // cannot PUT against a plan that no longer exists.
+  ['discountPlanId', 'freePlanId', 'codePlanId'].forEach(function (k) {
+    if (promoState[k] === id) promoState[k] = null;
+  });
+  if (promoState.validated) delete promoState.validated[id];
+  toast('Deleted draft plan ' + name);
+  bindPromotionsOverview().catch(function () {});
+  bindPromoHistory().catch(function () {});
+  bindPromoDashboardCharts().catch(function () {});
 }
 
 // Promotions-library control: ranges Promotion.createdAt + PromotionPlan.effectiveFrom
@@ -1993,9 +2032,9 @@ function renderValidationResults(result) {
 
 // ---- Free-months builder persistence (kind FREE_MONTHS round-trip) ----
 // SIMPLIFICATIONS (documented): facility select stores a branch ID when the
-// label matches a known branch, else ["ALL"]; the size select stores category
-// labels (["ALL"] or ["M","L","XL"]) rather than UnitSize IDs because the spec
-// matrix uses XS–XXL categories while UnitSize codes are LOCKER/SMALL/...;
+// label matches a known branch, else ["ALL"]; the size select stores canonical
+// category labels (["ALL"] or ["MEDIUM","LARGE","XL"]) matching the
+// LOCKER/SMALL/... matrix tiers (legacy single-letter rows read as canonical);
 // early-exit/min-stay map from label prefixes. Reload reverses the mapping.
 function freePanelFields() {
   const sels = Array.from(document.querySelectorAll('#promo-free-months .builder-section .form-grid select'));
@@ -2025,7 +2064,10 @@ function collectFreeMonthsPayload() {
   const storageType = f.storageSel ? f.storageSel.value : undefined;
   let sizeScope = ['ALL'];
   if (f.sizeSel && f.sizeSel.value && !/^all/i.test(f.sizeSel.value)) {
-    sizeScope = f.sizeSel.value.indexOf('M, L') >= 0 ? ['M', 'L', 'XL'] : [f.sizeSel.value];
+    // Canonical write path is MEDIUM/LARGE/XL; legacy "M, L and XL" labels
+    // (pre-unification markup) map to the same canonical triple.
+    var sv = f.sizeSel.value;
+    sizeScope = (sv.indexOf('MEDIUM') >= 0 || sv.indexOf('M, L') >= 0) ? ['MEDIUM', 'LARGE', 'XL'] : [sv];
   }
   let earlyExitTreatment = 'Prorate';
   if (f.exitSel[0]) {
@@ -2077,7 +2119,16 @@ async function loadFreeMonthsPlan() {
   try { plans = await get('/promotion-plans'); } catch (e) { return; }
   const plan = (plans || []).filter((p) => p.kind === 'FREE_MONTHS')[0];
   if (!plan) return;
+  populateFreePanel(plan);
+}
+
+// Fill the free-months builder from a specific plan object (Library Open or
+// newest-plan round-trip). Sets the working draft id so Save uses PUT /:id
+// and Publish walks PATCH /:id/status on the SAME row — never a copy.
+function populateFreePanel(plan) {
+  if (!plan) return;
   promoState.freePlanId = plan.id;
+  promoState.validated[plan.id] = plan.status !== 'DRAFT';
   setPromoStatusPill('freePlanStatus', plan.status);
   const f = freePanelFields();
   if (f.name) f.name.value = plan.name || '';
@@ -2085,7 +2136,7 @@ async function loadFreeMonthsPlan() {
   if (f.commitment && plan.commitmentMonths) {
     const label = plan.commitmentMonths + ' months';
     Array.from(f.commitment.options || []).forEach((o) => { if (o.text === label || o.value === label) f.commitment.value = o.value || o.text; });
-    if (!/3|6|12/.test(f.commitment.value)) f.commitment.value = f.commitment.options[2] ? f.commitment.options[2].value : label;
+    if (!/1|3|6|12/.test(f.commitment.value)) f.commitment.value = f.commitment.options[3] ? f.commitment.options[3].value : label;
   }
   const idx = (plan.freeMonths || []).filter((a) => a.free).map((a) => a.monthIndex);
   const strip = document.getElementById('monthStrip');
@@ -2201,7 +2252,16 @@ async function loadCodePlan() {
   try { plans = await get('/promotion-plans'); } catch (e) { return; }
   const plan = (plans || []).filter((p) => p.kind === 'PROMO_CODE')[0];
   if (!plan) return;
+  populateCodePanel(plan);
+}
+
+// Fill the promo-code builder from a specific plan object (Library Open or
+// newest-plan round-trip). Sets the working draft id so Save uses PUT /:id
+// and Publish walks PATCH /:id/status on the SAME row — never a copy.
+function populateCodePanel(plan) {
+  if (!plan) return;
   promoState.codePlanId = plan.id;
+  promoState.validated[plan.id] = plan.status !== 'DRAFT';
   setPromoStatusPill('codePlanStatus', plan.status);
   const nameEl = document.getElementById('promoName');
   const codeEl = document.getElementById('promoCode');
@@ -2247,6 +2307,94 @@ function setPromoStatusPill(elId, status) {
   const tone = s === 'ACTIVE' || s === 'VALIDATED' ? 'green' : s === 'SCHEDULED' ? 'amber' : 'grey';
   el.textContent = s.charAt(0) + s.slice(1).toLowerCase();
   el.className = 'pill ' + tone;
+}
+
+// Canonical size-category mapping for the discount-matrix builder (mirrors
+// core/promotionPlans.ts toCanonicalSizeCategory): new writes use LOCKER /
+// SMALL / MEDIUM / LARGE / XL / XXL; legacy XS / S / M / L rows read as
+// canonical so pre-unification plans still populate the right row.
+function canonicalSizeCat(raw) {
+  var k = String(raw == null ? '' : raw).trim().toUpperCase();
+  var alias = { XS: 'LOCKER', S: 'SMALL', M: 'MEDIUM', L: 'LARGE' };
+  return alias[k] || k || raw;
+}
+
+// Fill the discount-matrix builder from a specific plan object (Library Open).
+// Sets the working draft id so Save uses PUT /:id and Publish walks PATCH
+// /:id/status on the SAME row — never a copy. Cell mapping mirrors
+// saveDiscountPlan: row → size category, input 0–3 Ground floor / 4–7
+// Standard, commitment tiers [1, 3, 6, 12].
+function populateDiscountPanel(plan) {
+  if (!plan) return;
+  promoState.discountPlanId = plan.id;
+  promoState.validated[plan.id] = plan.status !== 'DRAFT';
+  const nameEl = document.getElementById('discountPlanName');
+  const dateEl = document.getElementById('discountStartDate');
+  const statusEl = document.getElementById('discountPlanStatus');
+  if (nameEl && plan.name) nameEl.value = plan.name;
+  if (dateEl && plan.effectiveFrom) {
+    const d = new Date(plan.effectiveFrom);
+    if (!isNaN(d.getTime())) dateEl.value = d.toISOString().slice(0, 10);
+  }
+  const lookup = {};
+  (plan.matrixCells || []).forEach(function (c) {
+    // Legacy XS / S / M / L rows (pre-unification) read as canonical LOCKER /
+    // SMALL / MEDIUM / LARGE so old plans populate the LOCKER row.
+    lookup[canonicalSizeCat(c.sizeCategory) + '|' + c.accessType + '|' + c.commitmentMonths] = c.discountPct;
+  });
+  const sizeCategories = ['LOCKER', 'SMALL', 'MEDIUM', 'LARGE', 'XL', 'XXL'];
+  const commitmentLabels = [1, 3, 6, 12];
+  document.querySelectorAll('#promo-discount-matrix .discount-matrix tbody tr').forEach(function (row, ri) {
+    if (ri >= sizeCategories.length) return;
+    row.querySelectorAll('input').forEach(function (input, ci) {
+      if (ci >= 8) return;
+      const accessType = ci < 4 ? 'Ground floor' : 'Standard';
+      const key = sizeCategories[ri] + '|' + accessType + '|' + commitmentLabels[ci % 4];
+      if (Object.prototype.hasOwnProperty.call(lookup, key)) {
+        const n = parseFloat(lookup[key]) || 0;
+        input.value = n + '%';
+        input.className = n >= 30 ? 'hot' : n >= 15 ? 'mid' : '';
+      }
+    });
+  });
+  if (statusEl) {
+    const s = plan.status || 'DRAFT';
+    statusEl.textContent = s.charAt(0) + s.slice(1).toLowerCase();
+    statusEl.className = 'pill ' + (s === 'ACTIVE' || s === 'VALIDATED' ? 'green' : s === 'SCHEDULED' ? 'amber' : 'grey');
+  }
+}
+
+// Library Open → load the exact plan into its builder (GET /promotion-plans/:id
+// only — never duplicate/restore). The data-tab-jump handler switches the tab;
+// this populates the working draft id + fields once the fetch resolves.
+async function openPromoPlan(id, kind) {
+  if (!id) return;
+  let plan = null;
+  try {
+    plan = await get('/promotion-plans/' + encodeURIComponent(id));
+  } catch (e) {
+    showBanner('Open: ' + describeError(e));
+    return;
+  }
+  if (!plan) return;
+  const k = kind || plan.kind;
+  if (k === 'DISCOUNT_MATRIX') populateDiscountPanel(plan);
+  else if (k === 'FREE_MONTHS') populateFreePanel(plan);
+  else populateCodePanel(plan);
+  toast('Opened ' + (plan.name || plan.code || plan.id));
+}
+
+// Document-level delegation (runtime-rendered Library rows included).
+// Idempotent: bootPromotions() re-runs on every promotions visit.
+let promoOpenWired = false;
+function installPromoOpenHandler() {
+  if (promoOpenWired) return;
+  promoOpenWired = true;
+  document.addEventListener('click', function (e) {
+    const b = e.target && e.target.closest ? e.target.closest('[data-open-plan]') : null;
+    if (!b) return;
+    openPromoPlan(b.dataset.openPlan, b.dataset.planKind).catch(function () {});
+  });
 }
 
 // Validate = save (if needed), then render live POST .../validate results in
@@ -2299,15 +2447,32 @@ async function schedulePromoPlan(kind) {
 // Publish = walk the plan to ACTIVE through the state machine (DRAFT →
 // VALIDATED → SCHEDULED → ACTIVE as needed). Server re-validates on the
 // VALIDATED edge, so blockers surface instead of slipping through.
+// In-place only: saves via PUT /:id when a working draft id exists (POST only
+// for a genuinely new plan), then PATCHes /:id/status on the SAME id — never
+// duplicate/restore. Double-click guarded; a second Publish on ACTIVE is a
+// harmless no-op toast (checked BEFORE saving so the live plan is untouched).
+const promoPublishBusy = {};
 async function publishPromoPlan(kind) {
   const tab = PROMO_PUBLISH_TABS[kind];
   if (!tab) return;
-  let pid = promoState[tab.idKey];
-  if (!pid) {
-    pid = await tab.save();
-    if (!pid) return;
-  }
+  if (promoPublishBusy[kind]) return;
+  promoPublishBusy[kind] = true;
+  const btn = document.getElementById(kind === 'free' ? 'freePublishBtn' : kind === 'code' ? 'codePublishBtn' : kind + 'PublishBtn');
+  if (btn) btn.disabled = true;
   try {
+    let pid = promoState[tab.idKey];
+    if (pid) {
+      let pre = null;
+      try { pre = await get('/promotion-plans/' + encodeURIComponent(pid)); } catch (e) { pre = null; }
+      if (pre && pre.status === 'ACTIVE') {
+        setPromoStatusPill(tab.pillId, 'ACTIVE');
+        toast(tab.label + ' is already active');
+        return;
+      }
+    } else {
+      pid = await tab.save();
+      if (!pid) return;
+    }
     let status = null;
     try {
       const current = await get('/promotion-plans/' + encodeURIComponent(pid));
@@ -2333,6 +2498,9 @@ async function publishPromoPlan(kind) {
     bindPromotionsOverview().catch(function () {});
   } catch (e) {
     showBanner('Publish: ' + describeError(e));
+  } finally {
+    promoPublishBusy[kind] = false;
+    if (btn) btn.disabled = false;
   }
 }
 
@@ -2553,34 +2721,150 @@ async function bindPromoPerformance() {
       const sub = trend.parentElement.querySelector('.trend');
       if (sub) sub.textContent = Object.entries(byKind).map(([k, v]) => v + ' ' + k.toLowerCase().replace(/_/g, ' ')).join(' · ') || 'no plans';
     }
-    set('#promoBookingsDiscounted', String(perf.totals.totalRedemptions));
     set('#promoDiscountCost', '$' + perf.totals.totalDiscountCost.toLocaleString());
     set('#promoEffectiveRevenue', '—');
     set('#promoConflicts', '—');
-    // Attention queue from live plan states.
+    // Attention queue from live plan states. Draft items intentionally omitted
+    // (owner request: first/topmost draft section removed); scheduled items stay.
     const att = document.getElementById('promoAttentionList');
     if (att) {
       const items = [];
-      perf.plans.filter((p) => p.status === 'DRAFT').forEach((p) => {
-        items.push('<div class="qitem"><i style="color:var(--amber);font-weight:800;width:20px">!</i><div><b>' + escapeHtml(p.planName) + ' is a draft</b><br><small>Validate before scheduling.</small></div><span class="pill amber">Draft</span></div>');
-      });
       perf.plans.filter((p) => p.status === 'SCHEDULED').forEach((p) => {
         items.push('<div class="qitem"><i style="color:var(--amber);font-weight:800;width:20px">!</i><div><b>' + escapeHtml(p.planName) + ' scheduled</b><br><small>Awaiting activation.</small></div><span class="pill amber">Scheduled</span></div>');
       });
       att.innerHTML = items.length ? items.join('') : '<div class="section-empty">No attention items — all plans active or ended.</div>';
     }
-    // Live promo cards (up to 3 newest plans) replace the static showcase.
-    const grid = document.getElementById('promoGrid');
-    if (grid) {
-      grid.innerHTML = perf.plans.length ? perf.plans.slice(0, 3).map((p) => {
-        const jump = p.kind === 'DISCOUNT_MATRIX' ? 'promo-discount-matrix' : p.kind === 'FREE_MONTHS' ? 'promo-free-months' : 'promo-code-builder';
-        const benefit = p.kind === 'DISCOUNT_MATRIX' ? 'Percentage matrix' : p.kind === 'FREE_MONTHS' ? 'Free months' : p.kind === 'PROMO_CODE' ? 'Promo code' : 'Credits';
-        return '<div class="card promo-card"><div class="promo-status"><span class="pill ' + (p.status === 'ACTIVE' ? 'green' : p.status === 'SCHEDULED' ? 'amber' : '') + '">' + p.status + '</span><small>' + p.kind + '</small></div>' +
-          '<div class="promo-code">' + escapeHtml(p.planName) + '</div><p>' + benefit + ' · ' + p.applied + ' redemption(s) · $' + p.discountCost.toLocaleString() + ' discount cost.</p>' +
-          '<button class="btn" style="width:100%" data-tab-jump="' + jump + '">Manage</button></div>';
-      }).join('') : '<div class="section-empty">No promotion plans yet — build one from the Discount, Free-months or Code panels.</div>';
-    }
   }
+}
+
+// ---- Promotion Dashboard charts (Chart.js, live data, empty-state safe) ----
+// Discount chart: discount cost by plan from GET /promotion-plans/performance.
+// Status chart: plan counts by status (performance) + legacy promo-code counts
+// from GET /promotions. No sample data is fabricated: when the APIs return
+// nothing the canvases hide and the .section-empty fallbacks show instead.
+// Styling follows dashboardView.js (Manrope ticks, v8 palette, no legend on
+// single-series bars, bottom legend on the doughnut).
+const PROMO_CHART_COLORS = ['#c97952', '#526557', '#334437', '#547b8d', '#e5a84b', '#aa5d3c'];
+const PROMO_STATUS_COLORS = { ACTIVE: '#526557', SCHEDULED: '#e5a84b', DRAFT: '#c97952', VALIDATED: '#547b8d', ENDED: '#a0a59c' };
+
+function promoChartLib() {
+  return typeof globalThis.Chart !== 'undefined' ? globalThis.Chart : null;
+}
+
+function destroyPromoChart(id) {
+  const lib = promoChartLib();
+  if (!lib || !lib.getChart) return;
+  try {
+    const existing = lib.getChart(id);
+    if (existing) existing.destroy();
+  } catch (e) { /* a half-initialised chart is safe to abandon */ }
+}
+
+function setPromoChartEmpty(canvasId, emptyId, isEmpty) {
+  const canvas = document.getElementById(canvasId);
+  const empty = document.getElementById(emptyId);
+  if (canvas) canvas.style.display = isEmpty ? 'none' : '';
+  if (empty) empty.hidden = !isEmpty;
+}
+
+function renderPromoDiscountChart(rows) {
+  const canvas = document.getElementById('promoDiscountChart');
+  if (!canvas) return;
+  const lib = promoChartLib();
+  const top = (rows || []).slice(0, 8);
+  if (!lib || !top.length) {
+    destroyPromoChart('promoDiscountChart');
+    setPromoChartEmpty('promoDiscountChart', 'promoDiscountEmpty', true);
+    return;
+  }
+  setPromoChartEmpty('promoDiscountChart', 'promoDiscountEmpty', false);
+  destroyPromoChart('promoDiscountChart');
+  const labels = top.map((p) => String(p.planName || p.kind || 'Plan').slice(0, 18));
+  const costs = top.map((p) => Number(p.discountCost) || 0);
+  const applied = top.map((p) => Number(p.applied) || 0);
+  new lib(canvas, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{
+        label: 'Discount cost',
+        data: costs,
+        backgroundColor: top.map((_, i) => PROMO_CHART_COLORS[i % PROMO_CHART_COLORS.length]),
+        borderRadius: 6,
+        borderSkipped: false,
+      }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: (ctx) => ' $' + Number(ctx.raw || 0).toLocaleString() + ' · ' + (applied[ctx.dataIndex] || 0) + ' redemption(s)',
+          },
+        },
+      },
+      scales: {
+        x: { grid: { display: false }, ticks: { font: { family: 'Manrope', size: 10 }, color: '#6f746d' } },
+        y: { grid: { color: '#ede8e2' }, ticks: { font: { family: 'Manrope', size: 10 }, color: '#6f746d', callback: (v) => '$' + (v >= 1000 ? (v / 1000).toFixed(1) + 'k' : v) } },
+      },
+    },
+  });
+}
+
+function renderPromoStatusChart(rows, promos) {
+  const canvas = document.getElementById('promoStatusChart');
+  if (!canvas) return;
+  const lib = promoChartLib();
+  const buckets = {};
+  (rows || []).forEach((p) => {
+    const s = String(p.status || 'UNKNOWN');
+    buckets[s] = (buckets[s] || 0) + 1;
+  });
+  const legacyActive = (promos || []).filter((p) => p.active).length;
+  const legacyDraft = (promos || []).length - legacyActive;
+  if (legacyActive > 0) buckets['CODE active'] = (buckets['CODE active'] || 0) + legacyActive;
+  if (legacyDraft > 0) buckets['CODE draft'] = (buckets['CODE draft'] || 0) + legacyDraft;
+  const labels = Object.keys(buckets);
+  if (!lib || !labels.length) {
+    destroyPromoChart('promoStatusChart');
+    setPromoChartEmpty('promoStatusChart', 'promoStatusEmpty', true);
+    return;
+  }
+  setPromoChartEmpty('promoStatusChart', 'promoStatusEmpty', false);
+  destroyPromoChart('promoStatusChart');
+  new lib(canvas, {
+    type: 'doughnut',
+    data: {
+      labels,
+      datasets: [{
+        data: labels.map((l) => buckets[l]),
+        backgroundColor: labels.map((l, i) => PROMO_STATUS_COLORS[l] || PROMO_CHART_COLORS[i % PROMO_CHART_COLORS.length]),
+        borderColor: '#fffdfa',
+        borderWidth: 2,
+      }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      cutout: '62%',
+      plugins: {
+        legend: { position: 'bottom', labels: { font: { family: 'Manrope', size: 10 }, color: '#20241f', boxWidth: 10, padding: 12 } },
+      },
+    },
+  });
+}
+
+async function bindPromoDashboardCharts() {
+  if (!document.getElementById('promoDashboardCharts')) return;
+  let perf = null;
+  let promos = [];
+  try { perf = await get('/promotion-plans/performance'); } catch (e) { perf = null; }
+  try { promos = await get('/promotions'); } catch (e) { promos = []; }
+  const rows = (perf && perf.plans) || [];
+  renderPromoDiscountChart(rows);
+  renderPromoStatusChart(rows, promos || []);
 }
 
 // ====================== PROMOTIONS INTERACTIVITY (ported from prototype) ======================
@@ -2756,7 +3040,7 @@ function bootPromotions() {
   // Create validation modal if it doesn't exist
   if (!validationModal) {
     document.body.insertAdjacentHTML('beforeend',
-      '<div class="modal" id="validationModal"><div class="overlay" data-close-validation></div><div class="modal-card"><header><div><h2>Plan validation</h2><small style="color:var(--muted)">Pre-publish commercial and rule checks</small></div><button class="iconbtn" data-close-validation>×</button></header><section><div class="stats" style="grid-template-columns:repeat(3,1fr);margin-bottom:14px"><div class="stat"><div class="label">Checks passed</div><div class="val">126</div></div><div class="stat"><div class="label">Blockers</div><div class="val" style="color:var(--olive2)">0</div></div><div class="stat"><div class="label">Warnings</div><div class="val" style="color:#9b681b">2</div></div></div><div class="risk-list"><div class="risk"><i>✓</i><div><b>Matrix values and coverage</b><small>All 36 values are valid percentages and every size × access × commitment combination is covered.</small></div></div><div class="risk"><i>✓</i><div><b>Schedule and version dates</b><small>Starts 1 Oct 2026; no gap or duplicate active version was found.</small></div></div><div class="risk"><i>✓</i><div><b>Effective-rate floors</b><small>Representative bookings remain above configured facility and unit minimum rates.</small></div></div><div class="risk warn"><i>!</i><div><b>Eligibility overlap</b><small>18 Woodlands bookings may also qualify for Stay 12, Pay 10. The stacking safeguard will select one rent promotion.</small></div></div><div class="risk warn"><i>!</i><div><b>High discount approval</b><small>Values above 40% require Commercial/Finance approval before activation.</small></div></div></div><div class="rulebox"><b>What Validate Plan does:</b> it checks data completeness, ranges, rate floors, overlapping rules, dates, commitment treatment and sample bookings. It does not save, publish or change the plan. Blockers prevent scheduling; warnings can be accepted by an authorised approver.</div></section><footer><button class="btn" data-tab-jump="promo-safeguards">Review safeguards</button><button class="primary" id="confirmValidation">Confirm and validate</button></footer></div></div>'
+      '<div class="modal" id="validationModal"><div class="overlay" data-close-validation></div><div class="modal-card"><header><div><h2>Plan validation</h2><small style="color:var(--muted)">Pre-publish commercial and rule checks</small></div><button class="iconbtn" data-close-validation>×</button></header><section><div class="stats" style="grid-template-columns:repeat(3,1fr);margin-bottom:14px"><div class="stat"><div class="label">Checks passed</div><div class="val">126</div></div><div class="stat"><div class="label">Blockers</div><div class="val" style="color:var(--olive2)">0</div></div><div class="stat"><div class="label">Warnings</div><div class="val" style="color:#9b681b">2</div></div></div><div class="risk-list"><div class="risk"><i>✓</i><div><b>Matrix values and coverage</b><small>All 48 values are valid percentages and every size × access × commitment combination is covered.</small></div></div><div class="risk"><i>✓</i><div><b>Schedule and version dates</b><small>Starts 1 Oct 2026; no gap or duplicate active version was found.</small></div></div><div class="risk"><i>✓</i><div><b>Effective-rate floors</b><small>Representative bookings remain above configured facility and unit minimum rates.</small></div></div><div class="risk warn"><i>!</i><div><b>Eligibility overlap</b><small>18 Woodlands bookings may also qualify for Stay 12, Pay 10. The stacking safeguard will select one rent promotion.</small></div></div><div class="risk warn"><i>!</i><div><b>High discount approval</b><small>Values above 40% require Commercial/Finance approval before activation.</small></div></div></div><div class="rulebox"><b>What Validate Plan does:</b> it checks data completeness, ranges, rate floors, overlapping rules, dates, commitment treatment and sample bookings. It does not save, publish or change the plan. Blockers prevent scheduling; warnings can be accepted by an authorised approver.</div></section><footer><button class="btn" data-tab-jump="promo-safeguards">Review safeguards</button><button class="primary" id="confirmValidation">Confirm and validate</button></footer></div></div>'
     );
     validationModal = document.getElementById('validationModal');
   }
@@ -2864,18 +3148,18 @@ function bootPromotions() {
     // Collect matrix cells from the DOM
     var matrixCells = [];
     var matrixRows = document.querySelectorAll('#promo-discount-matrix .discount-matrix tbody tr');
-    var sizeCategories = ['XS', 'S', 'M', 'L', 'XL', 'XXL'];
-    var accessTypes = ['Ground floor', 'Ground floor', 'Ground floor', 'Standard', 'Standard', 'Standard'];
-    var commitmentLabels = [3, 6, 12];
+    var sizeCategories = ['LOCKER', 'SMALL', 'MEDIUM', 'LARGE', 'XL', 'XXL'];
+    // Discount tiers: 1 / 3 / 6 / 12 months × 2 access types = 8 inputs/row.
+    var commitmentLabels = [1, 3, 6, 12];
     if (matrixRows.length) {
       matrixRows.forEach(function (row, ri) {
         if (ri >= sizeCategories.length) return;
         var inputs = row.querySelectorAll('input');
         inputs.forEach(function (input, ci) {
-          if (ci >= 6) return;
+          if (ci >= 8) return;
           var pct = parseFloat(input.value) || 0;
-          var accessType = ci < 3 ? 'Ground floor' : 'Standard';
-          var commitMonths = commitmentLabels[ci % 3];
+          var accessType = ci < 4 ? 'Ground floor' : 'Standard';
+          var commitMonths = commitmentLabels[ci % 4];
           matrixCells.push({
             sizeCategory: sizeCategories[ri],
             accessType: accessType,
@@ -2913,6 +3197,7 @@ function bootPromotions() {
     }
     // Refresh the library
     bindPromotionsOverview();
+    return promoState.discountPlanId;
   }
 
   document.querySelectorAll('[data-save-discount-plan]').forEach(function (b) {
@@ -2954,6 +3239,72 @@ function bootPromotions() {
       if (tab) tab.click();
     });
   });
+  document.querySelectorAll('[data-publish-plan]').forEach(function (b) {
+    if (b.dataset.wired) return;
+    b.dataset.wired = '1';
+    b.addEventListener('click', async function () {
+      // Publish = save, then walk DRAFT → VALIDATED → SCHEDULED → ACTIVE
+      // through the EXISTING status state machine (PATCH
+      // /promotion-plans/:id/status; server re-validates on the VALIDATED
+      // edge). Blockers reject with a surfaced error + validation modal.
+      // In-place only: an opened plan keeps its id (PUT /:id), so POST fires
+      // solely for a genuinely new plan. Never duplicate/restore here.
+      // Double-click guarded; a second Publish on ACTIVE is a harmless no-op
+      // toast checked BEFORE saving so the live plan is never touched.
+      if (b.disabled) return;
+      b.disabled = true;
+      try {
+        var pid = promoState.discountPlanId;
+        if (pid) {
+          var pre = null;
+          try { pre = await get('/promotion-plans/' + encodeURIComponent(pid)); } catch (e) { pre = null; }
+          if (pre && pre.status === 'ACTIVE') {
+            if (discountStatus) {
+              discountStatus.textContent = 'Active';
+              discountStatus.className = 'pill green';
+            }
+            toast('Plan is already active');
+            return;
+          }
+        }
+        await saveDiscountPlan('Draft');
+        pid = promoState.discountPlanId;
+        if (!pid) return;
+        var current = null;
+        try { current = await get('/promotion-plans/' + encodeURIComponent(pid)); } catch (e) { current = null; }
+        var status = current && current.status;
+        if (status === 'ACTIVE') {
+          if (discountStatus) {
+            discountStatus.textContent = 'Active';
+            discountStatus.className = 'pill green';
+          }
+          toast('Plan is already active');
+          return;
+        }
+        if (!status || status === 'DRAFT') {
+          await patch('/promotion-plans/' + encodeURIComponent(pid) + '/status', { status: 'VALIDATED' });
+          promoState.validated[pid] = true;
+          status = 'VALIDATED';
+        }
+        if (status === 'VALIDATED') {
+          await patch('/promotion-plans/' + encodeURIComponent(pid) + '/status', { status: 'SCHEDULED' });
+          status = 'SCHEDULED';
+        }
+        await patch('/promotion-plans/' + encodeURIComponent(pid) + '/status', { status: 'ACTIVE' });
+        if (discountStatus) {
+          discountStatus.textContent = 'Active';
+          discountStatus.className = 'pill green';
+        }
+        toast('Plan is now active');
+        bindPromotionsOverview().catch(function () {});
+      } catch (e) {
+        showBanner('Publish: ' + describeError(e));
+        openValidation();
+      } finally {
+        b.disabled = false;
+      }
+    });
+  });
 
   // --- 8. Choice grid tabbable (generic .choice-grid handler) ---
   document.querySelectorAll('.choice-grid').forEach(function (group) {
@@ -2968,14 +3319,18 @@ function bootPromotions() {
   // --- 9. History commitment column fix ---
   if (promoLibraryBody) {
     var firstCommitment = promoLibraryBody.querySelector('tr td:nth-child(4)');
-    if (firstCommitment) firstCommitment.textContent = '3 / 6 / 12 months';
+    if (firstCommitment) firstCommitment.textContent = '1 / 3 / 6 / 12 months';
   }
 
   // --- 10. Phase 5: builder save bars + round-trip loads (idempotent) ---
+  // Library Open populates the exact plan into its builder (GET only —
+  // sets the working draft id so Save/Publish stay in place, never a copy).
+  installPromoOpenHandler();
   ensurePromoSaveBars();
   loadFreeMonthsPlan().catch(function () {});
   loadCodePlan().catch(function () {});
   bindPromoPerformance().catch(function () {});
+  bindPromoDashboardCharts().catch(function () {});
 }
 
 async function bindBilling() {
@@ -3188,7 +3543,7 @@ function wireEvents() {
       });
       const panel = this.dataset.tab;
       activateSide('promotions', panel);
-      if (panel === 'promo-overview') bindPromotionsOverview();
+      if (panel === 'promo-overview') { bindPromotionsOverview(); bindPromoDashboardCharts().catch(function () {}); }
       else if (panel === 'promo-safeguards') bindSafeguards().catch(function () {});
       else if (panel === 'promo-history') bindPromoHistory().catch(function () {});
       else if (panel === 'promo-performance') bindPromoPerformance().catch(function () {});

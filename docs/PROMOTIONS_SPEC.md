@@ -67,7 +67,7 @@ The 4 benefit type choices (`PERCENTAGE`, `DOLLAR`, `FREE_MONTHS`, `CREDITS`) de
 
 ### 2.7 Discount Matrix Values
 
-The matrix grid has **6 size categories** (XS, S, M, L, XL, XXL) × **2 access types** (Ground floor/premium × Standard) × **3 commitment bands** (3/6/12 months) = **36 cells**. Each cell stores a discount percentage. The matrix is versioned with the parent plan.
+The matrix grid has **6 size categories** (LOCKER, SMALL, MEDIUM, LARGE, XL, XXL) × **2 access types** (Ground floor/premium × Standard) × **3 commitment bands** (3/6/12 months) = **36 cells**. Each cell stores a discount percentage. The matrix is versioned with the parent plan.
 
 ### 2.8 Month Strip & Free Months Plan
 
@@ -131,7 +131,7 @@ Rules feed into `PromotionRule` records.
 |-------|------|-------|
 | id | String (cuid) | PK |
 | planId | String | FK → PromotionPlan |
-| sizeCategory | String | XS / S / M / L / XL / XXL |
+| sizeCategory | String | LOCKER / SMALL / MEDIUM / LARGE / XL / XXL (canonical; legacy XS reads as LOCKER) |
 | accessType | String | "Ground floor" or "Standard" |
 | commitmentMonths | Int | 3 / 6 / 12 |
 | discountPct | Decimal | 0–100 |

@@ -85,7 +85,8 @@ export function rectsOverlap(
 }
 
 // Plan payload used by every read; placements exclude soft-deleted units;
-// blocks are plain name+rect rows in authored order (stable for the editor).
+// blocks are plain name+rect rows in authored order (stable for the editor);
+// boundaries are line-item polylines in sort order (stable for the editor).
 const planInclude = {
   floor: { include: { branch: true } },
   placements: {
@@ -95,6 +96,9 @@ const planInclude = {
   },
   blocks: {
     orderBy: { createdAt: 'asc' },
+  },
+  boundaries: {
+    orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
   },
 } satisfies Prisma.FloorPlanInclude;
 
@@ -141,6 +145,43 @@ function serializePlacement(p: { id: string; x: number; y: number; width: number
 
 type BlockRow = { id: string; name: string; x: number; y: number; width: number; height: number; color: string | null; doorEdges: string | null };
 
+type BoundaryRow = {
+  id: string;
+  label: string;
+  kind: string;
+  points: unknown; // JSONB [[x,y],...] polyline vertices in grid-ft units
+  closed: boolean;
+  sortOrder: number;
+};
+
+// Boundary points as validated [x, y] integer pairs (grid-ft units). Rows that
+// fail validation normalise to [] so a malformed row can never break a read.
+export function boundaryPointsOf(points: unknown): Array<[number, number]> {
+  if (!Array.isArray(points)) return [];
+  const out: Array<[number, number]> = [];
+  for (const p of points) {
+    if (!Array.isArray(p) || p.length < 2) continue;
+    const x = Number(p[0]);
+    const y = Number(p[1]);
+    if (!Number.isInteger(x) || !Number.isInteger(y)) continue;
+    out.push([x, y]);
+  }
+  return out;
+}
+
+function serializeBoundary(b: BoundaryRow) {
+  return {
+    id: b.id,
+    label: b.label,
+    kind: b.kind,
+    // Polyline vertices [[x,y],...] in grid-ft units (1 grid unit = 1 ft).
+    points: boundaryPointsOf(b.points),
+    // True once the loop is closed — only closed loops feed boundaryMetrics.
+    closed: b.closed,
+    sortOrder: b.sortOrder,
+  };
+}
+
 function serializeBlock(b: BlockRow) {
   return {
     id: b.id,
@@ -156,6 +197,166 @@ function serializeBlock(b: BlockRow) {
   };
 }
 
+// ---------- boundary metrics (NLA / GLA / UFA from closed boundary loops) ----------
+//
+// DEFINITIONS (documented once, applied consistently on server and editor):
+//   - GLA (gross lettable area): gross area inside CLOSED boundary loops
+//     (shoelace over grid-ft vertices; 1 grid unit = 1 ft so area = sqft).
+//   - UFA (usable floor area): GLA minus non-lettable obstructed areas — every
+//     FloorPlanBlock rect plus the solid legacy-structure rects (corridor
+//     bounding boxes, entrance/lift/stairs/fireExit rects). Thin wall LINES are
+//     excluded, matching the overlap policy (unit-vs-unit only) and the
+//     auto-place obstacle set (fpAutoPlaceAll `taken` minus placements).
+//   - NLA (net lettable area): sum of placed-unit footprints clipped to the
+//     closed boundary loops (each placement row contributes its own
+//     rect∩boundary area, so both tiers of a stacked locker pair count).
+// Multiple closed loops are summed (non-overlapping loops assumed; overlapping
+// loops may double-count). All measures clamp ≥ 0, NLA clamps ≤ UFA, rounded
+// to 1 decimal. With no closed loop the report is all-zero with
+// boundaryClosed: false — never fabricated.
+
+export interface BoundaryMetrics {
+  gla: number;
+  ufa: number;
+  nla: number;
+  unit: 'sqft';
+  boundaryClosed: boolean;
+}
+
+export type FootRect = { x: number; y: number; width: number; height: number };
+
+/** Shoelace area of a polygon in grid-ft units (= sqft). <3 vertices → 0. */
+export function polygonArea(points: ReadonlyArray<readonly [number, number]>): number {
+  if (points.length < 3) return 0;
+  let sum = 0;
+  for (let i = 0; i < points.length; i++) {
+    const [x1, y1] = points[i];
+    const [x2, y2] = points[(i + 1) % points.length];
+    sum += x1 * y2 - x2 * y1;
+  }
+  return Math.abs(sum) / 2;
+}
+
+/**
+ * Exact intersection area of an integer foot rect with a polygon: clips the
+ * polygon to the rect (Sutherland–Hodgman, 4 half-planes) then shoelaces.
+ * Handles rects partially outside the loop or canvas — only the overlap counts.
+ */
+export function rectPolygonArea(rect: FootRect, polygon: ReadonlyArray<readonly [number, number]>): number {
+  let pts: Array<[number, number]> = polygon.map(([x, y]) => [x, y] as [number, number]);
+  if (pts.length < 3) return 0;
+  const x0 = rect.x;
+  const y0 = rect.y;
+  const x1 = rect.x + rect.width;
+  const y1 = rect.y + rect.height;
+  const clip = (
+    input: Array<[number, number]>,
+    inside: (p: [number, number]) => boolean,
+    cross: (a: [number, number], b: [number, number]) => [number, number],
+  ): Array<[number, number]> => {
+    const out: Array<[number, number]> = [];
+    if (!input.length) return out;
+    let s = input[input.length - 1];
+    for (const e of input) {
+      const eIn = inside(e);
+      const sIn = inside(s);
+      if (eIn) {
+        if (!sIn) out.push(cross(s, e));
+        out.push(e);
+      } else if (sIn) {
+        out.push(cross(s, e));
+      }
+      s = e;
+    }
+    return out;
+  };
+  pts = clip(pts, (p) => p[0] >= x0, (a, b) => [x0, a[1] + ((b[1] - a[1]) * (x0 - a[0])) / (b[0] - a[0] || 1e-9)]);
+  pts = clip(pts, (p) => p[0] <= x1, (a, b) => [x1, a[1] + ((b[1] - a[1]) * (x1 - a[0])) / (b[0] - a[0] || 1e-9)]);
+  pts = clip(pts, (p) => p[1] >= y0, (a, b) => [a[0] + ((b[0] - a[0]) * (y0 - a[1])) / (b[1] - a[1] || 1e-9), y0]);
+  pts = clip(pts, (p) => p[1] <= y1, (a, b) => [a[0] + ((b[0] - a[0]) * (y1 - a[1])) / (b[1] - a[1] || 1e-9), y1]);
+  return polygonArea(pts);
+}
+
+/**
+ * Solid legacy-structure footprints (mirrors fpStructureRects() in
+ * src/cms/admin/floorplanView.js — keep the two in sync): corridor bounding
+ * boxes expanded by half-width plus entrance/lift/stairs/fireExit rects. Thin
+ * wall lines stay non-blocking, matching the overlap policy.
+ */
+export function solidStructureRects(structure: unknown): FootRect[] {
+  const s = structure as Record<string, unknown> | null;
+  if (!s || typeof s !== 'object' || Array.isArray(s)) return [];
+  const rects: FootRect[] = [];
+  const corridors = Array.isArray(s.corridors) ? (s.corridors as unknown[]) : [];
+  for (const c of corridors) {
+    const cc = c as { pts?: unknown; w?: unknown };
+    const pts = Array.isArray(cc?.pts) ? (cc.pts as Array<{ x?: unknown; y?: unknown }>) : [];
+    if (pts.length < 2) continue;
+    const half = (typeof cc.w === 'number' ? cc.w : 3) / 2;
+    const xs = pts.map((p) => Number(p?.x)).filter((n) => Number.isFinite(n));
+    const ys = pts.map((p) => Number(p?.y)).filter((n) => Number.isFinite(n));
+    if (!xs.length || !ys.length) continue;
+    const x0 = Math.floor(Math.min(...xs) - half);
+    const y0 = Math.floor(Math.min(...ys) - half);
+    const x1 = Math.ceil(Math.max(...xs) + half);
+    const y1 = Math.ceil(Math.max(...ys) + half);
+    rects.push({ x: x0, y: y0, width: Math.max(1, x1 - x0), height: Math.max(1, y1 - y0) });
+  }
+  for (const key of ['entrance', 'lift', 'stairs', 'fireExit']) {
+    const d = s[key] as { x?: unknown; y?: unknown; w?: unknown; h?: unknown } | null;
+    if (!d || typeof d !== 'object') continue;
+    rects.push({
+      x: Math.floor(Number(d.x) || 0),
+      y: Math.floor(Number(d.y) || 0),
+      width: Math.max(1, Math.ceil(Number(d.w) || 2)),
+      height: Math.max(1, Math.ceil(Number(d.h) || 2)),
+    });
+  }
+  return rects;
+}
+
+const round1 = (v: number): number => Math.round(v * 10) / 10;
+
+/**
+ * Boundary metrics for one plan. Inputs are plain rects/polylines so the
+ * editor can reuse this definition client-side (see fpBoundaryMetricsLocal in
+ * floorplanView.js — keep the two in sync).
+ */
+export function computeBoundaryMetrics(input: {
+  boundaries: Array<{ points: unknown; closed: boolean }>;
+  blocks: FootRect[];
+  structure: unknown;
+  placements: FootRect[];
+}): BoundaryMetrics {
+  const loops = input.boundaries
+    .filter((b) => b.closed)
+    .map((b) => boundaryPointsOf(b.points))
+    .filter((pts) => pts.length >= 3 && polygonArea(pts) > 0);
+  if (!loops.length) {
+    return { gla: 0, ufa: 0, nla: 0, unit: 'sqft', boundaryClosed: false };
+  }
+  const obstacles: FootRect[] = [...input.blocks, ...solidStructureRects(input.structure)];
+  let gla = 0;
+  let ufa = 0;
+  let nla = 0;
+  for (const loop of loops) {
+    const gross = polygonArea(loop);
+    gla += gross;
+    const blocked = obstacles.reduce((sum, r) => sum + rectPolygonArea(r, loop), 0);
+    ufa += Math.max(0, gross - blocked);
+    nla += input.placements.reduce((sum, r) => sum + rectPolygonArea(r, loop), 0);
+  }
+  const ufaClamped = Math.max(0, ufa);
+  return {
+    gla: round1(Math.max(0, gla)),
+    ufa: round1(ufaClamped),
+    // NLA is lettable footprint inside the loops — it can never exceed UFA.
+    nla: round1(Math.min(Math.max(0, nla), ufaClamped)),
+    unit: 'sqft',
+    boundaryClosed: true,
+  };
+}
+
 // Public-safe: branch/floor/unit summaries only — no tenant, no PII, no rates.
 function serializePlan(p: PlanPayload) {
   return {
@@ -168,6 +369,17 @@ function serializePlan(p: PlanPayload) {
     floor: { id: p.floor.id, level: p.floor.level, name: p.floor.name },
     placements: p.placements.map(serializePlacement),
     blocks: p.blocks.map(serializeBlock),
+    // Facility-boundary line items (grid-ft polylines) in editor sort order.
+    boundaries: p.boundaries.map(serializeBoundary),
+    // NLA / GLA / UFA derived from CLOSED boundary loops (see
+    // computeBoundaryMetrics for definitions). All-zero with
+    // boundaryClosed: false when no loop is closed — never fabricated.
+    boundaryMetrics: computeBoundaryMetrics({
+      boundaries: p.boundaries,
+      blocks: p.blocks,
+      structure: p.structure,
+      placements: p.placements,
+    }),
   };
 }
 
@@ -728,6 +940,153 @@ export async function removeFloorPlanBlock(floorId: string, blockId: string) {
   }
   await prisma.floorPlanBlock.delete({ where: { id: blockId } });
   return { floorId, blockId, removed: true };
+}
+
+// ---------- facility-boundary line items ----------
+
+function checkBoundaryLabel(label: string): string {
+  const trimmed = label.trim();
+  if (!trimmed || trimmed.length > 80) {
+    throw new AppError(400, 'VALIDATION', 'Boundary label must be a non-empty string of at most 80 characters');
+  }
+  return trimmed;
+}
+
+function checkBoundaryKind(kind: string | null | undefined): string {
+  if (kind == null) return 'BOUNDARY';
+  const trimmed = kind.trim();
+  if (!trimmed || trimmed.length > 24) {
+    throw new AppError(400, 'VALIDATION', 'Boundary kind must be a non-empty string of at most 24 characters');
+  }
+  return trimmed;
+}
+
+function checkBoundarySortOrder(sortOrder: number | null | undefined): number | undefined {
+  if (sortOrder == null) return undefined;
+  if (!Number.isInteger(sortOrder) || sortOrder < 0 || sortOrder > 100000) {
+    throw new AppError(400, 'VALIDATION', 'Boundary sortOrder must be an integer between 0 and 100000');
+  }
+  return sortOrder;
+}
+
+// Strict polyline validation: an array of [x, y] integer-foot pairs (2+
+// vertices; 3+ distinct vertices when closed). Vertices must sit on the canvas
+// (edges included) — enlarge the canvas first, same contract as blocks.
+function checkBoundaryPoints(points: unknown, closed: boolean, plan: { width: number; height: number }): Array<[number, number]> {
+  if (!Array.isArray(points)) {
+    throw new AppError(400, 'VALIDATION', 'Boundary points must be an array of [x, y] integer pairs');
+  }
+  if (points.length < 2) {
+    throw new AppError(400, 'VALIDATION', 'Boundary points must list at least 2 vertices');
+  }
+  if (points.length > 500) {
+    throw new AppError(400, 'VALIDATION', 'Boundary points must list at most 500 vertices');
+  }
+  const out: Array<[number, number]> = [];
+  for (const p of points) {
+    if (!Array.isArray(p) || p.length !== 2 || !Number.isInteger(p[0]) || !Number.isInteger(p[1])) {
+      throw new AppError(400, 'VALIDATION', 'Boundary points must be an array of [x, y] integer pairs');
+    }
+    const [x, y] = p as [number, number];
+    if (x < 0 || y < 0 || x > plan.width || y > plan.height) {
+      throw new AppError(
+        400,
+        'VALIDATION',
+        `Boundary vertex ${x},${y} sits outside the ${plan.width}×${plan.height} ft canvas for this plan — enlarge the canvas first`,
+      );
+    }
+    out.push([x, y]);
+  }
+  if (closed) {
+    const distinct = new Set(out.map(([x, y]) => `${x},${y}`));
+    if (distinct.size < 3) {
+      throw new AppError(400, 'VALIDATION', 'A closed boundary needs at least 3 distinct vertices — keep drawing or save it open');
+    }
+  }
+  return out;
+}
+
+export interface BoundaryInput {
+  label?: string;
+  kind?: string | null;
+  points?: unknown;
+  closed?: boolean;
+  sortOrder?: number | null;
+}
+
+/** List a floor's boundary line items (editor sort order). Empty when no plan exists yet. */
+export async function listFloorPlanBoundaries(floorId: string) {
+  const plan = await prisma.floorPlan.findUnique({
+    where: { floorId },
+    include: { boundaries: { orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }] } },
+  });
+  if (!plan) return [];
+  return plan.boundaries.map(serializeBoundary);
+}
+
+/**
+ * Create a boundary line item on a floor's plan. The plan is lazily created at
+ * the default canvas when the floor has none yet (same as blocks). `closed`
+ * defaults to false — an open polyline persists honestly and reports no
+ * metrics until the loop is closed.
+ */
+export async function createFloorPlanBoundary(floorId: string, input: BoundaryInput) {
+  const plan = await ensureCanvasPlan(floorId);
+  const label = input.label === undefined ? 'Boundary' : checkBoundaryLabel(input.label);
+  const kind = checkBoundaryKind(input.kind);
+  const closed = input.closed ?? false;
+  if (input.points === undefined) {
+    throw new AppError(400, 'VALIDATION', 'Boundary points must be an array of [x, y] integer pairs');
+  }
+  const points = checkBoundaryPoints(input.points, closed, plan);
+  const sortOrder = checkBoundarySortOrder(input.sortOrder) ?? 0;
+  const boundary = await prisma.floorPlanBoundary.create({
+    data: { floorPlanId: plan.id, label, kind, points, closed, sortOrder },
+  });
+  return serializeBoundary(boundary);
+}
+
+/**
+ * Update a boundary line item scoped to the floor's plan (vertex drag / close
+ * loop / rename persistence). Omitted fields keep their values; `points`
+ * replaces the whole polyline. A boundary id on a DIFFERENT plan 404s.
+ */
+export async function updateFloorPlanBoundary(floorId: string, boundaryId: string, input: BoundaryInput) {
+  const plan = await prisma.floorPlan.findUnique({ where: { floorId } });
+  if (!plan) throw new AppError(404, 'NOT_FOUND', `No floor plan exists for floor ${floorId}`);
+  const existing = await prisma.floorPlanBoundary.findUnique({ where: { id: boundaryId } });
+  if (!existing || existing.floorPlanId !== plan.id) {
+    throw new AppError(404, 'NOT_FOUND', `Boundary ${boundaryId} does not belong to floor ${floorId}'s plan`);
+  }
+  const closed = input.closed ?? existing.closed;
+  const data: Prisma.FloorPlanBoundaryUpdateInput = {};
+  if (input.label !== undefined) data.label = checkBoundaryLabel(input.label);
+  if (input.kind !== undefined) data.kind = checkBoundaryKind(input.kind);
+  if (input.sortOrder !== undefined) {
+    const sortOrder = checkBoundarySortOrder(input.sortOrder);
+    if (sortOrder !== undefined) data.sortOrder = sortOrder;
+  }
+  if (input.points !== undefined) {
+    data.points = checkBoundaryPoints(input.points, closed, plan);
+  } else if (input.closed === true) {
+    // Closing without new vertices still needs 3+ distinct points.
+    checkBoundaryPoints(boundaryPointsOf(existing.points), true, plan);
+  }
+  data.closed = closed;
+  const boundary = await prisma.floorPlanBoundary.update({ where: { id: boundaryId }, data });
+  return serializeBoundary(boundary);
+}
+
+/** Remove a boundary line item (scoped to the plan; cross-plan ids 404). */
+export async function removeFloorPlanBoundary(floorId: string, boundaryId: string) {
+  const plan = await prisma.floorPlan.findUnique({ where: { floorId } });
+  if (!plan) throw new AppError(404, 'NOT_FOUND', `No floor plan exists for floor ${floorId}`);
+  const boundary = await prisma.floorPlanBoundary.findUnique({ where: { id: boundaryId } });
+  if (!boundary || boundary.floorPlanId !== plan.id) {
+    throw new AppError(404, 'NOT_FOUND', `Boundary ${boundaryId} does not belong to floor ${floorId}'s plan`);
+  }
+  await prisma.floorPlanBoundary.delete({ where: { id: boundaryId } });
+  return { floorId, boundaryId, removed: true };
 }
 
 /** Delete the plan for a floor (cascades its placements; Unit rows untouched). */

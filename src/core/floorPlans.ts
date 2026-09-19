@@ -27,7 +27,7 @@ import { Prisma } from '@prisma/client';
 // Soft-delete rule: every plan read joins placements → unit and filters out
 // placements whose unit has deletedAt != null. Never touch Unit rows.
 
-export const CANVAS_DEFAULTS = { width: 20, height: 20 } as const;
+export const CANVAS_DEFAULTS = { width: 70, height: 80 } as const;
 const MAX_CANVAS = 500; // feet per axis, sanity cap
 
 // P3: a placement's drawn area (w×h, square feet) must be within ±15% of the
@@ -742,6 +742,31 @@ export async function setUnitPlacement(floorId: string, unitId: string, geom: Pl
   // stack mate (same rect, differing tier — allowed by the rules above).
   // Blocks are decoration and may underlay, so only unit-vs-unit is checked.
   const exemptIds = new Set(sameRect.filter((s) => s.stackTier !== tier).map((s) => s.id));
+  // Pair-move exemption: a ground tier that currently shares its exact rect
+  // with an upper-tier mate is being moved as one block — the editor's paired
+  // drag/resize/rotate writes the ground tier first, then the upper onto the
+  // same new rect. While the first write lands, the mate still sits on the OLD
+  // rect, so an in-place rotation (or a small nudge) legitimately overlaps the
+  // mate's stale rect — exempt that ONE mate placement (by id). Genuine
+  // collisions with any other unit still 409, and the upper's follow-up write
+  // is re-validated (tier-1 rules require the ground on the new rect).
+  if (
+    tier === 0 &&
+    existing &&
+    existing.floorPlanId === plan.id &&
+    existing.stackTier === 0 &&
+    (existing.x !== geom.x || existing.y !== geom.y || existing.width !== geom.width || existing.height !== geom.height)
+  ) {
+    const mate = siblings.find(
+      (s) =>
+        s.stackTier === 1 &&
+        s.x === existing.x &&
+        s.y === existing.y &&
+        s.width === existing.width &&
+        s.height === existing.height,
+    );
+    if (mate) exemptIds.add(mate.id);
+  }
   const hit = siblings.find((s) => !exemptIds.has(s.id) && rectsOverlap(geom, s));
   if (hit) {
     throw new AppError(

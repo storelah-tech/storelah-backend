@@ -74,7 +74,7 @@ export const state = {
     scale: 1, // zoom scale factor (feet → px)
     selected: null, // selected placement unitId
     selectedBlock: null, // selected block id
-    canvasDefaults: { width: 20, height: 20 },
+    canvasDefaults: { width: 70, height: 80 },
     liveDims: null, // live-typed canvas size from the W/H inputs (local, unsaved); null = use plan/server size
     lockSqft: true, // resize snaps to the nearest rect preserving area≈sqft (ops can toggle off; server still enforces ±15%)
     ghostRotated: false, // palette drag ghost orientation toggle (swaps W/H for rectangular footprints)

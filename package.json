@@ -18,6 +18,7 @@
     "db:seed-promotions": "tsx scripts/seed-promotions.ts",
     "db:seed-facility-ops": "tsx scripts/seed-facility-ops.ts",
     "db:seed-settings": "tsx scripts/seed-settings.ts",
+    "db:seed-units": "tsx scripts/seed-production-units.ts",
     "db:rotate-admin-password": "tsx scripts/rotate-admin-password.ts",
     "db:backfill-blocks": "tsx scripts/backfill-floor-plan-blocks.ts",
     "db:backfill-footprints": "tsx scripts/backfill-placement-footprints.ts",

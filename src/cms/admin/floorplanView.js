@@ -381,6 +381,16 @@ function fpZoomLabel() {
   if (el) el.textContent = Math.round(state.fp.scale * 100) + '%';
 }
 
+// Shared zoom step: the ± buttons and canvas wheel-zoom converge here so the
+// clamp (0.4–3x), the ×1.25 step factor, and the label + re-render path stay
+// identical. `dir` is +1 (zoom in) or -1 (zoom out). Only mutates
+// state.fp.scale — the state shape itself is untouched.
+function fpZoomStep(dir) {
+  if (dir > 0) state.fp.scale = Math.min(3, state.fp.scale * 1.25);
+  else state.fp.scale = Math.max(0.4, state.fp.scale / 1.25);
+  fpRenderCanvas(); // re-renders the canvas and refreshes the zoom label
+}
+
 function fpPopulateFloorSelect() {
   const b = branchByCode(state.fp.branchCode);
   const floors = state.floors.filter((f) => f.branchId === b?.id).sort((a, c) => a.level - c.level);
@@ -420,7 +430,7 @@ async function fpFetch() {
   try {
     const body = await get(`/floor-plans/${encodeURIComponent(state.fp.floorId)}`);
     state.fp.plan = body.plan;
-    state.fp.canvasDefaults = body.canvasDefaults || { width: 20, height: 20 };
+    state.fp.canvasDefaults = body.canvasDefaults || { width: 70, height: 80 };
     state.fp.structure = body.plan ? body.plan.structure : null;
     state.fp.placements = fpNormalizePlacements(body.plan);
     state.fp.blocks = fpNormalizeBlocks(body.plan);
@@ -439,6 +449,7 @@ async function fpFetch() {
     const d = fpCanvasDims();
     fpClampCanvasContent(d.w, d.h);
     fpRender();
+    fpSetPaletteCollapsed(false);
     notifyMetricsFloorChanged();
   } catch (err) {
     fpToast('Load floor plan: ' + describeError(err), false);
@@ -480,6 +491,23 @@ function fpRenderPalette() {
         })
         .join('')
     : '<div class="fp-hint">No unplaced units on this floor.</div>';
+}
+
+function fpSetPaletteCollapsed(collapsed) {
+  const layout = document.querySelector('#facility-floorplans .fp-layout');
+  const toggle = $('#fpPaletteToggle');
+  const reopen = $('#fpPaletteReopen');
+  if (layout) layout.classList.toggle('collapsed', collapsed);
+  if (toggle) {
+    toggle.setAttribute('aria-expanded', String(!collapsed));
+    toggle.textContent = collapsed ? '›' : '‹';
+    toggle.title = collapsed ? 'Show the units palette to drag more units' : 'Collapse the units palette to give the canvas more space';
+  }
+  if (reopen) reopen.hidden = !collapsed;
+}
+
+function fpPaletteCollapsed() {
+  return document.querySelector('#facility-floorplans .fp-layout')?.classList.contains('collapsed') === true;
 }
 
 function fpRenderStructure(canvas, u, structure) {
@@ -1148,6 +1176,7 @@ async function fpPlaceUnit(unit, footprint, gx, gy) {
       });
       fpToast(`Stacked ${unit.unitCode} (upper) over ${exact.unitCode} (lower)`, true);
       fpRender();
+      fpSetPaletteCollapsed(true);
       notifyMetricsFloorChanged();
     } catch (err) {
       fpToast(`Stack ${unit.unitCode}: ${describeError(err)}`, false);
@@ -1182,6 +1211,7 @@ async function fpPlaceUnit(unit, footprint, gx, gy) {
     });
     fpToast(`Placed ${unit.unitCode} → ${x},${y} · ${footprint.w}×${footprint.h} ft`, true);
     fpRender();
+    fpSetPaletteCollapsed(true);
     notifyMetricsFloorChanged();
   } catch (err) {
     fpToast(`Place ${unit.unitCode}: ${describeError(err)}`, false);
@@ -1427,6 +1457,7 @@ async function fpRotatePlacement() {
 function fpToggleBlockForm(show) {
   const form = $('#fpBlockForm');
   if (!form) return;
+  if (show) fpSetPaletteCollapsed(false);
   form.hidden = !show;
   if (show) {
     const input = $('#fpBlockName');
@@ -1592,6 +1623,7 @@ async function fpAutoPlaceAll() {
     if (btn) btn.disabled = false;
   }
   fpRender();
+  if (placed.length) fpSetPaletteCollapsed(true);
   notifyMetricsFloorChanged();
   if (!placed.length) {
     fpToast(
@@ -1876,7 +1908,7 @@ const fpView = {
   placements: [], // normalized placed units
   blocks: [], // normalized decoration blocks
   boundaries: [], // normalized boundary line items (incl. pencil-drawn lines)
-  dims: { w: 20, h: 20 }, // plan grid size (plan dims, else canvas defaults)
+  dims: { w: 70, h: 80 }, // plan grid size (plan dims, else canvas defaults)
   floorId: null, // floor whose level === state.level (for the current branch)
 };
 
@@ -1922,7 +1954,7 @@ async function fpViewFetch(floorId) {
   fpView.placements = fpNormalizePlacements(body.plan);
   fpView.blocks = fpNormalizeBlocks(body.plan);
   fpView.boundaries = fpNormalizeBoundaries(body.plan);
-  const defs = body.canvasDefaults || { width: 20, height: 20 };
+  const defs = body.canvasDefaults || { width: 70, height: 80 };
   fpView.dims = {
     w: body.plan && body.plan.width > 0 ? body.plan.width : defs.width,
     h: body.plan && body.plan.height > 0 ? body.plan.height : defs.height,
@@ -2027,6 +2059,59 @@ export function getFpViewFloorId() {
   return fpView.floorId || null;
 }
 
+// Canvas wheel zoom: ONLY Ctrl/Cmd+scroll zooms (trackpad pinch reports as
+// ctrl+wheel in browsers, so pinch-to-zoom works through the same branch).
+// Plain wheel is deliberately NOT hijacked — #fpCanvasWrap is a scrollable
+// (overflow:auto) panning surface, so plain scroll keeps panning natively and
+// the page scrolls normally elsewhere. Registered on the wrap (never on
+// document/window) with { passive: false } so preventDefault() stops the
+// browser's page/pinch zoom only while modifier-scrolling over the canvas.
+// Pinch/drag pointer flows are untouched (touch-action:none lives on the
+// drag handles, not the wrap).
+function fpOnCanvasWheel(e) {
+  if (!e.ctrlKey && !e.metaKey) return; // plain scroll → native pan
+  if (!e.deltaY) return;
+  e.preventDefault();
+  fpZoomStep(e.deltaY < 0 ? 1 : -1);
+}
+
+// Editor Delete/Backspace shortcut: removes the current selection through the
+// existing select → confirmDialog → DELETE → refresh flows. Registered ONCE in
+// fpInitEvents() (never per-render); the transient drag Escape handlers
+// (fpDrawStart) live on document too but only react to Escape, so there is no
+// conflict. Guards: typing (inputs/selects/contenteditable — covers the
+// block-name, canvas-dims and structure-JSON fields), the read-only
+// #fpViewModal preview (editor-only shortcut), and an open #confirmModal (a
+// re-press must not supersede the pending confirm). Priority mirrors
+// fpRenderSelInfo: boundary line, then decoration block, then unit placement.
+// fpDeletePlan (whole-plan delete) is NEVER bound here.
+function fpOnDeleteKey(e) {
+  if (e.key !== 'Delete' && e.key !== 'Backspace') return;
+  if (e.defaultPrevented) return;
+  const t = e.target;
+  // Typing guard — never hijack text entry.
+  if (t && typeof t.closest === 'function') {
+    if (t.closest('input, textarea, select, [contenteditable]')) return;
+  } else if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName || ''))) {
+    return;
+  }
+  const viewModal = $('#fpViewModal');
+  if (viewModal && !viewModal.hidden) return;
+  const confirmModal = $('#confirmModal');
+  if (confirmModal && !confirmModal.hidden) return;
+  if (state.fp.selectedBoundary) {
+    e.preventDefault();
+    fpRemoveBoundary();
+  } else if (state.fp.selectedBlock) {
+    e.preventDefault();
+    fpRemoveBlock();
+  } else if (state.fp.selected) {
+    e.preventDefault();
+    fpRemovePlacement();
+  }
+  // else: nothing selected → no-op
+}
+
 export function fpInitEvents() {
   $('#fpBranch').addEventListener('change', (e) => {
     state.fp.branchCode = e.target.value;
@@ -2112,19 +2197,22 @@ export function fpInitEvents() {
   $('#fpHeight').addEventListener('change', fpOnDimCommit);
   $('#fpWidth').addEventListener('keydown', fpOnDimEnter);
   $('#fpHeight').addEventListener('keydown', fpOnDimEnter);
-  $('#fpZoomIn').addEventListener('click', () => {
-    state.fp.scale = Math.min(3, state.fp.scale * 1.25);
-    fpRenderCanvas();
-  });
-  $('#fpZoomOut').addEventListener('click', () => {
-    state.fp.scale = Math.max(0.4, state.fp.scale / 1.25);
-    fpRenderCanvas();
-  });
+  $('#fpZoomIn').addEventListener('click', () => fpZoomStep(1));
+  $('#fpZoomOut').addEventListener('click', () => fpZoomStep(-1));
+  // Modifier-gated canvas zoom (see fpOnCanvasWheel) + editor Delete shortcut
+  // (see fpOnDeleteKey) — both attached once here, never per-render.
+  $('#fpCanvasWrap').addEventListener('wheel', fpOnCanvasWheel, { passive: false });
+  document.addEventListener('keydown', fpOnDeleteKey);
   $('#fpPalette').addEventListener('pointerdown', (e) => {
     const chip = e.target.closest('.fp-unit-chip');
     if (!chip) return;
     fpStartPaletteDrag(e, chip);
   });
+  $('#fpPaletteToggle')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    fpSetPaletteCollapsed(!fpPaletteCollapsed());
+  });
+  $('#fpPaletteReopen')?.addEventListener('click', () => fpSetPaletteCollapsed(false));
   $('#fpAddBlock').addEventListener('click', () => fpToggleBlockForm(true));
   const fpAutoBtn = $('#fpAutoPlace');
   if (fpAutoBtn) fpAutoBtn.addEventListener('click', fpAutoPlaceAll);

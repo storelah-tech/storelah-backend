@@ -1,0 +1,256 @@
+# =============================================================================
+# storelah-backend API — Lambda (Node 20) + API Gateway HTTP API + custom domains
+#
+# Stack: storelah-backend
+# Region: ap-southeast-1 (Lambda + HTTP API + ACM cert ALL in this region)
+#
+# This template codifies the LIVE backend deploy (first deployed 2026-08-13,
+# cms-gate + rebuild 2026-08-19) so it is IaC like the landing stack instead of
+# CLI-only. It does NOT replace the CLI zip procedure — Lambda code still ships
+# via the pnpm bundle in docs/backend-deploy.md Phase A (this stack owns the
+# wiring: function config, HTTP API, stage, custom domains, permissions).
+#
+# Architecture:
+#   booking (Amplify, server-side proxy)
+#     └─> https://api.storelah.sg ──> HTTP API custom domain (regional, this stack)
+#            └─> $default stage ──> $default route ──> Lambda proxy (payload 2.0)
+#                   └─> Express 5 via serverless-http, handler dist/src/index.handler
+#   https://cms.storelah.sg ──> SAME HTTP API, second custom domain + api-mapping
+#     (host-kind routing in src/lib/host.ts classifies by Host header; the cms
+#     edge gate lives in infra/cms-gate-stack.yaml, NOT here)
+#   Prisma ──> Neon Postgres (pooled URL at runtime; direct URL for migrations —
+#     both are USER-held connection strings, passed as params, never committed)
+#
+# CERTIFICATE — ap-southeast-1 (INVERTED vs CloudFront's us-east-1):
+#   API Gateway requires the ACM cert in the SAME region as the API
+#   (ap-southeast-1). Do NOT reuse the landing/cms CloudFront certs. Request it
+#   with DNS validation for BOTH api.storelah.sg AND cms.storelah.sg (one cert,
+#   two SANs), adding the validation CNAMEs to the storelah-dns stack the same
+#   way the CloudFront cert's CNAMEs already live there.
+#
+# CODE DEPLOY (two-step — config here, code via S3):
+#   CloudFormation cannot take a local zip, so the bundle ships via S3:
+#   1. Build per docs/backend-deploy.md Phase A (pnpm 10.4.1, tsc + cms copy,
+#      rhel-openssl-3.0.x engine only, slim ~20 MB zip) → /tmp/backend.zip
+#   2. aws s3 cp /tmp/backend.zip s3://<code-bucket>/storelah-backend/<sha>.zip
+#   3. Deploy/update this stack passing LambdaCodeS3Key=<sha>.zip (a key change
+#      replaces the function code on update — each deploy gets a unique key).
+#   Day-to-day code-only iterations can still use the CLI shortcut:
+#     aws lambda update-function-code --function-name storelah-backend \
+#       --zip-file fileb:///tmp/backend.zip --region ap-southeast-1
+#
+# Manual deploy (CLI):
+#   aws cloudformation deploy \
+#     --stack-name storelah-backend \
+#     --template-file infra/backend-stack.yaml \
+#     --parameter-overrides \
+#       LambdaCodeS3Bucket=<code-bucket> \
+#       LambdaCodeS3Key=storelah-backend/<sha>.zip \
+#       AcmCertificateArn=<ap-southeast-1-cert-arn> \
+#       DatabaseUrl='<POOLED-NEON-URL>' \
+#       JwtSecret='<STRONG-RANDOM>' \
+#       AdminPassword='<STRONG-RANDOM>' \
+#     --capabilities CAPABILITY_NAMED_IAM \
+#     --region ap-southeast-1
+#
+# DNS is NOT in this stack: api/cms CNAMEs live in the storelah-dns stack
+# (storelah-landing/infra/route53-stack.yaml) — see docs/backend-deploy.md B3.
+# Env values are NEVER committed: .env stays local/gitignored; Lambda env vars
+# come from the NoEcho parameters below at deploy time.
+# =============================================================================
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "StoreLah backend API: Express 5 on Lambda (Node 20) behind an API Gateway HTTP API with api.storelah.sg + cms.storelah.sg custom domains. DNS lives in the storelah-dns stack."
+
+Parameters:
+  LambdaCodeS3Bucket:
+    Type: String
+    Description: "S3 bucket holding the Lambda deployment zip (upload /tmp/backend.zip there first; see header). Example: storelah-backend-code-<acct>"
+  LambdaCodeS3Key:
+    Type: String
+    Description: "S3 key of the bundle for THIS deploy (use a unique key per build, e.g. storelah-backend/<git-sha>.zip, so stack updates replace the code)."
+  AcmCertificateArn:
+    Type: String
+    Description: "ARN of a DNS-validated ACM certificate in ap-southeast-1 (SAME region as this stack) covering BOTH api.storelah.sg and cms.storelah.sg. API Gateway cannot use us-east-1 CloudFront certs."
+  DatabaseUrl:
+    Type: String
+    NoEcho: true
+    Description: "POOLED Neon URL for the Lambda runtime (?sslmode=require&pgbouncer=true&connection_limit=1). The DIRECT URL is for one-shot `prisma migrate deploy` only — never pass it here."
+  JwtSecret:
+    Type: String
+    NoEcho: true
+    Description: "Strong random JWT secret (never the .env.example placeholder)."
+  JwtExpiresIn:
+    Type: String
+    Default: 12h
+    Description: "JWT lifetime (matches .env.example default)."
+  AdminEmail:
+    Type: String
+    Default: admin@storelah.sg
+    Description: "Seeded AdminUser email (must match the DB row; see password-rotation block in docs/backend-deploy.md)."
+  AdminPassword:
+    Type: String
+    NoEcho: true
+    Description: "STORELAH_ADMIN_PASSWORD — must match the bcrypt hash in the Neon AdminUser row (rotate via `pnpm db:rotate-admin-password`, never `db:seed`, on a live DB)."
+
+Resources:
+  # --- Execution role (what the function runs AS: logs only, no VPC) ---------
+  BackendExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: storelah-backend-execution-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        # Least-privilege logs write (Neon is reached over public internet —
+        # no VPC, so no EC2 ENI permissions needed).
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  # --- Lambda function --------------------------------------------------------
+  BackendFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: storelah-backend
+      Runtime: nodejs20.x
+      Handler: dist/src/index.handler
+      MemorySize: 256
+      Timeout: 30
+      Role: !GetAtt BackendExecutionRole.Arn
+      Code:
+        S3Bucket: !Ref LambdaCodeS3Bucket
+        S3Key: !Ref LambdaCodeS3Key
+      Environment:
+        Variables:
+          NODE_ENV: production
+          DATABASE_URL: !Ref DatabaseUrl
+          JWT_SECRET: !Ref JwtSecret
+          JWT_EXPIRES_IN: !Ref JwtExpiresIn
+          STORELAH_ADMIN_EMAIL: !Ref AdminEmail
+          STORELAH_ADMIN_PASSWORD: !Ref AdminPassword
+      # NOTE: zip layout must keep dist/src/cms beside dist/src/index.js
+      # (__dirname static serving) — enforced by `pnpm build`, see runbook A2.
+
+  # --- HTTP API (cheaper than REST; free tier 1M req/mo) ----------------------
+  BackendHttpApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: storelah-backend-api
+      ProtocolType: HTTP
+
+  BackendIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref BackendHttpApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${BackendFunction.Arn}/invocations"
+      PayloadFormatVersion: "2.0" # serverless-http handles 1.0 AND 2.0
+      TimeoutInMillis: 30000
+
+  # $default alone: Express routes internally (/health, /admin, /api/v1/*, /).
+  BackendDefaultRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref BackendHttpApi
+      RouteKey: $default
+      Target: !Sub "integrations/${BackendIntegration}"
+
+  BackendDefaultStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref BackendHttpApi
+      StageName: $default
+      AutoDeploy: true
+
+  # Invoke permission (who can CALL the function): the HTTP API.
+  BackendInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref BackendFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${BackendHttpApi}/*"
+
+  # --- Custom domains (root base-path mapping: full path reaches Express) -----
+  # Gotcha: map to the $default stage with an EMPTY base path — a base path of
+  # /api would STRIP the prefix and Express's /api/v1/* mounts would 404.
+  ApiDomainName:
+    Type: AWS::ApiGatewayV2::DomainName
+    Properties:
+      DomainName: api.storelah.sg
+      DomainNameConfigurations:
+        - EndpointType: Regional
+          CertificateArn: !Ref AcmCertificateArn
+
+  CmsDomainName:
+    Type: AWS::ApiGatewayV2::DomainName
+    Properties:
+      DomainName: cms.storelah.sg
+      DomainNameConfigurations:
+        - EndpointType: Regional
+          CertificateArn: !Ref AcmCertificateArn
+
+  ApiMapping:
+    Type: AWS::ApiGatewayV2::ApiMapping
+    Properties:
+      ApiId: !Ref BackendHttpApi
+      DomainName: !Ref ApiDomainName
+      Stage: !Ref BackendDefaultStage
+
+  CmsMapping:
+    Type: AWS::ApiGatewayV2::ApiMapping
+    Properties:
+      ApiId: !Ref BackendHttpApi
+      DomainName: !Ref CmsDomainName
+      Stage: !Ref BackendDefaultStage
+
+Outputs:
+  BackendFunctionArn:
+    Description: Lambda function ARN
+    Value: !GetAtt BackendFunction.Arn
+  HttpApiId:
+    Description: HTTP API id (invoke URL is https://<id>.execute-api.ap-southeast-1.amazonaws.com)
+    Value: !Ref BackendHttpApi
+  ApiRegionalEndpoint:
+    Description: Regional endpoint for the api.storelah.sg CNAME in the storelah-dns stack
+    Value: !GetAtt ApiDomainName.RegionalDomainName
+  CmsRegionalEndpoint:
+    Description: Regional endpoint for the cms.storelah.sg CNAME in the storelah-dns stack
+    Value: !GetAtt CmsDomainName.RegionalDomainName
+
+# =============================================================================
+# IAM policy for a GitHub/CLI deploy identity (documentation only — create
+# MANUALLY; IAM resources are deliberately NOT part of this stack because
+# access keys cannot be retrieved after creation). Mirrors the landing
+# deploy-user pattern, extended with Lambda + API Gateway + S3 code bucket:
+#
+# {
+#   "Version": "2012-10-17",
+#   "Statement": [
+#     {
+#       "Effect": "Allow",
+#       "Action": ["s3:PutObject", "s3:GetObject", "s3:ListBucket"],
+#       "Resource": [
+#         "arn:aws:s3:::<code-bucket>",
+#         "arn:aws:s3:::<code-bucket>/storelah-backend/*"
+#       ]
+#     },
+#     {
+#       "Effect": "Allow",
+#       "Action": ["lambda:UpdateFunctionCode", "lambda:GetFunction",
+#                  "lambda:UpdateFunctionConfiguration"],
+#       "Resource": "arn:aws:lambda:ap-southeast-1:<ACCOUNT_ID>:function:storelah-backend"
+#     },
+#     {
+#       "Effect": "Allow",
+#       "Action": ["cloudformation:Deploy", "cloudformation:DescribeStacks"],
+#       "Resource": "arn:aws:cloudformation:ap-southeast-1:<ACCOUNT_ID>:stack/storelah-backend/*"
+#     }
+#   ]
+# }
+# Save the access key as deploy-time-only env (never in the repo):
+#   AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_REGION=ap-southeast-1
+# =============================================================================

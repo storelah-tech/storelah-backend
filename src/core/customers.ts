@@ -444,7 +444,10 @@ export async function createCustomerBooking(customer: Customer, input: CreateBoo
 
   return prisma.$transaction(async (tx) => {
     const unit = await tx.unit.findUnique({ where: { unitCode: input.unitCode } });
-    if (!unit) throw new AppError(404, 'NOT_FOUND', `Unit ${input.unitCode} not found`);
+    // Soft-deleted units are not addressable (see docs/UNIT_DELETION.md):
+    // deletedAt is the only deletion marker, so a deleted row 404s here
+    // instead of leaking into the status check below.
+    if (!unit || unit.deletedAt) throw new AppError(404, 'NOT_FOUND', `Unit ${input.unitCode} not found`);
     if (unit.status !== 'AVAILABLE' && unit.status !== 'RESERVED') {
       throw new AppError(409, 'CONFLICT', `Unit ${input.unitCode} is ${unit.status.toLowerCase()} and cannot be booked`);
     }

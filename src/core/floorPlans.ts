@@ -176,7 +176,9 @@ function serializeBoundary(b: BoundaryRow) {
     kind: b.kind,
     // Polyline vertices [[x,y],...] in grid-ft units (1 grid unit = 1 ft).
     points: boundaryPointsOf(b.points),
-    // True once the loop is closed — only closed loops feed boundaryMetrics.
+    // True once the loop is closed. Marked-area rule: closed loops AND open
+    // >= 3-vertex polylines (chord-closed) feed boundaryMetrics; open 2-vertex
+    // segments contribute 0 until extended/closed.
     closed: b.closed,
     sortOrder: b.sortOrder,
   };
@@ -197,23 +199,42 @@ function serializeBlock(b: BlockRow) {
   };
 }
 
-// ---------- boundary metrics (NLA / GLA / UFA from closed boundary loops) ----------
+// ---------- boundary metrics (marked facility area -> UFA / NLA) ----------
 //
-// DEFINITIONS (documented once, applied consistently on server and editor):
-//   - GLA (gross lettable area): gross area inside CLOSED boundary loops
-//     (shoelace over grid-ft vertices; 1 grid unit = 1 ft so area = sqft).
-//   - UFA (usable floor area): GLA minus non-lettable obstructed areas — every
-//     FloorPlanBlock rect plus the solid legacy-structure rects (corridor
-//     bounding boxes, entrance/lift/stairs/fireExit rects). Thin wall LINES are
-//     excluded, matching the overlap policy (unit-vs-unit only) and the
-//     auto-place obstacle set (fpAutoPlaceAll `taken` minus placements).
+// MARKED-AREA RULE (deterministic; applied identically on server and editor —
+// see fpBoundaryMetricsLocal in floorplanView.js, keep the two in sync):
+//   - Every boundary polyline with >= 3 vertices and nonzero shoelace area
+//     contributes its chord-closed area (shoelace implicitly closes last->first,
+//     so CLOSED loops and OPEN >= 3-vertex polylines count alike). Multiple
+//     contributing lines are summed (non-overlapping marks assumed;
+//     overlapping marks may double-count).
+//   - An OPEN 2-vertex segment encloses no area and contributes 0 — a line has
+//     no area, so nothing is fabricated. The editor selection strip says this
+//     explicitly ("needs a 3rd vertex / close the loop to feed UFA/NLA").
+// DEFINITIONS:
+//   - facilityArea (marked gross, exposed as BOTH `gla` and `facilityAreaSqft`):
+//     summed marked-loop area above (shoelace over grid-ft vertices;
+//     1 grid unit = 1 ft so area = sqft). `gla` is kept so existing
+//     `boundaries`/`boundaryMetrics` shapes stay byte-compatible; new readers
+//     should prefer `facilityAreaSqft`.
+//   - UFA (usable floor area): marked gross minus non-lettable obstructed
+//     areas — every FloorPlanBlock rect plus the solid legacy-structure rects
+//     (corridor bounding boxes, entrance/lift/stairs/fireExit rects). Thin wall
+//     LINES are excluded, matching the overlap policy (unit-vs-unit only) and
+//     the auto-place obstacle set (fpAutoPlaceAll `taken` minus placements).
 //   - NLA (net lettable area): sum of placed-unit footprints clipped to the
-//     closed boundary loops (each placement row contributes its own
-//     rect∩boundary area, so both tiers of a stacked locker pair count).
-// Multiple closed loops are summed (non-overlapping loops assumed; overlapping
-// loops may double-count). All measures clamp ≥ 0, NLA clamps ≤ UFA, rounded
-// to 1 decimal. With no closed loop the report is all-zero with
-// boundaryClosed: false — never fabricated.
+//     marked loops (each placement row contributes its own rect∩loop area, so
+//     both tiers of a stacked locker pair count).
+//   - `gfaSqft` mirrors the plan's operator-entered GFA (null when unset);
+//     `gfaSource` is 'USER' when set, 'CANVAS' when the metrics report must
+//     fall back to the canvas-derived rect (see floorPlanMetricsService).
+// All measures clamp ≥ 0, NLA clamps ≤ UFA, rounded to 1 decimal. With no
+// contributing marked line the report is all-zero with boundaryClosed: false —
+// never fabricated. `boundaryClosed` is REUSED (not renamed, additive rule):
+// true means ">= 1 area-contributing marked line exists" (a closed loop OR an
+// open >= 3-vertex polyline), false means "no marked area".
+
+export type GfaSource = 'USER' | 'CANVAS';
 
 export interface BoundaryMetrics {
   gla: number;
@@ -221,6 +242,12 @@ export interface BoundaryMetrics {
   nla: number;
   unit: 'sqft';
   boundaryClosed: boolean;
+  /** Marked gross area (sqft) — same value as `gla`, clearer name for new readers. */
+  facilityAreaSqft: number;
+  /** Operator-entered plan GFA (sqft), mirrored from FloorPlan.gfaSqft; null when unset. */
+  gfaSqft: number | null;
+  /** 'USER' when gfaSqft is set, 'CANVAS' when the metrics report falls back to the canvas rect. */
+  gfaSource: GfaSource;
 }
 
 export type FootRect = { x: number; y: number; width: number; height: number };
@@ -320,20 +347,25 @@ const round1 = (v: number): number => Math.round(v * 10) / 10;
 /**
  * Boundary metrics for one plan. Inputs are plain rects/polylines so the
  * editor can reuse this definition client-side (see fpBoundaryMetricsLocal in
- * floorplanView.js — keep the two in sync).
+ * floorplanView.js — keep the two in sync). Marked-area rule: every polyline
+ * with >= 3 vertices and nonzero shoelace area contributes its chord-closed
+ * area (closed loops and open >= 3-vertex polylines alike); open 2-vertex
+ * segments contribute 0 (a line encloses no area — never fabricated).
  */
 export function computeBoundaryMetrics(input: {
   boundaries: Array<{ points: unknown; closed: boolean }>;
   blocks: FootRect[];
   structure: unknown;
   placements: FootRect[];
+  gfaSqft?: number | null;
 }): BoundaryMetrics {
   const loops = input.boundaries
-    .filter((b) => b.closed)
     .map((b) => boundaryPointsOf(b.points))
     .filter((pts) => pts.length >= 3 && polygonArea(pts) > 0);
+  const gfaSqft = input.gfaSqft ?? null;
+  const gfaSource: GfaSource = gfaSqft != null ? 'USER' : 'CANVAS';
   if (!loops.length) {
-    return { gla: 0, ufa: 0, nla: 0, unit: 'sqft', boundaryClosed: false };
+    return { gla: 0, ufa: 0, nla: 0, unit: 'sqft', boundaryClosed: false, facilityAreaSqft: 0, gfaSqft, gfaSource };
   }
   const obstacles: FootRect[] = [...input.blocks, ...solidStructureRects(input.structure)];
   let gla = 0;
@@ -347,13 +379,17 @@ export function computeBoundaryMetrics(input: {
     nla += input.placements.reduce((sum, r) => sum + rectPolygonArea(r, loop), 0);
   }
   const ufaClamped = Math.max(0, ufa);
+  const glaRounded = round1(Math.max(0, gla));
   return {
-    gla: round1(Math.max(0, gla)),
+    gla: glaRounded,
     ufa: round1(ufaClamped),
-    // NLA is lettable footprint inside the loops — it can never exceed UFA.
+    // NLA is lettable footprint inside the marked loops — it can never exceed UFA.
     nla: round1(Math.min(Math.max(0, nla), ufaClamped)),
     unit: 'sqft',
     boundaryClosed: true,
+    facilityAreaSqft: glaRounded,
+    gfaSqft,
+    gfaSource,
   };
 }
 
@@ -371,14 +407,19 @@ function serializePlan(p: PlanPayload) {
     blocks: p.blocks.map(serializeBlock),
     // Facility-boundary line items (grid-ft polylines) in editor sort order.
     boundaries: p.boundaries.map(serializeBoundary),
-    // NLA / GLA / UFA derived from CLOSED boundary loops (see
-    // computeBoundaryMetrics for definitions). All-zero with
-    // boundaryClosed: false when no loop is closed — never fabricated.
+    // Operator-entered gross floor area (sqft); null when unset — the metrics
+    // report then falls back to the canvas-derived rect (gfaSource 'CANVAS').
+    gfaSqft: p.gfaSqft ?? null,
+    gfaSource: (p.gfaSqft ?? null) != null ? ('USER' as const) : ('CANVAS' as const),
+    // Marked facility area -> UFA / NLA (see computeBoundaryMetrics for the
+    // marked-area rule). All-zero with boundaryClosed: false when no marked
+    // line contributes area — never fabricated.
     boundaryMetrics: computeBoundaryMetrics({
       boundaries: p.boundaries,
       blocks: p.blocks,
       structure: p.structure,
       placements: p.placements,
+      gfaSqft: p.gfaSqft ?? null,
     }),
   };
 }
@@ -460,6 +501,21 @@ export interface UpsertFloorPlanInput {
   width?: number;
   height?: number;
   structure?: unknown; // any JSON value (JSONB); null clears it
+  // Operator-entered GFA in sqft: a positive finite number (rounded to 1dp,
+  // capped at MAX_GFA_SQFT); null clears back to unset; omitted keeps the
+  // current value. Additive — old clients simply omit it.
+  gfaSqft?: number | null;
+}
+
+// Sanity cap for an operator-entered GFA (sqft): far above the largest
+// canvas-derived rect (500x500 ft) while still rejecting garbage/typos.
+export const MAX_GFA_SQFT = 10000000;
+
+function checkGfaSqft(v: number): number {
+  if (typeof v !== 'number' || !Number.isFinite(v) || v <= 0 || v > MAX_GFA_SQFT) {
+    throw new AppError(400, 'VALIDATION', `GFA must be a positive number of sqft (up to ${MAX_GFA_SQFT}) — got ${JSON.stringify(v)}`);
+  }
+  return Math.round(v * 10) / 10;
 }
 
 /** Upsert the canvas for a floor: create if absent, then update given fields. */
@@ -472,11 +528,15 @@ export async function upsertFloorPlan(floorId: string, input: UpsertFloorPlanInp
   if (input.structure !== undefined) {
     update.structure = input.structure === null ? Prisma.JsonNull : (input.structure as Prisma.InputJsonValue);
   }
+  if (input.gfaSqft !== undefined) {
+    update.gfaSqft = input.gfaSqft === null ? null : checkGfaSqft(input.gfaSqft);
+  }
 
   const create: Prisma.FloorPlanCreateInput = {
     floor: { connect: { id: floorId } },
     width: input.width !== undefined ? checkCanvasDim(input.width, 'width') : CANVAS_DEFAULTS.width,
     height: input.height !== undefined ? checkCanvasDim(input.height, 'height') : CANVAS_DEFAULTS.height,
+    ...(input.gfaSqft !== undefined && input.gfaSqft !== null ? { gfaSqft: checkGfaSqft(input.gfaSqft) } : {}),
   };
   if (input.structure !== undefined) {
     create.structure = input.structure === null ? Prisma.JsonNull : (input.structure as Prisma.InputJsonValue);
@@ -1052,8 +1112,9 @@ export async function listFloorPlanBoundaries(floorId: string) {
 /**
  * Create a boundary line item on a floor's plan. The plan is lazily created at
  * the default canvas when the floor has none yet (same as blocks). `closed`
- * defaults to false — an open polyline persists honestly and reports no
- * metrics until the loop is closed.
+ * defaults to false — an open polyline persists honestly. Marked-area rule:
+ * >= 3-vertex polylines (open or closed) feed boundaryMetrics via chord-close;
+ * a 2-vertex segment contributes 0 until it is extended/closed.
  */
 export async function createFloorPlanBoundary(floorId: string, input: BoundaryInput) {
   const plan = await ensureCanvasPlan(floorId);

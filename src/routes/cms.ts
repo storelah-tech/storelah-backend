@@ -253,6 +253,9 @@ const floorPlanCanvasSchema = z.object({
   width: z.number().int().min(1).max(500).optional(),
   height: z.number().int().min(1).max(500).optional(),
   structure: z.unknown().nullable().optional(), // arbitrary JSONB decorations
+  // Operator-entered GFA (sqft): positive, capped server-side at 10M; null
+  // clears back to unset (metrics fall back to the canvas rect); omitted keeps.
+  gfaSqft: z.number().positive().max(10000000).nullish(),
 });
 
 const floorPlanListQuerySchema = z.object({
@@ -860,8 +863,8 @@ router.get('/floor-plans/:floorId', requireAuth, async (req: Request, res: Respo
   ok(res, await getFloorPlan(String(req.params.floorId)));
 });
 
-// Upsert the plan canvas (width / height / structure) — create if absent, then
-// update the provided fields. 201 (created/upserted).
+// Upsert the plan canvas (width / height / structure / operator-entered GFA) —
+// create if absent, then update the provided fields. 201 (created/upserted).
 router.post('/floor-plans/:floorId', requireAuth, async (req: Request, res: Response) => {
   const parsed = floorPlanCanvasSchema.safeParse(req.body);
   if (!parsed.success) {
@@ -874,6 +877,7 @@ router.post('/floor-plans/:floorId', requireAuth, async (req: Request, res: Resp
       width: parsed.data.width,
       height: parsed.data.height,
       structure: parsed.data.structure,
+      gfaSqft: parsed.data.gfaSqft,
     }),
   );
 });
@@ -927,11 +931,13 @@ router.delete('/floor-plans/:floorId/blocks/:blockId', requireAuth, async (req: 
   ok(res, await removeFloorPlanBlock(String(req.params.floorId), String(req.params.blockId)));
 });
 
-// --- Floor-plan boundary line items (facility boundary for NLA/GLA/UFA) ---
+// --- Floor-plan boundary line items (facility layout marks for UFA/NLA) ---
 // Polylines in grid-ft units drawn with the editor's Line-item tool. Reads
 // (CMS GET plan + public plan GET) embed `boundaries` plus the derived
-// `boundaryMetrics { gla, ufa, nla, unit, boundaryClosed }`; open polylines
-// persist honestly and report no metrics until the loop is closed.
+// `boundaryMetrics { gla, ufa, nla, unit, boundaryClosed, facilityAreaSqft,
+// gfaSqft, gfaSource }`; marked-area rule: closed loops AND open >= 3-vertex
+// polylines (chord-closed) feed UFA/NLA, open 2-vertex segments persist
+// honestly and contribute 0 until extended/closed.
 
 // List a floor's boundary line items (editor sort order; [] when no plan yet).
 router.get('/floor-plans/:floorId/boundaries', requireAuth, async (req: Request, res: Response) => {

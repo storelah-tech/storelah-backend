@@ -2322,8 +2322,8 @@ function canonicalSizeCat(raw) {
 // Fill the discount-matrix builder from a specific plan object (Library Open).
 // Sets the working draft id so Save uses PUT /:id and Publish walks PATCH
 // /:id/status on the SAME row — never a copy. Cell mapping mirrors
-// saveDiscountPlan: row → size category, input 0–3 Ground floor / 4–7
-// Standard, commitment tiers [1, 3, 6, 12].
+// saveDiscountPlan: row → size category, 4 inputs/row (commitment tiers
+// [1, 3, 6, 12]) always Standard.
 function populateDiscountPanel(plan) {
   if (!plan) return;
   promoState.discountPlanId = plan.id;
@@ -2347,11 +2347,14 @@ function populateDiscountPanel(plan) {
   document.querySelectorAll('#promo-discount-matrix .discount-matrix tbody tr').forEach(function (row, ri) {
     if (ri >= sizeCategories.length) return;
     row.querySelectorAll('input').forEach(function (input, ci) {
-      if (ci >= 8) return;
-      const accessType = ci < 4 ? 'Ground floor' : 'Standard';
-      const key = sizeCategories[ri] + '|' + accessType + '|' + commitmentLabels[ci % 4];
-      if (Object.prototype.hasOwnProperty.call(lookup, key)) {
-        const n = parseFloat(lookup[key]) || 0;
+      if (ci >= 4) return;
+      const months = commitmentLabels[ci % 4];
+      const key = sizeCategories[ri] + '|' + 'Standard' + '|' + months;
+      // legacy-read: Ground floor cells are pre-simplification data; fall back to that value only when no Standard cell exists for this size×month.
+      const legacyKey = sizeCategories[ri] + '|Ground floor|' + months; // legacy-read
+      const hit = Object.prototype.hasOwnProperty.call(lookup, key) ? key : legacyKey;
+      if (Object.prototype.hasOwnProperty.call(lookup, hit)) {
+        const n = parseFloat(lookup[hit]) || 0;
         input.value = n + '%';
         input.className = n >= 30 ? 'hot' : n >= 15 ? 'mid' : '';
       }
@@ -3149,16 +3152,16 @@ function bootPromotions() {
     var matrixCells = [];
     var matrixRows = document.querySelectorAll('#promo-discount-matrix .discount-matrix tbody tr');
     var sizeCategories = ['LOCKER', 'SMALL', 'MEDIUM', 'LARGE', 'XL', 'XXL'];
-    // Discount tiers: 1 / 3 / 6 / 12 months × 2 access types = 8 inputs/row.
+    // Discount tiers: 1 / 3 / 6 / 12 months, Standard only = 4 inputs/row.
     var commitmentLabels = [1, 3, 6, 12];
     if (matrixRows.length) {
       matrixRows.forEach(function (row, ri) {
         if (ri >= sizeCategories.length) return;
         var inputs = row.querySelectorAll('input');
         inputs.forEach(function (input, ci) {
-          if (ci >= 8) return;
+          if (ci >= 4) return;
           var pct = parseFloat(input.value) || 0;
-          var accessType = ci < 4 ? 'Ground floor' : 'Standard';
+          var accessType = 'Standard';
           var commitMonths = commitmentLabels[ci % 4];
           matrixCells.push({
             sizeCategory: sizeCategories[ri],

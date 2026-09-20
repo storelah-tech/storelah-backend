@@ -9,6 +9,11 @@
 //   - outline = the plan canvas rect (0,0)-(width,height) in feet. Legacy
 //     `structure` JSON decorations are NOT measured (walls/corridors are
 //     line/path primitives with no area; rect markers already live as blocks).
+//   - GFA: the operator-entered FloorPlan.gfaSqft wins when set
+//     (geometry.gfaSource 'USER', efficiency + revenue chain follow it);
+//     otherwise GFA is the canvas-derived rect (gfaSource 'CANVAS', flagged in
+//     basis_notes). UFA/NLA stay canvas-tessellated here — the marked-line
+//     UFA/NLA live on plan reads as `boundaryMetrics` (see floorPlans.ts).
 //   - placements -> UNIT_STORAGE (LOCKER when the unit's size code is LOCKER),
 //     label = unitCode, pricing GROSS, default partition walls, stackLevel from
 //     stackTier. Soft-deleted units are filtered out (soft-delete rule).
@@ -43,7 +48,7 @@ import { toNum } from '../lib/format';
 import { AppError } from '../lib/http';
 import type { Prisma } from '@prisma/client';
 import { MARKET_PSF } from './market';
-import { doorEdgesToArray } from './floorPlans';
+import { doorEdgesToArray, type GfaSource } from './floorPlans';
 import {
   computeFloorMetrics,
   computeOccupancy,
@@ -56,6 +61,7 @@ import {
   RESIDUAL_TOLERANCE_SQFT,
   MIN_AISLE_WIDTH_FT,
   DEFAULT_CLEAR_HEIGHT_FT,
+  Q_PER_SQFT,
   WALL_THICKNESS_FEET,
   type DoorInput,
   type Edge,
@@ -147,6 +153,8 @@ export interface FloorMetricsReport {
   };
   geometry: {
     gfa: { q: string; sqft: number };
+    /** 'USER' = operator-entered FloorPlan.gfaSqft; 'CANVAS' = canvas-rect fallback. */
+    gfaSource: GfaSource;
     exteriorWall: { q: string; sqft: number };
     ufa: { q: string; sqft: number };
     nlaEnclosed: { q: string; sqft: number };
@@ -402,6 +410,16 @@ export async function getFloorMetrics(floorId: string): Promise<FloorMetricsRepo
   const m = largest ? computeFloorMetrics({ ...baseInput, entrances: [largest.seedFeet] }) : pass1;
   const hash = geometryHash(regions, unitDoors.authoredOnly);
 
+  // Operator-entered GFA (FloorPlan.gfaSqft) overrides the canvas-derived GFA
+  // in geometry.gfa + efficiency + the revenue chain. NULL/unusable falls back
+  // to the canvas rect and is flagged in basis_notes (never fabricated).
+  const userGfaRaw = plan.gfaSqft ?? null;
+  const userGfa = typeof userGfaRaw === 'number' && Number.isFinite(userGfaRaw) && userGfaRaw > 0 ? userGfaRaw : null;
+  const gfaSource: GfaSource = userGfa != null ? 'USER' : 'CANVAS';
+  const effGfaQ = userGfa != null ? BigInt(Math.round(userGfa * Number(Q_PER_SQFT))) : m.gfa.q;
+  const effGfaSqft = userGfa ?? m.gfa.sqft;
+  const efficiency = effGfaSqft > 0 ? m.nlaEnclosed.sqft / effGfaSqft : 0;
+
   const coreUnits = new Map(m.units.map((u) => [u.regionId, u]));
   const occupiedOf = (status: string): boolean => OCCUPIED_STATUSES.has(status);
 
@@ -439,8 +457,8 @@ export async function getFloorMetrics(floorId: string): Promise<FloorMetricsRepo
     perUnit.map((u) => ({ regionId: u.regionId, occupied: u.occupied, actualCents: u.actualCents, marketCents: u.marketCents })),
     nlaQ,
     occupiedQ,
-    m.gfa.q,
-    m.efficiency,
+    effGfaQ,
+    efficiency,
   );
   const mix = computeUnitMix(
     perUnit.map((u) => ({
@@ -493,6 +511,12 @@ export async function getFloorMetrics(floorId: string): Promise<FloorMetricsRepo
       market_rate_source: 'MARKET_PSF reference table (size -> sgd/sqft/month)',
       basis_notes: [
         'GPI assumes 100% occupancy at market rent (size -> MARKET_PSF reference table); actual is contracted rent on OCCUPIED/OVERDUE units only.',
+        gfaSource === 'USER'
+          ? `GFA is operator-entered (${userGfa} sqft) — geometry.gfa, efficiency and the revenue chain use it instead of the canvas-derived rect (${plan.width}x${plan.height} ft = ${m.gfa.sqft} sqft).`
+          : `No operator-entered GFA on this plan — GFA falls back to the canvas-derived rect (${plan.width}x${plan.height} ft); enter a GFA per plan to override (gfaSource CANVAS).`,
+        ...(gfaSource === 'USER' && efficiency > 1
+          ? [`Operator-entered GFA (${userGfa} sqft) is below enclosed NLA (${m.nlaEnclosed.sqft} sqft) — efficiency exceeds 100%; verify the entered GFA.`]
+          : []),
         unitDoors.authoredUnits > 0
           ? `${unitDoors.authoredUnits} unit(s) use editor-authored door edges (N/S/E/W toggles); the rest fall back to every edge as a door, and the entrance is seeded at the largest derived circulation component (two-pass compute). Units with no abutting circulation report DOOR_BLOCKED.`
           : 'No unit has authored door edges yet: every unit edge is treated as a door and the entrance is seeded at the largest derived circulation component (two-pass compute). Units with no abutting circulation report DOOR_BLOCKED.',
@@ -510,7 +534,8 @@ export async function getFloorMetrics(floorId: string): Promise<FloorMetricsRepo
       ],
     },
     geometry: {
-      gfa: areaJson(m.gfa),
+      gfa: areaJson({ q: effGfaQ, sqft: effGfaSqft }),
+      gfaSource,
       exteriorWall: areaJson(m.exteriorWall),
       ufa: areaJson(m.ufa),
       nlaEnclosed: areaJson(m.nlaEnclosed),
@@ -519,7 +544,7 @@ export async function getFloorMetrics(floorId: string): Promise<FloorMetricsRepo
       common: areaJson(m.common),
       glaExclusive: { area: areaJson(m.glaExclusive.area), convention: m.glaExclusive.convention },
       glaInclusive: { area: areaJson(m.glaInclusive.area), convention: m.glaInclusive.convention },
-      efficiency: round4(m.efficiency),
+      efficiency: round4(efficiency),
       loadFactor: round4(m.loadFactor),
       derivedCirculation: areaJson(m.derivedCirculation),
       droppedSlivers: areaJson(m.droppedSlivers),

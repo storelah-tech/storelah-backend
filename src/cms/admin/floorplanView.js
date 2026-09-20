@@ -186,6 +186,30 @@ function fpPx() {
   return Math.max(8, Math.round(FP_BASE * state.fp.scale));
 }
 
+// Door-edge markers (UI-visibility for authored doorEdges). Effective-edges
+// rule (same as the selection strip + metrics bridge): the authored array when
+// present, else all four edges as auto. Compass semantics: N = min-y edge
+// (top), S = max-y (bottom), W = min-x (left), E = max-x (right) — a rotated
+// (w/h swapped) rect keeps the same mapping since only the rect extents move.
+// Returns a purely visual HTML string (pointer-events:none via .fp-door CSS)
+// so drag/resize/hit-testing is untouched; tick thickness scales with px/ft
+// `u`, lengths are % of the rect so they track zoom automatically.
+function fpEffectiveDoors(pl) {
+  const authored = Array.isArray(pl.doorEdges) && pl.doorEdges.length ? pl.doorEdges : null;
+  return { edges: authored ? authored.slice() : ['N', 'S', 'E', 'W'], authored: !!authored };
+}
+function fpDoorMarkersHTML(pl, u) {
+  const { edges, authored } = fpEffectiveDoors(pl);
+  const t = Math.max(3, Math.round(u * 0.2));
+  const tone = authored ? 'authored' : 'auto';
+  const bits = [];
+  if (edges.includes('N')) bits.push(`<div class="fp-door fp-door-n ${tone}" style="height:${t}px" aria-hidden="true"></div>`);
+  if (edges.includes('S')) bits.push(`<div class="fp-door fp-door-s ${tone}" style="height:${t}px" aria-hidden="true"></div>`);
+  if (edges.includes('W')) bits.push(`<div class="fp-door fp-door-w ${tone}" style="width:${t}px" aria-hidden="true"></div>`);
+  if (edges.includes('E')) bits.push(`<div class="fp-door fp-door-e ${tone}" style="width:${t}px" aria-hidden="true"></div>`);
+  return bits.join('');
+}
+
 function fpNormalizeUnit(u) {
   return {
     id: u.id,
@@ -260,6 +284,108 @@ function fpNormalizeBoundaries(plan) {
   }));
 }
 
+// ---------- marked-area metrics parity (client mirror of computeBoundaryMetrics) ----------
+// MARKED-AREA RULE (keep in sync with src/core/floorPlans.ts): every polyline
+// with >= 3 vertices and nonzero shoelace area contributes its chord-closed
+// area (closed loops and open >= 3-vertex polylines alike); open 2-vertex
+// segments enclose no area and contribute 0 — never fabricated. UFA = marked
+// gross minus block + solid-structure rects; NLA = placement footprints
+// clipped to the marked loops (both stack tiers count); clamps ≥ 0,
+// NLA ≤ UFA, 1dp. No contributing line → all-zero + boundaryClosed: false.
+function fpPolygonArea(points) {
+  if (!Array.isArray(points) || points.length < 3) return 0;
+  let sum = 0;
+  for (let i = 0; i < points.length; i++) {
+    const [x1, y1] = points[i];
+    const [x2, y2] = points[(i + 1) % points.length];
+    sum += x1 * y2 - x2 * y1;
+  }
+  return Math.abs(sum) / 2;
+}
+
+// Exact rect∩polygon area: clip the polygon to the rect (Sutherland–Hodgman)
+// then shoelace. Mirrors rectPolygonArea() in src/core/floorPlans.ts.
+function fpRectPolygonArea(rect, polygon) {
+  let pts = polygon.map(([x, y]) => [x, y]);
+  if (pts.length < 3) return 0;
+  const x0 = rect.x;
+  const y0 = rect.y;
+  const x1 = rect.x + rect.width;
+  const y1 = rect.y + rect.height;
+  const clip = (input, inside, cross) => {
+    const out = [];
+    if (!input.length) return out;
+    let s = input[input.length - 1];
+    for (const e of input) {
+      const eIn = inside(e);
+      const sIn = inside(s);
+      if (eIn) {
+        if (!sIn) out.push(cross(s, e));
+        out.push(e);
+      } else if (sIn) {
+        out.push(cross(s, e));
+      }
+      s = e;
+    }
+    return out;
+  };
+  pts = clip(pts, (p) => p[0] >= x0, (a, b) => [x0, a[1] + ((b[1] - a[1]) * (x0 - a[0])) / (b[0] - a[0] || 1e-9)]);
+  pts = clip(pts, (p) => p[0] <= x1, (a, b) => [x1, a[1] + ((b[1] - a[1]) * (x1 - a[0])) / (b[0] - a[0] || 1e-9)]);
+  pts = clip(pts, (p) => p[1] >= y0, (a, b) => [a[0] + ((b[0] - a[0]) * (y0 - a[1])) / (b[1] - a[1] || 1e-9), y0]);
+  pts = clip(pts, (p) => p[1] <= y1, (a, b) => [a[0] + ((b[0] - a[0]) * (y1 - a[1])) / (b[1] - a[1] || 1e-9), y1]);
+  return fpPolygonArea(pts);
+}
+
+const fpRound1 = (v) => Math.round(v * 10) / 10;
+
+function fpBoundaryMetricsLocal() {
+  const loops = (state.fp.boundaries || [])
+    .map((b) => fpBoundaryPoints(b.points))
+    .filter((pts) => pts.length >= 3 && fpPolygonArea(pts) > 0);
+  const gfa = state.fp.gfa;
+  const gfaSource = gfa != null ? 'USER' : 'CANVAS';
+  if (!loops.length) {
+    return { gla: 0, ufa: 0, nla: 0, unit: 'sqft', boundaryClosed: false, facilityAreaSqft: 0, gfaSqft: gfa, gfaSource };
+  }
+  const obstacles = (state.fp.blocks || []).concat(fpStructureRects());
+  let gla = 0;
+  let ufa = 0;
+  let nla = 0;
+  for (const loop of loops) {
+    const gross = fpPolygonArea(loop);
+    gla += gross;
+    const blocked = obstacles.reduce((sum, r) => sum + fpRectPolygonArea(r, loop), 0);
+    ufa += Math.max(0, gross - blocked);
+    nla += (state.fp.placements || []).reduce((sum, r) => sum + fpRectPolygonArea(r, loop), 0);
+  }
+  const ufaClamped = Math.max(0, ufa);
+  const glaRounded = fpRound1(Math.max(0, gla));
+  return {
+    gla: glaRounded,
+    ufa: fpRound1(ufaClamped),
+    nla: fpRound1(Math.min(Math.max(0, nla), ufaClamped)),
+    unit: 'sqft',
+    boundaryClosed: true,
+    facilityAreaSqft: glaRounded,
+    gfaSqft: gfa,
+    gfaSource,
+  };
+}
+
+const fpFmt1 = (n) => Number(n || 0).toLocaleString('en-SG', { maximumFractionDigits: 1 });
+
+// Toolbar strip showing the live marked-area UFA/NLA (parity preview of the
+// server boundaryMetrics on plan reads). Explicit "no marked area" state —
+// never fabricated.
+function fpRenderBoundaryMetrics() {
+  const el = $('#fpBoundaryMetrics');
+  if (!el) return;
+  const mm = fpBoundaryMetricsLocal();
+  el.textContent = mm.boundaryClosed
+    ? `Marked ${fpFmt1(mm.facilityAreaSqft)} sqft · UFA ${fpFmt1(mm.ufa)} · NLA ${fpFmt1(mm.nla)}`
+    : 'No marked area — draw a line (3+ vertices, then close the loop) to measure UFA/NLA';
+}
+
 function fpCanvasDims() {
   // A live-typed size (unsaved W/H input edits) wins while the operator is
   // editing; "Save Canvas" is the explicit commit that persists it.
@@ -292,6 +418,24 @@ function fpSyncDimInputs(d) {
   if (document.activeElement === wEl || document.activeElement === hEl) return;
   wEl.value = d.w;
   hEl.value = d.h;
+}
+
+// Operator-entered GFA field: server state wins except while the operator is
+// typing (focused) — "Save Canvas" is the explicit commit that persists it.
+// Empty = unset (metrics fall back to the canvas rect).
+function fpSyncGfaInput() {
+  const el = $('#fpGfa');
+  if (!el) return;
+  if (document.activeElement === el) return;
+  el.value = state.fp.gfa != null ? String(state.fp.gfa) : '';
+}
+
+function fpParseGfa(v) {
+  const t = String(v == null ? '' : v).trim();
+  if (!t) return { ok: true, value: null }; // empty clears back to unset
+  const n = Number(t);
+  if (!Number.isFinite(n) || n <= 0 || n > 10000000) return { ok: false, value: null };
+  return { ok: true, value: Math.round(n * 10) / 10 };
 }
 
 function fpClampCanvasContent(w, h) {
@@ -435,6 +579,7 @@ async function fpFetch() {
     state.fp.placements = fpNormalizePlacements(body.plan);
     state.fp.blocks = fpNormalizeBlocks(body.plan);
     state.fp.boundaries = fpNormalizeBoundaries(body.plan);
+    state.fp.gfa = body.plan && body.plan.gfaSqft != null && Number.isFinite(body.plan.gfaSqft) ? body.plan.gfaSqft : null;
     state.fp.unplaced = (body.unplacedUnits || []).map(fpNormalizeUnit);
     state.fp.branchName = body.branch && body.branch.name;
     state.fp.floorName = body.floor ? `Level ${body.floor.level}` : '';
@@ -577,8 +722,9 @@ function fpRenderStructure(canvas, u, structure) {
 // Facility-boundary line items as an SVG overlay under the blocks/units (the
 // .fp-boundary-layer CSS is pointer-events:none z-index 1, so canvas pointer
 // interactions are untouched). Closed loops render as filled <polygon>s, open
-// polylines as dashed <polyline>s, the in-flight pencil draft as a dashed
-// preview. Reused by the editor canvas AND the read-only fpView canvas.
+// polylines as SOLID <polyline>s (persisted lines are never dashed — only the
+// in-flight pencil draft previews dashed). Reused by the editor canvas AND the
+// read-only fpView canvas.
 // Pencil lines (kind 'PENCIL') only show their label while selected.
 function fpRenderBoundaryLayer(canvas, u, dims, boundaries, draft, selectedId) {
   const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -661,12 +807,13 @@ function fpRenderCanvas() {
       el.style.top = r.y * u + 'px';
       el.style.width = r.width * u + 'px';
       el.style.height = r.height * u + 'px';
-      el.title = `Stacked pair — upper ${upper.unitCode} (${upper.status}) / lower ${lower.unitCode} (${lower.status})`;
+      el.title = `Stacked pair — upper ${upper.unitCode} (${upper.status}) / lower ${lower.unitCode} (${lower.status}) · doors auto (stacked pairs stay AUTO)`;
       el.innerHTML =
         `<div class="fp-status" style="background:${statusDot[lower.status] || '#9C948D'};"></div>` +
         `<div class="fp-code fp-stack-upper">${escapeHtml(upper.unitCode)}</div>` +
         `<div class="fp-stack-divider"></div>` +
         `<div class="fp-code fp-stack-lower">${escapeHtml(lower.unitCode)}</div>` +
+        fpDoorMarkersHTML({ doorEdges: null }, u) +
         `<div class="fp-resize" title="Drag to resize"></div>`;
       canvas.appendChild(el);
       continue;
@@ -684,6 +831,7 @@ function fpRenderCanvas() {
       `<div class="fp-status" style="background:${statusDot[pl.status] || '#9C948D'};"></div>` +
       `<div class="fp-code">${escapeHtml(pl.unitCode)}</div>` +
       (pl.height * u > 34 ? `<div class="fp-size">${escapeHtml(pl.sizeName)}</div>` : '') +
+      fpDoorMarkersHTML(pl, u) +
       `<div class="fp-resize" title="Drag to resize"></div>`;
     canvas.appendChild(el);
   }
@@ -709,22 +857,29 @@ function fpRenderSelInfo() {
     return;
   }
   // A selected boundary line item (incl. pencil-drawn lines) renders like the
-  // block branch: a short descriptor plus the remove action.
+  // block branch: a short descriptor plus close/remove actions. Marked-area
+  // rule: >= 3-vertex polylines (open or closed) feed UFA/NLA; a 2-vertex open
+  // segment renders solid but contributes 0 until extended/closed.
   const bnd = (state.fp.boundaries || []).find((b) => b.id === state.fp.selectedBoundary);
   if (bnd) {
     const pts = fpBoundaryPoints(bnd.points);
     let len = 0;
     for (let i = 1; i < pts.length; i++) len += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
     const isPencil = String(bnd.kind || '').toUpperCase() === 'PENCIL';
+    const contributing = pts.length >= 3 && fpPolygonArea(pts) > 0;
+    const distinct = new Set(pts.map(([x, y]) => `${x},${y}`)).size;
     const meta = [
       `${pts.length} vertex${pts.length === 1 ? '' : 'es'}`,
       len ? `${Math.round(len)} ft` : null,
-      bnd.closed ? 'closed loop (feeds GLA/UFA)' : 'open polyline — decoration, no metrics impact',
+      contributing ? 'marked area — feeds UFA/NLA' : 'open line segment — needs a 3rd vertex (close the loop) to feed UFA/NLA',
     ]
       .filter(Boolean)
       .join(' · ');
     info.innerHTML =
       `<span class="t-type">${isPencil ? '✎ Line' : '⌒ Boundary'} · ${escapeHtml(bnd.label || 'Line')} · ${meta}</span>` +
+      (!bnd.closed && distinct >= 3
+        ? `<button class="act-btn primary" id="fpBoundaryCloseBtn" style="padding:2px 9px;font-size:10px;" title="Close the loop — the marked area starts feeding UFA/NLA">Close loop</button>`
+        : '') +
       `<button class="act-btn danger" id="fpBoundaryRemoveBtn" style="padding:2px 9px;font-size:10px;">Remove line</button>`;
     return;
   }
@@ -741,7 +896,7 @@ function fpRenderSelInfo() {
     const upper = (pl.stackTier || 0) === 1 ? pl : mate;
     const lower = upper === pl ? mate : pl;
     info.innerHTML =
-      `<span class="t-type">⧉ Stacked pair · ${escapeHtml(upper.unitCode)} (upper) over ${escapeHtml(lower.unitCode)} (lower) · ${pl.x},${pl.y} · ${pl.width}×${pl.height} ft${lockNote}</span>` +
+      `<span class="t-type">⧉ Stacked pair · ${escapeHtml(upper.unitCode)} (upper) over ${escapeHtml(lower.unitCode)} (lower) · ${pl.x},${pl.y} · ${pl.width}×${pl.height} ft${lockNote} · doors auto (ghost ticks = all edges)</span>` +
       `<button class="act-btn" id="fpRotateBtn" style="padding:2px 9px;font-size:10px;" title="Swap width/height (90° rotation) for both tiers">⟳ Rotate</button>` +
       `<button class="act-btn" id="fpUnstackBtn" style="padding:2px 9px;font-size:10px;" title="Remove the upper tier — the lower tier stays as a single">Unstack</button>` +
       `<button class="act-btn danger" id="fpRemoveBtn" style="padding:2px 9px;font-size:10px;">Remove from floor</button>`;
@@ -764,7 +919,7 @@ function fpRenderSelInfo() {
     (stackable.length === 1
       ? `<button class="act-btn" id="fpStackBtn" style="padding:2px 9px;font-size:10px;" title="Stack ${escapeHtml(stackable[0].unitCode)} (upper) onto this block">⧉ Stack ${escapeHtml(stackable[0].unitCode)}</button>`
       : '') +
-    `<span class="t-type">Doors${authored ? '' : ' (auto)'}:</span>` + doorBtns +
+    `<span class="t-type">Doors${authored ? ' · terra ticks = authored' : ' (auto · ghost ticks = all edges)'}:</span>` + doorBtns +
     (authored ? `<button class="act-btn" id="fpDoorsAutoBtn" style="padding:2px 9px;font-size:10px;" title="Clear authored doors — fall back to all edges">Auto</button>` : '') +
     `<button class="act-btn danger" id="fpRemoveBtn" style="padding:2px 9px;font-size:10px;">Remove from floor</button>`;
 }
@@ -780,6 +935,7 @@ async function fpSaveDoors(pl, edges) {
     });
     pl.doorEdges = res && res.data ? res.data.doorEdges : edges;
     fpRenderSelInfo();
+    fpRenderCanvas();
     notifyMetricsFloorChanged();
     fpToast(
       pl.doorEdges ? `Doors ${pl.unitCode} → ${pl.doorEdges.join('')} (authored)` : `Doors ${pl.unitCode} → auto (all edges)`,
@@ -919,6 +1075,8 @@ function fpRender() {
       : "No plan yet — set a canvas size and click Save Canvas, then drag this floor's units from the palette.";
   }
   fpSyncDimInputs(d);
+  fpSyncGfaInput();
+  fpRenderBoundaryMetrics();
   const st = $('#fpStructure');
   if (st) st.value = state.fp.structure ? JSON.stringify(state.fp.structure, null, 2) : '';
   const legacy = $('#fpLegacyNote');
@@ -1010,8 +1168,9 @@ function fpDrawStart(e) {
 
 // Persist a drawn line as an OPEN boundary polyline (kind 'PENCIL') via the
 // existing boundary endpoints — ZERO contract change (label/kind/points/closed
-// are long-standing fields). Open polylines never feed boundaryMetrics, so
-// drawn lines are display-only and the public payload schema is untouched.
+// are long-standing fields). Persisted lines render SOLID (only the in-flight
+// draft previews dashed). Marked-area rule: >= 3-vertex polylines feed UFA/NLA
+// via chord-close; a 2-vertex segment contributes 0 until extended/closed.
 async function fpPersistLine(x1, y1, x2, y2) {
   try {
     const res = await request(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/boundaries`, {
@@ -1030,7 +1189,7 @@ async function fpPersistLine(x1, y1, x2, y2) {
     state.fp.selectedBlock = null;
     fpRender();
     notifyMetricsFloorChanged();
-    fpToast(`Line added — ${Math.round(Math.hypot(x2 - x1, y2 - y1))} ft at ${x1},${y1} → ${x2},${y2}. Click it to select/remove.`, true);
+    fpToast(`Line added (solid) — ${Math.round(Math.hypot(x2 - x1, y2 - y1))} ft at ${x1},${y1} → ${x2},${y2}. Select it to close the loop (3+ vertices) so it feeds UFA/NLA.`, true);
   } catch (err) {
     fpRenderCanvas();
     fpToast('Draw line: ' + describeError(err), false);
@@ -1488,19 +1647,142 @@ function fpFirstFreeSpot(size) {
   return { x: 0, y: 0 };
 }
 
+// Point-in-polygon (ray cast), edge-inclusive: a point on an edge or vertex
+// counts as inside so auto-placed units may abut boundary walls.
+function fpPointOnSeg(px, py, ax, ay, bx, by) {
+  if ((bx - ax) * (py - ay) - (by - ay) * (px - ax) !== 0) return false;
+  return Math.min(ax, bx) <= px && px <= Math.max(ax, bx) && Math.min(ay, by) <= py && py <= Math.max(ay, by);
+}
+
+function fpPointInPolygon(px, py, poly) {
+  for (let i = 0; i < poly.length; i++) {
+    const [ax, ay] = poly[i];
+    const [bx, by] = poly[(i + 1) % poly.length];
+    if (fpPointOnSeg(px, py, ax, ay, bx, by)) return true;
+  }
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const [xi, yi] = poly[i];
+    const [xj, yj] = poly[j];
+    if (yi > py !== yj > py && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+function fpOrient(ax, ay, bx, by, cx, cy) {
+  return (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+}
+
+// True only when two segments cross through each other's interiors (strict
+// sign change on both orientation pairs). Endpoint touches and collinear
+// overlaps are NOT crossings, so a rect abutting a wall is allowed while a
+// rect straddling a wall is rejected.
+function fpSegsProperCross(a, b, c, d) {
+  const d1 = fpOrient(c[0], c[1], d[0], d[1], a[0], a[1]);
+  const d2 = fpOrient(c[0], c[1], d[0], d[1], b[0], b[1]);
+  const d3 = fpOrient(a[0], a[1], b[0], b[1], c[0], c[1]);
+  const d4 = fpOrient(a[0], a[1], b[0], b[1], d[0], d[1]);
+  return ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0));
+}
+
+function fpRectStraddlesPolygon(x, y, w, h, poly) {
+  const corners = [
+    [x, y],
+    [x + w, y],
+    [x + w, y + h],
+    [x, y + h],
+  ];
+  for (let e = 0; e < 4; e++) {
+    const p = corners[e];
+    const q = corners[(e + 1) % 4];
+    for (let i = 0; i < poly.length; i++) {
+      if (fpSegsProperCross(p, q, poly[i], poly[(i + 1) % poly.length])) return true;
+    }
+  }
+  return false;
+}
+
+// True when a candidate rect is fully contained in a polygon loop: all four
+// corners inside (walls inclusive) and no rect edge crossing a loop edge, so
+// rects that straddle walls are rejected even when their corners test inside.
+function fpRectInPolygon(x, y, w, h, poly) {
+  const corners = [
+    [x, y],
+    [x + w, y],
+    [x + w, y + h],
+    [x, y + h],
+  ];
+  if (!corners.every(([cx, cy]) => fpPointInPolygon(cx, cy, poly))) return false;
+  return !fpRectStraddlesPolygon(x, y, w, h, poly);
+}
+
+function fpPolyBBox(pts) {
+  const xs = pts.map(([x]) => x);
+  const ys = pts.map(([, y]) => y);
+  return { x0: Math.min(...xs), y0: Math.min(...ys), x1: Math.max(...xs), y1: Math.max(...ys) };
+}
+
+// Usable auto-place area derived from the boundary lines (rect-in-polygon
+// clipping for fpFirstFreeRect). Closed loops (closed:true, >=3 distinct
+// vertices, nonzero area) define the interior and win when present; otherwise
+// open >=3-vertex polylines chord-close under the same marked-area rule as
+// fpBoundaryMetricsLocal; when only open 2-vertex segments exist (e.g. the
+// Bukit Merah L1 perimeter of single Line strokes) there is no loop interior,
+// so the fallback is the union bbox of all line vertices — an over-approx-
+// imation for non-rectangular marks, surfaced as "line area" in the confirm
+// and toast copy until the loop is closed.
+function fpUsablePlaceArea() {
+  const rows = (state.fp.boundaries || [])
+    .map((b) => ({ pts: fpBoundaryPoints(b.points), closed: !!b.closed }))
+    .filter((b) => b.pts.length >= 2 && b.pts.some(([x, y]) => x !== b.pts[0][0] || y !== b.pts[0][1]));
+  if (!rows.length) return null;
+  const distinct = (pts) => new Set(pts.map(([x, y]) => `${x},${y}`)).size;
+  const closedLoops = rows.filter((b) => b.closed && distinct(b.pts) >= 3 && fpPolygonArea(b.pts) > 0).map((b) => b.pts);
+  if (closedLoops.length) return { kind: 'loops', polys: closedLoops, bbox: fpPolyBBox(closedLoops.flat()) };
+  const openLoops = rows.filter((b) => !b.closed && b.pts.length >= 3 && fpPolygonArea(b.pts) > 0).map((b) => b.pts);
+  if (openLoops.length) return { kind: 'loops', polys: openLoops, bbox: fpPolyBBox(openLoops.flat()) };
+  return { kind: 'bbox', polys: [], bbox: fpPolyBBox(rows.flatMap((b) => b.pts)) };
+}
+
+// True when a candidate rect sits inside the usable boundary area: within the
+// area bbox, and (for loop interiors) fully contained in at least one loop.
+function fpRectInUsable(x, y, w, h, usable) {
+  if (!usable) return false;
+  const { x0, y0, x1, y1 } = usable.bbox;
+  if (x < x0 || y < y0 || x + w > x1 || y + h > y1) return false;
+  if (usable.kind === 'bbox') return true;
+  return usable.polys.some((poly) => fpRectInPolygon(x, y, w, h, poly));
+}
+
 // Rectangular first-free-spot scan for auto-place (same repack approach as the
 // opt-in scripts/backfill-placement-footprints.ts): top-left → bottom-right
 // over integer foot cells against the live `taken` rect list. Returns {x,y} or
 // null — never a fallback spot: canvas dims are blueprint feet and auto-place
 // must NOT auto-resize the canvas.
-function fpFirstFreeRect(w, h, taken) {
+function fpFirstFreeRect(w, h, taken, usable) {
   const { w: cw, h: ch } = fpCanvasDims();
   if (w > cw || h > ch) return null;
   const collides = (x, y) =>
     taken.some((o) => x < o.x + o.width && o.x < x + w && y < o.y + o.height && o.y < y + h);
-  for (let y = 0; y + h <= ch; y++) {
-    for (let x = 0; x + w <= cw; x++) {
-      if (!collides(x, y)) return { x, y };
+  // Clamp the scan to the usable boundary area (when known) so candidates
+  // outside the Line-tool area are never tried; every surviving candidate is
+  // then rect-in-polygon checked (corners inside + no edge straddling walls).
+  // Without a usable area the whole canvas scans (callers guard this path).
+  let xFrom = 0;
+  let yFrom = 0;
+  let xTo = cw;
+  let yTo = ch;
+  if (usable) {
+    xFrom = Math.max(0, usable.bbox.x0);
+    yFrom = Math.max(0, usable.bbox.y0);
+    xTo = Math.min(cw, usable.bbox.x1);
+    yTo = Math.min(ch, usable.bbox.y1);
+  }
+  for (let y = yFrom; y + h <= yTo; y++) {
+    for (let x = xFrom; x + w <= xTo; x++) {
+      if (collides(x, y)) continue;
+      if (usable && !fpRectInUsable(x, y, w, h, usable)) continue;
+      return { x, y };
     }
   }
   return null;
@@ -1537,13 +1819,30 @@ function fpStructureRects() {
   return rects;
 }
 
+// Auto-place guard: a boundary/line must exist before units can be placed.
+// Missing = no rows, or every row normalises to < 2 vertices / zero length
+// (all vertices identical). Normalised rows store points as [x, y] pairs, and
+// fpBoundaryPoints() is idempotent over that shape, so it is reused here.
+function fpHasUsableBoundary() {
+  const list = state.fp.boundaries;
+  if (!Array.isArray(list) || !list.length) return false;
+  return list.some((b) => {
+    const pts = fpBoundaryPoints(b && b.points);
+    if (pts.length < 2) return false;
+    return pts.some(([x, y]) => x !== pts[0][0] || y !== pts[0][1]);
+  });
+}
+
 // Auto-place: renders ALL unplaced units of the current floor onto the canvas.
 // One PUT per unit via the existing placement endpoint; footprints come from
 // unitFootprint() (true-size sqftFootprint, ghost-rotated orientation first,
 // swapped orientation as fallback) so the server's 15% area tolerance holds.
-// Units that don't fit — or fail to persist — are collected and reported;
-// already-placed units are kept, never reverted as a batch. Canvas dims are
-// blueprint feet and are never auto-resized.
+// Every candidate spot is rect-in-polygon clipped to the usable boundary area
+// (fpUsablePlaceArea: closed-loop interior, else the open-lines box), so no
+// write ever lands outside the Line-tool area. Units that don't fit — or fail
+// to persist — are collected and reported; already-placed units are kept,
+// never reverted as a batch. Canvas dims are blueprint feet and are never
+// auto-resized.
 async function fpAutoPlaceAll() {
   const btn = $('#fpAutoPlace');
   if (!state.fp.floorId) {
@@ -1555,9 +1854,26 @@ async function fpAutoPlaceAll() {
     fpToast('All units on this floor are already placed.', true);
     return;
   }
+  if (!fpHasUsableBoundary()) {
+    fpToast('Cannot place units — there is no boundary. Draw a boundary with the Line tool first.', false);
+    return;
+  }
+  // Rect-in-polygon clipping: every auto-placed rect must sit fully inside the
+  // usable boundary area (closed-loop interior when loops exist, otherwise the
+  // open-lines fallback box). Defensive — the guard above already ensures
+  // fpUsablePlaceArea() is non-null.
+  const usable = fpUsablePlaceArea();
+  if (!usable) {
+    fpToast('Cannot place units — there is no usable boundary area. Draw a boundary with the Line tool first.', false);
+    return;
+  }
   const placeOk = await confirmDialog({
     title: `Place ${queue.length} unplaced unit${queue.length === 1 ? '' : 's'}?`,
-    message: 'Units are placed into the first free space on the canvas. Already-placed units are kept.',
+    message:
+      'Units are placed into the first free space inside the boundary lines. Already-placed units are kept.' +
+      (usable.kind === 'bbox'
+        ? ' The boundary is open lines, so placement is bounded by the lines\u2019 overall box — close the loop for exact interior placement.'
+        : ''),
     confirmLabel: 'Place units',
   });
   if (!placeOk) return;
@@ -1581,7 +1897,7 @@ async function fpAutoPlaceAll() {
       let spot = null;
       let geom = null;
       for (const o of orientations) {
-        const s = fpFirstFreeRect(o.w, o.h, taken);
+        const s = fpFirstFreeRect(o.w, o.h, taken, usable);
         if (s) {
           spot = s;
           geom = o;
@@ -1627,7 +1943,7 @@ async function fpAutoPlaceAll() {
   notifyMetricsFloorChanged();
   if (!placed.length) {
     fpToast(
-      `Auto-place: nothing fits on the ${cw}×${ch} ft canvas — enlarge the canvas first.` +
+      `Auto-place: nothing fits inside the boundary lines on the ${cw}×${ch} ft canvas — enlarge the canvas or extend the boundary first.` +
         (unfit.length ? ` Did not fit: ${unfit.join(', ')}.` : '') +
         (failed.length ? ` Errors: ${failed.join('; ')}.` : ''),
       false,
@@ -1808,13 +2124,14 @@ async function fpRemoveBlock() {
 }
 
 // Remove a drawn/selected boundary line item (same select → confirm → DELETE
-// flow as blocks; scoped server-side to this floor's plan).
+// flow as blocks; scoped server-side to this floor's plan). Units and blocks
+// are unaffected; the marked-area UFA/NLA strip recomputes on refetch.
 async function fpRemoveBoundary() {
   const bnd = (state.fp.boundaries || []).find((b) => b.id === state.fp.selectedBoundary);
   if (!bnd) return;
   const removeOk = await confirmDialog({
     title: `Remove line "${bnd.label || 'Line'}" from the plan?`,
-    message: 'The line is removed from the canvas. Units, blocks and metrics are unaffected.',
+    message: 'The line is removed from the canvas. Units and blocks are unaffected; marked-area UFA/NLA recompute.',
     confirmLabel: 'Remove',
     danger: true,
   });
@@ -1830,12 +2147,44 @@ async function fpRemoveBoundary() {
   }
 }
 
+// Close an open >= 3-distinct-vertex line into a loop (PUT closed:true,
+// scoped server-side to this floor's plan). Closing is what promotes a drawn
+// line into the marked facility area that feeds UFA/NLA; the server still
+// re-validates (3+ distinct vertices required, 400 otherwise).
+async function fpCloseBoundary() {
+  const bnd = (state.fp.boundaries || []).find((b) => b.id === state.fp.selectedBoundary);
+  if (!bnd || bnd.closed) return;
+  try {
+    const res = await request(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/boundaries/${encodeURIComponent(bnd.id)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ closed: true }),
+    });
+    const b = res.data;
+    bnd.closed = !!b.closed;
+    bnd.points = fpBoundaryPoints(b.points);
+    fpToast(`Loop closed — "${bnd.label || 'Line'}" now marks facility area feeding UFA/NLA.`, true);
+    fpRender();
+    notifyMetricsFloorChanged();
+  } catch (err) {
+    fpToast('Close loop: ' + describeError(err), false);
+  }
+}
+
 async function fpSaveCanvas() {
   if (!state.fp.floorId) return;
   const w = Number($('#fpWidth').value);
   const h = Number($('#fpHeight').value);
   if (!Number.isInteger(w) || w < 1 || w > 500 || !Number.isInteger(h) || h < 1 || h > 500) {
     fpToast('Canvas size must be a whole number between 1 and 500 feet.', false);
+    return;
+  }
+  // Operator-entered GFA (sqft): empty clears back to unset (metrics fall back
+  // to the canvas rect); garbage is rejected with a toast, never persisted.
+  const gfaEl = $('#fpGfa');
+  const gfaParsed = fpParseGfa(gfaEl ? gfaEl.value : '');
+  if (!gfaParsed.ok) {
+    fpToast('GFA must be a positive number of sqft (up to 10,000,000) — or empty to unset.', false);
+    if (gfaEl) gfaEl.focus();
     return;
   }
   let structure = null;
@@ -1851,9 +2200,10 @@ async function fpSaveCanvas() {
   try {
     await request(`/floor-plans/${encodeURIComponent(state.fp.floorId)}`, {
       method: 'POST',
-      body: JSON.stringify({ width: w, height: h, structure }),
+      body: JSON.stringify({ width: w, height: h, structure, gfaSqft: gfaParsed.value }),
     });
-    fpToast(`Canvas saved (${w}×${h} ft).`, true);
+    state.fp.gfa = gfaParsed.value;
+    fpToast(`Canvas saved (${w}×${h} ft${gfaParsed.value != null ? `, GFA ${fpFmt1(gfaParsed.value)} sqft` : ', GFA unset — metrics use the canvas rect'}).`, true);
     await fpFetch();
   } catch (err) {
     fpToast('Save canvas: ' + describeError(err), false);
@@ -2022,12 +2372,13 @@ function fpViewRender() {
       el.style.top = r.y * u + 'px';
       el.style.width = r.width * u + 'px';
       el.style.height = r.height * u + 'px';
-      el.title = `Stacked pair — upper ${upper.unitCode} (${upper.status}) / lower ${lower.unitCode} (${lower.status})`;
+      el.title = `Stacked pair — upper ${upper.unitCode} (${upper.status}) / lower ${lower.unitCode} (${lower.status}) · doors auto (stacked pairs stay AUTO)`;
       el.innerHTML =
         `<div class="fp-status" style="background:${statusDot[lower.status] || '#9C948D'};"></div>` +
         `<div class="fp-code fp-stack-upper">${escapeHtml(upper.unitCode)}</div>` +
         `<div class="fp-stack-divider"></div>` +
-        `<div class="fp-code fp-stack-lower">${escapeHtml(lower.unitCode)}</div>`;
+        `<div class="fp-code fp-stack-lower">${escapeHtml(lower.unitCode)}</div>` +
+        fpDoorMarkersHTML({ doorEdges: null }, u);
       canvas.appendChild(el);
       continue;
     }
@@ -2043,6 +2394,7 @@ function fpViewRender() {
       `<div class="fp-status" style="background:${statusDot[pl.status] || '#9C948D'};"></div>` +
       `<div class="fp-code">${escapeHtml(pl.unitCode)}</div>` +
       (pl.height * u > 34 ? `<div class="fp-size">${escapeHtml(pl.sizeName)}</div>` : '') +
+      fpDoorMarkersHTML(pl, u) +
       `<div class="fp-resize" title="Drag to resize"></div>`;
     canvas.appendChild(el);
   }
@@ -2165,9 +2517,10 @@ export function fpInitEvents() {
   }
   // Pencil (line) tool: toggles draw mode like the other ghost toggles. While
   // ON, canvas press-drag draws a straight grid-ft line persisted as an OPEN
-  // boundary polyline (kind 'PENCIL') via POST /floor-plans/:id/boundaries —
-  // display-only: open polylines never feed GLA/UFA/NLA (those need closed
-  // loops), so the metrics panel and the public payload stay untouched.
+  // boundary polyline (kind 'PENCIL') via POST /floor-plans/:id/boundaries.
+  // Persisted lines render SOLID. Marked-area rule: >= 3-vertex polylines feed
+  // UFA/NLA (chord-closed); a 2-vertex segment contributes 0 until it is
+  // extended/closed via the selection strip's Close-loop action.
   const pencilBtn = $('#fpBoundaryTool');
   const syncPencilBtn = () => {
     if (!pencilBtn) return;
@@ -2197,6 +2550,15 @@ export function fpInitEvents() {
   $('#fpHeight').addEventListener('change', fpOnDimCommit);
   $('#fpWidth').addEventListener('keydown', fpOnDimEnter);
   $('#fpHeight').addEventListener('keydown', fpOnDimEnter);
+  // Enter in the GFA field commits the whole canvas form (dims + GFA) via the
+  // same Save-Canvas path; an empty field unsets the GFA (canvas fallback).
+  $('#fpGfa')?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      fpSaveCanvas().catch(() => {});
+      e.target.blur();
+    }
+  });
   $('#fpZoomIn').addEventListener('click', () => fpZoomStep(1));
   $('#fpZoomOut').addEventListener('click', () => fpZoomStep(-1));
   // Modifier-gated canvas zoom (see fpOnCanvasWheel) + editor Delete shortcut
@@ -2270,6 +2632,7 @@ export function fpInitEvents() {
     else if (e.target && e.target.id === 'fpUnstackBtn') fpUnstackSelected();
     else if (e.target && e.target.id === 'fpBlockRemoveBtn') fpRemoveBlock();
     else if (e.target && e.target.id === 'fpBoundaryRemoveBtn') fpRemoveBoundary();
+    else if (e.target && e.target.id === 'fpBoundaryCloseBtn') fpCloseBoundary();
     else if (e.target && e.target.id === 'fpBlockRenameBtn') fpRenameBlock();
     else if (e.target && e.target.id === 'fpDoorsAutoBtn') fpResetDoors();
     else if (e.target && e.target.dataset && e.target.dataset.door) fpToggleDoor(e.target.dataset.door);

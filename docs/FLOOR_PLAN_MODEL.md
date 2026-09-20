@@ -26,6 +26,7 @@ Two new tables, both additive (creation only — no existing column/table is alt
 | `floorId`   | FK → Floor| one plan per floor: `@@unique([floorId])`                     |
 | `width`     | `Int`     | canvas width in **FEET** (`default 0`)                        |
 | `height`    | `Int`     | canvas height in **FEET** (`default 0`)                       |
+| `gfaSqft`   | `Float?`  | **operator-entered GFA in sqft** (`NULL` = unset; see "Operator-entered GFA" below) |
 | `structure` | `Json?`   | **LEGACY** free-form decorations (walls/corridors/entrance/lift/stairs/fire exit) |
 | timestamps  |           | `createdAt` / `updatedAt`                                      |
 
@@ -187,6 +188,23 @@ pre-existing placement is a ground tier, no data migration needed).
   then upper). The read-only preview (`#fpViewModal`) renders the identical
   split-block treatment. Non-locker stack attempts are rejected with a toast.
 
+## Door-edge visualization (operator canvas + read-only preview)
+
+Authored door compass edges (`UnitPlacement.doorEdges`, `null` = unauthored)
+are drawn as centered edge ticks on each unit's rect in both the editor canvas
+(`fpRenderCanvas`) and the read-only Show-Floor-Plan preview (`fpViewRender`):
+**solid terra** ticks for authored edges, **muted ghost** ticks for auto. The
+effective-edges rule matches the metrics bridge — authored array when present,
+else all four edges as auto — and compass semantics are unchanged (N = min-y
+edge, S = max-y, W = min-x, E = max-x; rotation just swaps w/h). Stacked locker
+pairs share one rect and stay AUTO, so they always render the all-edges ghost
+treatment (the selection strip says so explicitly). Markers are purely visual
+(`pointer-events:none`, `.fp-door` in `src/cms/admin/dashboard.html`) so
+drag/resize/hit-testing is untouched; tick thickness scales with the canvas
+px/ft zoom and lengths are % of the rect. The canvas re-renders immediately
+after `fpSaveDoors` succeeds, and markers round-trip through the existing
+`doorEdges` PUT field so they persist on reload with no contract change.
+
 ## Decisions and tradeoffs
 
 **(a) Single plan per floor** (`@@unique([floorId])`):
@@ -227,7 +245,67 @@ pre-existing placement is a ground tier, no data migration needed).
 | Soft-delete a `Unit`      | Placement row persists; visible reads filter it out                       |
 | Hard-delete a `Unit` (future) | Blocked (`Restrict`) until its placement is removed (or the decision is revisited) |
 
+## Operator-entered GFA + line-area UFA/NLA (marked facility area)
+
+GFA is **given by the operator** (typed per floor plan in the editor's "GFA
+(sqft)" field, saved with the canvas), never derived from the canvas size:
+
+- `FloorPlan.gfaSqft` (`Float?`, migration
+  `20260919000000_floor_plan_gfa_sqft`, additive, no backfill of fake values —
+  `NULL` = unset). `POST /floor-plans/:floorId` accepts optional `gfaSqft`
+  (positive sqft, 1dp, capped at 10M server-side; `null` clears, omitted keeps).
+  Every plan read (CMS + public-safe) returns `gfaSqft` (`null` when unset) and
+  `gfaSource: 'USER' | 'CANVAS'`.
+- The live metrics report (`GET /floor-plans/:floorId/metrics`) uses the
+  entered GFA for `geometry.gfa`, `efficiency` (= NLA_enclosed / entered GFA)
+  and the revenue chain when set (`geometry.gfaSource: 'USER'`, tagged in
+  `basis_notes`; an efficiency > 100% adds a verify-your-GFA note). When unset
+  the report falls back to the canvas-derived rect (`gfaSource: 'CANVAS'`,
+  flagged in `basis_notes` — never fabricated).
+
+The editor line tool marks the **facility layout plan**; UFA and NLA are
+calculated from that marked area (`boundaryMetrics` on plan reads, plus the
+editor toolbar strip via the parity function `fpBoundaryMetricsLocal` in
+`floorplanView.js` — keep it in sync with `computeBoundaryMetrics` in
+`src/core/floorPlans.ts`).
+
+**Marked-area rule (one deterministic rule, enforced + documented in code,
+docs, and the selection-strip copy):** every boundary polyline with **≥ 3
+vertices and nonzero shoelace area** contributes its **chord-closed** area
+(shoelace implicitly closes last→first, so closed loops and open ≥ 3-vertex
+polylines count alike; multiple contributing lines are summed). An **open
+2-vertex segment encloses no area and contributes 0** — a line has no area, so
+nothing is fabricated; the selection strip says exactly this ("needs a 3rd
+vertex (close the loop) to feed UFA/NLA") and offers a **Close loop** action
+(`PUT …/boundaries/:id { closed: true }`, server re-validates 3+ distinct
+vertices with 400 otherwise).
+
+Definitions (same clamps as before, rounded to 1 decimal):
+
+| Measure | Meaning |
+| ------- | ------- |
+| `facilityAreaSqft` (= `gla`, kept for compatibility) | summed marked-loop area (shoelace, sqft) |
+| `ufa` | marked gross minus `FloorPlanBlock` rects + solid legacy-structure rects (thin wall lines excluded) |
+| `nla` | placed-unit footprints clipped to the marked loops (each placement row counts, so both stack tiers count), clamped ≤ UFA |
+
+With **no contributing marked line** the report is all-zero with
+`boundaryClosed: false` — the reused "no marked area" flag (true means "≥ 1
+area-contributing marked line exists", whether a closed loop or an open
+≥ 3-vertex polyline). The metrics panel shows the explicit "No marked area"
+strip state; it never fabricates.
+
+**Line styling:** all persisted lines render **solid** (`.fp-boundary.open`
+carries no `stroke-dasharray`; closed loops stay filled + solid). Only the
+in-flight pencil **draft** previews dashed (`.fp-boundary.draft`) so the
+operator can tell the unsaved preview apart.
+
 ## Migration
+
+`prisma/migrations/20260919000000_floor_plan_gfa_sqft/migration.sql` —
+additive `ADD COLUMN "FloorPlan"."gfaSqft" DOUBLE PRECISION` (nullable, no
+default, no backfill). Applied cleanly with `prisma migrate deploy` over the
+existing dev data (all plans keep `NULL` = unset = canvas fallback; no row
+changes meaning).
 
 `prisma/migrations/20260817140819_add_floor_plan_layout/migration.sql` — two `CREATE TABLE`,
 three `CREATE INDEX`/`CREATE UNIQUE INDEX`, three `ADD CONSTRAINT` statements only. Verified

@@ -81,6 +81,7 @@ export const state = {
     boundaries: [], // normalized boundary line items (grid-ft polylines; kind 'PENCIL' = pencil-drawn lines)
     drawMode: false, // ✎ line tool active — canvas press-drag draws a line, placement/block drags gated off
     selectedBoundary: null, // selected boundary line-item id (info strip shows Remove line)
+    gfa: null, // operator-entered plan GFA in sqft (mirrors FloorPlan.gfaSqft; null = unset, metrics fall back to canvas rect)
   },
   // Area-metrics panel state (facility setup view; read-only live reads of
   // the Phase-2 endpoints for the editor's selected floor).

@@ -219,6 +219,12 @@ model FloorPlan {
                   // lift / stairs / fire exit) from before FloorPlanBlock existed.
                   // Kept readable/writable for old clients; the editor authors new
                   // decorations as FloorPlanBlock rows instead (see FloorPlanBlock).
+  // Operator-entered gross floor area in SQFT (nullable Float, no backfill:
+  // NULL = unset). When set, the area-metrics report uses it as GFA
+  // (gfaSource 'USER'); when NULL the report falls back to the
+  // canvas-derived rect (width x height, gfaSource 'CANVAS'). Additive,
+  // nullable, never fabricated — see docs/FLOOR_PLAN_MODEL.md.
+  gfaSqft   Float?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -284,7 +290,9 @@ model FloorPlanBoundary {
   label       String    @default("Boundary") // operator-given line name ("North wing boundary", ...)
   kind        String    @default("BOUNDARY") // line-kind tag (BOUNDARY today; additive for future kinds)
   points      Json // polyline vertices [[x,y],...] in grid-ft units (1 grid unit = 1 ft)
-  closed      Boolean   @default(false) // true once the loop is closed — only closed loops feed metrics
+  closed      Boolean   @default(false) // true once the loop is closed — closed loops AND open >= 3-vertex
+                                        // polylines (chord-closed) feed boundaryMetrics; open 2-vertex segments
+                                        // contribute 0 until extended/closed (see docs/FLOOR_PLAN_MODEL.md)
   sortOrder   Int       @default(0) // stable editor ordering (lowest first)
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt

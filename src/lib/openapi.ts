@@ -25,7 +25,7 @@ export const openapiSpec = {
   openapi: '3.0.3',
   info: {
     title: 'StoreLah Booking API',
-    version: '1.5.4',
+    version: '1.5.5',
     description: [
       'Customer-facing booking API for the StoreLah self-storage business.',
       '',
@@ -106,6 +106,19 @@ export const openapiSpec = {
         'UFA = GLA minus block + solid-structure footprints, NLA = placed-unit footprints inside ' +
         'the loops (clamped, 1dp); all-zero with `boundaryClosed: false` when no loop is closed. ' +
         'All pre-existing plan shapes, metrics endpoints, and promotion/booking/customer APIs are unchanged.',
+      '',
+      'v1.5.5 is ADDITIVE-ONLY over 1.5.4: operator-entered GFA per floor plan — ' +
+        '`POST /cms/floor-plans/{floorId}` accepts an optional `gfaSqft` (positive sqft, null clears, ' +
+        'omitted keeps) and every plan read gains `gfaSqft` (null when unset) + `gfaSource` ' +
+        '(`USER` | `CANVAS`); the live metrics `geometry` gains `gfaSource` and uses the entered GFA ' +
+        'for `gfa`, efficiency and the revenue chain when set (canvas-rect fallback flagged in ' +
+        '`basis_notes` when unset). Marked-area rule for line-driven UFA/NLA: closed loops AND open ' +
+        'polylines with 3+ vertices (chord-closed) feed `boundaryMetrics` (open 2-vertex segments ' +
+        'persist and render SOLID but contribute 0 until extended/closed); `boundaryMetrics` gains ' +
+        '`facilityAreaSqft` (= marked gross, same value as `gla`) plus mirrored `gfaSqft`/`gfaSource`, ' +
+        'all-zero with `boundaryClosed: false` when no marked line contributes area — never fabricated. ' +
+        'Persisted editor lines render solid (only the in-flight draft previews dashed). ' +
+        'All pre-existing shapes are unchanged.',
     ].join('\n'),
   },
   servers: [
@@ -707,7 +720,8 @@ export const openapiSpec = {
         description: [
           'Lists the facility-boundary line-item polylines on the floor\'s plan in editor sort order ' +
             '([] when the floor has no plan yet). Plan reads also embed `boundaries` plus derived ' +
-            '`boundaryMetrics { gla, ufa, nla, unit, boundaryClosed }`.',
+            '`boundaryMetrics { gla, ufa, nla, unit, boundaryClosed, facilityAreaSqft, gfaSqft, gfaSource }` ' +
+            '(marked-area rule: 3+-vertex polylines feed UFA/NLA; 2-vertex segments contribute 0).',
           '',
           'Operator CMS endpoints are documented here for reference only; they are served on the CMS host under ',
           '`/api/v1/cms` and require a Bearer JWT issued by `/api/v1/cms/login` (auto-login via `/api/v1/cms/config`).',
@@ -737,8 +751,9 @@ export const openapiSpec = {
         description: [
           'Creates a facility-boundary line-item polyline (grid-ft vertices `[[x, y], ...]`, 2+ vertices; ' +
             '`closed: true` needs 3+ distinct vertices) on the floor\'s plan. Vertices must sit on the canvas. ' +
-            'The plan is lazily created at the default canvas if the floor has none yet. Open polylines persist ' +
-            'honestly and report no metrics until the loop is closed.',
+            'The plan is lazily created at the default canvas if the floor has none yet. Marked-area rule: ' +
+            '3+-vertex polylines (open or closed) feed UFA/NLA via chord-close; open 2-vertex segments persist ' +
+            'honestly and contribute 0 until extended/closed.',
           '',
           'Operator CMS endpoints are documented here for reference only; they are served on the CMS host under ',
           '`/api/v1/cms` and require a Bearer JWT issued by `/api/v1/cms/login` (auto-login via `/api/v1/cms/config`).',
@@ -2876,7 +2891,7 @@ export const openapiSpec = {
           },
           accessType: {
             type: 'string',
-            description: 'Additive: access tier (e.g. Ground floor / Standard) disambiguating the two cells that share a size × month key.',
+            description: 'Additive: access tier (e.g. Ground floor / Standard) disambiguating the two cells that share a size × month key. Builder authors Standard only; Ground floor is legacy read-only.',
           },
         },
       },
@@ -3532,7 +3547,7 @@ export const openapiSpec = {
         type: 'object',
         required: ['id', 'label', 'kind', 'points', 'closed', 'sortOrder'],
         description:
-          'A facility-boundary line item on a floor plan: an operator-drawn polyline marking the facility boundary for NLA / GLA / UFA measurement. Vertices are grid-ft [x, y] pairs (1 grid unit = 1 ft); only closed loops feed boundaryMetrics.',
+          'A facility-boundary line item on a floor plan: an operator-drawn polyline marking the facility layout for line-area UFA / NLA measurement. Vertices are grid-ft [x, y] pairs (1 grid unit = 1 ft); 3+-vertex polylines (open or closed) feed boundaryMetrics, 2-vertex segments contribute 0 until extended/closed.',
         properties: {
           id: { type: 'string', description: 'FloorPlanBoundary row id (cuid).' },
           label: {
@@ -3555,7 +3570,7 @@ export const openapiSpec = {
           },
           closed: {
             type: 'boolean',
-            description: 'True once the loop is closed — only closed loops feed boundaryMetrics.',
+            description: 'True once the loop is closed. Marked-area rule: closed loops AND open 3+-vertex polylines (chord-closed) feed boundaryMetrics; open 2-vertex segments contribute 0 until extended/closed.',
           },
           sortOrder: { type: 'integer', description: 'Stable editor ordering (lowest first).' },
         },
@@ -3585,13 +3600,16 @@ export const openapiSpec = {
         type: 'object',
         required: ['gla', 'ufa', 'nla', 'unit', 'boundaryClosed'],
         description:
-          'NLA / GLA / UFA derived from CLOSED boundary loops: GLA = closed-loop area; UFA = GLA minus block + solid-structure footprints (thin wall lines excluded); NLA = placed-unit footprints inside the loops, clamped to UFA. All-zero with boundaryClosed: false when no loop is closed — never fabricated. Rounded to 1 decimal.',
+          'Line-area UFA/NLA from the marked facility layout. Marked-area rule: every polyline with 3+ vertices and nonzero shoelace area contributes its chord-closed area (closed loops and open 3+-vertex polylines alike); open 2-vertex segments contribute 0 — never fabricated. facilityAreaSqft = marked gross (same value as gla); UFA = marked gross minus block + solid-structure footprints (thin wall lines excluded); NLA = placed-unit footprints inside the marked loops (both stack tiers count), clamped to UFA. All-zero with boundaryClosed: false when no marked line contributes area. Rounded to 1 decimal. gfaSqft mirrors the plan operator-entered GFA (null when unset); gfaSource tags it USER vs CANVAS.',
         properties: {
-          gla: { type: 'number', description: 'Gross lettable area (sqft).' },
+          gla: { type: 'number', description: 'Marked gross area (sqft) — same value as facilityAreaSqft, kept for compatibility.' },
           ufa: { type: 'number', description: 'Usable floor area (sqft).' },
           nla: { type: 'number', description: 'Net lettable area (sqft).' },
           unit: { type: 'string', enum: ['sqft'] },
-          boundaryClosed: { type: 'boolean', description: 'True when at least one closed loop exists.' },
+          boundaryClosed: { type: 'boolean', description: 'True when at least one area-contributing marked line exists (closed loop OR open 3+-vertex polyline).' },
+          facilityAreaSqft: { type: 'number', description: 'Marked gross facility area (sqft) — same value as gla.' },
+          gfaSqft: { type: 'number', nullable: true, description: 'Operator-entered plan GFA (sqft); null when unset.' },
+          gfaSource: { type: 'string', enum: ['USER', 'CANVAS'], description: 'USER when gfaSqft is set, CANVAS when the metrics report falls back to the canvas rect.' },
         },
       },
       PublicFloorPlan: {
@@ -3629,6 +3647,8 @@ export const openapiSpec = {
               floorId: { type: 'string' },
               width: { type: 'integer', description: 'Canvas width in feet (1 grid unit = 1 ft).' },
               height: { type: 'integer', description: 'Canvas height in feet (1 grid unit = 1 ft).' },
+              gfaSqft: { type: 'number', nullable: true, description: 'Operator-entered gross floor area (sqft); null when unset (metrics fall back to the canvas rect).' },
+              gfaSource: { type: 'string', enum: ['USER', 'CANVAS'], description: 'USER when gfaSqft is set, CANVAS otherwise.' },
               structure: {
                 description:
                   'LEGACY free-form JSONB decorations authored by the operator (walls / corridors / entrance / lift / stairs / fireExit). Kept for old clients; new decorations are authored as `blocks`. Optional.',
@@ -3647,7 +3667,7 @@ export const openapiSpec = {
               },
               boundaryMetrics: {
                 description:
-                  'NLA / GLA / UFA derived from CLOSED boundary loops (all-zero with boundaryClosed: false when no loop is closed).',
+                  'Line-area UFA/NLA from the marked facility layout (all-zero with boundaryClosed: false when no marked line contributes area).',
                 $ref: openapiSchemaRef('BoundaryMetrics'),
               },
               placements: {
@@ -3798,9 +3818,10 @@ export const openapiSpec = {
           assumptions: { $ref: openapiSchemaRef('MetricsAssumptions') },
           geometry: {
             type: 'object',
-            description: 'Centreline-basis aggregates; every area is an AreaMeasure.',
+            description: 'Centreline-basis aggregates; every area is an AreaMeasure. gfaSource tags the GFA basis: USER (operator-entered FloorPlan.gfaSqft, driving gfa/efficiency/revenue chain) vs CANVAS (canvas-rect fallback, flagged in basis_notes).',
             properties: {
               gfa: { $ref: openapiSchemaRef('AreaMeasure') },
+              gfaSource: { type: 'string', enum: ['USER', 'CANVAS'] },
               exteriorWall: { $ref: openapiSchemaRef('AreaMeasure') },
               ufa: { $ref: openapiSchemaRef('AreaMeasure') },
               nlaEnclosed: { $ref: openapiSchemaRef('AreaMeasure') },

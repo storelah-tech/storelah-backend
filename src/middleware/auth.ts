@@ -92,6 +92,15 @@ export function extractCustomerPayload(req: Request): CustomerJwtPayload {
   return payload;
 }
 
+/**
+ * True only when an Authorization header carrying a Bearer token is present.
+ * Non-Bearer garbage (e.g. a stale/misconfigured client default) is treated
+ * as ABSENT so dual-mode routes (POST /customer/bookings, checkout sessions)
+ * fall through to guest handling instead of 401ing. A present Bearer token is
+ * still verified strictly — extractCustomerPayload / requireCustomerAuth below
+ * hard-401 on verify-fail/kind-mismatch and never downgrade to guest.
+ */
 export function hasAuthorizationHeader(req: Request): boolean {
-  return !!req.headers.authorization;
+  const header = req.headers.authorization;
+  return typeof header === 'string' && /^Bearer\s+\S+/.test(header);
 }

@@ -4,6 +4,7 @@ import { AccountType, Customer, Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { toNum } from '../lib/format';
 import { AppError } from '../lib/http';
+import { toCanonicalSizeCategory } from './promotionPlans';
 import { CustomerJwtPayload, signCustomerToken } from '../middleware/auth';
 
 export interface RegisterCustomerInput {
@@ -423,19 +424,28 @@ export async function getCustomerPortal(payload: CustomerJwtPayload) {
 // --- Booking pricing (server-side recompute) ----------------------------------
 //
 // The client's `totalDueToday` is a HINT ONLY — the invoiced figure is derived
-// from server truth: unit.monthlyRate − validated promo discount + catalog
+// from server truth: unit.monthlyRate − plan/promo discount + catalog
 // protection price + catalog addon prices. A hint that undercuts the server
 // figure is a tampered underpayment and is rejected with 400; a hint at/above
 // it is ignored (the server figure is invoiced verbatim).
 //
-// Promo validation mirrors validatePromotion() in core/promotions.ts (active +
-// date window + minMonths + identical discount math) so the booking-time
-// discount can never exceed what the public validate endpoint would grant.
-// Protection tiers resolve by catalog slug (unknown/inactive tier = 0 — the
-// client cannot invent a cheap tier). Addons resolve by catalog name/slug when
-// matched (catalog price wins); unmatched names fall back to the client price
-// (they only ever ADD ≥ 0, so they cannot undercut the rent floor).
-// movingService has no priced fee schedule — it contributes 0 by design.
+// Promo precedence: the ACTIVE promotion-plan DISCOUNT MATRIX wins first — an
+// exact (sizeCategory from unit.size, commitmentMonths from durationMonths)
+// cell discounts the rent to Math.round(base * (1 - pct/100)) (integer
+// rounding parity with the booking frontend's Math.round, so a
+// plan-discounted client hint converges instead of 400ing). Across ACTIVE
+// plans / accessTypes sharing the key the largest discountPct wins. Only when
+// NO exact cell (or no positive pct) exists does the legacy promo-code path
+// below run — its validation mirrors validatePromotion() in
+// core/promotions.ts (active + date window + minMonths + identical discount
+// math) so the booking-time discount can never exceed what the public
+// validate endpoint would grant. Plan and legacy discounts never stack.
+// Protection tiers resolve by catalog id slug OR case-insensitive name
+// (unknown/inactive tier = 0 — the client cannot invent a cheap tier).
+// Addons resolve by catalog id/name/slug when matched (catalog price wins);
+// unmatched names fall back to the client price (they only ever ADD ≥ 0, so
+// they cannot undercut the rent floor). movingService has no priced fee
+// schedule — it contributes 0 by design.
 //
 // DELIBERATE DIVERGENCE (product decision pending — do NOT "fix" by adding
 // GST/deposit/proration here): the booking-app client computes Due Today as
@@ -445,40 +455,82 @@ export async function getCustomerPortal(payload: CustomerJwtPayload) {
 // Consequences are intentional and one-sided: a client hint ABOVE the server
 // figure (the normal deposit+GST case) passes and is still invoiced at the
 // SERVER figure; a hint BELOW server − 0.01 400s with an enriched breakdown so
-// the frontend can refresh-and-retry without guessing. Do not add GST, deposit,
-// proration, or term-matrix math to this formula without an explicit product
-// decision — that changes what every invoice + Stripe session charges.
+// the frontend can refresh-and-retry without guessing. Do not add GST, deposit
+// or proration to this formula without an explicit product decision — that
+// changes what every invoice + Stripe session charges. (The plan-matrix
+// discount above IS an explicit product decision — coordinated with the
+// booking frontend lane, which keeps sending plan-discounted totals.)
 async function computeServerDueToday(
   tx: Prisma.TransactionClient,
-  unit: { monthlyRate: Prisma.Decimal | number },
+  unit: { monthlyRate: Prisma.Decimal | number; size?: { code: string; name: string } | null },
   input: CreateBookingInput,
 ): Promise<{ total: number; base: number; promoDiscount: number; protection: number; addons: number }> {
   const base = toNum(unit.monthlyRate);
-  const now = new Date();
 
   let promoDiscount = 0;
-  const code = input.promoCode?.trim();
-  if (code) {
-    const promo = await tx.promotion.findUnique({ where: { code } });
-    const usable =
-      !!promo &&
-      promo.active &&
-      (!promo.startDate || promo.startDate <= now) &&
-      (!promo.endDate || promo.endDate >= now) &&
-      (promo.minMonths == null || input.durationMonths >= promo.minMonths);
-    if (usable) {
-      const value = toNum(promo!.discountValue);
-      promoDiscount =
-        promo!.discountType === 'PERCENTAGE'
-          ? toNum((base * value) / 100)
-          : toNum(Math.min(value, base));
+  let planApplied = false;
+
+  // ACTIVE promotion-plan matrix FIRST: exact
+  // (sizeCategory, commitmentMonths) wins over the legacy promo-code path.
+  const sizeCategory = toCanonicalSizeCategory(unit.size?.code ?? unit.size?.name ?? '');
+  if (sizeCategory && Number.isFinite(input.durationMonths)) {
+    const plans = await tx.promotionPlan.findMany({
+      where: { status: 'ACTIVE' },
+      include: { matrixCells: true },
+    });
+    let bestPct: number | null = null;
+    for (const p of plans) {
+      for (const c of p.matrixCells) {
+        if (
+          toCanonicalSizeCategory(c.sizeCategory) === sizeCategory &&
+          c.commitmentMonths === input.durationMonths
+        ) {
+          const pct = toNum(c.discountPct);
+          if (bestPct == null || pct > bestPct) bestPct = pct;
+        }
+      }
+    }
+    if (bestPct != null && bestPct > 0) {
+      // Frontend parity: the DISCOUNTED RENT is integer-rounded
+      // (Math.round), not the discount amount.
+      const discounted = Math.round(base * (1 - bestPct / 100));
+      promoDiscount = toNum(Math.max(0, base - discounted));
+      planApplied = true;
+    }
+  }
+
+  if (!planApplied) {
+    const code = input.promoCode?.trim();
+    if (code) {
+      const now = new Date();
+      const promo = await tx.promotion.findUnique({ where: { code } });
+      const usable =
+        !!promo &&
+        promo.active &&
+        (!promo.startDate || promo.startDate <= now) &&
+        (!promo.endDate || promo.endDate >= now) &&
+        (promo.minMonths == null || input.durationMonths >= promo.minMonths);
+      if (usable) {
+        const value = toNum(promo!.discountValue);
+        promoDiscount =
+          promo!.discountType === 'PERCENTAGE'
+            ? toNum((base * value) / 100)
+            : toNum(Math.min(value, base));
+      }
     }
   }
 
   let protection = 0;
   const tier = input.protectionPlan?.tier?.trim();
   if (tier) {
-    const row = await tx.protectionPlan.findUnique({ where: { id: tier } });
+    const row = await tx.protectionPlan.findFirst({
+      where: {
+        OR: [
+          { id: { equals: tier, mode: 'insensitive' } },
+          { name: { equals: tier, mode: 'insensitive' } },
+        ],
+      },
+    });
     if (row && row.active) protection = toNum(row.price);
   }
 
@@ -489,7 +541,13 @@ async function computeServerDueToday(
       const qty = Math.max(0, Math.floor(a.qty));
       if (!qty) continue;
       const key = a.name.trim().toLowerCase();
-      const match = catalog.find((c) => c.name.toLowerCase() === key || c.id === key.replace(/\s+/g, '-'));
+      const slugKey = key.replace(/\s+/g, '-');
+      const match = catalog.find(
+        (c) =>
+          c.id.toLowerCase() === key ||
+          c.id.toLowerCase() === slugKey ||
+          c.name.toLowerCase() === key,
+      );
       const unitPrice = match ? toNum(match.price) : Math.max(0, a.price);
       addons = toNum(addons + unitPrice * qty);
     }
@@ -527,7 +585,10 @@ export async function createCustomerBooking(customer: Customer, input: CreateBoo
   }
 
   return prisma.$transaction(async (tx) => {
-    const unit = await tx.unit.findUnique({ where: { unitCode: input.unitCode } });
+    const unit = await tx.unit.findUnique({
+      where: { unitCode: input.unitCode },
+      include: { size: true },
+    });
     // Soft-deleted units are not addressable (see docs/UNIT_DELETION.md):
     // deletedAt is the only deletion marker, so a deleted row 404s here
     // instead of leaking into the status check below.

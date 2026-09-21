@@ -1195,12 +1195,12 @@ export const openapiSpec = {
         summary: 'Create a booking',
         description: [
           'Books a unit and returns the created booking. On success the unit is marked RESERVED and a DUE invoice is ',
-          'raised for the server-recomputed due-today total (unit rate minus validated promo plus catalog protection/addon prices); ',
+          'raised for the server-recomputed due-today total (unit rate minus ACTIVE promotion-plan matrix discount — exact size × commitment-months cell, integer-rounded — else validated promo-code discount, plus catalog protection/addon prices); ',
           'the client `totalDueToday` is a hint only — a hint below server pricing is `400 VALIDATION` ' +
           'with details `{ expected, base, promoDiscount, protection, addons }` (all numbers) for refresh-and-retry.',
           '',
           'Auth: dual-mode. WITH a bearer token, books for the authenticated customer (invalid token = 401). ',
-          'WITHOUT any Authorization header, performs guest checkout: the body must include `email`, and the customer ',
+          'WITHOUT any Bearer Authorization header, performs guest checkout: the body must include `email`, and the customer ',
           'record is found-or-created by it (new customers get type GUEST and a bcrypt-hashed default password).',
           '',
           'Errors: `404 NOT_FOUND` when the unit code is unknown, `409 CONFLICT` when the unit is not AVAILABLE/RESERVED, ',
@@ -1224,7 +1224,7 @@ export const openapiSpec = {
             'Invalid booking payload, or `moveInDate` is not a valid date.',
           ),
           '401': openapiErrorResponse(
-            'Bearer token was supplied but is invalid/expired. (No header at all → guest checkout instead of 401.)',
+            'Bearer token was supplied but is invalid/expired. (No Bearer header at all → guest checkout instead of 401.)',
           ),
           '404': openapiErrorResponse('Unit not found.'),
           '409': openapiErrorResponse(

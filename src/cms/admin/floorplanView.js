@@ -287,8 +287,10 @@ function fpNormalizeBoundaries(plan) {
 // ---------- marked-area metrics parity (client mirror of computeBoundaryMetrics) ----------
 // MARKED-AREA RULE (keep in sync with src/core/floorPlans.ts): every polyline
 // with >= 3 vertices and nonzero shoelace area contributes its chord-closed
-// area (closed loops and open >= 3-vertex polylines alike); open 2-vertex
-// segments enclose no area and contribute 0 — never fabricated. UFA = marked
+// area (closed loops and open >= 3-vertex polylines alike), plus stitched
+// rings chained from endpoint-connected leftover strokes (so a loop drawn as
+// separate 2-vertex sides counts); a lone open 2-vertex segment encloses no
+// area and contributes 0 — never fabricated. UFA = marked
 // gross minus block + solid-structure rects; NLA = placement footprints
 // clipped to the marked loops (both stack tiers count); clamps ≥ 0,
 // NLA ≤ UFA, 1dp. No contributing line → all-zero + boundaryClosed: false.
@@ -338,10 +340,54 @@ function fpRectPolygonArea(rect, polygon) {
 
 const fpRound1 = (v) => Math.round(v * 10) / 10;
 
+// Stitch endpoint-connected boundary polylines into longer chains. Mirrors
+// chainBoundarySegments() in src/core/floorPlans.ts — keep the two in sync
+// (see its doc comment for the full contract: shared exact integer endpoints
+// join in either orientation until fixpoint, closed chains are final,
+// zero-length polylines skipped, deterministic input order).
+function fpChainBoundarySegments(segments) {
+  const key = (p) => `${p[0]},${p[1]}`;
+  const chains = [];
+  for (const seg of segments || []) {
+    const pts = seg.map(([x, y]) => [x, y]);
+    if (pts.length < 2) continue;
+    if (!pts.some(([x, y]) => x !== pts[0][0] || y !== pts[0][1])) continue;
+    chains.push(pts);
+  }
+  const isClosed = (c) => c.length >= 2 && key(c[0]) === key(c[c.length - 1]);
+  let merged = true;
+  while (merged) {
+    merged = false;
+    for (let i = 0; i < chains.length && !merged; i++) {
+      if (isClosed(chains[i])) continue;
+      for (let j = 0; j < chains.length && !merged; j++) {
+        if (i === j || isClosed(chains[j])) continue;
+        const a = chains[i];
+        const b = chains[j];
+        let joined = null;
+        if (key(a[a.length - 1]) === key(b[0])) joined = [...a, ...b.slice(1)];
+        else if (key(a[a.length - 1]) === key(b[b.length - 1])) joined = [...a, ...b.slice(0, -1).reverse()];
+        else if (key(a[0]) === key(b[b.length - 1])) joined = [...b, ...a.slice(1)];
+        else if (key(a[0]) === key(b[0])) joined = [...b.slice(0, -1).reverse(), ...a];
+        if (joined) {
+          chains[i] = joined;
+          chains.splice(j, 1);
+          merged = true;
+        }
+      }
+    }
+  }
+  return chains;
+}
+
 function fpBoundaryMetricsLocal() {
-  const loops = (state.fp.boundaries || [])
+  const validated = (state.fp.boundaries || [])
     .map((b) => fpBoundaryPoints(b.points))
-    .filter((pts) => pts.length >= 3 && fpPolygonArea(pts) > 0);
+    .filter((pts) => pts.length >= 2 && pts.some(([x, y]) => x !== pts[0][0] || y !== pts[0][1]));
+  const direct = validated.filter((pts) => pts.length >= 3 && fpPolygonArea(pts) > 0);
+  const leftover = validated.filter((pts) => !(pts.length >= 3 && fpPolygonArea(pts) > 0));
+  const stitched = fpChainBoundarySegments(leftover).filter((pts) => pts.length >= 3 && fpPolygonArea(pts) > 0);
+  const loops = [...direct, ...stitched];
   const gfa = state.fp.gfa;
   const gfaSource = gfa != null ? 'USER' : 'CANVAS';
   if (!loops.length) {

@@ -864,7 +864,8 @@ export const openapiSpec = {
           'Lists the facility-boundary line-item polylines on the floor\'s plan in editor sort order ' +
             '([] when the floor has no plan yet). Plan reads also embed `boundaries` plus derived ' +
             '`boundaryMetrics { gla, ufa, nla, unit, boundaryClosed, facilityAreaSqft, gfaSqft, gfaSource }` ' +
-            '(marked-area rule: 3+-vertex polylines feed UFA/NLA; 2-vertex segments contribute 0).',
+            '(marked-area rule: 3+-vertex polylines feed UFA/NLA; lone 2-vertex segments contribute 0, ' +
+            'but endpoint-connected segments that join into a ring feed UFA/NLA as one loop).',
           '',
           'Operator CMS endpoints are documented here for reference only; they are served on the CMS host under ',
           '`/api/v1/cms` and require a Bearer JWT issued by `/api/v1/cms/login` (auto-login via `/api/v1/cms/config`).',
@@ -895,7 +896,8 @@ export const openapiSpec = {
           'Creates a facility-boundary line-item polyline (grid-ft vertices `[[x, y], ...]`, 2+ vertices; ' +
             '`closed: true` needs 3+ distinct vertices) on the floor\'s plan. Vertices must sit on the canvas. ' +
             'The plan is lazily created at the default canvas if the floor has none yet. Marked-area rule: ' +
-            '3+-vertex polylines (open or closed) feed UFA/NLA via chord-close; open 2-vertex segments persist ' +
+            '3+-vertex polylines (open or closed) feed UFA/NLA via chord-close, as do endpoint-connected ' +
+            'segments that join into a ring (e.g. a square drawn as four strokes); lone open 2-vertex segments persist ' +
             'honestly and contribute 0 until extended/closed.',
           '',
           'Operator CMS endpoints are documented here for reference only; they are served on the CMS host under ',

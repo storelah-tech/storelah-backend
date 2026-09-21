@@ -208,7 +208,11 @@ function serializeBlock(b: BlockRow) {
 //     so CLOSED loops and OPEN >= 3-vertex polylines count alike). Multiple
 //     contributing lines are summed (non-overlapping marks assumed;
 //     overlapping marks may double-count).
-//   - An OPEN 2-vertex segment encloses no area and contributes 0 — a line has
+//   - Pencil-stroke stitching: leftover polylines (2-vertex sides, degenerate
+//     rows) that share exact integer endpoints are chained via
+//     chainBoundarySegments, and each resulting >= 3-vertex nonzero ring feeds
+//     UFA/NLA as one loop — a square drawn as four separate strokes counts.
+//   - A LONE open 2-vertex segment encloses no area and contributes 0 — a line has
 //     no area, so nothing is fabricated. The editor selection strip says this
 //     explicitly ("needs a 3rd vertex / close the loop to feed UFA/NLA").
 // DEFINITIONS:
@@ -262,6 +266,58 @@ export function polygonArea(points: ReadonlyArray<readonly [number, number]>): n
     sum += x1 * y2 - x2 * y1;
   }
   return Math.abs(sum) / 2;
+}
+
+/**
+ * Stitch endpoint-connected boundary polylines into longer chains (mirrors
+ * fpChainBoundarySegments() in src/cms/admin/floorplanView.js — keep the two
+ * in sync). The pencil tool persists one row per stroke, so a loop drawn as
+ * several 2-vertex sides (e.g. four strokes forming a 3x3 square) never forms
+ * a single >= 3-vertex row — chaining joins rows that share an exact integer
+ * endpoint (either orientation) into one vertex list, repeating until no two
+ * open chains share an endpoint. Closed chains (first == last vertex) are
+ * final and never extended; zero-length polylines (all vertices identical)
+ * carry no geometry and are skipped. Returns the chains in deterministic
+ * input order; callers keep only >= 3-vertex nonzero-shoelace chains, so a
+ * lone 2-vertex segment still contributes 0, and overlapping marks may
+ * double-count (same non-overlapping assumption as the marked-area rule).
+ */
+export function chainBoundarySegments(
+  segments: Array<ReadonlyArray<readonly [number, number]>>,
+): Array<Array<[number, number]>> {
+  const key = (p: readonly [number, number]): string => `${p[0]},${p[1]}`;
+  const chains: Array<Array<[number, number]>> = [];
+  for (const seg of segments) {
+    const pts = seg.map(([x, y]) => [x, y] as [number, number]);
+    if (pts.length < 2) continue;
+    if (!pts.some(([x, y]) => x !== pts[0][0] || y !== pts[0][1])) continue;
+    chains.push(pts);
+  }
+  const isClosed = (c: Array<[number, number]>): boolean =>
+    c.length >= 2 && key(c[0]) === key(c[c.length - 1]);
+  let merged = true;
+  while (merged) {
+    merged = false;
+    for (let i = 0; i < chains.length && !merged; i++) {
+      if (isClosed(chains[i])) continue;
+      for (let j = 0; j < chains.length && !merged; j++) {
+        if (i === j || isClosed(chains[j])) continue;
+        const a = chains[i];
+        const b = chains[j];
+        let joined: Array<[number, number]> | null = null;
+        if (key(a[a.length - 1]) === key(b[0])) joined = [...a, ...b.slice(1)];
+        else if (key(a[a.length - 1]) === key(b[b.length - 1])) joined = [...a, ...b.slice(0, -1).reverse()];
+        else if (key(a[0]) === key(b[b.length - 1])) joined = [...b, ...a.slice(1)];
+        else if (key(a[0]) === key(b[0])) joined = [...b.slice(0, -1).reverse(), ...a];
+        if (joined) {
+          chains[i] = joined;
+          chains.splice(j, 1);
+          merged = true;
+        }
+      }
+    }
+  }
+  return chains;
 }
 
 /**
@@ -349,8 +405,10 @@ const round1 = (v: number): number => Math.round(v * 10) / 10;
  * editor can reuse this definition client-side (see fpBoundaryMetricsLocal in
  * floorplanView.js — keep the two in sync). Marked-area rule: every polyline
  * with >= 3 vertices and nonzero shoelace area contributes its chord-closed
- * area (closed loops and open >= 3-vertex polylines alike); open 2-vertex
- * segments contribute 0 (a line encloses no area — never fabricated).
+ * area (closed loops and open >= 3-vertex polylines alike), plus stitched
+ * rings chained from endpoint-connected leftover strokes (so a loop drawn as
+ * separate 2-vertex sides counts); a lone open 2-vertex segment contributes 0
+ * (a line encloses no area — never fabricated).
  */
 export function computeBoundaryMetrics(input: {
   boundaries: Array<{ points: unknown; closed: boolean }>;
@@ -359,9 +417,13 @@ export function computeBoundaryMetrics(input: {
   placements: FootRect[];
   gfaSqft?: number | null;
 }): BoundaryMetrics {
-  const loops = input.boundaries
+  const validated = input.boundaries
     .map((b) => boundaryPointsOf(b.points))
-    .filter((pts) => pts.length >= 3 && polygonArea(pts) > 0);
+    .filter((pts) => pts.length >= 2 && pts.some(([x, y]) => x !== pts[0][0] || y !== pts[0][1]));
+  const direct = validated.filter((pts) => pts.length >= 3 && polygonArea(pts) > 0);
+  const leftover = validated.filter((pts) => !(pts.length >= 3 && polygonArea(pts) > 0));
+  const stitched = chainBoundarySegments(leftover).filter((pts) => pts.length >= 3 && polygonArea(pts) > 0);
+  const loops = [...direct, ...stitched];
   const gfaSqft = input.gfaSqft ?? null;
   const gfaSource: GfaSource = gfaSqft != null ? 'USER' : 'CANVAS';
   if (!loops.length) {

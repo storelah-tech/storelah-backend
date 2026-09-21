@@ -1340,7 +1340,13 @@ export const openapiSpec = {
           '',
           'Auth: dual-mode like POST /customer/bookings. GUEST bookings (owning customer is type GUEST) need no ',
           'Authorization header; bookings owned by a registered customer require the owner Bearer token (401 without one, ',
-          '403 for a different customer; a present-but-invalid token is a hard 401).',
+          '403 for a different customer; a present-but-invalid token is a hard 401). ',
+          'Email-proof bypass (pay gate only, no PII read): an unauthenticated caller whose `email` ',
+          'matches the booking customer email (case-insensitive) for that `bookingRef` may create the ',
+          'session without login — the unguessable bookingRef plus payer-email possession is the proof. ',
+          'An optional `mobile` strengthens the proof when both sides hold a number (digits-only match; ',
+          'a mismatch falls back to 401) but is never required. Portal/PII routes (`/me`, `/bookings`, ',
+          '`/portal`, `/requests`, `/notice`) stay Bearer-gated and are unaffected.',
           '',
           'Errors: `400 VALIDATION` when `bookingRef` is missing, `404 NOT_FOUND` for an unknown bookingRef, ',
           '`409 CONFLICT` when the booking is cancelled/already paid/has nothing due, `503 STRIPE_NOT_CONFIGURED` when ',
@@ -3880,7 +3886,12 @@ export const openapiSpec = {
             type: 'string',
             format: 'email',
             description:
-              'Receipt email. Optional — defaults to the booking customer email.',
+              'Receipt email. Optional — defaults to the booking customer email. When no Bearer token is sent for a registered-customer booking, a matching email is accepted as ownership proof for session creation only.',
+          },
+          mobile: {
+            type: 'string',
+            description:
+              'Optional extra ownership proof (min 6 digits after stripping non-digits). Never required; when supplied and the booking holds a stored number the digits must match.',
           },
         },
       },

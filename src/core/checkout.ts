@@ -1,7 +1,7 @@
 // Stripe Checkout (hosted redirect, TEST MODE only) for the booking payment flow.
 //
 // Flow:
-//   1. POST /customer/checkout/sessions { bookingRef, email? } → Stripe Checkout
+//   1. POST /customer/checkout/sessions { bookingRef, email?, mobile? } → Stripe Checkout
 //      Session (amount computed server-side from the booking/invoice, SGD).
 //      Idempotent per bookingRef: a stored open session is reused and
 //      concurrent creates are deduped — no two active sessions for one
@@ -87,10 +87,23 @@ async function loadBookingForCheckout(bookingRef: string) {
  *    must belong to the booking owner, else 401/403.
  * A present-but-invalid token never downgrades to guest — the route layer
  * already rejects it via extractCustomerPayload before reaching here.
+ *
+ * Narrow email-proof bypass (pay gate ONLY, no PII read): when there is no
+ * Bearer caller but the request proves ownership with the booking's own
+ * payer email (case-insensitive, trimmed) for THIS bookingRef, session
+ * creation is allowed without a password/login. Safe because (a) bookingRef
+ * is unguessable and already scopes the row, (b) only the payer holding the
+ * confirmation email can present the exact address, and (c) this grants only
+ * Stripe-session creation — never a PII read (portal/bookings/me stay
+ * Bearer-gated). An optional `mobile` strengthens the proof when supplied
+ * (digits-only comparison against the stored tenant mobile; a mismatch
+ * falls through to 401) but is NEVER required — absent mobile still allows
+ * via the email proof (back-compat with { bookingRef, email } clients).
  */
 export async function assertCheckoutAccess(
   booking: BookingWithRefs,
   caller: CustomerJwtPayload | null,
+  proof?: { email?: string; mobile?: string },
 ): Promise<void> {
   const owner = booking.tenant.email
     ? await prisma.customer.findUnique({
@@ -100,6 +113,24 @@ export async function assertCheckoutAccess(
   const isGuestBooking =
     !owner || owner.type === AccountType.GUEST;
   if (isGuestBooking) return;
+  if (!caller && proof?.email) {
+    const claimed = proof.email.trim().toLowerCase();
+    const tenantEmail = (booking.tenant.email ?? '').trim().toLowerCase();
+    if (claimed && tenantEmail && claimed === tenantEmail) {
+      // Optional mobile strengthening: when the caller volunteers a mobile
+      // AND the tenant has a stored number, the digits must match — a
+      // mismatch falls through to the 401 below (login remains available).
+      // Absent input mobile, or no stored number to check against, keeps
+      // the email proof sufficient (back-compat).
+      const proofDigits = (proof.mobile ?? '').replace(/\D/g, '');
+      const tenantDigits = (booking.tenant.mobile ?? '').replace(/\D/g, '');
+      if (proofDigits && tenantDigits && proofDigits !== tenantDigits) {
+        // Mobile offered but does not match — do not bypass.
+      } else {
+        return;
+      }
+    }
+  }
   if (!caller) {
     throw new AppError(
       401,
@@ -155,6 +186,7 @@ async function findReusableSession(
 export interface CreateCheckoutSessionInput {
   bookingRef: string;
   email?: string;
+  mobile?: string;
 }
 
 export async function createCheckoutSession(
@@ -162,7 +194,10 @@ export async function createCheckoutSession(
   caller: CustomerJwtPayload | null,
 ): Promise<{ sessionId: string; url: string }> {
   const booking = await loadBookingForCheckout(input.bookingRef);
-  await assertCheckoutAccess(booking, caller);
+  await assertCheckoutAccess(booking, caller, {
+    email: input.email,
+    mobile: input.mobile,
+  });
 
   if (booking.status === 'CANCELLED') {
     throw new AppError(409, 'CONFLICT', 'This booking was cancelled and cannot be paid');

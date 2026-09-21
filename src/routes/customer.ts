@@ -88,6 +88,16 @@ const noticeSchema = z.object({
 const createCheckoutSessionSchema = z.object({
   bookingRef: z.string().trim().min(1),
   email: z.string().trim().email().optional(),
+  // Optional ownership proof for the pay gate (never required — back-compat
+  // with { bookingRef, email } clients; blank strings count as absent).
+  mobile: z
+    .string()
+    .trim()
+    .transform((v) => (v === '' ? undefined : v))
+    .optional()
+    .refine((v) => v === undefined || v.replace(/\D/g, '').length >= 6, {
+      message: 'Mobile must contain at least 6 digits',
+    }),
 });
 
 function customerFrom(req: Request) {

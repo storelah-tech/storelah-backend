@@ -4,10 +4,10 @@
 // through api.js, renders into the frozen markup. `Chart` is the global set up
 // by the dashboard's chart.umd <script> tag — deliberately not imported.
 
-import { MAP_TONE, fmtMoney } from './constants.js';
+import { MAP_TONE, SIZE_COLOR, SIZE_CLASS, fmtMoney } from './constants.js';
 import { $, $$, escapeHtml, showBanner } from './dom.js';
 import { get, describeError } from './api.js';
-import { state, branchByCode, branchFloors, isAllFacilities } from './state.js';
+import { state, branchByCode, branchFloors, ensureActiveLevel, isAllFacilities } from './state.js';
 
 // ---------- dashboard bindings (mirror frozen data-layer.js) ----------
 const kpiVal = (i) => $$('.kpi-strip .kpi')[i]?.querySelector('.kpi-val');
@@ -55,14 +55,42 @@ export function renderFloorTabs() {
   const tabs = $('#floorTabs');
   if (!tabs) return;
   if (isAllFacilities()) return; // tabs hidden — no single facility's floors to show
+  // branchFloors() is active-only: inactive (hidden) levels never render as
+  // selectable tabs. A stale state.level (e.g. just deactivated) falls back
+  // to the first active level so the map + table never query a hidden floor.
+  if (ensureActiveLevel(state.branchCode) == null) {
+    // Edge: branch with no active floor — empty-state text, not broken tabs.
+    tabs.innerHTML = '<div class="t-type" style="padding:8px 4px;">No active floors for this facility — reactivate one in Floors.</div>';
+    return;
+  }
   const floors = branchFloors(state.branchCode);
-  if (!floors.length) return;
   tabs.innerHTML = floors
     .map(
       (f) =>
         `<button class="floor-tab ${f.level === state.level ? 'active' : ''}" data-level="${f.level}">Level ${f.level}</button>`,
     )
     .join('');
+}
+
+// Grouped unit map: one column per size in canonical order. Buckets derive
+// from map.units (the visible set — branch/level/?size=/nearLift already
+// applied server-side), so branch/level switching re-groups for free and
+// ?size= composes by narrowing within columns. Size display names prefer
+// map.sizes (same visible set), then the unit payload, then the labels below.
+const MAP_SIZE_ORDER = ['LOCKER', 'SMALL', 'MEDIUM', 'LARGE'];
+const MAP_SIZE_NAME = { LOCKER: 'Locker', SMALL: 'Small', MEDIUM: 'Medium', LARGE: 'Large' };
+
+// Single-unit cell markup (unchanged visuals + wiring: status fill/dot via
+// MAP_TONE, size ribbon/chip via SIZE_CLASS, tooltip, inline selectUnit() so
+// the detail-panel click binding keeps working inside columns).
+function unitCellHtml(u) {
+  const tone = MAP_TONE[u.status.toUpperCase()] || 'available';
+  const sizeCode = String((u.sizeInfo && u.sizeInfo.code) || u.sizeCode || '').toUpperCase();
+  const sizeCls = SIZE_CLASS[sizeCode] || 'size-OTHER';
+  const psf = u.psf ? '$' + Number(u.psf).toFixed(2) : 'Maint.';
+  const sizeName = (u.sizeInfo && u.sizeInfo.name) || u.size || sizeCode;
+  const tip = `${u.code} · ${sizeName} (${sizeCode}) · ${u.sqft} sq ft · ${u.status}`;
+  return `<div class="u-cell ${tone} ${sizeCls}" title="${escapeHtml(tip)}" onclick="selectUnit(this,'${escapeHtml(u.code)}')"><div class="u-dot"></div><div class="u-id">${escapeHtml(u.short)}</div><div class="u-size">${escapeHtml(sizeName)}</div><div class="u-psf">${psf}</div></div>`;
 }
 
 function renderUnitMap(map) {
@@ -88,20 +116,110 @@ function renderUnitMap(map) {
           `<div class="u-leg"><div class="u-leg-dot" style="background:${color};"></div>${label} (${count})</div>`,
       )
       .join('');
+    // Size legend (additive — the status legend above is untouched). Counts come
+    // from map.sizes (same visible set as the status legend); payloads without
+    // it fall back to counting map.units client-side. Convention (see
+    // docs/FLOORS.md "Map size legend"): cell fill + corner dot = status, top
+    // ribbon + size chip = size.
+    const sizeGroups = map.sizes && map.sizes.length ? map.sizes : countSizesLocal(map.units || []);
+    if (sizeGroups.length) {
+      legend.innerHTML += '<div class="u-leg u-leg-hdr">Sizes:</div>' + sizeGroups
+        .map((g) => {
+          const code = String(g.code || '').toUpperCase();
+          const color = SIZE_COLOR[code] || '#8a8478';
+          const b = g.byStatus || {};
+          const tip = `${g.name}: ${g.total} total · avail ${b.available || 0} · occ ${b.occupied || 0} · res ${b.reserved || 0} · over ${b.overdue || 0}`;
+          return `<div class="u-leg" title="${escapeHtml(tip)}"><div class="u-leg-dot" style="background:${color};"></div>${escapeHtml(g.name)} (${g.total})</div>`;
+        })
+        .join('');
+    }
   }
   renderFloorTabs();
   if (!grid || !map || !map.units) return;
-  grid.innerHTML = map.units
-    .map((u) => {
-      const tone = MAP_TONE[u.status.toUpperCase()] || 'available';
-      const psf = u.psf ? '$' + Number(u.psf).toFixed(2) : 'Maint.';
-      return `<div class="u-cell ${tone}" onclick="selectUnit(this,'${escapeHtml(u.code)}')"><div class="u-dot"></div><div class="u-id">${escapeHtml(u.short)}</div><div class="u-size">${escapeHtml(u.size)}</div><div class="u-psf">${psf}</div></div>`;
-    })
-    .join('');
+  // Grouped columns: empty groups keep header + count 0 + empty-state text
+  // (the column is never collapsed). With ?size= active the server already
+  // narrows map.units, so off-filter columns render empty + dimmed while the
+  // matching column stays full. Column counts equal the size-legend counts
+  // for present sizes (both derive from the same visible set).
+  grid.classList.add('map-grouped');
+  const sizeMeta = map.sizes && map.sizes.length ? map.sizes : countSizesLocal(map.units || []);
+  const metaByCode = new Map(sizeMeta.map((g) => [String(g.code || '').toUpperCase(), g]));
+  const buckets = new Map(MAP_SIZE_ORDER.map((c) => [c, []]));
+  const extraBuckets = new Map(); // unknown size codes (not in seed data): trailing columns, never dropped
+  for (const u of map.units) {
+    const code = String((u.sizeInfo && u.sizeInfo.code) || u.sizeCode || '').toUpperCase();
+    if (buckets.has(code)) buckets.get(code).push(u);
+    else {
+      if (!extraBuckets.has(code)) extraBuckets.set(code, []);
+      extraBuckets.get(code).push(u);
+    }
+  }
+  const activeSize = String(state.mapSize || '').toUpperCase();
+  const columnHtml = (code, units) => {
+    const meta = metaByCode.get(code);
+    const name = (meta && meta.name)
+      || (units[0] && ((units[0].sizeInfo && units[0].sizeInfo.name) || units[0].size))
+      || MAP_SIZE_NAME[code] || code;
+    const color = SIZE_COLOR[code] || '#8a8478';
+    const dimmed = activeSize && code !== activeSize ? ' is-dimmed' : '';
+    const body = units.length
+      ? units.map(unitCellHtml).join('')
+      : `<div class="map-col-empty">No ${escapeHtml(name)} units on this floor.</div>`;
+    return `<div class="map-col${dimmed}" data-size="${escapeHtml(code)}"><div class="map-col-hdr"><div class="u-leg-dot" style="background:${color};"></div>${escapeHtml(name)}<span class="map-col-count">${units.length}</span></div><div class="map-col-body">${body}</div></div>`;
+  };
+  grid.innerHTML = MAP_SIZE_ORDER.map((code) => columnHtml(code, buckets.get(code))).join('') +
+    [...extraBuckets.entries()].map(([code, units]) => columnHtml(code, units)).join('');
+  paintMapSizeCounts(map);
+}
+
+// Client-side fallback for the size legend + filter counts when a map payload
+// predates the `sizes` grouping (same visible set as the status legend).
+function countSizesLocal(units) {
+  const groups = new Map();
+  for (const u of units || []) {
+    const code = String((u.sizeInfo && u.sizeInfo.code) || u.sizeCode || '?').toUpperCase();
+    const name = (u.sizeInfo && u.sizeInfo.name) || u.size || code;
+    let g = groups.get(code);
+    if (!g) {
+      g = { code, name, total: 0, byStatus: {} };
+      groups.set(code, g);
+    }
+    g.total += 1;
+    const st = String(u.status || '').toLowerCase();
+    g.byStatus[st] = (g.byStatus[st] || 0) + 1;
+  }
+  return [...groups.values()];
+}
+
+// Paint per-size counts into the existing size-filter options ("Small (24)")
+// from the map's size grouping; the selected value is preserved. Labels are
+// rebuilt from a cached base each fetch so counts never stack.
+function paintMapSizeCounts(map) {
+  const sel = $('#mapSizeFilter');
+  if (!sel) return;
+  const groups = map.sizes && map.sizes.length ? map.sizes : countSizesLocal(map.units || []);
+  const byCode = new Map(groups.map((g) => [String(g.code).toUpperCase(), g.total]));
+  const total = groups.reduce((n, g) => n + (g.total || 0), 0);
+  [...sel.options].forEach((o) => {
+    if (o.dataset.base == null) o.dataset.base = o.textContent.replace(/\s*\(\d+\)\s*$/, '');
+    const n = o.value ? (byCode.get(o.value.toUpperCase()) ?? 0) : total;
+    o.textContent = `${o.dataset.base} (${n})`;
+  });
 }
 
 export async function fetchUnitMap() {
   if (isAllFacilities()) return; // syncFacilityDashboard renders the ALL placeholder instead
+  // Clamp a stale level (e.g. just deactivated) to the first active level so
+  // branch+level switching never queries a hidden floor. No active floor →
+  // empty-state text, not a fetch against a hidden level.
+  if (ensureActiveLevel(state.branchCode) == null) {
+    renderFloorTabs();
+    const grid = $('#unitGrid');
+    if (grid) { grid.classList.remove('map-grouped'); grid.innerHTML = '<div class="t-type" style="padding:18px 4px;">No active floors for this facility — reactivate one in Floors.</div>'; }
+    const title = $('#unitMapTitle');
+    if (title) { const b = branchByCode(state.branchCode); title.textContent = `Unit Map — ${b ? b.name : state.branchCode}`; }
+    return;
+  }
   // P1 item 3: Near-lift + Size filters ride the map read path.
   const qs = new URLSearchParams({ branch: state.branchCode, level: String(state.level) });
   if (state.mapSize) qs.set('size', state.mapSize);
@@ -132,7 +250,9 @@ export function syncFacilityDashboard() {
   if (isAllFacilities()) {
     if (tabs) tabs.style.display = 'none';
     if (title) title.textContent = 'Unit Map — All Facilities';
-    if (grid) grid.innerHTML = '<div class="t-type" style="padding:18px 4px;">Select a facility above to view its floor map.</div>';
+    // Placeholder is flat text, not size columns — drop the grouped class so
+    // the 4/2-col grid doesn't apply; renderUnitMap re-adds it per fetch.
+    if (grid) { grid.classList.remove('map-grouped'); grid.innerHTML = '<div class="t-type" style="padding:18px 4px;">Select a facility above to view its floor map.</div>'; }
   } else {
     if (tabs) tabs.style.display = '';
     renderFloorTabs();

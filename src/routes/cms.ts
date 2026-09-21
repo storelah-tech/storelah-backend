@@ -14,10 +14,17 @@ import {
   createUnit,
   updateUnit,
   softDeleteUnit,
-  listFloors,
   listSizes,
   getUnitActivity,
 } from '../core/units';
+import {
+  listFloors,
+  listFloorsAdmin,
+  getFloor,
+  createFloor,
+  updateFloor,
+  deleteFloor,
+} from '../core/floors';
 import { listTenants, createTenant, updateTenant, deactivateTenant, listMoveOuts, transitionMoveOut } from '../core/tenants';
 import { listLeads, getLeadStats, getWeeklyAnalytics, createLead, updateLead, deleteLead } from '../core/leads';
 import {
@@ -153,6 +160,16 @@ import {
   createMetricsSnapshot,
   listMetricsSnapshots,
 } from '../core/floorPlanMetricsService';
+import {
+  listProtectionPlans,
+  createProtectionPlan,
+  updateProtectionPlan,
+  deleteProtectionPlan,
+  listAddons,
+  createAddon,
+  updateAddon,
+  deleteAddon,
+} from '../core/extras';
 
 const router = Router();
 
@@ -206,6 +223,21 @@ const dateRangeQuerySchema = z.object({ ...dateRangeFields });
 
 const unitActivityQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(20),
+});
+
+// Facility floors: create needs branch + level; name defaults to "Level N"
+// in core when omitted/blank. Update accepts any subset including the
+// isActive toggle (the deactivation path — reversible, public-hiding).
+const floorPayloadSchema = z.object({
+  branchId: z.string().min(1),
+  level: z.number().int().min(1).max(99),
+  name: z.string().trim().max(80).optional(),
+});
+
+const floorUpdateSchema = z.object({
+  level: z.number().int().min(1).max(99).optional(),
+  name: z.string().trim().max(80).optional(),
+  isActive: z.boolean().optional(),
 });
 
 const createTenantSchema = z.object({
@@ -675,9 +707,51 @@ router.patch('/move-outs/:tenantId', requireAuth, async (req: Request, res: Resp
   ok(res, await transitionMoveOut(String(req.params.tenantId), parsed.data.action));
 });
 
-router.get('/floors', requireAuth, async (_req: Request, res: Response) => {
-  const rows = await listFloors();
+router.get('/floors', requireAuth, async (req: Request, res: Response) => {
+  // Admin reference list: ALL floors (active + inactive) with branch join +
+  // unit counts. Inactive rows carry isActive:false + badge in the UI.
+  // ?activeOnly=1 narrows to active floors (additive: level selectors can use
+  // it; the default stays all-rows for the Floors management list).
+  const branchId = typeof req.query.branchId === 'string' && req.query.branchId.trim()
+    ? req.query.branchId.trim()
+    : undefined;
+  const activeOnly = req.query.activeOnly === '1' || req.query.activeOnly === 'true';
+  const rows = activeOnly
+    ? await listFloors({ branchId })
+    : await listFloorsAdmin(branchId);
   ok(res, rows, { count: rows.length });
+});
+
+// NOTE: POST /floors is registered BEFORE GET /floors/:id so "create"-style
+// literals are never parsed as an id (Express matches in order; keep this
+// pairing together if new floor routes are added).
+router.post('/floors', requireAuth, async (req: Request, res: Response) => {
+  const parsed = floorPayloadSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid floor payload', parsed.error.flatten());
+    return;
+  }
+  created(res, await createFloor(parsed.data));
+});
+
+router.get('/floors/:id', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await getFloor(String(req.params.id)));
+});
+
+router.put('/floors/:id', requireAuth, async (req: Request, res: Response) => {
+  const parsed = floorUpdateSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid floor payload', parsed.error.flatten());
+    return;
+  }
+  ok(res, await updateFloor(String(req.params.id), parsed.data));
+});
+
+router.delete('/floors/:id', requireAuth, async (req: Request, res: Response) => {
+  // Guard lives in core: 409 while ANY Unit rows reference the floor.
+  // ?deactivate=true converts to a reversible deactivation instead.
+  const deactivate = req.query.deactivate === '1' || req.query.deactivate === 'true';
+  ok(res, await deleteFloor(String(req.params.id), { deactivate }));
 });
 
 router.get('/sizes', requireAuth, async (_req: Request, res: Response) => {
@@ -2066,6 +2140,103 @@ router.post('/users/:id/permissions', requireAuth, async (req: Request, res: Res
 router.delete('/users/:id/permissions/:permission', requireAuth, async (req: Request, res: Response) => {
   await requirePermission((req as any).user?.sub, 'users.manage');
   ok(res, await revokePermission(String(req.params.id), String(req.params.permission)));
+});
+
+// --- Booking extras (protection plans + packing-supply addons) ---
+// CMS-editable catalog for the booking flow. GET lists every row (active +
+// inactive) in sortOrder; ?activeOnly=1 narrows to active rows. POST creates a
+// row keyed by its frontend slug (409 on clash). PATCH updates any subset
+// including the active toggle (deactivation is preferred over delete —
+// bookings snapshot catalog values as free text). DELETE is a hard delete.
+// Writes are intentionally NOT permission-gated (catalog edits, like
+// promotions) — Bearer JWT via requireAuth is the gate.
+
+const protectionPlanPayloadSchema = z.object({
+  id: z
+    .string()
+    .trim()
+    .min(1)
+    .max(80)
+    .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, 'id must be a URL-safe slug (e.g. "essential")'),
+  name: z.string().trim().min(1).max(120),
+  price: z.number().nonnegative(),
+  coverage: z.string().trim().max(500).nullable().optional(),
+  sortOrder: z.number().int().min(0).max(100000).optional(),
+  active: z.boolean().optional(),
+});
+
+const protectionPlanUpdateSchema = protectionPlanPayloadSchema.partial().omit({ id: true });
+
+const addonPayloadSchema = z.object({
+  id: z
+    .string()
+    .trim()
+    .min(1)
+    .max(80)
+    .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, 'id must be a URL-safe slug (e.g. "medium-box")'),
+  name: z.string().trim().min(1).max(120),
+  price: z.number().nonnegative(),
+  unit: z.string().trim().max(40).nullable().optional(),
+  sortOrder: z.number().int().min(0).max(100000).optional(),
+  active: z.boolean().optional(),
+});
+
+const addonUpdateSchema = addonPayloadSchema.partial().omit({ id: true });
+
+router.get('/protection-plans', requireAuth, async (req: Request, res: Response) => {
+  const activeOnly = req.query.activeOnly === '1' || req.query.activeOnly === 'true';
+  const rows = await listProtectionPlans(activeOnly ? { activeOnly: true } : {});
+  ok(res, rows, { count: rows.length });
+});
+
+router.post('/protection-plans', requireAuth, async (req: Request, res: Response) => {
+  const parsed = protectionPlanPayloadSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid protection plan payload', parsed.error.flatten());
+    return;
+  }
+  created(res, await createProtectionPlan(parsed.data));
+});
+
+router.patch('/protection-plans/:id', requireAuth, async (req: Request, res: Response) => {
+  const parsed = protectionPlanUpdateSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid protection plan payload', parsed.error.flatten());
+    return;
+  }
+  ok(res, await updateProtectionPlan(String(req.params.id), parsed.data));
+});
+
+router.delete('/protection-plans/:id', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await deleteProtectionPlan(String(req.params.id)));
+});
+
+router.get('/addons', requireAuth, async (req: Request, res: Response) => {
+  const activeOnly = req.query.activeOnly === '1' || req.query.activeOnly === 'true';
+  const rows = await listAddons(activeOnly ? { activeOnly: true } : {});
+  ok(res, rows, { count: rows.length });
+});
+
+router.post('/addons', requireAuth, async (req: Request, res: Response) => {
+  const parsed = addonPayloadSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid addon payload', parsed.error.flatten());
+    return;
+  }
+  created(res, await createAddon(parsed.data));
+});
+
+router.patch('/addons/:id', requireAuth, async (req: Request, res: Response) => {
+  const parsed = addonUpdateSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid addon payload', parsed.error.flatten());
+    return;
+  }
+  ok(res, await updateAddon(String(req.params.id), parsed.data));
+});
+
+router.delete('/addons/:id', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await deleteAddon(String(req.params.id)));
 });
 
 export default router;

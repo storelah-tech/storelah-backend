@@ -8,6 +8,7 @@ import {
 } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 import 'dotenv/config';
+import { seedExtras } from '../src/core/extras';
 
 const prisma = new PrismaClient();
 
@@ -386,6 +387,12 @@ async function main() {
       },
     });
   }
+
+  // ── Booking extras catalog (idempotent upsert by id/slug) ──
+  // 4 protection tiers + 6 packing-supply addons. Upsert-only: re-seeds and
+  // CMS edits converge on the same slugs without deleting operator rows.
+  const extras = await seedExtras();
+  console.log(`Booking extras: ${extras.plans} protection plans, ${extras.addons} addons`);
 
   const tenantCount = await prisma.tenant.count();
   const unitCount = await prisma.unit.count();

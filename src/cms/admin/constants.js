@@ -32,6 +32,24 @@ export const MAP_TONE = {
   BLOCKED: 'blocked',
 };
 
+// Unit-map size categorization (see docs/FLOORS.md "Map size legend"):
+// cell fill + corner dot = status (MAP_TONE, unchanged); top ribbon + size
+// chip = size. Colours mirror the psf-chart size series in dashboardView.js
+// (Locker terracotta, Small green, Medium dark green, Large gold).
+export const SIZE_COLOR = {
+  LOCKER: '#c97952',
+  SMALL: '#526557',
+  MEDIUM: '#334437',
+  LARGE: '#e5a84b',
+};
+
+export const SIZE_CLASS = {
+  LOCKER: 'size-LOCKER',
+  SMALL: 'size-SMALL',
+  MEDIUM: 'size-MEDIUM',
+  LARGE: 'size-LARGE',
+};
+
 export const TENANT_STATUS_TONE = {
   ACTIVE: 'occ',
   DUE_SOON: 'res',

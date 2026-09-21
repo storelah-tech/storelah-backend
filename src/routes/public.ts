@@ -6,6 +6,7 @@ import { getUnitMap, listPublicUnits } from '../core/units';
 import { listActivePromotions, validatePromotion, DEFAULT_PROMO_TYPE, DEFAULT_PROMO_SCOPE } from '../core/promotions';
 import { listActivePublicPromotionPlans } from '../core/promotionPlans';
 import { getPublicFloorPlan } from '../core/floorPlans';
+import { listProtectionPlans, listAddons } from '../core/extras';
 
 const router = Router();
 
@@ -32,7 +33,12 @@ router.get('/units', async (req: Request, res: Response) => {
 router.get('/units/map', async (req: Request, res: Response) => {
   const branch = (req.query.branch as string) || 'BM';
   const level = Number(req.query.level) || 1;
-  ok(res, await getUnitMap(branch, level, { public: true }));
+  // Additive size/near-lift filters — same contract as the admin map read path
+  // (GET /api/v1/cms/units/map). Omitted by default so the BM/L1 response keeps
+  // every existing key; booking readers ignore the new `sizes`/`sizeInfo` keys.
+  const size = typeof req.query.size === 'string' && req.query.size.trim() ? req.query.size.trim() : undefined;
+  const nearLift = req.query.nearLift === '1' || req.query.nearLift === 'true';
+  ok(res, await getUnitMap(branch, level, { public: true, ...(size ? { size } : {}), ...(nearLift ? { nearLift: true } : {}) }));
 });
 
 // PUBLIC floor-plan read for the future booking renderer (see FLOOR_PLAN_MODEL.md
@@ -86,6 +92,22 @@ router.post('/promotions/validate', async (req: Request, res: Response) => {
 // (size × 1/3/6/12 months). Additive: ACTIVE plans only (DRAFT / SCHEDULED /
 // ENDED excluded), honest empty array when none is ACTIVE. No auth. Legacy
 // GET /promotions + POST /promotions/validate are untouched above.
+// PUBLIC booking-extras catalog for the booking frontend (unauthenticated).
+// Additive: active rows only, sortOrder ascending, envelope { data, meta }.
+// ProtectionPlan: { id, name, price (monthly recurring), coverage, sortOrder,
+// active } — Addon: { id, name, price (one-off), unit, sortOrder, active }.
+// `id` is the stable frontend slug so the app can fall back to its baked-in
+// copy when a row is missing. No auth, no PII.
+router.get('/protection-plans', async (_req: Request, res: Response) => {
+  const rows = await listProtectionPlans({ activeOnly: true });
+  ok(res, rows, { count: rows.length });
+});
+
+router.get('/addons', async (_req: Request, res: Response) => {
+  const rows = await listAddons({ activeOnly: true });
+  ok(res, rows, { count: rows.length });
+});
+
 router.get('/promotion-plans', async (_req: Request, res: Response) => {
   ok(res, await listActivePublicPromotionPlans());
 });

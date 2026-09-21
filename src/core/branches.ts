@@ -90,11 +90,22 @@ export async function getPortfolio() {
 }
 
 // Customer-facing branch list: no internal counters, only availability.
+// Inactive floors contribute nothing: the floor list holds active levels only
+// and availableUnits counts live AVAILABLE units on active floors (previously
+// unfiltered — soft-deleted units and inactive-floor units leaked into the
+// count). See docs/FLOORS.md.
 export async function listPublicBranches() {
   const branches = await prisma.branch.findMany({
     include: {
-      floors: { select: { level: true }, orderBy: { level: 'asc' } },
-      units: { select: { status: true } },
+      floors: {
+        where: { isActive: true },
+        select: { level: true },
+        orderBy: { level: 'asc' },
+      },
+      units: {
+        where: { deletedAt: null, status: 'AVAILABLE', floor: { isActive: true } },
+        select: { status: true },
+      },
     },
     orderBy: { code: 'asc' },
   });
@@ -106,7 +117,7 @@ export async function listPublicBranches() {
     address: b.address,
     operatingHours: b.operatingHours,
     floors: b.floors.map((f) => f.level),
-    availableUnits: b.units.filter((u) => u.status === 'AVAILABLE').length,
+    availableUnits: b.units.length,
   }));
 }
 

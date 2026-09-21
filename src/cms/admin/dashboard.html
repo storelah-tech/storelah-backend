@@ -382,6 +382,33 @@ main{min-width:0;display:flex;flex-direction:column;min-height:100vh}
 .u-id{font-size:10px;font-weight:800;color:var(--ink)}
 .u-size{font-size:8.5px;font-weight:600;color:var(--muted);margin-top:1px}
 .u-psf{font-size:8.5px;font-weight:700;color:var(--terra);margin-top:1px}
+/* Map size categorization (see docs/FLOORS.md "Map size legend"): cell fill +
+   corner dot stay status-driven (.u-cell.{tone} above, untouched); the top
+   ribbon + tinted size chip carry the size. Unknown sizes fall back to grey. */
+.u-cell[class*="size-"]::after{content:"";position:absolute;top:-1.5px;left:10px;right:10px;height:4px;border-radius:0 0 3px 3px;background:var(--size-ribbon,#8a8478)}
+.u-cell.size-LOCKER{--size-ribbon:#c97952;--size-soft:#f7e8dd;--size-ink:#9a5a34}
+.u-cell.size-SMALL{--size-ribbon:#526557;--size-soft:#e3e9e4;--size-ink:#3c4c40}
+.u-cell.size-MEDIUM{--size-ribbon:#334437;--size-soft:#dde4dd;--size-ink:#26332a}
+.u-cell.size-LARGE{--size-ribbon:#e5a84b;--size-soft:#faf0da;--size-ink:#8a6420}
+.u-cell .u-size{background:var(--size-soft,transparent);color:var(--size-ink,var(--muted));border-radius:4px;padding:0 4px}
+.u-leg-hdr{margin-left:6px;padding-left:12px;border-left:1px solid var(--line)}
+/* Grouped unit map: one column per size (LOCKER|SMALL|MEDIUM|LARGE, in that
+   order). #unitGrid keeps its id + .unit-grid class; JS adds .map-grouped
+   when rendering columns (the ALL-facilities placeholder removes it again).
+   Specificity note: every rule below keys on .unit-grid.map-grouped (0,2,0),
+   which beats the flat .unit-grid rules above — including the max-width:760
+   5-col rule — so no !important is used anywhere in this block. Inner cells
+   reuse .u-cell markup/classes untouched (status fill/dot + size ribbon). */
+.unit-grid.map-grouped{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;width:100%}
+.map-col{min-width:0;background:var(--cream);border:1px solid var(--line);border-radius:10px;padding:10px;display:flex;flex-direction:column;gap:8px}
+.map-col-hdr{display:flex;align-items:center;gap:6px;font-size:11px;font-weight:800;color:var(--ink);white-space:nowrap}
+.map-col-count{margin-left:auto;font-size:10px;font-weight:800;color:var(--muted);background:var(--white);border:1px solid var(--line);border-radius:20px;padding:1px 8px}
+.map-col-body{display:grid;grid-template-columns:repeat(auto-fill,minmax(64px,1fr));gap:5px;align-content:start;min-width:0}
+.map-col-body .u-cell{min-width:0}
+.map-col-empty{font-size:10px;color:var(--muted);font-weight:600;background:var(--white);border:1px dashed var(--line);border-radius:8px;padding:12px 8px;text-align:center}
+.map-col.is-dimmed .map-col-hdr{opacity:.65}
+.map-col.is-dimmed .map-col-body{opacity:.45}
+@media(max-width:1023px){.unit-grid.map-grouped{grid-template-columns:repeat(2,minmax(0,1fr))}}
 /* Revenue bars (legacy dashboard card) */
 .rev-row{display:flex;align-items:center;padding:9px 0;border-bottom:1px solid #ede8e2}
 .rev-row:last-child{border-bottom:none}
@@ -843,7 +870,7 @@ body.lead-drawer-open{overflow-x:hidden}
 
     <!-- ============ FACILITIES ============ -->
     <section class="page" id="facilities">
-      <div class="subtabs" data-tabs="facility"><button class="active" data-tab="facility-map">Unit Map</button><button data-tab="facility-units">Units</button><button data-tab="facility-floorplans">Floor Plans</button><button data-tab="facility-maintenance">Maintenance</button><button data-tab="facility-assets">Assets &amp; Vendors</button><button data-tab="facility-incidents">Incidents</button><button data-tab="facility-access">Access Control</button><button data-tab="facility-inspections">Inspections</button></div>
+      <div class="subtabs" data-tabs="facility"><button class="active" data-tab="facility-map">Unit Map</button><button data-tab="facility-units">Units</button><button data-tab="facility-floors">Floors</button><button data-tab="facility-floorplans">Floor Plans</button><button data-tab="facility-maintenance">Maintenance</button><button data-tab="facility-assets">Assets &amp; Vendors</button><button data-tab="facility-incidents">Incidents</button><button data-tab="facility-access">Access Control</button><button data-tab="facility-inspections">Inspections</button><button data-tab="facility-extras">Protection Plans &amp; Addons</button></div>
       <!-- Unit Map -->
       <div class="module-panel active" id="facility-map">
         <div class="unit-map-card">
@@ -871,6 +898,15 @@ body.lead-drawer-open{overflow-x:hidden}
           <div class="modal-alert" id="unitsBanner" hidden></div>
           <table class="data-tbl" id="unitsTable"><thead><tr><th>Code</th><th>Name</th><th>Size</th><th>Branch</th><th>Floor</th><th>Sqft</th><th>Rate/mo</th><th>PSF</th><th>Status</th><th>Tenant</th><th></th></tr></thead><tbody></tbody></table>
           <div class="tbl-pager"><div class="tbl-pager-info" id="pageInfo">Page 1 of 1</div><div class="tbl-pager-btns"><button class="tb-btn ghost" id="pagePrev">‹ Prev</button><button class="tb-btn ghost" id="pageNext">Next ›</button></div></div>
+        </div>
+      </div>
+      <!-- Floors -->
+      <div class="module-panel" id="facility-floors">
+        <div class="tbl-card">
+          <div class="sec-hdr"><div><div class="sec-title">Floors</div><div class="sec-sub" id="floorsSub">Floors per facility</div></div><div style="display:flex;gap:7px;"><button class="tb-btn primary" id="addFloorBtn">+ Add Floor</button></div></div>
+          <div class="tbl-toolbar"><select id="floorBranchFilter" class="tbl-select"><option value="">All facilities</option></select></div>
+          <div class="modal-alert" id="floorsBanner" hidden></div>
+          <table class="data-tbl" id="floorsTable"><thead><tr><th>Facility</th><th>Level</th><th>Name</th><th>Units</th><th>Status</th><th></th></tr></thead><tbody id="floorsBody"></tbody></table>
         </div>
       </div>
       <!-- Floor Plan Editor -->
@@ -1017,6 +1053,9 @@ body.lead-drawer-open{overflow-x:hidden}
           <div class="modal-alert" id="certificatesBanner" hidden></div>
           <table class="data-tbl" id="certificatesTable"><thead><tr><th>Certificate</th><th>Type</th><th>Branch</th><th>Expiry</th><th>Status</th><th></th></tr></thead><tbody id="certificatesBody"></tbody></table>
         </div>
+      </div>
+      <!-- Protection plans & addons (booking checkout catalog; body self-mounted by extrasView.js) -->
+      <div class="module-panel" id="facility-extras">
       </div>
     </section>
 
@@ -1409,6 +1448,24 @@ body.lead-drawer-open{overflow-x:hidden}
         <div class="field full"><label for="f-climateControl">Climate Control</label><input type="text" id="f-climateControl" name="climateControl" placeholder="Ambient climate"><div class="field-err" id="e-climateControl"></div></div>
       </div>
       <div class="modal-foot"><button class="act-btn" type="button" id="unitFormCancel">Cancel</button><button class="act-btn primary" type="submit" id="unitFormSubmit">Save Unit</button></div>
+    </form>
+  </div>
+</div>
+
+<!-- Floor modal -->
+<div class="modal-overlay" id="floorModal" hidden>
+  <div class="modal-win">
+    <div class="modal-hdr"><div class="modal-title" id="floorModalTitle">Add Floor</div><button class="modal-x" id="floorModalClose" type="button">✕</button></div>
+    <div class="modal-alert" id="floorModalAlert" hidden></div>
+    <div class="modal-hint" id="floorModalHint" hidden>Branch cannot be changed for an existing floor. Deactivating hides its units from booking.</div>
+    <form id="floorForm" novalidate>
+      <div class="form-grid">
+        <div class="field"><label for="ff-branch">Branch</label><select id="ff-branch" name="branch"></select><div class="field-err" id="fe-branch"></div></div>
+        <div class="field"><label for="ff-level">Level</label><input type="number" id="ff-level" name="level" min="1" max="99" step="1"><div class="field-err" id="fe-level"></div></div>
+        <div class="field full"><label for="ff-name">Name (optional)</label><input type="text" id="ff-name" name="name" maxlength="80" placeholder="Defaults to Level N"><div class="field-err" id="fe-name"></div></div>
+        <div class="field"><label for="ff-active">Active (visible to booking)</label><input type="checkbox" id="ff-active" name="active" checked><div class="field-err" id="fe-active"></div></div>
+      </div>
+      <div class="modal-foot"><button class="act-btn" type="button" id="floorFormCancel">Cancel</button><button class="act-btn primary" type="submit" id="floorFormSubmit">Save Floor</button></div>
     </form>
   </div>
 </div>

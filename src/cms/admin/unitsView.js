@@ -10,7 +10,7 @@ import { $, $$, escapeHtml, showBanner } from './dom.js';
 import { createDateFilter, withDateQuery, isRangeActive, rangeLabel } from './dateFilter.js';
 import { confirmDialog } from './confirmDialog.js';
 import { ApiError, request, get, describeError } from './api.js';
-import { state, isAllFacilities } from './state.js';
+import { state, ensureActiveLevel, isAllFacilities } from './state.js';
 
 // Post-mutation full-refresh hook — the entry hands its refreshAll() down here
 // (dependency inversion keeps imports one-way: views → state/api/dom/constants).
@@ -121,6 +121,9 @@ function ensureUnitsDateFilter() {
 // ---------- server-side pagination ----------
 export async function fetchUnitsPage() {
   ensureUnitsDateFilter();
+  // Clamp a stale level (e.g. just deactivated) to the first active level so
+  // the table never filters on a hidden floor. ALL mode omits level anyway.
+  if (!isAllFacilities()) ensureActiveLevel(state.branchCode);
   const qs = new URLSearchParams({ page: String(state.page), perPage: String(state.perPage) });
   if (state.statusFilter) qs.set('status', state.statusFilter);
   // All Facilities → omit branch/level so the backend returns every unit.
@@ -270,9 +273,24 @@ function populateBranchSelect(selected) {
 
 export function populateFloorSelect(branchId, selected) {
   const sel = $('#f-floor');
-  const floors = state.floors.filter((f) => f.branchId === branchId);
-  sel.innerHTML = floors.map((f) => `<option value="${f.id}">Level ${f.level} (${f.branch.code})</option>`).join('');
-  if (selected && floors.some((f) => f.id === selected)) sel.value = selected;
+  if (!sel) return;
+  // Level selectors show ACTIVE floors only: inactive (hidden) floors are not
+  // selectable here (POST /units refuses them) and are reactivated via the
+  // Floors management list, which keeps showing all rows.
+  const floors = state.floors
+    .filter((f) => f.branchId === branchId && f.isActive !== false)
+    .sort((a, c) => a.level - c.level);
+  // Edit mode: the unit's own floor stays selectable (labelled) even if it
+  // was deactivated after the unit was created — the form never strands an
+  // existing unit. Create mode (no `selected`) lists active floors only.
+  const current = selected ? state.floors.find((f) => f.id === selected) : null;
+  const rows = current && current.isActive === false && !floors.some((f) => f.id === current.id)
+    ? [...floors, current].sort((a, c) => a.level - c.level)
+    : floors;
+  sel.innerHTML = rows.length
+    ? rows.map((f) => `<option value="${f.id}">Level ${f.level} (${f.branch.code})${f.isActive === false ? ' — inactive' : ''}</option>`).join('')
+    : '<option value="">No active floors — reactivate one in Floors</option>';
+  if (selected && rows.some((f) => f.id === selected)) sel.value = selected;
 }
 
 function populateSizeSelect(selected) {

@@ -107,5 +107,24 @@ export const selectedFacilityName = () => (isAllFacilities() ? '' : branchByCode
 
 export function branchFloors(code) {
   const b = branchByCode(code);
-  return state.floors.filter((f) => f.branchId === b?.id).sort((a, c) => a.level - c.level);
+  // Level-selector source of truth: ACTIVE floors only (isActive !== false).
+  // Inactive (hidden) floors never appear as selectable levels — not in the
+  // unit-map tabs, the unit-form floor dropdown, or the floor-plan editor.
+  // They stay visible solely in the Floors management list (floorsView reads
+  // state.floors directly) so they can be reactivated. Rows predating the
+  // isActive flag (missing field) count as active.
+  return state.floors
+    .filter((f) => f.branchId === b?.id && f.isActive !== false)
+    .sort((a, c) => a.level - c.level);
+}
+
+// Clamp state.level to an active level for the branch: keeps the current
+// level when still active, otherwise falls back to the first active level
+// (L1). Returns the level, or null when the branch has no active floor
+// (selectors render an empty state instead of broken tabs).
+export function ensureActiveLevel(code) {
+  const floors = branchFloors(code ?? state.branchCode);
+  if (!floors.length) return null;
+  if (!floors.some((f) => f.level === state.level)) state.level = floors[0].level;
+  return state.level;
 }

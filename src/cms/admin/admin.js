@@ -4,7 +4,7 @@ import { ALL_FACILITIES } from './constants.js';
 import { $, $$, escapeHtml, timeAgo, showBanner, initSelectAll, resetSelectAll } from './dom.js';
 import { login, get, post, put, patch, del, describeError, getCurrentUser } from './api.js';
 import { confirmDialog } from './confirmDialog.js';
-import { state, isAllFacilities } from './state.js';
+import { state, ensureActiveLevel, isAllFacilities } from './state.js';
 import { createDateFilter, withDateQuery, isRangeActive, rangeLabel, rangeEmptyText } from './dateFilter.js';
 import { refreshBookingsView, bindBookingsTable, refreshMoveinsView } from './bookingsView.js';
 import {
@@ -23,10 +23,12 @@ import {
 import { bindPortfolio, wirePortfolio } from './portfolioView.js';
 import { bindQuotes, bindMoveouts, wireOpsQueues } from './opsQueuesView.js';
 import { bindFeesSection, bindBusinessRulesSection, bindUsersSection, wireSettingsExt } from './settingsExtView.js';
+import { bindExtrasSection, wireExtras } from './extrasView.js';
 import {
   setRefreshAll as leadDrawerSetRefreshAll, setLeadDrawerActions, openLeadDrawer, wireLeadDrawer,
 } from './leadsDetailDrawer.js';
 import { setRefsLoader as fpSetRefsLoader, fpInitEvents, fpOpen, fpViewClose, getFpViewFloorId } from './floorplanView.js';
+import { setRefreshAll as floorsSetRefreshAll, setRefsLoader as floorsSetRefsLoader, bindFloorsView, wireFloorsView } from './floorsView.js';
 import { wireMetricsPanel, refreshMetricsView } from './metricsView.js';
 import {
   bindMaintenance, bindAssets, bindIncidents, bindAccess, bindInspections,
@@ -64,9 +66,10 @@ const sideNav = {
     ['Move-ins', 'customers', 'customer-moveins'], ['Quotes', 'customers', 'customer-quotes'],
     ['Move-outs', 'customers', 'customer-moveouts']],
   facilities: [['Unit map', 'facilities', 'facility-map'], ['Units', 'facilities', 'facility-units'],
-    ['Floor plans', 'facilities', 'facility-floorplans'], ['Maintenance', 'facilities', 'facility-maintenance'],
+    ['Floors', 'facilities', 'facility-floors'], ['Floor plans', 'facilities', 'facility-floorplans'], ['Maintenance', 'facilities', 'facility-maintenance'],
     ['Assets & vendors', 'facilities', 'facility-assets'], ['Incidents', 'facilities', 'facility-incidents'],
-    ['Access control', 'facilities', 'facility-access'], ['Inspections', 'facilities', 'facility-inspections']],
+    ['Access control', 'facilities', 'facility-access'], ['Inspections', 'facilities', 'facility-inspections'],
+    ['Protection plans & addons', 'facilities', 'facility-extras']],
   promotions: [['Dashboard', 'promotions', 'promo-overview'], ['Discount plan builder', 'promotions', 'promo-discount-matrix'], ['Free months', 'promotions', 'promo-free-months'], ['Promo code builder', 'promotions', 'promo-code-builder'], ['Promotions library', 'promotions', 'promo-library'], ['History', 'promotions', 'promo-history'], ['Safeguards', 'promotions', 'promo-safeguards'], ['Performance', 'promotions', 'promo-performance']],
   billing: [['Overview', 'billing', 'bill-overview'], ['Invoices', 'billing', 'bill-invoices'],
     ['Arrears', 'billing', 'bill-arrears']],
@@ -1811,6 +1814,9 @@ async function bindSettings() {
   bindFeesSection().catch((e) => showBanner('Fees: ' + describeError(e)));
   bindBusinessRulesSection().catch((e) => showBanner('Business rules: ' + describeError(e)));
   bindUsersSection().catch((e) => showBanner('Users: ' + describeError(e)));
+  // Booking extras catalog moved to Facilities Management (#facility-extras).
+  // Drop any legacy mount under Settings so the page stays clean.
+  document.querySelector('#settings #extrasSection')?.remove();
 }
 
 async function saveSettings() {
@@ -3491,6 +3497,7 @@ function wireEvents() {
       // Lazy load
       if (panel === 'facility-map') { ensureMapSizeFilter().catch(() => {}); syncFacilityDashboard(); }
       else if (panel === 'facility-units') refreshUnitsView();
+      else if (panel === 'facility-floors') bindFloorsView().catch((err) => showBanner('Floors: ' + describeError(err)));
       else if (panel === 'facility-floorplans') { fpOpen(); refreshMetricsView().catch((err) => showBanner('Metrics: ' + describeError(err))); }
       else if (panel === 'facility-maintenance') bindMaintenance();
       else if (panel === 'facility-assets') bindAssets();
@@ -3504,6 +3511,7 @@ function wireEvents() {
         bindAccess();
       }
       else if (panel === 'facility-inspections') bindInspections();
+      else if (panel === 'facility-extras') bindExtrasSection().catch((err) => showBanner('Extras: ' + describeError(err)));
     });
   });
   // Customer tabs (data-tabs="customer")
@@ -3560,6 +3568,9 @@ function wireEvents() {
   // Facility filter change
   $('#sbBranchSelect')?.addEventListener('change', function () {
     state.branchCode = this.value;
+    // New facility → default to its first ACTIVE level (inactive levels are
+    // hidden from every selector, so a stale level must never carry over).
+    ensureActiveLevel(state.branchCode);
     // Re-render current view
     const tab = document.querySelector('[data-tabs="facility"] button.active');
     if (tab) tab.click();
@@ -3660,6 +3671,8 @@ function wireEvents() {
   wirePortfolio();
   wireOpsQueues();
   wireSettingsExt();
+  // Booking extras catalog (protection plans + addons).
+  wireExtras();
   // P1 item 3: unit-map read-path filters (Size + Near lift).
   $('#mapSizeFilter')?.addEventListener('change', (e) => { state.mapSize = e.target.value; fetchUnitMap().catch(() => {}); });
   $('#mapNearLiftFilter')?.addEventListener('change', (e) => { state.mapNearLift = !!e.target.checked; fetchUnitMap().catch(() => {}); });
@@ -3848,6 +3861,9 @@ async function boot() {
     unitsSetRefreshAll(refreshAll);
     unitsSetRefsLoader(loadRefs);
     fpSetRefsLoader(loadRefs);
+    floorsSetRefreshAll(refreshAll);
+    floorsSetRefsLoader(loadRefs);
+    wireFloorsView();
     await login();
     initCharts();
     await Promise.all([loadRefs(), refreshAll()]);

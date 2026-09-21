@@ -25,7 +25,7 @@ export const openapiSpec = {
   openapi: '3.0.3',
   info: {
     title: 'StoreLah Booking API',
-    version: '1.5.5',
+    version: '1.6.0',
     description: [
       'Customer-facing booking API for the StoreLah self-storage business.',
       '',
@@ -118,6 +118,16 @@ export const openapiSpec = {
         '`facilityAreaSqft` (= marked gross, same value as `gla`) plus mirrored `gfaSqft`/`gfaSource`, ' +
         'all-zero with `boundaryClosed: false` when no marked line contributes area — never fabricated. ' +
         'Persisted editor lines render solid (only the in-flight draft previews dashed). ' +
+        'All pre-existing shapes are unchanged.',
+      '',
+      'v1.6.0 is ADDITIVE-ONLY over 1.5.5: CMS-editable booking-extras catalog — ' +
+        'protection tiers (`ProtectionPlan`: id slug, name, price monthly recurring, coverage, ' +
+        'sortOrder, active) and packing-supply addons (`Addon`: id slug, name, price one-off, ' +
+        'unit, sortOrder, active) with unauthenticated `GET /public/protection-plans` + ' +
+        '`GET /public/addons` (active only, sortOrder ascending, `{ data, meta: { count } }`) ' +
+        'and operator CMS CRUD `GET|POST /cms/protection-plans`, ' +
+        '`PATCH|DELETE /cms/protection-plans/{id}` (same 4 for `/cms/addons`; Bearer JWT; ' +
+        'PATCH carries the active toggle — deactivation preferred over hard delete). ' +
         'All pre-existing shapes are unchanged.',
     ].join('\n'),
   },
@@ -329,6 +339,48 @@ export const openapiSpec = {
           '200': openapiResponse({
             type: 'array',
             items: { $ref: openapiSchemaRef('PublicPromotionPlan') },
+          }),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+    },
+    '/public/protection-plans': {
+      get: {
+        tags: ['Public'],
+        summary: 'List active protection plans',
+        description: [
+          'CMS-editable protection tiers for the booking checkout (id slug, name, monthly recurring ',
+          'price, coverage, sortOrder). Active rows only, sortOrder ascending. The id is the stable ',
+          'frontend slug so the app can fall back to its baked-in copy when a row is missing. ',
+          'No authentication. Envelope `{ data, meta: { count } }`.',
+        ].join('\n'),
+        operationId: 'listActiveProtectionPlans',
+        security: [],
+        responses: {
+          '200': openapiResponse({
+            type: 'array',
+            items: { $ref: openapiSchemaRef('ProtectionPlan') },
+          }),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+    },
+    '/public/addons': {
+      get: {
+        tags: ['Public'],
+        summary: 'List active packing-supply addons',
+        description: [
+          'CMS-editable packing supplies for the booking checkout (id slug, name, one-off price, ',
+          'unit, sortOrder). Active rows only, sortOrder ascending. The id is the stable frontend ',
+          'slug so the app can fall back to its baked-in copy when a row is missing. ',
+          'No authentication. Envelope `{ data, meta: { count } }`.',
+        ].join('\n'),
+        operationId: 'listActiveAddons',
+        security: [],
+        responses: {
+          '200': openapiResponse({
+            type: 'array',
+            items: { $ref: openapiSchemaRef('Addon') },
           }),
           '500': openapiErrorResponse('Unexpected server error'),
         },
@@ -1283,6 +1335,201 @@ export const openapiSpec = {
           '503': openapiErrorResponse(
             'Stripe is not configured (STRIPE_WEBHOOK_SECRET missing).',
           ),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+    },
+    // --- Operator CMS: booking-extras catalog (v1.6.0, additive) ---
+    // Protection tiers + packing-supply addons. Served on the CMS host under
+    // `/api/v1/cms` with a Bearer JWT. PATCH carries the active toggle
+    // (deactivation preferred — bookings snapshot catalog values as free
+    // text); DELETE is a hard delete.
+    '/cms/protection-plans': {
+      get: {
+        tags: ['Operator CMS'],
+        summary: 'List protection plans (active + inactive)',
+        description: 'Every protection-plan row in sortOrder. `?activeOnly=1` narrows to active rows.',
+        operationId: 'listProtectionPlans',
+        security: [{ bearerAuth: [] }],
+        responses: {
+          '200': openapiResponse({ type: 'array', items: { $ref: openapiSchemaRef('ProtectionPlan') } }),
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+      post: {
+        tags: ['Operator CMS'],
+        summary: 'Create a protection plan',
+        description: 'Creates a tier keyed by its frontend slug (409 on clash). Slug: lowercase letters, numbers, hyphens.',
+        operationId: 'createProtectionPlan',
+        security: [{ bearerAuth: [] }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: { $ref: openapiSchemaRef('ProtectionPlanInput') },
+            },
+          },
+        },
+        responses: {
+          '201': openapiCreatedResponse({ $ref: openapiSchemaRef('ProtectionPlan') }),
+          '400': openapiErrorResponse('Invalid protection plan payload.'),
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '409': openapiErrorResponse('Protection plan id already exists.'),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+    },
+    '/cms/protection-plans/{id}': {
+      patch: {
+        tags: ['Operator CMS'],
+        summary: 'Update a protection plan (incl. active toggle)',
+        description: 'Partial update. `{ active: false }` deactivates (preferred over delete — hides the tier from public reads, keeps history).',
+        operationId: 'updateProtectionPlan',
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          {
+            name: 'id',
+            in: 'path',
+            required: true,
+            description: 'Protection plan slug (e.g. essential).',
+            schema: { type: 'string' },
+          },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: { $ref: openapiSchemaRef('ProtectionPlanInput') },
+            },
+          },
+        },
+        responses: {
+          '200': openapiResponse({ $ref: openapiSchemaRef('ProtectionPlan') }),
+          '400': openapiErrorResponse('Invalid protection plan payload.'),
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '404': openapiErrorResponse('Protection plan not found.'),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+      delete: {
+        tags: ['Operator CMS'],
+        summary: 'Delete a protection plan (hard delete)',
+        description: 'Prefer deactivation (`PATCH { active: false }`) — delete is permanent.',
+        operationId: 'deleteProtectionPlan',
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          {
+            name: 'id',
+            in: 'path',
+            required: true,
+            description: 'Protection plan slug (e.g. essential).',
+            schema: { type: 'string' },
+          },
+        ],
+        responses: {
+          '200': openapiResponse({
+            type: 'object',
+            required: ['id'],
+            properties: { id: { type: 'string' } },
+          }),
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '404': openapiErrorResponse('Protection plan not found.'),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+    },
+    '/cms/addons': {
+      get: {
+        tags: ['Operator CMS'],
+        summary: 'List packing-supply addons (active + inactive)',
+        description: 'Every addon row in sortOrder. `?activeOnly=1` narrows to active rows.',
+        operationId: 'listAddons',
+        security: [{ bearerAuth: [] }],
+        responses: {
+          '200': openapiResponse({ type: 'array', items: { $ref: openapiSchemaRef('Addon') } }),
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+      post: {
+        tags: ['Operator CMS'],
+        summary: 'Create a packing-supply addon',
+        description: 'Creates an addon keyed by its frontend slug (409 on clash). Slug: lowercase letters, numbers, hyphens.',
+        operationId: 'createAddon',
+        security: [{ bearerAuth: [] }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: { $ref: openapiSchemaRef('AddonInput') },
+            },
+          },
+        },
+        responses: {
+          '201': openapiCreatedResponse({ $ref: openapiSchemaRef('Addon') }),
+          '400': openapiErrorResponse('Invalid addon payload.'),
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '409': openapiErrorResponse('Addon id already exists.'),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+    },
+    '/cms/addons/{id}': {
+      patch: {
+        tags: ['Operator CMS'],
+        summary: 'Update a packing-supply addon (incl. active toggle)',
+        description: 'Partial update. `{ active: false }` deactivates (preferred over delete — hides the addon from public reads, keeps history).',
+        operationId: 'updateAddon',
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          {
+            name: 'id',
+            in: 'path',
+            required: true,
+            description: 'Addon slug (e.g. medium-box).',
+            schema: { type: 'string' },
+          },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: { $ref: openapiSchemaRef('AddonInput') },
+            },
+          },
+        },
+        responses: {
+          '200': openapiResponse({ $ref: openapiSchemaRef('Addon') }),
+          '400': openapiErrorResponse('Invalid addon payload.'),
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '404': openapiErrorResponse('Addon not found.'),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+      delete: {
+        tags: ['Operator CMS'],
+        summary: 'Delete a packing-supply addon (hard delete)',
+        description: 'Prefer deactivation (`PATCH { active: false }`) — delete is permanent.',
+        operationId: 'deleteAddon',
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          {
+            name: 'id',
+            in: 'path',
+            required: true,
+            description: 'Addon slug (e.g. medium-box).',
+            schema: { type: 'string' },
+          },
+        ],
+        responses: {
+          '200': openapiResponse({
+            type: 'object',
+            required: ['id'],
+            properties: { id: { type: 'string' } },
+          }),
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '404': openapiErrorResponse('Addon not found.'),
           '500': openapiErrorResponse('Unexpected server error'),
         },
       },
@@ -2911,6 +3158,61 @@ export const openapiSpec = {
             items: { $ref: openapiSchemaRef('PublicPromotionPlanCell') },
             description: 'Discount-matrix cells, sorted by commitmentMonths, then sizeCategory, then accessType.',
           },
+        },
+      },
+      // --- Booking-extras catalog (v1.6.0, additive) ---
+      ProtectionPlan: {
+        type: 'object',
+        required: ['id', 'name', 'price', 'coverage', 'sortOrder', 'active'],
+        description:
+          'A CMS-editable protection tier (monthly recurring price). `id` is the stable frontend slug.',
+        properties: {
+          id: { type: 'string', description: 'Stable slug, e.g. essential / standard / enhanced / premium.' },
+          name: { type: 'string', description: 'Display name, e.g. Essential.' },
+          price: { type: 'number', description: 'Monthly recurring price (SGD).' },
+          coverage: { type: ['string', 'null'], description: 'Short coverage description shown at checkout.' },
+          sortOrder: { type: 'integer', description: 'Ascending display order.' },
+          active: { type: 'boolean', description: 'False = hidden from public reads, kept for history.' },
+        },
+      },
+      ProtectionPlanInput: {
+        type: 'object',
+        required: ['id', 'name', 'price'],
+        description: 'Payload for creating a protection plan (PATCH accepts any subset except id).',
+        properties: {
+          id: { type: 'string', description: 'URL-safe slug: lowercase letters, numbers, hyphens.' },
+          name: { type: 'string' },
+          price: { type: 'number', minimum: 0 },
+          coverage: { type: ['string', 'null'] },
+          sortOrder: { type: 'integer', minimum: 0 },
+          active: { type: 'boolean' },
+        },
+      },
+      Addon: {
+        type: 'object',
+        required: ['id', 'name', 'price', 'unit', 'sortOrder', 'active'],
+        description:
+          'A CMS-editable packing-supply addon (one-off price). `id` is the stable frontend slug.',
+        properties: {
+          id: { type: 'string', description: 'Stable slug, e.g. medium-box / disc-padlock.' },
+          name: { type: 'string', description: 'Display name, e.g. Medium Box.' },
+          price: { type: 'number', description: 'One-off price (SGD).' },
+          unit: { type: ['string', 'null'], description: 'Sale unit shown at checkout, e.g. box / each.' },
+          sortOrder: { type: 'integer', description: 'Ascending display order.' },
+          active: { type: 'boolean', description: 'False = hidden from public reads, kept for history.' },
+        },
+      },
+      AddonInput: {
+        type: 'object',
+        required: ['id', 'name', 'price'],
+        description: 'Payload for creating an addon (PATCH accepts any subset except id).',
+        properties: {
+          id: { type: 'string', description: 'URL-safe slug: lowercase letters, numbers, hyphens.' },
+          name: { type: 'string' },
+          price: { type: 'number', minimum: 0 },
+          unit: { type: ['string', 'null'] },
+          sortOrder: { type: 'integer', minimum: 0 },
+          active: { type: 'boolean' },
         },
       },
       RegisterRequest: {

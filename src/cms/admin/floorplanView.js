@@ -537,16 +537,25 @@ function fpZoomStep(dir) {
 
 function fpPopulateFloorSelect() {
   const b = branchByCode(state.fp.branchCode);
-  const floors = state.floors.filter((f) => f.branchId === b?.id).sort((a, c) => a.level - c.level);
+  // Level selectors show ACTIVE floors only (inactive = hidden from booking;
+  // reactivate via the Floors management list). The in-flight selection is
+  // preserved (labelled) so deactivating mid-edit never strands the editor.
+  const floors = state.floors
+    .filter((f) => f.branchId === b?.id && f.isActive !== false)
+    .sort((a, c) => a.level - c.level);
   const sel = $('#fpFloor');
   if (!sel) return;
-  sel.innerHTML = floors
-    .map((f) => `<option value="${escapeHtml(f.id)}">Level ${f.level} — ${escapeHtml(f.name)}</option>`)
+  const current = state.fp.floorId ? state.floors.find((f) => f.id === state.fp.floorId) : null;
+  const rows = current && current.branchId === b?.id && current.isActive === false && !floors.some((f) => f.id === current.id)
+    ? [...floors, current].sort((a, c) => a.level - c.level)
+    : floors;
+  sel.innerHTML = rows
+    .map((f) => `<option value="${escapeHtml(f.id)}">Level ${f.level} — ${escapeHtml(f.name)}${f.isActive === false ? ' (inactive)' : ''}</option>`)
     .join('');
-  if (state.fp.floorId && floors.some((f) => f.id === state.fp.floorId)) sel.value = state.fp.floorId;
-  else if (floors.length) {
-    sel.value = floors[0].id;
-    state.fp.floorId = floors[0].id;
+  if (state.fp.floorId && rows.some((f) => f.id === state.fp.floorId)) sel.value = state.fp.floorId;
+  else if (rows.length) {
+    sel.value = rows[0].id;
+    state.fp.floorId = rows[0].id;
   } else {
     state.fp.floorId = null;
   }

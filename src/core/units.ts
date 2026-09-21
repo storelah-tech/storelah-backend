@@ -103,6 +103,8 @@ export interface PublicUnitsQuery {
 const BROWSEABLE_STATUSES: UnitStatus[] = ['AVAILABLE', 'RESERVED'];
 
 // Customer-facing unit listing: only browseable statuses, no tenant/PII anywhere.
+// Floors gated by isActive: units on an inactive floor are never sent to the
+// frontend (see docs/FLOORS.md).
 export async function listPublicUnits(query: PublicUnitsQuery = {}) {
   const statuses = query.status ? [query.status] : BROWSEABLE_STATUSES;
   const units = await prisma.unit.findMany({
@@ -110,7 +112,10 @@ export async function listPublicUnits(query: PublicUnitsQuery = {}) {
       deletedAt: null,
       status: { in: statuses },
       ...(query.branch ? { branch: { code: query.branch } } : {}),
-      ...(query.level != null ? { floor: { level: query.level } } : {}),
+      floor: {
+        ...(query.level != null ? { level: query.level } : {}),
+        isActive: true,
+      },
     },
     include: { size: true, branch: true, floor: true },
     orderBy: { unitCode: 'asc' },
@@ -150,6 +155,15 @@ export async function createUnit(input: CreateUnitInput) {
   if (!branch) throw new AppError(400, 'VALIDATION', `Branch ${input.branchId} not found`);
   if (!floor) throw new AppError(400, 'VALIDATION', `Floor ${input.floorId} not found`);
   if (!size) throw new AppError(400, 'VALIDATION', `Unit size ${input.sizeId} not found`);
+  // Units on an inactive floor would be invisible to the frontend — refuse so
+  // operators activate the floor first (see docs/FLOORS.md).
+  if (!floor.isActive) {
+    throw new AppError(
+      400,
+      'VALIDATION',
+      `Floor ${input.floorId} is inactive — activate it before adding units`,
+    );
+  }
 
   // Derive the next unitCode from the MAX existing numeric suffix on this branch+floor,
   // not the row count — counts collide when the floor's numbering has gaps (e.g. seed gaps).
@@ -251,7 +265,12 @@ export async function getUnitMap(branchCode: string, level: number, opts?: UnitM
     where: {
       deletedAt: null,
       branch: { code: branchCode },
-      floor: { level },
+      floor: {
+        level,
+        // Public map never shows units on an inactive floor (admin map is
+        // unfiltered so operators still see the whole floor).
+        ...(isPublic ? { isActive: true } : {}),
+      },
       ...(opts?.size ? { size: { code: opts.size } } : {}),
     },
     include: { size: true, tenant: true },
@@ -294,10 +313,51 @@ export async function getUnitMap(branchCode: string, level: number, opts?: UnitM
     blocked: visible.filter((u) => u.status === 'BLOCKED').length,
   };
 
+  // Size grouping (additive — `legend` keys above are untouched): per-size
+  // totals + by-status breakdown over the SAME visible set the status legend
+  // counts (post size/near-lift filter). Powers the admin size legend + the
+  // size-filter counts; booking readers ignore it safely.
+  const sizeGroups = new Map<
+    string,
+    {
+      code: string;
+      name: string;
+      sortOrder: number;
+      total: number;
+      byStatus: { occupied: number; available: number; reserved: number; overdue: number; maintenance: number; blocked: number; inactive: number };
+    }
+  >();
+  for (const u of visible) {
+    let g = sizeGroups.get(u.size.code);
+    if (!g) {
+      g = {
+        code: u.size.code,
+        name: u.size.name,
+        sortOrder: u.size.sortOrder,
+        total: 0,
+        byStatus: { occupied: 0, available: 0, reserved: 0, overdue: 0, maintenance: 0, blocked: 0, inactive: 0 },
+      };
+      sizeGroups.set(u.size.code, g);
+    }
+    g.total += 1;
+    if (u.status === 'OCCUPIED') g.byStatus.occupied += 1;
+    else if (u.status === 'AVAILABLE') g.byStatus.available += 1;
+    else if (u.status === 'RESERVED') g.byStatus.reserved += 1;
+    else if (u.status === 'OVERDUE') g.byStatus.overdue += 1;
+    else if (u.status === 'MAINTENANCE') g.byStatus.maintenance += 1;
+    else if (u.status === 'BLOCKED') g.byStatus.blocked += 1;
+    else if (u.status === 'INACTIVE') g.byStatus.inactive += 1;
+  }
+  // sortOrder is a server-side ordering aid only — stripped from the payload.
+  const sizes = [...sizeGroups.values()]
+    .sort((a, b) => a.sortOrder - b.sortOrder || a.code.localeCompare(b.code))
+    .map(({ sortOrder: _sortOrder, ...rest }) => rest);
+
   return {
     branch: branchCode,
     level,
     legend,
+    sizes,
     filters: {
       size: opts?.size ?? null,
       nearLift: opts?.nearLift ?? false,
@@ -308,6 +368,9 @@ export async function getUnitMap(branchCode: string, level: number, opts?: UnitM
       short: u.unitCode.split('-').slice(1).join('-'),
       size: u.size.name,
       sizeCode: u.size.code,
+      // Additive object identity for size grouping (the `size` string + `sizeCode`
+      // above are kept byte-compatible for existing booking readers).
+      sizeInfo: { code: u.size.code, name: u.size.name },
       psf: u.sqft ? toNum(u.monthlyRate) / u.sqft : 0,
       rate: toNum(u.monthlyRate),
       sqft: u.sqft,
@@ -316,21 +379,6 @@ export async function getUnitMap(branchCode: string, level: number, opts?: UnitM
       ...(isPublic ? {} : { tenant: u.tenant?.name ?? null }),
     })),
   };
-}
-
-// Reference data for the admin units UI: all distinct floors (with branch info).
-export async function listFloors() {
-  const floors = await prisma.floor.findMany({
-    include: { branch: { select: { code: true, name: true } } },
-    orderBy: [{ branch: { code: 'asc' } }, { level: 'asc' }],
-  });
-  return floors.map((f) => ({
-    id: f.id,
-    branchId: f.branchId,
-    branch: f.branch,
-    level: f.level,
-    name: f.name,
-  }));
 }
 
 // Reference data for the admin units UI: all UnitSize rows. widthFt/heightFt

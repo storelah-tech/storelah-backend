@@ -1197,6 +1197,11 @@ export async function getPublicFloorPlan(branchCode: string, level: number) {
     include: { branch: true },
   });
   if (!floor) throw new AppError(404, 'NOT_FOUND', `Floor ${level} not found at branch ${branchCode}`);
+  // An inactive floor has no public presence — the booking renderer must not
+  // draw it (same 404 as a missing floor; admin reads are unaffected).
+  if (!floor.isActive) {
+    throw new AppError(404, 'NOT_FOUND', `Floor ${level} not found at branch ${branchCode}`);
+  }
 
   const plan = await prisma.floorPlan.findFirst({ where: { floorId: floor.id }, include: planInclude });
   return {

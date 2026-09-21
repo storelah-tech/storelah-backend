@@ -70,10 +70,17 @@ function renderKpis(r) {
   }
   const g = r.geometry || {};
   const sqft = (a) => (a && a.sqft != null ? fmtSqft(a.sqft) : '—');
+  // UFA is LINE-ONLY (marked-area, never the whole canvas): prefer the
+  // authoritative boundaryMetrics.ufa; with no contributing marked line
+  // (boundaryClosed false) the KPI is 0 with an explicit "no marked area"
+  // empty state. GFA is untouched (operator-entered vs canvas fallback).
+  const bm = r.boundaryMetrics || null;
+  const ufaSqft = bm ? bm.ufa : (g.ufa && g.ufa.sqft);
+  const ufaSub = !bm ? 'usable floor area' : (bm.boundaryClosed ? 'usable floor area · line-only' : 'no marked area — draw lines to measure');
   const circRatio = g.gfa && g.gfa.sqft > 0 && g.derivedCirculation ? g.derivedCirculation.sqft / g.gfa.sqft : 0;
   el.innerHTML = [
     statCard('GFA', sqft(g.gfa), 'gross floor area'),
-    statCard('UFA', sqft(g.ufa), 'usable floor area'),
+    statCard('UFA', ufaSqft != null ? fmtSqft(ufaSqft) : '—', ufaSub),
     statCard('NLA enclosed', sqft(g.nlaEnclosed), 'billable, enclosed'),
     statCard('NLA outdoor', sqft(g.nlaOutdoor), 'billable, outdoor'),
     statCard('NLA total', sqft(g.nlaTotal), 'enclosed + outdoor'),

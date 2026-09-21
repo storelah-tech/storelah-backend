@@ -237,7 +237,7 @@ router.get('/checkout/sessions/:id', async (req: Request, res: Response) => {
 });
 
 // Stripe webhook — the raw body is preserved by the express.raw mount in
-// src/index.ts (registered BEFORE express.json); req.body is a Buffer here.
+// src/app.ts:20 (registered BEFORE express.json); req.body is a Buffer here.
 router.post('/stripe/webhook', async (req: Request, res: Response) => {
   const rawBody: Buffer = Buffer.isBuffer(req.body)
     ? req.body

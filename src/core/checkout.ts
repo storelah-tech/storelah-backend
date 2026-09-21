@@ -3,17 +3,21 @@
 // Flow:
 //   1. POST /customer/checkout/sessions { bookingRef, email? } → Stripe Checkout
 //      Session (amount computed server-side from the booking/invoice, SGD).
+//      Idempotent per bookingRef: a stored open session is reused and
+//      concurrent creates are deduped — no two active sessions for one
+//      PENDING_PAYMENT booking. The session id is persisted on the booking.
 //   2. Customer pays on Stripe-hosted page → redirected to BOOKING_APP_URL.
 //   3. POST /customer/stripe/webhook (checkout.session.completed) marks the
-//      booking/invoice paid. Idempotent on retried deliveries.
+//      booking/invoice paid, scoped to the invoiced session (never bulk-flips
+//      other DUE invoices). Idempotent on retried deliveries.
 //   4. GET /customer/checkout/sessions/:id reflects Stripe truth for the
 //      frontend return page.
 //
 // Payment-state mapping (no new states invented — schema already fits):
 //   - Booking.status PENDING_PAYMENT → CONFIRMED on payment.
 //   - Invoice.status DUE → PAID on payment (method recorded as 'Card').
-// A booking that is already CONFIRMED/ACTIVE with all invoices PAID is a
-// no-op (webhook retries). A CANCELLED booking is never resurrected.
+// A booking that is already CONFIRMED/ACTIVE with no DUE invoice left for the
+// session is a no-op (webhook retries). A CANCELLED booking is never resurrected.
 
 import Stripe from 'stripe';
 import { AccountType } from '@prisma/client';
@@ -113,12 +117,39 @@ export async function assertCheckoutAccess(
 }
 
 // Server-side amount (SGD): the latest open (DUE) invoice for the booking's
-// tenant+unit — which already encodes totalDueToday/promo/quote logic from
-// booking creation — falling back to the booking amount (unit monthly rate).
+// tenant+unit — which already encodes the server-side due-today recompute
+// (unit rate − validated promo + catalog protection/addons) from booking
+// creation — falling back to the booking amount (unit monthly rate).
 // The client never supplies an amount.
 function chargeableAmountSgd(booking: BookingWithRefs): number {
   const invoiced = booking.tenant.invoices[0];
   return invoiced ? toNum(invoiced.amount) : toNum(booking.amount);
+}
+
+// In-flight session creates per bookingRef: a double-click (two concurrent
+// POSTs) shares one Stripe call instead of minting two sessions. Best-effort
+// single-instance guard (same per-instance caveat as the claim rate limiter
+// in core/customers.ts); the durable guards are Booking.stripeSessionId plus
+// the open-session reuse below.
+const pendingCreates = new Map<string, Promise<{ sessionId: string; url: string }>>();
+
+// Reuse the stored session when Stripe still reports it open — covers both
+// sequential double POSTs and retries after a stored-but-unreturned create.
+// Returns null when there is nothing reusable (no stored id, unknown id,
+// completed/expired session, or an open session with no redirect URL left).
+async function findReusableSession(
+  booking: BookingWithRefs,
+): Promise<{ sessionId: string; url: string } | null> {
+  if (!booking.stripeSessionId) return null;
+  try {
+    const existing = await stripe().checkout.sessions.retrieve(booking.stripeSessionId);
+    if (existing.status === 'open' && existing.payment_status !== 'paid' && existing.url) {
+      return { sessionId: existing.id, url: existing.url };
+    }
+  } catch {
+    // Unknown/expired stored id — fall through and mint a fresh session.
+  }
+  return null;
 }
 
 export interface CreateCheckoutSessionInput {
@@ -152,35 +183,59 @@ export async function createCheckoutSession(
   const unitAmount = Math.round(amountSgd * 100); // SGD cents
 
   const appUrl = bookingAppUrl();
-  const session = await stripe().checkout.sessions.create({
-    mode: 'payment',
-    currency: 'sgd',
-    customer_email: email,
-    line_items: [
-      {
-        price_data: {
-          currency: 'sgd',
-          unit_amount: unitAmount,
-          product_data: {
-            name: `StoreLah booking ${booking.bookingRef} — ${booking.unit.unitCode}`,
-          },
-        },
-        quantity: 1,
-      },
-    ],
-    metadata: {
-      bookingRef: booking.bookingRef,
-      unitCode: booking.unit.unitCode,
-      email,
-    },
-    success_url: `${appUrl}/checkout/success?session_id={CHECKOUT_SESSION_ID}`,
-    cancel_url: `${appUrl}/checkout/cancel`,
-  });
 
-  if (!session.id || !session.url) {
-    throw new AppError(500, 'INTERNAL', 'Stripe did not return a checkout URL');
+  // Idempotency per bookingRef: prefer the stored open session over minting.
+  const reusable = await findReusableSession(booking);
+  if (reusable) return reusable;
+
+  // Dedupe concurrent creates (double-click safe): queued callers await the
+  // in-flight Stripe call instead of minting a second session.
+  const queued = pendingCreates.get(booking.bookingRef);
+  if (queued) return queued;
+
+  const task = (async () => {
+    const session = await stripe().checkout.sessions.create({
+      mode: 'payment',
+      currency: 'sgd',
+      customer_email: email,
+      line_items: [
+        {
+          price_data: {
+            currency: 'sgd',
+            unit_amount: unitAmount,
+            product_data: {
+              name: `StoreLah booking ${booking.bookingRef} — ${booking.unit.unitCode}`,
+            },
+          },
+          quantity: 1,
+        },
+      ],
+      metadata: {
+        bookingRef: booking.bookingRef,
+        unitCode: booking.unit.unitCode,
+        email,
+      },
+      success_url: `${appUrl}/checkout/success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${appUrl}/checkout/cancel`,
+    });
+
+    if (!session.id || !session.url) {
+      throw new AppError(500, 'INTERNAL', 'Stripe did not return a checkout URL');
+    }
+    // Persist the session id at creation time: the webhook lookup prefers it
+    // over metadata, and the next create call reuses the session while open.
+    await prisma.booking.update({
+      where: { id: booking.id },
+      data: { stripeSessionId: session.id },
+    });
+    return { sessionId: session.id, url: session.url };
+  })();
+  pendingCreates.set(booking.bookingRef, task);
+  try {
+    return await task;
+  } finally {
+    pendingCreates.delete(booking.bookingRef);
   }
-  return { sessionId: session.id, url: session.url };
 }
 
 export async function getCheckoutSessionStatus(sessionId: string): Promise<{
@@ -197,60 +252,110 @@ export async function getCheckoutSessionStatus(sessionId: string): Promise<{
 }
 
 /**
- * Marks booking + invoices paid for a completed Checkout Session. IDEMPOTENT:
+ * Marks booking + invoice paid for a completed Checkout Session. IDEMPOTENT:
  * current state is read first and conditional writes (status filters) make
- * retried deliveries safe no-ops.
+ * retried deliveries safe no-ops. Scoped to the invoiced session: only the
+ * DUE invoice whose amount matches what Stripe collected is flipped (latest
+ * DUE as fallback so single-invoice bookings keep working through any
+ * rounding drift) — other DUE invoices for the tenant are never touched,
+ * keeping future recurring billing safe.
  */
 export async function applyCheckoutCompleted(
   session: Stripe.Checkout.Session,
 ): Promise<{ bookingRef: string | null; applied: boolean }> {
-  const bookingRef = session.metadata?.bookingRef ?? null;
-  if (!bookingRef) return { bookingRef: null, applied: false };
+  const sessionId = session.id;
+  const metadataRef = session.metadata?.bookingRef ?? null;
 
-  const booking = await prisma.booking.findUnique({
-    where: { bookingRef },
-    include: {
-      tenant: {
-        include: { invoices: true },
+  // Prefer the stored session id (tamper-proof server linkage over the
+  // client-echoed metadata ref); fall back to metadata.bookingRef for
+  // sessions minted before the id was persisted.
+  let booking = sessionId
+    ? await prisma.booking.findFirst({
+        where: { stripeSessionId: sessionId },
+        include: {
+          tenant: {
+            include: { invoices: true },
+          },
+        },
+      })
+    : null;
+  if (!booking && metadataRef) {
+    booking = await prisma.booking.findUnique({
+      where: { bookingRef: metadataRef },
+      include: {
+        tenant: {
+          include: { invoices: true },
+        },
       },
-    },
-  });
-  if (!booking) return { bookingRef, applied: false };
-  if (booking.status === 'CANCELLED') return { bookingRef, applied: false };
+    });
+  }
+  if (!booking) return { bookingRef: metadataRef, applied: false };
+  if (booking.status === 'CANCELLED') return { bookingRef: booking.bookingRef, applied: false };
 
-  const openInvoices = booking.tenant.invoices.filter(
-    (i) => i.status !== 'PAID',
-  );
-  const alreadyPaid =
-    (booking.status === 'CONFIRMED' || booking.status === 'ACTIVE') &&
-    openInvoices.length === 0;
-  if (alreadyPaid) return { bookingRef, applied: false };
+  const paymentIntentId =
+    typeof session.payment_intent === 'string'
+      ? session.payment_intent
+      : (session.payment_intent?.id ?? null);
+  const amountPaid =
+    typeof session.amount_total === 'number' ? toNum(session.amount_total / 100) : null;
+  const paidAt = new Date();
+
+  const dueInvoices = booking.tenant.invoices
+    .filter((i) => i.tenantId === booking!.tenantId && i.unitId === booking!.unitId && i.status === 'DUE')
+    .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+  const target =
+    amountPaid != null
+      ? (dueInvoices.find((i) => Math.abs(toNum(i.amount) - amountPaid) < 0.01) ?? dueInvoices[0] ?? null)
+      : (dueInvoices[0] ?? null);
+
+  // No DUE invoice left for the session and the booking already left
+  // PENDING_PAYMENT → this delivery (or an earlier one) already applied.
+  if (!target && (booking.status === 'CONFIRMED' || booking.status === 'ACTIVE')) {
+    return { bookingRef: booking.bookingRef, applied: false };
+  }
 
   await prisma.$transaction(async (tx) => {
-    if (booking.status === 'PENDING_PAYMENT') {
-      await tx.booking.update({
-        where: { id: booking.id },
-        data: { status: 'CONFIRMED' },
+    // Preserve first-payment stamps on retried deliveries: only fill columns
+    // that are still null, but always refresh the session linkage.
+    const bookingPatch: {
+      status?: typeof booking.status;
+      stripeSessionId: string;
+      paymentIntentId?: string | null;
+      paidAt?: Date;
+      amountPaid?: number;
+    } = { stripeSessionId: sessionId };
+    if (booking!.status === 'PENDING_PAYMENT') bookingPatch.status = 'CONFIRMED';
+    if (paymentIntentId && !booking!.paymentIntentId) bookingPatch.paymentIntentId = paymentIntentId;
+    if (!booking!.paidAt) bookingPatch.paidAt = paidAt;
+    if (amountPaid != null && booking!.amountPaid == null) bookingPatch.amountPaid = amountPaid;
+    await tx.booking.update({
+      where: { id: booking!.id },
+      data: bookingPatch,
+    });
+    if (target) {
+      // Conditional on status DUE + row id so concurrent/retried deliveries
+      // only ever flip this one invoice once.
+      await tx.invoice.updateMany({
+        where: { id: target.id, status: 'DUE' },
+        data: {
+          status: 'PAID',
+          method: 'Card',
+          stripeSessionId: sessionId,
+          paymentIntentId,
+          paidAt,
+          amountPaid: amountPaid ?? toNum(target.amount),
+        },
       });
     }
-    // Conditional on status DUE so concurrent/retried deliveries only ever
-    // flip each invoice once.
-    await tx.invoice.updateMany({
-      where: {
-        tenantId: booking.tenantId,
-        unitId: booking.unitId,
-        status: 'DUE',
-      },
-      data: { status: 'PAID', method: 'Card' },
-    });
   });
 
-  return { bookingRef, applied: true };
+  return { bookingRef: booking.bookingRef, applied: true };
 }
 
 /**
  * Verifies the `stripe-signature` header against STRIPE_WEBHOOK_SECRET using
- * the RAW request body (the route must run under express.raw — see index.ts).
+ * the RAW request body (the route runs under the express.raw mount in
+ * src/app.ts, registered BEFORE express.json).
  */
 export function constructWebhookEvent(
   rawBody: Buffer,

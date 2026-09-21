@@ -420,6 +420,90 @@ export async function getCustomerPortal(payload: CustomerJwtPayload) {
   };
 }
 
+// --- Booking pricing (server-side recompute) ----------------------------------
+//
+// The client's `totalDueToday` is a HINT ONLY — the invoiced figure is derived
+// from server truth: unit.monthlyRate − validated promo discount + catalog
+// protection price + catalog addon prices. A hint that undercuts the server
+// figure is a tampered underpayment and is rejected with 400; a hint at/above
+// it is ignored (the server figure is invoiced verbatim).
+//
+// Promo validation mirrors validatePromotion() in core/promotions.ts (active +
+// date window + minMonths + identical discount math) so the booking-time
+// discount can never exceed what the public validate endpoint would grant.
+// Protection tiers resolve by catalog slug (unknown/inactive tier = 0 — the
+// client cannot invent a cheap tier). Addons resolve by catalog name/slug when
+// matched (catalog price wins); unmatched names fall back to the client price
+// (they only ever ADD ≥ 0, so they cannot undercut the rent floor).
+// movingService has no priced fee schedule — it contributes 0 by design.
+//
+// DELIBERATE DIVERGENCE (product decision pending — do NOT "fix" by adding
+// GST/deposit/proration here): the booking-app client computes Due Today as
+// rent ± promos/extras PLUS S$100 refundable deposit PLUS 7/31 first-month
+// proration PLUS 1%/9% GST (see booking-app checkout math), while this server
+// figure books rent-only: max(0, base − promoDiscount + protection + addons).
+// Consequences are intentional and one-sided: a client hint ABOVE the server
+// figure (the normal deposit+GST case) passes and is still invoiced at the
+// SERVER figure; a hint BELOW server − 0.01 400s with an enriched breakdown so
+// the frontend can refresh-and-retry without guessing. Do not add GST, deposit,
+// proration, or term-matrix math to this formula without an explicit product
+// decision — that changes what every invoice + Stripe session charges.
+async function computeServerDueToday(
+  tx: Prisma.TransactionClient,
+  unit: { monthlyRate: Prisma.Decimal | number },
+  input: CreateBookingInput,
+): Promise<{ total: number; base: number; promoDiscount: number; protection: number; addons: number }> {
+  const base = toNum(unit.monthlyRate);
+  const now = new Date();
+
+  let promoDiscount = 0;
+  const code = input.promoCode?.trim();
+  if (code) {
+    const promo = await tx.promotion.findUnique({ where: { code } });
+    const usable =
+      !!promo &&
+      promo.active &&
+      (!promo.startDate || promo.startDate <= now) &&
+      (!promo.endDate || promo.endDate >= now) &&
+      (promo.minMonths == null || input.durationMonths >= promo.minMonths);
+    if (usable) {
+      const value = toNum(promo!.discountValue);
+      promoDiscount =
+        promo!.discountType === 'PERCENTAGE'
+          ? toNum((base * value) / 100)
+          : toNum(Math.min(value, base));
+    }
+  }
+
+  let protection = 0;
+  const tier = input.protectionPlan?.tier?.trim();
+  if (tier) {
+    const row = await tx.protectionPlan.findUnique({ where: { id: tier } });
+    if (row && row.active) protection = toNum(row.price);
+  }
+
+  let addons = 0;
+  if (input.addons?.length) {
+    const catalog = await tx.addon.findMany({ where: { active: true } });
+    for (const a of input.addons) {
+      const qty = Math.max(0, Math.floor(a.qty));
+      if (!qty) continue;
+      const key = a.name.trim().toLowerCase();
+      const match = catalog.find((c) => c.name.toLowerCase() === key || c.id === key.replace(/\s+/g, '-'));
+      const unitPrice = match ? toNum(match.price) : Math.max(0, a.price);
+      addons = toNum(addons + unitPrice * qty);
+    }
+  }
+
+  return {
+    total: toNum(Math.max(0, base - promoDiscount + protection + addons)),
+    base: toNum(base),
+    promoDiscount: toNum(promoDiscount),
+    protection: toNum(protection),
+    addons: toNum(addons),
+  };
+}
+
 // --- Booking creation ----------------------------------------------------
 
 async function uniqueRef(db: Prisma.TransactionClient, kind: 'booking' | 'invoice', prefix: string): Promise<string> {
@@ -492,12 +576,35 @@ export async function createCustomerBooking(customer: Customer, input: CreateBoo
 
     await tx.unit.update({ where: { id: unit.id }, data: { status: 'RESERVED' } });
 
+    // Server-side amount: the invoice is the recomputed due-today figure, NOT
+    // the client hint verbatim. The hint is advisory and one-sided: omitted →
+    // no check; at/above the server figure → accepted but the SERVER figure is
+    // still invoiced (never the client hint); below it (beyond 1-cent float
+    // tolerance) → 400 with an enriched breakdown so the frontend can
+    // refresh-and-retry without guessing.
+    const quote = await computeServerDueToday(tx, unit, input);
+    const dueToday = quote.total;
+    if (input.totalDueToday !== undefined && input.totalDueToday < dueToday - 0.01) {
+      throw new AppError(
+        400,
+        'VALIDATION',
+        'The quoted total does not match server pricing. Please refresh and try again.',
+        {
+          expected: dueToday,
+          base: quote.base,
+          promoDiscount: quote.promoDiscount,
+          protection: quote.protection,
+          addons: quote.addons,
+        },
+      );
+    }
+
     await tx.invoice.create({
       data: {
         invoiceNo: await uniqueRef(tx, 'invoice', 'INV'),
         tenantId: tenant.id,
         unitId: unit.id,
-        amount: input.totalDueToday ?? unit.monthlyRate,
+        amount: dueToday,
         dueDate: moveInDate,
         status: 'DUE',
       },

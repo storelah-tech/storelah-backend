@@ -148,21 +148,37 @@ export async function postNote(conversationId: string, body: string, author?: st
 // Send stub: real WhatsApp/email delivery is out of scope (ops-gated), so the
 // outbound message is only RECORDED on the thread. The `delivered: false`
 // flag tells the UI this never left the building.
+//
+// Pipeline automation (same transaction): the first OUTBOUND message on a lead
+// still sitting at NEW_ENQUIRY moves it forward to CONTACTED — forward-only,
+// never a regress, and internal /notes never flip the stage (they go through
+// postNote, which touches no stage). `stageTransitioned` lets the UI toast.
+// The first-response metric is untouched (it reads earliest direction=OUT
+// messages, which this path still creates exactly as before).
 export async function sendMessageStub(conversationId: string, body: string, sender?: string | null) {
-  const convo = await prisma.conversation.findUnique({ where: { id: conversationId } });
-  if (!convo) throw new AppError(404, 'NOT_FOUND', 'Conversation not found');
-  const message = await prisma.message.create({
-    data: { conversationId, direction: 'OUT', body, sender: sender ?? null },
+  return prisma.$transaction(async (tx) => {
+    const convo = await tx.conversation.findUnique({ where: { id: conversationId } });
+    if (!convo) throw new AppError(404, 'NOT_FOUND', 'Conversation not found');
+    const message = await tx.message.create({
+      data: { conversationId, direction: 'OUT', body, sender: sender ?? null },
+    });
+    await tx.conversation.update({ where: { id: conversationId }, data: { updatedAt: new Date() } });
+    let stageTransitioned = false;
+    const lead = await tx.lead.findUnique({ where: { id: convo.leadId }, select: { stage: true } });
+    if (lead && lead.stage === 'NEW_ENQUIRY') {
+      await tx.lead.update({ where: { id: convo.leadId }, data: { stage: 'CONTACTED' } });
+      stageTransitioned = true;
+    }
+    return {
+      delivered: false,
+      stageTransitioned,
+      message: {
+        id: message.id,
+        direction: message.direction,
+        sender: message.sender,
+        body: message.body,
+        at: message.sentAt,
+      },
+    };
   });
-  await prisma.conversation.update({ where: { id: conversationId }, data: { updatedAt: new Date() } });
-  return {
-    delivered: false,
-    message: {
-      id: message.id,
-      direction: message.direction,
-      sender: message.sender,
-      body: message.body,
-      at: message.sentAt,
-    },
-  };
 }

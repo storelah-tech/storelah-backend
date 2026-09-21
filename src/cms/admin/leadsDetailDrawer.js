@@ -111,6 +111,46 @@ function contactLine(l) {
   return bits.length ? bits.join(' · ') : '—';
 }
 
+// Booking-intent block (v2 field-sync): every booking-steps datum captured at
+// "Your details" renders here from first-class columns, with the legacy
+// note-packed fallback already resolved server-side in serializeLead. Only
+// rendered when at least one intent field is present.
+function intentHtml(l) {
+  const rows = [];
+  if (l.unitCode) rows.push(infoRow('Unit', escapeHtml(l.unitCode)));
+  if (l.moveInDate) rows.push(infoRow('Move-in', escapeHtml(fmtDay(l.moveInDate))));
+  if (l.durationMonths != null) rows.push(infoRow('Duration', escapeHtml(String(l.durationMonths)) + ' month' + (l.durationMonths === 1 ? '' : 's')));
+  if (l.protectionTier || l.protectionCost != null) {
+    rows.push(infoRow(
+      'Protection',
+      (l.protectionTier ? escapeHtml(l.protectionTier) : '—') +
+      (l.protectionCost != null ? ' · ' + escapeHtml(fmtMoney(l.protectionCost)) + '/mo' : ''),
+    ));
+  }
+  if (Array.isArray(l.addons) && l.addons.length) {
+    rows.push(infoRow(
+      'Addons',
+      escapeHtml(l.addons.map((a) => String(a.name || '—') + ' ×' + a.qty + ' (' + fmtMoney(a.price) + ')').join(', ')),
+    ));
+  }
+  if (l.promoCode || l.promoDiscountAmt != null) {
+    rows.push(infoRow(
+      'Promo',
+      (l.promoCode ? escapeHtml(l.promoCode) : '—') +
+      (l.promoDiscountAmt != null ? ' · −' + escapeHtml(fmtMoney(l.promoDiscountAmt)) : ''),
+    ));
+  }
+  if (l.movingService != null) rows.push(infoRow('Moving service', l.movingService ? 'Yes' : 'No'));
+  if (l.totalDueToday != null) rows.push(infoRow('Due today', '<b>' + escapeHtml(fmtMoney(l.totalDueToday)) + '</b>'));
+  const consents = [];
+  if (l.consentPdpa != null) consents.push('PDPA ' + (l.consentPdpa ? '✓' : '—'));
+  if (l.consentMarketing != null) consents.push('Marketing ' + (l.consentMarketing ? '✓' : 'opted out'));
+  if (consents.length) rows.push(infoRow('Consents', escapeHtml(consents.join(' · '))));
+  if (!rows.length) return '';
+  return '<div class="sec-hdr" style="margin-top:16px"><div><div class="sec-title">Booking intent</div><div class="sec-sub">Captured at booking “Your details”</div></div></div>' +
+    '<div class="info-grid">' + rows.join('') + '</div>';
+}
+
 function infoRow(label, valueHtml) {
   return '<div class="info"><small>' + escapeHtml(label) + '</small><div>' + valueHtml + '</div></div>';
 }
@@ -136,6 +176,7 @@ function detailsHtml(l) {
     infoRow('Created', escapeHtml(fmtDay(l.createdAt))) +
     lossRow +
     '</div>' +
+    intentHtml(l) +
     (l.note ? '<div class="rulebox" style="margin-top:12px"><b>Note:</b> ' + escapeHtml(l.note) + '</div>' : '') +
     '<div class="sec-hdr" style="margin-top:16px"><div><div class="sec-title">Stage</div><div class="sec-sub">Moves persist via PATCH /leads/:id</div></div></div>' +
     '<div class="form-grid"><div class="field"><label for="leadDrawerStage">Stage</label><select id="leadDrawerStage">' +
@@ -409,7 +450,10 @@ async function sendDrawerText(asNote) {
     if (isNote) {
       await post('/conversations/' + encodeURIComponent(threadId) + '/notes', { body: bodyText });
     } else {
-      await post('/conversations/' + encodeURIComponent(threadId) + '/messages', { body: bodyText });
+      const res = await post('/conversations/' + encodeURIComponent(threadId) + '/messages', { body: bodyText });
+      // First outbound reply flips NEW_ENQUIRY → CONTACTED server-side
+      // (same transaction); surface it so the operator sees the move.
+      if (res && res.stageTransitioned) showBanner('First reply recorded — lead moved to Contacted.', true);
     }
     if (box) box.value = '';
     threadCache.leadId = null; // force refetch of the timeline

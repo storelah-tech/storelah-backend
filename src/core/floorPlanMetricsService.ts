@@ -12,8 +12,22 @@
 //   - GFA: the operator-entered FloorPlan.gfaSqft wins when set
 //     (geometry.gfaSource 'USER', efficiency + revenue chain follow it);
 //     otherwise GFA is the canvas-derived rect (gfaSource 'CANVAS', flagged in
-//     basis_notes). UFA/NLA stay canvas-tessellated here — the marked-line
-//     UFA/NLA live on plan reads as `boundaryMetrics` (see floorPlans.ts).
+//     basis_notes).
+//   - UFA/NLA are LINE-ONLY (marked-area, never the whole canvas): the
+//     authoritative source is the plan's marked boundary lines via
+//     computeBoundaryMetrics() (see floorPlans.ts) — geometry.ufa is the marked
+//     gross minus blocks/solid-structure rects, geometry.nlaEnclosed/nlaTotal
+//     are placement footprints clipped to the marked loops (capped ≤ UFA),
+//     geometry.nlaOutdoor is 0 (the marked-area model has no outdoor split),
+//     geometry.common is the marked remainder (UFA − NLA), and efficiency +
+//     the occupancy-sqft/revenue NLA denominators follow the same line-only
+//     NLA. With no contributing marked line (boundaryClosed false) all of
+//     these are 0 — never the canvas rect. The canvas-tessellated
+//     whole-canvas UFA/NLA survive only as diagnostic numbers inside
+//     basis_notes (plus exteriorWall/derivedCirculation/droppedSlivers/balanced,
+//     which stay canvas-tessellation diagnostics). The exact marked figures
+//     are also exposed as top-level `boundaryMetrics` (byte-identical to the
+//     plan-read shape).
 //   - placements -> UNIT_STORAGE (LOCKER when the unit's size code is LOCKER),
 //     label = unitCode, pricing GROSS, default partition walls, stackLevel from
 //     stackTier. Soft-deleted units are filtered out (soft-delete rule).
@@ -48,7 +62,7 @@ import { toNum } from '../lib/format';
 import { AppError } from '../lib/http';
 import type { Prisma } from '@prisma/client';
 import { MARKET_PSF } from './market';
-import { doorEdgesToArray, type GfaSource } from './floorPlans';
+import { computeBoundaryMetrics, doorEdgesToArray, type BoundaryMetrics, type GfaSource } from './floorPlans';
 import {
   computeFloorMetrics,
   computeOccupancy,
@@ -156,10 +170,15 @@ export interface FloorMetricsReport {
     /** 'USER' = operator-entered FloorPlan.gfaSqft; 'CANVAS' = canvas-rect fallback. */
     gfaSource: GfaSource;
     exteriorWall: { q: string; sqft: number };
+    /** LINE-ONLY (marked-area) usable floor area — 0 with no contributing marked line. */
     ufa: { q: string; sqft: number };
+    /** LINE-ONLY NLA (placements clipped to the marked loops, capped ≤ UFA). */
     nlaEnclosed: { q: string; sqft: number };
+    /** Always 0 — the marked-area model has no outdoor/enclosed split. */
     nlaOutdoor: { q: string; sqft: number };
+    /** LINE-ONLY NLA total (= nlaEnclosed; outdoor is 0). */
     nlaTotal: { q: string; sqft: number };
+    /** Marked remainder (UFA − NLA, ≥ 0). */
     common: { q: string; sqft: number };
     glaExclusive: { area: { q: string; sqft: number }; convention: string };
     glaInclusive: { area: { q: string; sqft: number }; convention: string };
@@ -169,6 +188,8 @@ export interface FloorMetricsReport {
     droppedSlivers: { q: string; sqft: number };
     balanced: boolean;
   };
+  /** Authoritative marked-area figures (byte-identical to the plan-read shape). */
+  boundaryMetrics: BoundaryMetrics;
   occupancy: {
     physical: { occupiedUnits: number; totalUnits: number; pct: number };
     sqft: { occupiedQ: string; occupiedSqft: number; nlaQ: string; nlaSqft: number; pct: number };
@@ -345,6 +366,7 @@ export async function getFloorMetrics(floorId: string): Promise<FloorMetricsRepo
         orderBy: { createdAt: 'asc' },
       },
       blocks: { orderBy: { createdAt: 'asc' } },
+      boundaries: { orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }] },
     },
   });
   if (!plan) throw new AppError(404, 'NOT_FOUND', `No floor plan exists for floor ${floorId}`);
@@ -418,7 +440,26 @@ export async function getFloorMetrics(floorId: string): Promise<FloorMetricsRepo
   const gfaSource: GfaSource = userGfa != null ? 'USER' : 'CANVAS';
   const effGfaQ = userGfa != null ? BigInt(Math.round(userGfa * Number(Q_PER_SQFT))) : m.gfa.q;
   const effGfaSqft = userGfa ?? m.gfa.sqft;
-  const efficiency = effGfaSqft > 0 ? m.nlaEnclosed.sqft / effGfaSqft : 0;
+
+  // LINE-ONLY (marked-area) UFA/NLA — the authoritative facility figures (see
+  // computeBoundaryMetrics in floorPlans.ts): marked gross minus blocks/solid
+  // structure rects (UFA), placements clipped to the marked loops capped ≤ UFA
+  // (NLA). All-zero with boundaryClosed false when no marked line contributes
+  // area — never the whole-canvas rect. `sqft` echoes the 1dp boundaryMetrics
+  // numbers exactly; `q` is derived from them (BigInt would throw via JSON).
+  const boundaryMetrics: BoundaryMetrics = computeBoundaryMetrics({
+    boundaries: (plan.boundaries ?? []).map((b) => ({ points: b.points, closed: b.closed })),
+    blocks: plan.blocks.map((b) => ({ x: b.x, y: b.y, width: b.width, height: b.height })),
+    structure: (plan as { structure?: unknown }).structure ?? null,
+    placements: placed.map((p) => ({ x: p.x, y: p.y, width: p.width, height: p.height })),
+    gfaSqft: userGfa,
+  });
+  const lineUfaQ = BigInt(Math.round(boundaryMetrics.ufa * Number(Q_PER_SQFT)));
+  const lineNlaQ = BigInt(Math.round(boundaryMetrics.nla * Number(Q_PER_SQFT)));
+  const lineCommonSqft = Math.round(Math.max(0, boundaryMetrics.ufa - boundaryMetrics.nla) * 10) / 10;
+  const lineCommonQ = BigInt(Math.round(lineCommonSqft * Number(Q_PER_SQFT)));
+  const lineEfficiency = effGfaSqft > 0 ? boundaryMetrics.nla / effGfaSqft : 0;
+  const lineLoadFactor = boundaryMetrics.nla > 0 ? boundaryMetrics.ufa / boundaryMetrics.nla : 1;
 
   const coreUnits = new Map(m.units.map((u) => [u.regionId, u]));
   const occupiedOf = (status: string): boolean => OCCUPIED_STATUSES.has(status);
@@ -442,7 +483,7 @@ export async function getFloorMetrics(floorId: string): Promise<FloorMetricsRepo
     };
   });
 
-  const nlaQ = m.nlaTotal.q;
+  const nlaQ = lineNlaQ;
   const occupiedQ = perUnit.reduce((s, u) => s + (u.occupied ? u.billableQ : 0n), 0n);
   const actualCents = perUnit.reduce((s, u) => s + (u.occupied ? u.actualCents : 0n), 0n);
   const gpiCents = perUnit.reduce((s, u) => s + u.marketCents, 0n);
@@ -458,7 +499,7 @@ export async function getFloorMetrics(floorId: string): Promise<FloorMetricsRepo
     nlaQ,
     occupiedQ,
     effGfaQ,
-    efficiency,
+    lineEfficiency,
   );
   const mix = computeUnitMix(
     perUnit.map((u) => ({
@@ -514,9 +555,16 @@ export async function getFloorMetrics(floorId: string): Promise<FloorMetricsRepo
         gfaSource === 'USER'
           ? `GFA is operator-entered (${userGfa} sqft) — geometry.gfa, efficiency and the revenue chain use it instead of the canvas-derived rect (${plan.width}x${plan.height} ft = ${m.gfa.sqft} sqft).`
           : `No operator-entered GFA on this plan — GFA falls back to the canvas-derived rect (${plan.width}x${plan.height} ft); enter a GFA per plan to override (gfaSource CANVAS).`,
-        ...(gfaSource === 'USER' && efficiency > 1
-          ? [`Operator-entered GFA (${userGfa} sqft) is below enclosed NLA (${m.nlaEnclosed.sqft} sqft) — efficiency exceeds 100%; verify the entered GFA.`]
+        ...(gfaSource === 'USER' && lineEfficiency > 1
+          ? [`Operator-entered GFA (${userGfa} sqft) is below line-only enclosed NLA (${boundaryMetrics.nla} sqft) — efficiency exceeds 100%; verify the entered GFA.`]
           : []),
+        ...(boundaryMetrics.boundaryClosed
+          ? [
+              `UFA/NLA are line-only (marked-area, authoritative = boundaryMetrics): geometry.ufa ${boundaryMetrics.ufa} sqft (marked gross ${boundaryMetrics.facilityAreaSqft} minus blocks/structure), geometry.nlaEnclosed/nlaTotal ${boundaryMetrics.nla} sqft (placements clipped to loops, capped at UFA); outdoor split is 0 under the marked-area model. Canvas-tessellated whole-canvas figures were UFA ${m.ufa.sqft} / NLA ${m.nlaTotal.sqft} sqft (diagnostic only, never facility UFA/NLA).`,
+            ]
+          : [
+              `No marked area on this plan (boundaryClosed false) — geometry.ufa/nla* are 0; canvas-tessellated whole-canvas figures were UFA ${m.ufa.sqft} / NLA ${m.nlaTotal.sqft} sqft (diagnostic only, never facility UFA/NLA). Draw a line (3+ vertices, then close the loop) to measure UFA/NLA.`,
+            ]),
         unitDoors.authoredUnits > 0
           ? `${unitDoors.authoredUnits} unit(s) use editor-authored door edges (N/S/E/W toggles); the rest fall back to every edge as a door, and the entrance is seeded at the largest derived circulation component (two-pass compute). Units with no abutting circulation report DOOR_BLOCKED.`
           : 'No unit has authored door edges yet: every unit edge is treated as a door and the entrance is seeded at the largest derived circulation component (two-pass compute). Units with no abutting circulation report DOOR_BLOCKED.',
@@ -537,19 +585,20 @@ export async function getFloorMetrics(floorId: string): Promise<FloorMetricsRepo
       gfa: areaJson({ q: effGfaQ, sqft: effGfaSqft }),
       gfaSource,
       exteriorWall: areaJson(m.exteriorWall),
-      ufa: areaJson(m.ufa),
-      nlaEnclosed: areaJson(m.nlaEnclosed),
-      nlaOutdoor: areaJson(m.nlaOutdoor),
-      nlaTotal: areaJson(m.nlaTotal),
-      common: areaJson(m.common),
-      glaExclusive: { area: areaJson(m.glaExclusive.area), convention: m.glaExclusive.convention },
-      glaInclusive: { area: areaJson(m.glaInclusive.area), convention: m.glaInclusive.convention },
-      efficiency: round4(efficiency),
-      loadFactor: round4(m.loadFactor),
+      ufa: { q: lineUfaQ.toString(), sqft: boundaryMetrics.ufa },
+      nlaEnclosed: { q: lineNlaQ.toString(), sqft: boundaryMetrics.nla },
+      nlaOutdoor: zeroArea(),
+      nlaTotal: { q: lineNlaQ.toString(), sqft: boundaryMetrics.nla },
+      common: { q: lineCommonQ.toString(), sqft: lineCommonSqft },
+      glaExclusive: { area: { q: lineNlaQ.toString(), sqft: boundaryMetrics.nla }, convention: m.glaExclusive.convention },
+      glaInclusive: { area: { q: lineUfaQ.toString(), sqft: boundaryMetrics.ufa }, convention: m.glaInclusive.convention },
+      efficiency: round4(lineEfficiency),
+      loadFactor: round4(lineLoadFactor),
       derivedCirculation: areaJson(m.derivedCirculation),
       droppedSlivers: areaJson(m.droppedSlivers),
       balanced: m.identity.balanced,
     },
+    boundaryMetrics,
     occupancy: {
       physical: { ...occupancy.physical, pct: round4(occupancy.physical.pct) },
       sqft: {

@@ -26,6 +26,30 @@ export const LOSS_REASONS = [
   'Unspecified',
 ] as const;
 
+export interface LeadBookingIntent {
+  unitCode?: string | null;
+  moveInDate?: Date | null;
+  durationMonths?: number | null;
+  companyName?: string | null;
+  uen?: string | null;
+  consentPdpa?: boolean | null;
+  consentMarketing?: boolean | null;
+  protectionTier?: string | null;
+  protectionCost?: number | null;
+  addons?: LeadAddon[] | null;
+  promoCode?: string | null;
+  promoDiscountAmt?: number | null;
+  movingService?: boolean | null;
+  totalDueToday?: number | null;
+}
+
+export interface LeadAddon {
+  id?: string;
+  name: string;
+  qty: number;
+  price: number;
+}
+
 export interface CreateLeadInput {
   name: string;
   type?: AccountType;
@@ -42,6 +66,20 @@ export interface CreateLeadInput {
   nextActionAt?: Date | null;
   lossReason?: string | null;
   lossValue?: number | null;
+  unitCode?: string | null;
+  moveInDate?: Date | null;
+  durationMonths?: number | null;
+  companyName?: string | null;
+  uen?: string | null;
+  consentPdpa?: boolean | null;
+  consentMarketing?: boolean | null;
+  protectionTier?: string | null;
+  protectionCost?: number | null;
+  addons?: LeadAddon[] | null;
+  promoCode?: string | null;
+  promoDiscountAmt?: number | null;
+  movingService?: boolean | null;
+  totalDueToday?: number | null;
 }
 
 export interface UpdateLeadInput {
@@ -60,11 +98,149 @@ export interface UpdateLeadInput {
   nextActionAt?: Date | null;
   lossReason?: string | null;
   lossValue?: number | null;
+  unitCode?: string | null;
+  moveInDate?: Date | null;
+  durationMonths?: number | null;
+  companyName?: string | null;
+  uen?: string | null;
+  consentPdpa?: boolean | null;
+  consentMarketing?: boolean | null;
+  protectionTier?: string | null;
+  protectionCost?: number | null;
+  addons?: LeadAddon[] | null;
+  promoCode?: string | null;
+  promoDiscountAmt?: number | null;
+  movingService?: boolean | null;
+  totalDueToday?: number | null;
 }
 
 type LeadWithBranch = Prisma.LeadGetPayload<{ include: { branch: true } }>;
 
-function serializeLead(l: LeadWithBranch) {
+// ---------------------------------------------------------------------------
+// Legacy note parser (v1 backfill reader). Pre-v2 public leads packed overflow
+// fields into `note` as stable `key: value` lines with an optional free-text
+// message head on the first line(s). New rows write first-class columns
+// directly, so this parser is a READ fallback only: serializeLead prefers the
+// real column and fills the gap from the note when the column is NULL, which
+// keeps old rows working without a data migration.
+// ---------------------------------------------------------------------------
+
+function parseLegacyBool(raw: string): boolean | null {
+  const v = raw.trim().toLowerCase();
+  if (v === 'true') return true;
+  if (v === 'false') return false;
+  return null;
+}
+
+function parseLegacyNum(raw: string): number | null {
+  const n = Number(raw.trim());
+  return Number.isFinite(n) ? n : null;
+}
+
+function parseLegacyInt(raw: string): number | null {
+  const n = Number(raw.trim());
+  return Number.isInteger(n) ? n : null;
+}
+
+function parseLegacyAddons(raw: string): LeadAddon[] | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  try {
+    const parsed: unknown = JSON.parse(trimmed);
+    if (!Array.isArray(parsed)) return null;
+    const rows = parsed
+      .filter((a): a is Record<string, unknown> => typeof a === 'object' && a !== null)
+      .map((a) => ({
+        ...(typeof a.id === 'string' ? { id: a.id } : {}),
+        name: String(a.name ?? ''),
+        qty: Number(a.qty ?? 0),
+        price: Number(a.price ?? 0),
+      }))
+      .filter((a) => a.name && Number.isInteger(a.qty) && a.qty > 0 && Number.isFinite(a.price) && a.price >= 0)
+      .slice(0, 20);
+    return rows.length ? rows : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Extract legacy `key: value` lines from a v1-packed note (null-safe). */
+export function parseLegacyLeadNote(note: string | null | undefined): LeadBookingIntent & { idempotencyKey?: string | null } {
+  const out: LeadBookingIntent & { idempotencyKey?: string | null } = {};
+  if (!note) return out;
+  for (const line of note.split('\n')) {
+    const idx = line.indexOf(':');
+    if (idx <= 0) continue;
+    const key = line.slice(0, idx).trim();
+    const raw = line.slice(idx + 1).trim();
+    if (!raw) continue;
+    switch (key) {
+      case 'unitCode': out.unitCode = raw.slice(0, 40); break;
+      case 'moveInDate': {
+        const d = new Date(raw);
+        if (!Number.isNaN(d.getTime())) out.moveInDate = d;
+        break;
+      }
+      case 'durationMonths': {
+        const n = parseLegacyInt(raw);
+        if (n != null && n > 0) out.durationMonths = n;
+        break;
+      }
+      case 'companyName': out.companyName = raw.slice(0, 120); break;
+      case 'uen': out.uen = raw.slice(0, 40); break;
+      case 'consentPdpa': {
+        const b = parseLegacyBool(raw);
+        if (b != null) out.consentPdpa = b;
+        break;
+      }
+      case 'consentMarketing': {
+        const b = parseLegacyBool(raw);
+        if (b != null) out.consentMarketing = b;
+        break;
+      }
+      case 'protectionTier': out.protectionTier = raw.slice(0, 80); break;
+      case 'protectionCost': {
+        const n = parseLegacyNum(raw);
+        if (n != null && n >= 0) out.protectionCost = n;
+        break;
+      }
+      case 'addons': {
+        const rows = parseLegacyAddons(raw);
+        if (rows) out.addons = rows;
+        break;
+      }
+      case 'promoCode': out.promoCode = raw.slice(0, 40); break;
+      case 'promoDiscountAmt': {
+        const n = parseLegacyNum(raw);
+        if (n != null && n >= 0) out.promoDiscountAmt = n;
+        break;
+      }
+      case 'movingService': {
+        const b = parseLegacyBool(raw);
+        if (b != null) out.movingService = b;
+        break;
+      }
+      case 'totalDueToday': {
+        const n = parseLegacyNum(raw);
+        if (n != null && n >= 0) out.totalDueToday = n;
+        break;
+      }
+      case 'idempotencyKey': out.idempotencyKey = raw.slice(0, 80); break;
+      default: break;
+    }
+  }
+  return out;
+}
+
+function legacyOr<T>(column: T | null | undefined, fallback: T | null | undefined): T | null {
+  return column ?? fallback ?? null;
+}
+
+export function serializeLead(l: LeadWithBranch) {
+  // Prefer first-class columns; fall back to legacy note-packed lines so
+  // pre-v2 rows keep rendering without a data migration.
+  const legacy = parseLegacyLeadNote(l.note);
+  const addons = (l.addons as unknown) ?? legacy.addons ?? null;
   return {
     id: l.id,
     name: l.name,
@@ -83,6 +259,20 @@ function serializeLead(l: LeadWithBranch) {
     nextActionAt: l.nextActionAt,
     lossReason: l.lossReason ?? null,
     lossValue: l.lossValue ? toNum(l.lossValue) : null,
+    unitCode: legacyOr(l.unitCode, legacy.unitCode),
+    moveInDate: l.moveInDate ?? legacy.moveInDate ?? null,
+    durationMonths: legacyOr(l.durationMonths, legacy.durationMonths),
+    companyName: legacyOr(l.companyName, legacy.companyName),
+    uen: legacyOr(l.uen, legacy.uen),
+    consentPdpa: legacyOr(l.consentPdpa, legacy.consentPdpa),
+    consentMarketing: legacyOr(l.consentMarketing, legacy.consentMarketing),
+    protectionTier: legacyOr(l.protectionTier, legacy.protectionTier),
+    protectionCost: l.protectionCost != null ? toNum(l.protectionCost) : (legacy.protectionCost ?? null),
+    addons: Array.isArray(addons) ? (addons as LeadAddon[]) : null,
+    promoCode: legacyOr(l.promoCode, legacy.promoCode),
+    promoDiscountAmt: l.promoDiscountAmt != null ? toNum(l.promoDiscountAmt) : (legacy.promoDiscountAmt ?? null),
+    movingService: legacyOr(l.movingService, legacy.movingService),
+    totalDueToday: l.totalDueToday != null ? toNum(l.totalDueToday) : (legacy.totalDueToday ?? null),
     createdAt: l.createdAt,
     daysSince: Math.floor((Date.now() - l.createdAt.getTime()) / (1000 * 60 * 60 * 24)),
   };
@@ -102,9 +292,39 @@ function assertLossReason(reason: string | null | undefined) {
   }
 }
 
+// Nullable-Json writes must use Prisma.DbNull for SQL NULL (plain `null`
+// means JSON null and is rejected by the Json filter type).
+function toJsonColumn(value: LeadAddon[] | null | undefined): Prisma.InputJsonValue | typeof Prisma.DbNull | undefined {
+  if (value === undefined) return undefined;
+  if (value === null) return Prisma.DbNull;
+  return value as unknown as Prisma.InputJsonValue;
+}
+
+function assertIntent(input: CreateLeadInput | UpdateLeadInput) {
+  if (input.durationMonths !== undefined && input.durationMonths !== null && (!Number.isInteger(input.durationMonths) || input.durationMonths <= 0)) {
+    throw new AppError(400, 'VALIDATION', 'durationMonths must be a positive integer');
+  }
+  for (const [key, value] of [['protectionCost', input.protectionCost], ['promoDiscountAmt', input.promoDiscountAmt], ['totalDueToday', input.totalDueToday]] as const) {
+    if (value !== undefined && value !== null && !(value >= 0)) {
+      throw new AppError(400, 'VALIDATION', `${key} must be 0 or greater`);
+    }
+  }
+  if (input.addons !== undefined && input.addons !== null) {
+    if (!Array.isArray(input.addons) || input.addons.length > 20) {
+      throw new AppError(400, 'VALIDATION', 'addons must be an array of at most 20 items');
+    }
+    for (const a of input.addons) {
+      if (!a || typeof a.name !== 'string' || !a.name.trim() || !Number.isInteger(a.qty) || a.qty <= 0 || typeof a.price !== 'number' || !(a.price >= 0)) {
+        throw new AppError(400, 'VALIDATION', 'each addon needs name, qty (int > 0) and price (>= 0)');
+      }
+    }
+  }
+}
+
 export async function createLead(input: CreateLeadInput) {
   await assertBranch(input.preferredBranchId ?? null);
   assertLossReason(input.lossReason ?? undefined);
+  assertIntent(input);
   const lead = await prisma.lead.create({
     data: {
       name: input.name,
@@ -123,10 +343,211 @@ export async function createLead(input: CreateLeadInput) {
       // Creating directly into LOST still gets attributed (same default as updateLead).
       lossReason: input.stage === 'LOST' ? (input.lossReason?.trim() || 'Unspecified') : (input.lossReason?.trim() || null),
       lossValue: input.lossValue ?? (input.stage === 'LOST' ? (input.monthlyRate ?? null) : null),
+      unitCode: input.unitCode ?? null,
+      moveInDate: input.moveInDate ?? null,
+      durationMonths: input.durationMonths ?? null,
+      companyName: input.companyName ?? null,
+      uen: input.uen ?? null,
+      consentPdpa: input.consentPdpa ?? null,
+      consentMarketing: input.consentMarketing ?? null,
+      protectionTier: input.protectionTier ?? null,
+      protectionCost: input.protectionCost ?? null,
+      // addons snapshot as JSON (validated upstream by zod; legacy rows may
+      // carry a JSON string inside a note-packed line — parsed on read only).
+      addons: toJsonColumn(input.addons),
+      promoCode: input.promoCode ?? null,
+      promoDiscountAmt: input.promoDiscountAmt ?? null,
+      movingService: input.movingService ?? null,
+      totalDueToday: input.totalDueToday ?? null,
     },
     include: { branch: true },
   });
   return serializeLead(lead);
+}
+
+// ---------------------------------------------------------------------------
+// Public lead capture (POST /api/v1/public/leads, booking "Your details").
+// v2 field-sync: every booking-steps datum is written to a first-class Lead
+// column on create (see the v2 columns on the Lead model). `note` carries
+// only the free-text message head for new rows. packPublicLeadNote survives
+// below as the LEGACY writer reference for the parseLegacyLeadNote reader —
+// it is no longer called on the create path.
+// ---------------------------------------------------------------------------
+
+export interface PublicLeadInput {
+  name: string;
+  email?: string | null;
+  mobile?: string | null;
+  // personal|business → AccountType; BUSINESS wins when company/uen present.
+  purpose?: 'personal' | 'business' | null;
+  companyName?: string | null;
+  uen?: string | null;
+  // Either a Branch.code (BM/WD/UB, case-insensitive) or a raw branch cuid.
+  branchCode?: string | null;
+  preferredBranchId?: string | null;
+  preferredSize?: string | null;
+  // Loose reference only — validated best-effort, never an FK, never a 400.
+  unitCode?: string | null;
+  moveInDate?: string | null;
+  durationMonths?: number | null;
+  monthlyRate?: number | null;
+  message?: string | null;
+  source?: LeadSource;
+  consentPdpa?: boolean | null;
+  consentMarketing?: boolean | null;
+  protectionTier?: string | null;
+  protectionCost?: number | null;
+  addons?: LeadAddon[] | null;
+  promoCode?: string | null;
+  promoDiscountAmt?: number | null;
+  movingService?: boolean | null;
+  totalDueToday?: number | null;
+  idempotencyKey?: string | null;
+}
+
+export interface PublicLeadResult {
+  lead: ReturnType<typeof serializeLead> & { preferredBranchId: string | null };
+  /** true when an existing row was returned instead of creating a duplicate. */
+  deduped: boolean;
+}
+
+// Overflow fields packed into `note` (no dedicated column in v1). Stable
+// `key: value` prefixes, one per line — only present fields are emitted.
+//
+// LEGACY WRITER (pre-v2 only): new rows write first-class columns directly
+// and keep `note` for the message head, so this is no longer called on the
+// create path. Kept (exported) beside parseLegacyLeadNote as the format
+// reference for the reader — do not extend it with new fields.
+export function packPublicLeadNote(input: PublicLeadInput): string | null {
+  const lines: string[] = [];
+  if (input.unitCode) lines.push(`unitCode: ${input.unitCode}`);
+  if (input.moveInDate) lines.push(`moveInDate: ${input.moveInDate}`);
+  if (input.durationMonths != null) lines.push(`durationMonths: ${input.durationMonths}`);
+  if (input.companyName) lines.push(`companyName: ${input.companyName}`);
+  if (input.uen) lines.push(`uen: ${input.uen}`);
+  if (input.consentPdpa != null) lines.push(`consentPdpa: ${input.consentPdpa}`);
+  if (input.consentMarketing != null) lines.push(`consentMarketing: ${input.consentMarketing}`);
+  if (input.idempotencyKey) lines.push(`idempotencyKey: ${input.idempotencyKey}`);
+  const head = input.message?.trim() ? input.message.trim() : null;
+  if (!head && lines.length === 0) return null;
+  return [head, ...lines].filter(Boolean).join('\n');
+}
+
+async function resolvePublicBranchId(input: PublicLeadInput): Promise<string | null> {
+  if (input.branchCode?.trim()) {
+    const code = input.branchCode.trim().toUpperCase();
+    const branch = await prisma.branch.findUnique({ where: { code } });
+    if (!branch) throw new AppError(400, 'VALIDATION', `Unknown branchCode: ${input.branchCode.trim()}`);
+    return branch.id;
+  }
+  if (input.preferredBranchId?.trim()) {
+    await assertBranch(input.preferredBranchId.trim());
+    return input.preferredBranchId.trim();
+  }
+  return null;
+}
+
+const PUBLIC_DUPLICATE_WINDOW_MS = 10 * 60 * 1000;
+const IDEMPOTENCY_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+export async function createPublicLead(input: PublicLeadInput): Promise<PublicLeadResult> {
+  const email = input.email?.trim() ? input.email.trim() : null;
+  const mobile = input.mobile?.trim() ? input.mobile.trim() : null;
+  if (!email && !mobile) {
+    throw new AppError(400, 'VALIDATION', 'At least one of email or mobile is required');
+  }
+
+  const preferredBranchId = await resolvePublicBranchId(input);
+
+  // Dedupe 1: idempotencyKey — a recent Lead with the same key is the same
+  // submission (double-click / retry safe). v2 rows carry the key in the
+  // `idempotencyKey` column; pre-v2 rows carry the packed
+  // `idempotencyKey: <key>` note line — match either. Full-line fragment on
+  // the note side avoids prefix collisions on short keys.
+  if (input.idempotencyKey?.trim()) {
+    const key = input.idempotencyKey.trim();
+    const existing = await prisma.lead.findFirst({
+      where: {
+        OR: [{ idempotencyKey: key }, { note: { contains: `idempotencyKey: ${key}` } }],
+        createdAt: { gte: new Date(Date.now() - IDEMPOTENCY_WINDOW_MS) },
+      },
+      include: { branch: true },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (existing) {
+      return { lead: { ...serializeLead(existing), preferredBranchId: existing.preferredBranchId ?? null }, deduped: true };
+    }
+  }
+
+  // Dedupe 2: same contact + same branch within 10 minutes.
+  const recent = await prisma.lead.findFirst({
+    where: {
+      email: { equals: email },
+      mobile: { equals: mobile },
+      preferredBranchId: { equals: preferredBranchId },
+      createdAt: { gte: new Date(Date.now() - PUBLIC_DUPLICATE_WINDOW_MS) },
+    },
+    include: { branch: true },
+    orderBy: { createdAt: 'desc' },
+  });
+  if (recent) {
+    return { lead: { ...serializeLead(recent), preferredBranchId: recent.preferredBranchId ?? null }, deduped: true };
+  }
+
+  // Loose unitCode check (best-effort existence, never a 400, never an FK):
+  // the code is stored on the column either way so nothing blocks capture.
+  const unitCode = input.unitCode?.trim() ? input.unitCode.trim() : null;
+  if (unitCode) {
+    await prisma.unit.findFirst({
+      where: { unitCode, deletedAt: null },
+      select: { id: true },
+    });
+  }
+
+  const type: AccountType =
+    input.purpose === 'business' || input.companyName?.trim() || input.uen?.trim() ? 'BUSINESS' : 'PERSONAL';
+
+  // v2: every booking-steps datum lands in a first-class column. `note`
+  // carries only the free-text message head (legacy rows keep their packed
+  // lines, which serializeLead parses back on read).
+  const moveInDate = input.moveInDate?.trim() ? new Date(input.moveInDate.trim()) : null;
+  const lead = await prisma.lead.create({
+    data: {
+      name: input.name.trim(),
+      type,
+      stage: 'NEW_ENQUIRY',
+      source: input.source ?? 'WEBSITE',
+      preferredSize: input.preferredSize?.trim() ? input.preferredSize.trim() : null,
+      preferredBranchId,
+      monthlyRate: input.monthlyRate ?? null,
+      note: input.message?.trim() ? input.message.trim() : null,
+      email,
+      mobile,
+      unitCode,
+      moveInDate: moveInDate && !Number.isNaN(moveInDate.getTime()) ? moveInDate : null,
+      durationMonths: input.durationMonths ?? null,
+      companyName: input.companyName?.trim() ? input.companyName.trim() : null,
+      uen: input.uen?.trim() ? input.uen.trim() : null,
+      consentPdpa: input.consentPdpa ?? null,
+      consentMarketing: input.consentMarketing ?? null,
+      protectionTier: input.protectionTier?.trim() ? input.protectionTier.trim() : null,
+      protectionCost: input.protectionCost ?? null,
+      addons: toJsonColumn(input.addons),
+      promoCode: input.promoCode?.trim() ? input.promoCode.trim() : null,
+      promoDiscountAmt: input.promoDiscountAmt ?? null,
+      movingService: input.movingService ?? null,
+      totalDueToday: input.totalDueToday ?? null,
+      idempotencyKey: input.idempotencyKey?.trim() ? input.idempotencyKey.trim() : null,
+    },
+    include: { branch: true },
+  });
+  return { lead: { ...serializeLead(lead), preferredBranchId: lead.preferredBranchId ?? null }, deduped: false };
+}
+
+export async function getLeadById(id: string) {
+  const lead = await prisma.lead.findUnique({ where: { id }, include: { branch: true } });
+  if (!lead) throw new AppError(404, 'NOT_FOUND', 'Lead not found');
+  return { ...serializeLead(lead), preferredBranchId: lead.preferredBranchId ?? null };
 }
 
 export async function updateLead(id: string, input: UpdateLeadInput) {
@@ -134,6 +555,7 @@ export async function updateLead(id: string, input: UpdateLeadInput) {
   if (!existing) throw new AppError(404, 'NOT_FOUND', 'Lead not found');
   await assertBranch(input.preferredBranchId);
   assertLossReason(input.lossReason ?? undefined);
+  assertIntent(input);
   if (input.lossValue !== undefined && input.lossValue !== null && input.lossValue < 0) {
     throw new AppError(400, 'VALIDATION', 'lossValue must be 0 or greater');
   }
@@ -176,6 +598,20 @@ export async function updateLead(id: string, input: UpdateLeadInput) {
       ...(input.nextActionAt !== undefined ? { nextActionAt: input.nextActionAt } : {}),
       ...(lossPatch.lossReason !== undefined ? { lossReason: lossPatch.lossReason } : {}),
       ...(lossPatch.lossValue !== undefined ? { lossValue: lossPatch.lossValue } : {}),
+      ...(input.unitCode !== undefined ? { unitCode: input.unitCode } : {}),
+      ...(input.moveInDate !== undefined ? { moveInDate: input.moveInDate } : {}),
+      ...(input.durationMonths !== undefined ? { durationMonths: input.durationMonths } : {}),
+      ...(input.companyName !== undefined ? { companyName: input.companyName } : {}),
+      ...(input.uen !== undefined ? { uen: input.uen } : {}),
+      ...(input.consentPdpa !== undefined ? { consentPdpa: input.consentPdpa } : {}),
+      ...(input.consentMarketing !== undefined ? { consentMarketing: input.consentMarketing } : {}),
+      ...(input.protectionTier !== undefined ? { protectionTier: input.protectionTier } : {}),
+      ...(input.protectionCost !== undefined ? { protectionCost: input.protectionCost } : {}),
+      ...(input.addons !== undefined ? { addons: toJsonColumn(input.addons) } : {}),
+      ...(input.promoCode !== undefined ? { promoCode: input.promoCode } : {}),
+      ...(input.promoDiscountAmt !== undefined ? { promoDiscountAmt: input.promoDiscountAmt } : {}),
+      ...(input.movingService !== undefined ? { movingService: input.movingService } : {}),
+      ...(input.totalDueToday !== undefined ? { totalDueToday: input.totalDueToday } : {}),
     },
     include: { branch: true },
   });

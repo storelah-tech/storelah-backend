@@ -1,14 +1,43 @@
 import { Router, Request, Response } from 'express';
 import { z } from 'zod';
-import { ok, fail } from '../lib/http';
+import { ok, created, fail } from '../lib/http';
 import { listPublicBranches } from '../core/branches';
 import { getUnitMap, listPublicUnits } from '../core/units';
 import { listActivePromotions, validatePromotion, DEFAULT_PROMO_TYPE, DEFAULT_PROMO_SCOPE } from '../core/promotions';
 import { listActivePublicPromotionPlans } from '../core/promotionPlans';
 import { getPublicFloorPlan } from '../core/floorPlans';
 import { listProtectionPlans, listAddons } from '../core/extras';
+import { createPublicLead } from '../core/leads';
 
 const router = Router();
+
+// Minimal fixed-window rate limit for the public lead-capture endpoint
+// (no shared limiter exists — the claim limiter in core/customers.ts is
+// failure-count keyed and claim-specific, so it can't be reused). Keyed by
+// client IP; tuned via PUBLIC_LEAD_RATE_LIMIT / PUBLIC_LEAD_RATE_WINDOW_MS.
+// Same per-instance caveat as the claim limiter under serverless-http: each
+// warm Lambda instance keeps its own Map. Swap in Redis/DynamoDB if a hard
+// cross-instance limit is ever required.
+const PUBLIC_LEAD_LIMIT = Number(process.env.PUBLIC_LEAD_RATE_LIMIT ?? 30);
+const PUBLIC_LEAD_WINDOW_MS = Number(process.env.PUBLIC_LEAD_RATE_WINDOW_MS ?? 60_000);
+const publicLeadHits = new Map<string, { windowStart: number; count: number }>();
+
+function publicLeadLimiter(req: Request, res: Response, next: () => void): void {
+  const key = req.ip ?? 'unknown';
+  const now = Date.now();
+  const entry = publicLeadHits.get(key);
+  if (!entry || now - entry.windowStart >= PUBLIC_LEAD_WINDOW_MS) {
+    publicLeadHits.set(key, { windowStart: now, count: 1 });
+    next();
+    return;
+  }
+  entry.count += 1;
+  if (entry.count > PUBLIC_LEAD_LIMIT) {
+    fail(res, 429, 'TOO_MANY_REQUESTS', 'Too many requests. Please try again shortly.');
+    return;
+  }
+  next();
+}
 
 router.get('/branches', async (_req: Request, res: Response) => {
   ok(res, await listPublicBranches());
@@ -110,6 +139,111 @@ router.get('/addons', async (_req: Request, res: Response) => {
 
 router.get('/promotion-plans', async (_req: Request, res: Response) => {
   ok(res, await listActivePublicPromotionPlans());
+});
+
+// PUBLIC lead capture for the booking frontend "Your details" step —
+// unauthenticated by design (no requireAuth; CORS unchanged). Creates a Lead
+// with stage NEW_ENQUIRY; every booking-steps datum is persisted to a
+// first-class Lead column (v2 field-sync — see core/leads.ts) and `note`
+// carries only the message head. Pre-v2 note-packed rows still read via the
+// legacy parser fallback in serializeLead.
+// Dedupe: repeat idempotencyKey (24h) or same email+mobile+branch within
+// 10 min returns the existing row with 200 instead of a duplicate.
+const emptyToNull = (v: unknown) => (typeof v === 'string' && v.trim() === '' ? null : v);
+
+const publicLeadSchema = z
+  .object({
+    name: z.string().trim().min(1).max(120),
+    email: z.preprocess(emptyToNull, z.string().trim().max(254).email().nullable().optional()),
+    mobile: z.preprocess(emptyToNull, z.string().trim().max(40).nullable().optional()),
+    purpose: z.preprocess(emptyToNull, z.enum(['personal', 'business']).nullable().optional()),
+    companyName: z.preprocess(emptyToNull, z.string().trim().max(120).nullable().optional()),
+    uen: z.preprocess(emptyToNull, z.string().trim().max(40).nullable().optional()),
+    branchCode: z.preprocess(emptyToNull, z.string().trim().max(10).nullable().optional()),
+    preferredBranchId: z.preprocess(emptyToNull, z.string().trim().min(1).nullable().optional()),
+    preferredSize: z.preprocess(emptyToNull, z.string().trim().max(40).nullable().optional()),
+    unitCode: z.preprocess(emptyToNull, z.string().trim().max(40).nullable().optional()),
+    moveInDate: z.preprocess(
+      emptyToNull,
+      z
+        .string()
+        .trim()
+        .max(40)
+        .nullable()
+        .optional()
+        .refine((v) => v == null || !Number.isNaN(Date.parse(v)), { message: 'moveInDate must be a parseable date string' }),
+    ),
+    durationMonths: z.number().int().positive().nullable().optional(),
+    monthlyRate: z.number().nonnegative().nullable().optional(),
+    message: z.preprocess(emptyToNull, z.string().trim().max(2000).nullable().optional()),
+    source: z.preprocess(emptyToNull, z.enum(['WEBSITE', 'WHATSAPP', 'REFERRAL', 'GOOGLE']).nullable().optional()),
+    consentPdpa: z
+      .boolean()
+      .nullable()
+      .optional()
+      .refine((v) => v == null || v === true, { message: 'consentPdpa must be true when supplied' }),
+    consentMarketing: z.boolean().nullable().optional(),
+    protectionTier: z.preprocess(emptyToNull, z.string().trim().max(80).nullable().optional()),
+    protectionCost: z.number().nonnegative().nullable().optional(),
+    addons: z
+      .array(
+        z.object({
+          id: z.string().trim().max(80).optional(),
+          name: z.string().trim().min(1).max(120),
+          qty: z.number().int().positive(),
+          price: z.number().nonnegative(),
+        }),
+      )
+      .max(20)
+      .nullable()
+      .optional(),
+    promoCode: z.preprocess(emptyToNull, z.string().trim().max(40).nullable().optional()),
+    promoDiscountAmt: z.number().nonnegative().nullable().optional(),
+    movingService: z.boolean().nullable().optional(),
+    totalDueToday: z.number().nonnegative().nullable().optional(),
+    idempotencyKey: z.preprocess(emptyToNull, z.string().trim().max(80).nullable().optional()),
+  })
+  .refine((v) => Boolean(v.email ?? v.mobile), { message: 'At least one of email or mobile is required' });
+
+router.post('/leads', publicLeadLimiter, async (req: Request, res: Response) => {
+  const parsed = publicLeadSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid lead payload', parsed.error.flatten());
+    return;
+  }
+  const v = parsed.data;
+  const { lead, deduped } = await createPublicLead({
+    name: v.name,
+    email: v.email ?? null,
+    mobile: v.mobile ?? null,
+    purpose: v.purpose ?? null,
+    companyName: v.companyName ?? null,
+    uen: v.uen ?? null,
+    branchCode: v.branchCode ?? null,
+    preferredBranchId: v.preferredBranchId ?? null,
+    preferredSize: v.preferredSize ?? null,
+    unitCode: v.unitCode ?? null,
+    moveInDate: v.moveInDate ?? null,
+    durationMonths: v.durationMonths ?? null,
+    monthlyRate: v.monthlyRate ?? null,
+    message: v.message ?? null,
+    source: v.source ?? undefined,
+    consentPdpa: v.consentPdpa ?? null,
+    consentMarketing: v.consentMarketing ?? null,
+    protectionTier: v.protectionTier ?? null,
+    protectionCost: v.protectionCost ?? null,
+    addons: v.addons ?? null,
+    promoCode: v.promoCode ?? null,
+    promoDiscountAmt: v.promoDiscountAmt ?? null,
+    movingService: v.movingService ?? null,
+    totalDueToday: v.totalDueToday ?? null,
+    idempotencyKey: v.idempotencyKey ?? null,
+  });
+  if (deduped) {
+    ok(res, lead);
+    return;
+  }
+  created(res, lead);
 });
 
 export default router;

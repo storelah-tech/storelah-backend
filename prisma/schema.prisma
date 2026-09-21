@@ -475,6 +475,17 @@ model Booking {
   status         BookingStatus @default(PENDING_PAYMENT)
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
+  // Stripe payment linkage (additive, all nullable — pre-Stripe rows stay NULL).
+  // stripeSessionId = latest Checkout Session id (cs_test_…) for idempotent
+  // session reuse; paymentIntentId/paidAt/amountPaid are stamped by the
+  // checkout.session.completed webhook. Booking.amount stays the rent snapshot;
+  // the actually-charged figure lives in amountPaid / the invoice.
+  stripeSessionId String?
+  paymentIntentId String?
+  paidAt          DateTime?
+  amountPaid      Decimal?      @db.Decimal(10, 2)
+
+  @@index([stripeSessionId])
 }
 
 model Invoice {
@@ -489,10 +500,18 @@ model Invoice {
   status     InvoiceStatus @default(DUE)
   method     String? // Auto-debit / Card / Manual
   billedMonth DateTime @default(now())
-  createdAt  DateTime      @default(now())
-  updatedAt  DateTime      @updatedAt
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  // Stripe payment linkage (additive, all nullable). Stamped per-invoice by the
+  // checkout.session.completed webhook so PAID can stay scoped to the invoiced
+  // session when a tenant later holds several DUE invoices (recurring billing).
+  stripeSessionId String?
+  paymentIntentId String?
+  paidAt          DateTime?
+  amountPaid      Decimal?      @db.Decimal(10, 2)
 
   @@index([status])
+  @@index([stripeSessionId])
 }
 
 model Lead {
@@ -516,11 +535,35 @@ model Lead {
   // lossValue defaults to the lead's monthlyRate at loss time (revenue proxy).
   lossReason    String?
   lossValue     Decimal?  @db.Decimal(10, 2)
+  // v2 booking-intent fields (additive, all nullable — pre-v2 rows stay NULL
+  // and legacy note-packed `key: value` lines are parsed as fallback in
+  // serializeLead; see src/core/leads.ts). Captured by POST /public/leads
+  // ("Your details" step) and written as first-class columns for new rows.
+  unitCode         String?   // loose unit reference (never an FK)
+  moveInDate       DateTime?
+  durationMonths   Int?
+  companyName      String?
+  uen              String?
+  consentPdpa      Boolean?
+  consentMarketing Boolean?
+  protectionTier   String?   // protection plan id or name
+  protectionCost   Decimal?  @db.Decimal(10, 2)
+  addons           Json?     // [{ id?, name, qty, price }, ...] (cap 20)
+  promoCode        String?
+  promoDiscountAmt Decimal?  @db.Decimal(10, 2)
+  movingService    Boolean?
+  totalDueToday    Decimal?  @db.Decimal(10, 2)
+  // 24h idempotency key for public-lead dedupe. Stored as a column (not
+  // packed into note) so new rows keep the double-submit guard; legacy rows
+  // are still matched via their packed `idempotencyKey: <key>` note line.
+  idempotencyKey   String?
   createdAt     DateTime   @default(now())
   updatedAt     DateTime   @updatedAt
 
   appointments Appointment[]
   conversations Conversation[]
+
+  @@index([idempotencyKey])
 }
 
 model Appointment {

@@ -460,10 +460,16 @@ async function bindLeadTable() {
     tbody.innerHTML = rows.map((l) => {
       const initial = (l.name || '?').charAt(0).toUpperCase();
       const heat = stageLabel[l.stage] || l.stage;
+      // v2 booking-intent tooltip on the size/facility cell — columns stay
+      // intact (Status/Intent/Source/Next-action/Est-value untouched).
+      const intentTip = [
+        l.unitCode ? 'Unit ' + l.unitCode : null,
+        l.moveInDate ? 'Move-in ' + fmtDay(l.moveInDate) : null,
+      ].filter(Boolean).join(' · ');
       return '<tr data-lead-id="' + escapeHtml(l.id) + '" tabindex="0"><td><input class="check" type="checkbox"></td><td><div class="contact"><div class="avatar">' + initial + '</div><div><b>' + escapeHtml(l.name) + '</b><small>' + (l.type === 'BUSINESS' ? 'Business' : 'Personal') + (l.segment ? ' · ' + escapeHtml(l.segment) : '') + '</small></div></div></td>' +
         '<td><span class="pill ' + (l.stage === 'NEW_ENQUIRY' ? 'red' : l.stage === 'WON' ? 'green' : l.stage === 'LOST' ? '' : 'amber') + '">' + heat + '</span></td>' +
         '<td>' + leadHeatHtml(l.stage, l.monthlyRate) + '</td>' +
-        '<td>' + escapeHtml(l.size || '—') + (l.branchCode ? ' · ' + escapeHtml(l.branchCode) : '') + '</td>' +
+        '<td' + (intentTip ? ' title="' + escapeHtml(intentTip) + '"' : '') + '>' + escapeHtml(l.size || '—') + (l.branchCode ? ' · ' + escapeHtml(l.branchCode) : '') + (l.unitCode ? ' · ' + escapeHtml(l.unitCode) : '') + '</td>' +
         '<td><span class="channel">' + (l.source ? l.source.charAt(0) : 'W') + '</span></td>' +
         '<td>' + nextActionLabel(l) + '</td>' +
         '<td><b>' + (l.monthlyRate ? '$' + (l.monthlyRate).toLocaleString() : '—') + '</b></td>' +
@@ -683,7 +689,7 @@ async function bindPipeline() {
         .filter((l) => !branchFilter || l.branchCode === branchFilter)
         .map((l) => {
           totalValue += l.monthlyRate || 0;
-          return '<div class="deal" draggable="true" data-lead-id="' + escapeHtml(l.id) + '" data-stage="' + col.stage + '"><div class="deal-top"><div><h4>' + escapeHtml(l.name) + '</h4><p>' + escapeHtml(l.size || '—') + (l.branchCode ? ' · ' + escapeHtml(l.branchCode) : '') + '</p></div><span class="pill ' + (l.type === 'PERSONAL' ? 'green' : 'amber') + '">' + (l.type === 'PERSONAL' ? 'Personal' : 'Business') + '</span></div><div class="deal-value">' + (l.monthlyRate ? '$' + (l.monthlyRate).toLocaleString() : '—') + '</div><div class="deal-meta"><span>' + (l.source || '') + '</span><span>' + fmtDay(l.createdAt) + '</span></div></div>';
+          return '<div class="deal" draggable="true" tabindex="0" role="button" aria-label="Open lead ' + escapeHtml(l.name) + '" data-lead-id="' + escapeHtml(l.id) + '" data-stage="' + col.stage + '"><div class="deal-top"><div><h4>' + escapeHtml(l.name) + '</h4><p>' + escapeHtml(l.size || '—') + (l.branchCode ? ' · ' + escapeHtml(l.branchCode) : '') + '</p></div><span class="pill ' + (l.type === 'PERSONAL' ? 'green' : 'amber') + '">' + (l.type === 'PERSONAL' ? 'Personal' : 'Business') + '</span></div><div class="deal-value">' + (l.monthlyRate ? '$' + (l.monthlyRate).toLocaleString() : '—') + '</div><div class="deal-meta"><span>' + (l.source || '') + '</span><span>' + fmtDay(l.createdAt) + '</span></div></div>';
         }).join('');
       return '<div class="column" data-stage="' + col.stage + '"><div class="col-head"><span>' + (stageKanbanLabel[col.stage] || col.stage) + ' <small>' + col.count + '</small></span></div>' + (cards || '<div class="deal"><p style="color:var(--muted)">No leads</p></div>') + '</div>';
     }).join('');
@@ -694,15 +700,33 @@ async function bindPipeline() {
 }
 
 // HTML5 drag-drop on the kanban: delegated on #kanban so re-renders keep
-// working. Drop persists the new stage via PATCH /leads/:id.
+// working. Drop persists the new stage via PATCH /leads/:id. Card click (and
+// Enter/Space on a focused card) opens the same right-side detail drawer as
+// the table rows via openLeadDrawer — guarded vs dragstart so dragging a card
+// never pops the drawer.
 function wirePipelineDragDrop() {
   const kanban = $('#kanban');
   if (!kanban || kanban.dataset.dnd === '1') return;
   kanban.dataset.dnd = '1';
   let dragId = null;
+  let justDragged = false;
+  kanban.addEventListener('click', (e) => {
+    if (justDragged) return;
+    const card = e.target.closest('.deal[data-lead-id]');
+    if (!card) return;
+    openLeadDrawer(card.dataset.leadId, card);
+  });
+  kanban.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    const card = e.target.closest && e.target.closest('.deal[data-lead-id]');
+    if (!card) return;
+    e.preventDefault();
+    openLeadDrawer(card.dataset.leadId, card);
+  });
   kanban.addEventListener('dragstart', (e) => {
     const card = e.target.closest('.deal[data-lead-id]');
     if (!card) return;
+    justDragged = true;
     dragId = card.dataset.leadId;
     try { e.dataTransfer.setData('text/plain', dragId); e.dataTransfer.effectAllowed = 'move'; } catch (err) { /* noop */ }
     card.style.opacity = '0.5';
@@ -710,6 +734,9 @@ function wirePipelineDragDrop() {
   kanban.addEventListener('dragend', () => {
     dragId = null;
     kanban.querySelectorAll('.deal').forEach((c) => { c.style.opacity = ''; });
+    // A real drag suppresses the follow-up click in most browsers; reset on a
+    // tick so the click guard only swallows drag-initiated clicks, never real ones.
+    setTimeout(() => { justDragged = false; }, 0);
   });
   kanban.addEventListener('dragover', (e) => {
     const col = e.target.closest('.column[data-stage]');
@@ -1095,7 +1122,14 @@ async function sendComposer() {
       toast('Note saved');
     } else {
       const res = await post('/conversations/' + encodeURIComponent(t.id) + '/messages', { body: text });
-      toast(res && res.delivered === false ? 'Recorded (delivery stub — not sent)' : 'Message recorded');
+      if (res && res.stageTransitioned) {
+        // First outbound reply flips NEW_ENQUIRY → CONTACTED server-side;
+        // refresh the pipeline/table so the card moves immediately.
+        toast('Moved to Contacted (first reply)');
+        await refreshLeadsViews().catch(() => {});
+      } else {
+        toast(res && res.delivered === false ? 'Recorded (delivery stub — not sent)' : 'Message recorded');
+      }
     }
     if (box) box.value = '';
     await openConversation(t.id);

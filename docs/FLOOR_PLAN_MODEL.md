@@ -294,6 +294,19 @@ area-contributing marked line exists", whether a closed loop or an open
 ≥ 3-vertex polyline). The metrics panel shows the explicit "No marked area"
 strip state; it never fabricates.
 
+**Line-only authority in the live metrics report.** `GET
+/floor-plans/:floorId/metrics` reports the SAME marked figures — never the
+whole-canvas rect: `geometry.ufa` is the marked gross minus
+blocks/solid-structure rects, `geometry.nlaEnclosed`/`nlaTotal` are placement
+footprints clipped to the marked loops (capped ≤ UFA), `nlaOutdoor` is 0 (the
+marked-area model has no outdoor split), `common` is the marked remainder
+(UFA − NLA), and efficiency plus the occupancy-sqft/revenue NLA denominators
+follow the same line-only NLA. With no contributing marked line all of these
+are 0 (the ghost whole-canvas UFA this replaces survives only as diagnostic
+numbers inside `basis_notes`). The exact marked figures are also exposed as
+top-level `boundaryMetrics` (byte-identical to the plan-read shape), which is
+what the metrics "UFA" KPI card and the portfolio per-facility UFA sums read.
+
 **Line styling:** all persisted lines render **solid** (`.fp-boundary.open`
 carries no `stroke-dasharray`; closed loops stay filled + solid). Only the
 in-flight pencil **draft** previews dashed (`.fp-boundary.draft`) so the

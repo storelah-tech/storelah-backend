@@ -25,7 +25,7 @@ export const openapiSpec = {
   openapi: '3.0.3',
   info: {
     title: 'StoreLah Booking API',
-    version: '1.6.0',
+    version: '1.7.0',
     description: [
       'Customer-facing booking API for the StoreLah self-storage business.',
       '',
@@ -129,6 +129,46 @@ export const openapiSpec = {
         '`PATCH|DELETE /cms/protection-plans/{id}` (same 4 for `/cms/addons`; Bearer JWT; ' +
         'PATCH carries the active toggle — deactivation preferred over hard delete). ' +
         'All pre-existing shapes are unchanged.',
+      '',
+      'v1.6.1 is ADDITIVE-ONLY over 1.6.0: Stripe Checkout hardening (TEST MODE, no shape changes) — ' +
+        '`POST /customer/bookings` now recomputes the invoiced amount server-side ' +
+        '(unit rate minus validated promo plus catalog protection/addon prices); the client ' +
+        '`totalDueToday` is a hint only and a hint below server pricing is `400 VALIDATION`. ' +
+        '`POST /customer/checkout/sessions` reuses the booking\'s stored open session and dedupes ' +
+        'concurrent creates (double-click safe), and `POST /customer/stripe/webhook` resolves the ' +
+        'booking by stored session id (metadata ref as fallback) and flips only the invoiced ' +
+        'session\'s DUE invoice to PAID. All pre-existing shapes are unchanged.',
+      '',
+      'v1.6.2 is ADDITIVE-ONLY over 1.6.1: line-only (marked-area) UFA/NLA in the live metrics ' +
+        'report — `GET /cms/floor-plans/{floorId}/metrics` gains top-level `boundaryMetrics` ' +
+        '(byte-identical to the plan-read shape) and `geometry.ufa/nlaEnclosed/nlaTotal/common` ' +
+        'are now the marked-area figures (UFA = marked gross minus blocks/structure, NLA = ' +
+        'placements clipped to loops capped at UFA, outdoor split 0, common = UFA − NLA; ' +
+        'all-zero with `boundaryClosed: false` when no marked line contributes area — never the ' +
+        'whole-canvas rect). Efficiency and the occupancy-sqft/revenue NLA denominators follow ' +
+        'the same line-only NLA; canvas-tessellated whole-canvas figures survive only as ' +
+        'diagnostic numbers inside `basis_notes` (exteriorWall/derivedCirculation/droppedSlivers/' +
+        'balanced stay canvas diagnostics). GFA/occupancy-count/revenue-money/unit_mix/volumetric ' +
+        'shapes are unchanged.',
+      '',
+      'v1.6.3 is ADDITIVE-ONLY over 1.6.2: unauthenticated lead capture for the booking ',
+      '"Your details" step — `POST /public/leads` creates a Lead with stage `NEW_ENQUIRY` ',
+      '(201; repeat `idempotencyKey` or same email+mobile+branch within 10 min returns the ',
+      'existing row with 200). `branchCode` resolves server-side (`preferredBranchId` cuid ',
+      'accepted as an alternative; unknown codes are 400), `purpose` maps to ',
+      'PERSONAL|BUSINESS, and overflow fields with no dedicated column are packed into ',
+      '`note` as stable `key: value` lines (no migration). Per-IP fixed-window rate limit ',
+      '(429). All pre-existing shapes are unchanged.',
+      '',
+      'v1.7.0 is ADDITIVE-ONLY over 1.6.3: v2 booking-intent field-sync — every ',
+      'booking-steps datum is stored as a first-class Lead column (`unitCode`, `moveInDate`, ',
+      '`durationMonths`, `companyName`, `uen`, `consentPdpa`, `consentMarketing`, ',
+      '`protectionTier`, `protectionCost`, `addons` (max 20 × { id?, name, qty, price }), ',
+      '`promoCode`, `promoDiscountAmt`, `movingService`, `totalDueToday`; all optional, ',
+      '`name` + ≥1 contact still required, `consentPdpa` must be true when supplied). ',
+      'New rows write columns directly (`note` carries only the message head); pre-v2 ',
+      'note-packed rows keep reading via the server-side legacy parser fallback. ',
+      'All pre-existing shapes are unchanged.',
     ].join('\n'),
   },
   servers: [
@@ -386,6 +426,49 @@ export const openapiSpec = {
         },
       },
     },
+    '/public/leads': {
+      post: {
+        tags: ['Public'],
+        summary: 'Submit a lead (booking "Your details")',
+        description: [
+          'Unauthenticated lead capture for the booking frontend: creates a Lead with stage ',
+          '`NEW_ENQUIRY` (source as given, default `WEBSITE`). `name` plus at least one of ',
+          '`email`/`mobile` is required; `branchCode` (BM/WD/UB, case-insensitive) resolves ',
+          'server-side to the branch (`preferredBranchId` cuid accepted as an alternative; ',
+          'unknown codes are `400 VALIDATION`). `purpose` (`personal`|`business`, default ',
+          'personal) maps to `PERSONAL`|`BUSINESS` (`BUSINESS` wins when `companyName`/`uen` ',
+          'are present). Every booking-steps datum is stored as a first-class Lead column ',
+          '(`unitCode`, `moveInDate`, `durationMonths`, `protectionTier`/`protectionCost`, ',
+          '`addons` up to 20 items, `promoCode`/`promoDiscountAmt`, `movingService`, ',
+          '`totalDueToday`; `note` carries only the message head) — pre-v2 note-packed ',
+          '`key: value` rows keep reading via the legacy parser fallback. `unitCode` is a ',
+          'loose reference only (never an FK, never a 400). Dedupe: a repeat `idempotencyKey` ',
+          '(24h) or the same email+mobile+branch within 10 minutes returns the existing row ',
+          'with 200 instead of a duplicate. No authentication. Envelope `{ data }`.',
+        ].join('\n'),
+        operationId: 'createPublicLead',
+        security: [],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: { $ref: openapiSchemaRef('PublicLeadRequest') },
+            },
+          },
+        },
+        responses: {
+          '201': openapiCreatedResponse({ $ref: openapiSchemaRef('PublicLead') }),
+          '200': openapiResponse({ $ref: openapiSchemaRef('PublicLead') }),
+          '400': openapiErrorResponse(
+            'Invalid lead payload (missing name/contact, bad email, unknown branchCode, consentPdpa false).',
+          ),
+          '429': openapiErrorResponse(
+            'Too many requests: per-IP fixed-window rate limit (see PUBLIC_LEAD_RATE_LIMIT).',
+          ),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+    },
     '/public/floor-plans/{branchCode}/{level}': {
       get: {
         tags: ['Public'],
@@ -575,6 +658,14 @@ export const openapiSpec = {
           'RevPAF/RevPOF with a walkable gross→efficiency→rentable→rent chain), unit-mix (climate-controlled ',
           'area share + size-band histogram by area share), volumetric capacity (clear area × ceiling, floor ',
           'sums), per-unit rows, circulation, reachability and validation records.',
+          '',
+          'UFA/NLA are LINE-ONLY (marked-area, never the whole canvas): `geometry.ufa` is the marked ',
+          'gross minus blocks/solid-structure rects, `geometry.nlaEnclosed`/`nlaTotal` are placement ',
+          'footprints clipped to the marked loops (capped at UFA), `nlaOutdoor` is 0 and `common` is ',
+          'UFA − NLA — all-zero with `boundaryClosed: false` when no marked line contributes area. The ',
+          'authoritative marked figures are also exposed as top-level `boundaryMetrics` (byte-identical ',
+          'to the plan-read shape); canvas-tessellated whole-canvas figures survive only as diagnostic ',
+          'numbers inside `basis_notes`.',
           '',
           'Every payload carries an `assumptions` block (measurement_basis CENTERLINE, pricing_basis, ',
           'gla_convention, wall_thickness_ft, residual_tolerance_sqft 0.25, min_aisle_width_ft 3.0, ',
@@ -1102,7 +1193,9 @@ export const openapiSpec = {
         summary: 'Create a booking',
         description: [
           'Books a unit and returns the created booking. On success the unit is marked RESERVED and a DUE invoice is ',
-          'raised for `totalDueToday` (or the unit monthly rate when omitted).',
+          'raised for the server-recomputed due-today total (unit rate minus validated promo plus catalog protection/addon prices); ',
+          'the client `totalDueToday` is a hint only — a hint below server pricing is `400 VALIDATION` ' +
+          'with details `{ expected, base, promoDiscount, protection, addons }` (all numbers) for refresh-and-retry.',
           '',
           'Auth: dual-mode. WITH a bearer token, books for the authenticated customer (invalid token = 401). ',
           'WITHOUT any Authorization header, performs guest checkout: the body must include `email`, and the customer ',
@@ -1238,6 +1331,8 @@ export const openapiSpec = {
         description: [
           'Creates a Stripe-hosted Checkout Session (TEST MODE only) for an existing booking and returns its id + redirect URL. ',
           'The amount is computed SERVER-SIDE from the booking invoice/unit rate in SGD — the client never sends an amount. ',
+          'Idempotent per bookingRef: the booking\'s stored open session is reused and concurrent creates are deduped ',
+          '(double-click safe; the session id is persisted on the booking). ',
           'Success redirects to `{BOOKING_APP_URL}/checkout/success?session_id={CHECKOUT_SESSION_ID}`; cancel to ',
           '`{BOOKING_APP_URL}/checkout/cancel`.',
           '',
@@ -1321,8 +1416,9 @@ export const openapiSpec = {
         description: [
           'Stripe event delivery (TEST MODE only). Verifies the `stripe-signature` header against `STRIPE_WEBHOOK_SECRET` ',
           'using the raw request body — `400 INVALID_SIGNATURE` on mismatch. Handles `checkout.session.completed` by marking ',
-          'the booking CONFIRMED and its open invoices PAID (method `Card`); all other event types are acknowledged without ',
-          'writes. IDEMPOTENT: retried deliveries are safe no-ops once the booking/invoices are already paid. No auth header — ',
+          'the booking CONFIRMED and the invoiced session\'s DUE invoice PAID (method `Card`, Stripe session/payment-intent ids, ',
+          'paid-at and amount-paid stamped on both rows); all other event types are acknowledged without ',
+          'writes. Booking lookup prefers the stored session id (metadata ref as fallback). IDEMPOTENT: retried deliveries are safe no-ops once the booking/invoices are already paid, and other DUE invoices are never touched. No auth header — ',
           'the Stripe signature is the credential.',
         ].join('\n'),
         operationId: 'stripeWebhook',
@@ -3215,6 +3311,115 @@ export const openapiSpec = {
           active: { type: 'boolean' },
         },
       },
+      PublicLeadRequest: {
+        type: 'object',
+        required: ['name'],
+        description:
+          'Booking "Your details" lead capture. All strings are trimmed server-side; empty strings are treated as null. `name` plus at least one of `email`/`mobile` is required.',
+        properties: {
+          name: { type: 'string', minLength: 1, maxLength: 120 },
+          email: { type: ['string', 'null'], format: 'email' },
+          mobile: { type: ['string', 'null'], maxLength: 40, description: 'Full international number, e.g. +6591234567.' },
+          purpose: {
+            type: ['string', 'null'],
+            enum: ['personal', 'business'],
+            description: 'Maps to PERSONAL|BUSINESS (default PERSONAL; BUSINESS when business or companyName/uen present).',
+          },
+          companyName: { type: ['string', 'null'], maxLength: 120 },
+          uen: { type: ['string', 'null'], maxLength: 40 },
+          branchCode: { type: ['string', 'null'], description: 'Branch code (BM/WD/UB, case-insensitive); resolved server-side. Unknown codes are 400.' },
+          preferredBranchId: { type: ['string', 'null'], description: 'Branch cuid alternative to branchCode.' },
+          preferredSize: { type: ['string', 'null'], maxLength: 40 },
+          unitCode: { type: ['string', 'null'], maxLength: 40, description: 'Loose unit reference — stored as a column, never an FK.' },
+          moveInDate: { type: ['string', 'null'], description: 'ISO date string; stored as a column.' },
+          durationMonths: { type: ['integer', 'null'], minimum: 1, description: 'Stored as a column.' },
+          monthlyRate: { type: ['number', 'null'], minimum: 0 },
+          message: { type: ['string', 'null'], maxLength: 2000, description: 'Stored as the head of note.' },
+          source: {
+            type: ['string', 'null'],
+            enum: ['WEBSITE', 'WHATSAPP', 'REFERRAL', 'GOOGLE'],
+            default: 'WEBSITE',
+          },
+          consentPdpa: { type: ['boolean', 'null'], description: 'When supplied must be true.' },
+          consentMarketing: { type: ['boolean', 'null'] },
+          protectionTier: { type: ['string', 'null'], maxLength: 80, description: 'Protection plan id or name.' },
+          protectionCost: { type: ['number', 'null'], minimum: 0 },
+          addons: {
+            type: ['array', 'null'],
+            maxItems: 20,
+            description: 'Booking addons snapshot (max 20 items).',
+            items: {
+              type: 'object',
+              required: ['name', 'qty', 'price'],
+              properties: {
+                id: { type: 'string' },
+                name: { type: 'string' },
+                qty: { type: 'integer', minimum: 1 },
+                price: { type: 'number', minimum: 0 },
+              },
+            },
+          },
+          promoCode: { type: ['string', 'null'], maxLength: 40 },
+          promoDiscountAmt: { type: ['number', 'null'], minimum: 0 },
+          movingService: { type: ['boolean', 'null'] },
+          totalDueToday: { type: ['number', 'null'], minimum: 0 },
+          idempotencyKey: { type: ['string', 'null'], maxLength: 80, description: 'Repeat key returns the existing row with 200.' },
+        },
+      },
+      PublicLead: {
+        type: 'object',
+        required: ['id', 'name', 'type', 'stage', 'source', 'preferredBranchId', 'createdAt'],
+        description:
+          'Serialized Lead echoed back from POST /public/leads (operator lead shape plus the resolved preferredBranchId).',
+        properties: {
+          id: { type: 'string' },
+          name: { type: 'string' },
+          type: { type: 'string', enum: ['PERSONAL', 'BUSINESS'] },
+          segment: { type: ['string', 'null'] },
+          size: { type: ['string', 'null'], description: 'Preferred size.' },
+          branchCode: { type: 'string', description: 'Resolved branch code (empty when no branch).' },
+          branchName: { type: 'string' },
+          preferredBranchId: { type: ['string', 'null'], description: 'Resolved branch id (null when no branch).' },
+          note: { type: ['string', 'null'], description: 'Message head (pre-v2 rows may also carry legacy `key: value` lines).' },
+          stage: { type: 'string', enum: ['NEW_ENQUIRY', 'CONTACTED', 'VIEWING_BOOKED', 'PROPOSAL_SENT', 'WON', 'LOST'] },
+          source: { type: 'string', enum: ['WEBSITE', 'WHATSAPP', 'REFERRAL', 'GOOGLE'] },
+          monthlyRate: { type: ['number', 'null'] },
+          email: { type: ['string', 'null'] },
+          mobile: { type: ['string', 'null'] },
+          owner: { type: ['string', 'null'] },
+          nextActionAt: { type: ['string', 'null'], format: 'date-time' },
+          lossReason: { type: ['string', 'null'] },
+          lossValue: { type: ['number', 'null'] },
+          unitCode: { type: ['string', 'null'] },
+          moveInDate: { type: ['string', 'null'], format: 'date-time' },
+          durationMonths: { type: ['integer', 'null'] },
+          companyName: { type: ['string', 'null'] },
+          uen: { type: ['string', 'null'] },
+          consentPdpa: { type: ['boolean', 'null'] },
+          consentMarketing: { type: ['boolean', 'null'] },
+          protectionTier: { type: ['string', 'null'] },
+          protectionCost: { type: ['number', 'null'] },
+          addons: {
+            type: ['array', 'null'],
+            items: {
+              type: 'object',
+              required: ['name', 'qty', 'price'],
+              properties: {
+                id: { type: 'string' },
+                name: { type: 'string' },
+                qty: { type: 'integer' },
+                price: { type: 'number' },
+              },
+            },
+          },
+          promoCode: { type: ['string', 'null'] },
+          promoDiscountAmt: { type: ['number', 'null'] },
+          movingService: { type: ['boolean', 'null'] },
+          totalDueToday: { type: ['number', 'null'] },
+          createdAt: { type: 'string', format: 'date-time' },
+          daysSince: { type: 'integer' },
+        },
+      },
       RegisterRequest: {
         type: 'object',
         required: ['name', 'email', 'password'],
@@ -3379,7 +3584,9 @@ export const openapiSpec = {
             type: 'number',
             minimum: 0,
             description:
-              'Amount invoiced on booking. Defaults to the unit monthly rate when omitted.',
+              'Client hint for the due-today total. The invoiced figure is recomputed server-side ' +
+              '(unit rate minus validated promo plus catalog protection/addon prices); a hint below ' +
+              'server pricing is rejected with 400 VALIDATION. Omit to invoice server pricing directly.',
           },
           email: {
             type: 'string',
@@ -4082,7 +4289,7 @@ export const openapiSpec = {
         type: 'object',
         required: [
           'schema_version', 'geometry_hash', 'facility', 'floor', 'coverage', 'assumptions',
-          'geometry', 'occupancy', 'revenue', 'unit_mix', 'volumetric', 'units',
+          'geometry', 'boundaryMetrics', 'occupancy', 'revenue', 'unit_mix', 'volumetric', 'units',
           'circulation', 'reachability', 'validation', 'statusBreakdown',
         ],
         description:
@@ -4120,7 +4327,7 @@ export const openapiSpec = {
           assumptions: { $ref: openapiSchemaRef('MetricsAssumptions') },
           geometry: {
             type: 'object',
-            description: 'Centreline-basis aggregates; every area is an AreaMeasure. gfaSource tags the GFA basis: USER (operator-entered FloorPlan.gfaSqft, driving gfa/efficiency/revenue chain) vs CANVAS (canvas-rect fallback, flagged in basis_notes).',
+            description: 'Centreline-basis aggregates; every area is an AreaMeasure. gfaSource tags the GFA basis: USER (operator-entered FloorPlan.gfaSqft, driving gfa/efficiency/revenue chain) vs CANVAS (canvas-rect fallback, flagged in basis_notes). ufa/nlaEnclosed/nlaTotal/common are LINE-ONLY (marked-area, authoritative = boundaryMetrics; all-zero with boundaryClosed false, never the whole-canvas rect); nlaOutdoor is 0 under the marked-area model.',
             properties: {
               gfa: { $ref: openapiSchemaRef('AreaMeasure') },
               gfaSource: { type: 'string', enum: ['USER', 'CANVAS'] },
@@ -4136,6 +4343,11 @@ export const openapiSpec = {
               droppedSlivers: { $ref: openapiSchemaRef('AreaMeasure') },
               balanced: { type: 'boolean' },
             },
+          },
+          boundaryMetrics: {
+            description:
+              'Authoritative line-only (marked-area) UFA/NLA figures (byte-identical to the plan-read shape; all-zero with boundaryClosed: false when no marked line contributes area).',
+            $ref: openapiSchemaRef('BoundaryMetrics'),
           },
           occupancy: {
             type: 'object',

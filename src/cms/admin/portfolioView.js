@@ -85,6 +85,28 @@ function geomFigures(g) {
   return figs;
 }
 
+// UFA/NLA are LINE-ONLY (marked-area, never the whole canvas): prefer the
+// authoritative report.boundaryMetrics ({ ufa, nla, boundaryClosed }) when
+// present — with no contributing marked line the floor contributes 0 — and
+// fall back to the legacy geometry mapping only for snapshots published
+// before boundaryMetrics existed.
+function reportFigures(report) {
+  if (!report) return null;
+  const bm = report.boundaryMetrics;
+  if (bm && typeof bm === 'object') {
+    const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : null);
+    const figs = {
+      nlaEnclosed: num(bm.nla),
+      nlaOutdoor: 0,
+      nlaTotal: num(bm.nla),
+      ufa: num(bm.ufa),
+    };
+    if (figs.nlaEnclosed == null && figs.nlaTotal == null && figs.ufa == null) return null;
+    return figs;
+  }
+  return geomFigures(report.geometry);
+}
+
 function areaSlotFor(code) {
   const card = Array.from(document.querySelectorAll('.facility-card'))
     .find((c) => c.getAttribute('data-branch') === code);
@@ -114,12 +136,12 @@ async function floorArea(floorId) {
   try {
     const rows = await get('/floor-plans/' + encodeURIComponent(floorId) + '/metrics/snapshots');
     const latest = (rows || [])[0];
-    const figs = geomFigures(latest && latest.payload && latest.payload.geometry);
+    const figs = reportFigures(latest && latest.payload);
     if (figs) return { figs, effectiveDate: latest.effectiveDate || '', live: false };
   } catch (e) { /* fall through to live compute */ }
   try {
     const report = await get('/floor-plans/' + encodeURIComponent(floorId) + '/metrics');
-    const figs = geomFigures(report && report.geometry);
+    const figs = reportFigures(report);
     if (figs) return { figs, effectiveDate: '', live: true };
   } catch (e) { /* no data for this floor */ }
   return null;

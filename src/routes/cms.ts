@@ -26,7 +26,7 @@ import {
   deleteFloor,
 } from '../core/floors';
 import { listTenants, createTenant, updateTenant, deactivateTenant, listMoveOuts, transitionMoveOut } from '../core/tenants';
-import { listLeads, getLeadStats, getWeeklyAnalytics, createLead, updateLead, deleteLead } from '../core/leads';
+import { listLeads, getLeadById, getLeadStats, getWeeklyAnalytics, createLead, updateLead, deleteLead } from '../core/leads';
 import {
   listConversations,
   createConversation,
@@ -527,6 +527,43 @@ const leadPayloadSchema = z.object({
   nextActionAt: z.string().datetime().nullable().optional(),
   lossReason: z.string().trim().max(80).nullable().optional(),
   lossValue: z.number().nonnegative().nullable().optional(),
+  // v2 booking-intent fields (same contract as POST /public/leads — see
+  // src/routes/public.ts). All optional/nullable; validated, never FKs.
+  unitCode: z.string().trim().max(40).nullable().optional(),
+  moveInDate: z
+    .string()
+    .trim()
+    .max(40)
+    .nullable()
+    .optional()
+    .refine((v) => v == null || !Number.isNaN(Date.parse(v)), { message: 'moveInDate must be a parseable date string' }),
+  durationMonths: z.number().int().positive().nullable().optional(),
+  companyName: z.string().trim().max(120).nullable().optional(),
+  uen: z.string().trim().max(40).nullable().optional(),
+  consentPdpa: z
+    .boolean()
+    .nullable()
+    .optional()
+    .refine((v) => v == null || v === true, { message: 'consentPdpa must be true when supplied' }),
+  consentMarketing: z.boolean().nullable().optional(),
+  protectionTier: z.string().trim().max(80).nullable().optional(),
+  protectionCost: z.number().nonnegative().nullable().optional(),
+  addons: z
+    .array(
+      z.object({
+        id: z.string().trim().max(80).optional(),
+        name: z.string().trim().min(1).max(120),
+        qty: z.number().int().positive(),
+        price: z.number().nonnegative(),
+      }),
+    )
+    .max(20)
+    .nullable()
+    .optional(),
+  promoCode: z.string().trim().max(40).nullable().optional(),
+  promoDiscountAmt: z.number().nonnegative().nullable().optional(),
+  movingService: z.boolean().nullable().optional(),
+  totalDueToday: z.number().nonnegative().nullable().optional(),
 });
 
 const leadUpdateSchema = leadPayloadSchema.partial();
@@ -535,8 +572,15 @@ function toLeadInput(parsed: z.infer<typeof leadPayloadSchema>) {
   return {
     ...parsed,
     nextActionAt: parsed.nextActionAt === undefined ? undefined : parsed.nextActionAt ? new Date(parsed.nextActionAt) : null,
+    moveInDate: parsed.moveInDate === undefined ? undefined : parsed.moveInDate ? new Date(parsed.moveInDate) : null,
   };
 }
+
+// Single lead read (drawer refresh + deep links). Additive — serializeLead
+// includes the v2 booking-intent columns with the legacy note fallback.
+router.get('/leads/:id', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await getLeadById(String(req.params.id)));
+});
 
 router.post('/leads', requireAuth, async (req: Request, res: Response) => {
   const parsed = leadPayloadSchema.safeParse(req.body);
@@ -624,7 +668,10 @@ router.post('/conversations/:id/notes', requireAuth, async (req: Request, res: R
 });
 
 // Send stub — records the outbound message on the thread; real
-// WhatsApp/email delivery is out of scope (see core/conversations.ts).
+// WhatsApp/email delivery is out of scope (see core/conversations.ts). The
+// first OUTBOUND message on a NEW_ENQUIRY lead also flips it to CONTACTED in
+// the same transaction (notes excluded); the response carries
+// `stageTransitioned` so the UI can toast.
 router.post('/conversations/:id/messages', requireAuth, async (req: Request, res: Response) => {
   const parsed = sendMessageSchema.safeParse(req.body);
   if (!parsed.success) {
@@ -1319,6 +1366,10 @@ const metricsSnapshotSchema = z.object({
 // wall_thickness, residual_tolerance 0.25, min_aisle_width 3.0) plus
 // facility + floor + coverage + geometry/occupancy/revenue/unit_mix/
 // volumetric + units + circulation + reachability + validation.
+// UFA/NLA are LINE-ONLY (marked-area, never the whole canvas): geometry.ufa
+// is the marked gross minus blocks/structure, geometry.nlaEnclosed/nlaTotal
+// are placements clipped to the marked loops (capped at UFA, 0 with no marked
+// area), and the authoritative figures ride alongside as `boundaryMetrics`.
 router.get('/floor-plans/:floorId/metrics', requireAuth, async (req: Request, res: Response) => {
   ok(res, await getFloorMetrics(String(req.params.floorId)));
 });

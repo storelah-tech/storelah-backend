@@ -23,3 +23,29 @@ export const config = {
   jwtExpiresIn: process.env.JWT_EXPIRES_IN ?? '12h',
   isProd: process.env.NODE_ENV === 'production',
 } as const;
+
+// Stripe Checkout return origin (see src/core/checkout.ts): BOOKING_APP_URL is
+// the booking-app origin baked into Checkout success_url/cancel_url. Dev
+// default is http://localhost:3001 (see .env.example); in production it MUST
+// be the public https booking origin (https://app.storelah.sg) — Stripe
+// redirects the customer's browser there after payment, so a localhost value
+// in prod breaks post-payment return (mobile browsers can never reach the
+// server's localhost). Warn loudly but never crash: a misconfigured prod
+// still boots so the misconfig shows up in logs instead of crash-looping
+// cold starts. Runs at import time (index.ts imports this module on boot,
+// including the Lambda cold start).
+const bookingAppUrlRaw = process.env.BOOKING_APP_URL ?? '';
+if (
+  config.isProd &&
+  (bookingAppUrlRaw === '' ||
+    /localhost|127\.0\.0\.1|\[::1\]/i.test(bookingAppUrlRaw) ||
+    !/^https:\/\//i.test(bookingAppUrlRaw))
+) {
+  console.warn(
+    '[storelah] ⚠ MISCONFIG: BOOKING_APP_URL must be the public https booking origin ' +
+      'in production (e.g. https://app.storelah.sg); got ' +
+      `${bookingAppUrlRaw === '' ? '(unset)' : JSON.stringify(bookingAppUrlRaw)}. ` +
+      'Stripe Checkout success_url/cancel_url will point at the wrong origin and ' +
+      'post-payment redirects will fail.',
+  );
+}

@@ -194,6 +194,13 @@ export async function createCheckoutSession(
   if (queued) return queued;
 
   const task = (async () => {
+    // Return origin resolves from BOOKING_APP_URL only — there is no
+    // per-request return-URL override (the POST /customer/checkout/sessions
+    // contract stays { bookingRef, email } → { sessionId, url }). The
+    // effective URLs are logged after creation so each session can be
+    // correlated in the Stripe Dashboard.
+    const successUrl = `${appUrl}/checkout/success?session_id={CHECKOUT_SESSION_ID}`;
+    const cancelUrl = `${appUrl}/checkout/cancel`;
     const session = await stripe().checkout.sessions.create({
       mode: 'payment',
       currency: 'sgd',
@@ -215,13 +222,19 @@ export async function createCheckoutSession(
         unitCode: booking.unit.unitCode,
         email,
       },
-      success_url: `${appUrl}/checkout/success?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${appUrl}/checkout/cancel`,
+      success_url: successUrl,
+      cancel_url: cancelUrl,
     });
 
     if (!session.id || !session.url) {
       throw new AppError(500, 'INTERNAL', 'Stripe did not return a checkout URL');
     }
+    // Log the effective return URLs at creation for Stripe Dashboard
+    // correlation (session id + booking ref + resolved origin).
+    console.log(
+      `[checkout] session created bookingRef=${booking.bookingRef} ` +
+        `sessionId=${session.id} success_url=${successUrl} cancel_url=${cancelUrl}`,
+    );
     // Persist the session id at creation time: the webhook lookup prefers it
     // over metadata, and the next create call reuses the session while open.
     await prisma.booking.update({

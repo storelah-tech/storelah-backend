@@ -25,6 +25,7 @@ import { prisma } from '../lib/prisma';
 import { toNum } from '../lib/format';
 import { AppError } from '../lib/http';
 import type { CustomerJwtPayload } from '../middleware/auth';
+import { markLeadWonForBooking } from './leads';
 
 let stripeClient: Stripe | null = null;
 
@@ -307,6 +308,12 @@ export async function getCheckoutSessionStatus(sessionId: string): Promise<{
  * DUE as fallback so single-invoice bookings keep working through any
  * rounding drift) — other DUE invoices for the tenant are never touched,
  * keeping future recurring billing safe.
+ *
+ * Payment-won attribution: matching Lead(s) flip to WON in the same
+ * transaction (see markLeadWonForBooking in core/leads.ts — heuristic contact
+ * match, forward-only, LOST never resurrected). Best-effort: lead failures
+ * never fail the payment. The booking frontend stays read-only on paid
+ * verification, so this webhook is the single source of truth for WON.
  */
 export async function applyCheckoutCompleted(
   session: Stripe.Checkout.Session,
@@ -324,6 +331,7 @@ export async function applyCheckoutCompleted(
           tenant: {
             include: { invoices: true },
           },
+          unit: { select: { unitCode: true, branchId: true } },
         },
       })
     : null;
@@ -334,11 +342,22 @@ export async function applyCheckoutCompleted(
         tenant: {
           include: { invoices: true },
         },
+        unit: { select: { unitCode: true, branchId: true } },
       },
     });
   }
   if (!booking) return { bookingRef: metadataRef, applied: false };
   if (booking.status === 'CANCELLED') return { bookingRef: booking.bookingRef, applied: false };
+
+  // Heuristic Lead↔Booking linkage (no FK exists): tenant contact plus the
+  // booked unit/branch when available. Contact-only, never PII content, in
+  // any log line below.
+  const leadMatch = {
+    email: booking.tenant.email,
+    mobile: booking.tenant.mobile,
+    unitCode: booking.unit.unitCode,
+    branchId: booking.unit.branchId ?? booking.tenant.branchId ?? null,
+  };
 
   const paymentIntentId =
     typeof session.payment_intent === 'string'
@@ -358,7 +377,14 @@ export async function applyCheckoutCompleted(
 
   // No DUE invoice left for the session and the booking already left
   // PENDING_PAYMENT → this delivery (or an earlier one) already applied.
+  // Still heal leads created after the first delivery (e.g. a late enquiry
+  // for the same contact) — best-effort, never fails the webhook.
   if (!target && (booking.status === 'CONFIRMED' || booking.status === 'ACTIVE')) {
+    try {
+      await markLeadWonForBooking(prisma, leadMatch);
+    } catch {
+      // Best-effort attribution only — the payment itself already applied.
+    }
     return { bookingRef: booking.bookingRef, applied: false };
   }
 
@@ -394,6 +420,18 @@ export async function applyCheckoutCompleted(
           amountPaid: amountPaid ?? toNum(target.amount),
         },
       });
+    }
+    // Payment-won attribution INSIDE the same transaction: matching leads flip
+    // to WON atomically with the booking/invoice writes. Best-effort — a
+    // failure here must never fail (or roll back) the payment, so errors are
+    // swallowed; the log carries counts only, never contact values.
+    try {
+      const wonCount = await markLeadWonForBooking(tx, leadMatch);
+      if (wonCount > 0) {
+        console.log(`[checkout] bookingRef=${booking!.bookingRef} marked ${wonCount} lead(s) WON`);
+      }
+    } catch {
+      console.log(`[checkout] bookingRef=${booking!.bookingRef} lead WON attribution skipped`);
     }
   });
 

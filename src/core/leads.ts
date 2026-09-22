@@ -871,3 +871,104 @@ export async function getWeeklyAnalytics(weeks = 8) {
     meta: { count: n, from: start.toISOString().slice(0, 10) },
   };
 }
+
+// ---------------------------------------------------------------------------
+// Payment-won attribution (Stripe webhook → Lead WON).
+// Called best-effort from applyCheckoutCompleted (src/core/checkout.ts) — the
+// backend webhook is the single source of truth; the booking frontend never
+// sets lead stage. There is no Lead↔Booking FK, so matching is heuristic:
+//   - CONTACT match is required: tenant email (case-insensitive) OR tenant
+//     mobile (digits-compared, country-prefix tolerant so "+65 8123 4567"
+//     matches "81234567").
+//   - UNIT/BRANCH narrow only when the lead carries them: a lead with a
+//     different unitCode, or a preferredBranchId different from the booking's
+//     branch, is a different enquiry and is left alone. Leads carrying neither
+//     still convert on contact match alone.
+// Forward-only + never resurrect: WON and LOST are excluded both in the read
+// and in the conditional updateMany, so concurrent/retried webhooks stay safe
+// no-ops. Unlike the LOST path in updateLead there is no win attribution to
+// stamp (no won-reason/value columns exist) — the stage flip is the whole
+// write. Manual PATCH /leads/:id to WON is untouched and keeps working.
+// Returns the number of leads flipped (0 when nothing matched).
+// ---------------------------------------------------------------------------
+
+export interface LeadWonMatch {
+  email?: string | null;
+  mobile?: string | null;
+  unitCode?: string | null;
+  branchId?: string | null;
+}
+
+function digitsOnly(value: string): string {
+  return value.replace(/\D/g, '');
+}
+
+function mobilesMatch(a: string, b: string): boolean {
+  if (!a || !b) return false;
+  return a === b || a.endsWith(b) || b.endsWith(a);
+}
+
+export async function markLeadWonForBooking(
+  client: Prisma.TransactionClient,
+  match: LeadWonMatch,
+): Promise<number> {
+  const email = match.email?.trim().toLowerCase() || null;
+  const mobileRaw = match.mobile?.trim() || null;
+  const mobileDigits = mobileRaw ? digitsOnly(mobileRaw) : '';
+  if (!email && !mobileDigits) return 0;
+  const unitCode = match.unitCode?.trim() || null;
+  const branchId = match.branchId?.trim() || null;
+
+  // Minimal read: only non-terminal leads matching the contact. The mobile
+  // `contains` on the trailing digits catches format variants (+65 / spaces /
+  // dashes); every candidate is re-verified by digits comparison below, so a
+  // loose index hit can never widen the write set.
+  const contactOr: Prisma.LeadWhereInput[] = [];
+  if (email) contactOr.push({ email: { equals: email, mode: 'insensitive' } });
+  if (mobileRaw) {
+    contactOr.push({ mobile: { equals: mobileRaw } });
+    if (mobileDigits && mobileDigits !== mobileRaw) {
+      contactOr.push({ mobile: { equals: mobileDigits } });
+    }
+    if (mobileDigits.length >= 4) {
+      contactOr.push({ mobile: { contains: mobileDigits.slice(-7) } });
+    }
+  }
+  const candidates = await client.lead.findMany({
+    where: { stage: { notIn: ['WON', 'LOST'] }, OR: contactOr },
+    select: {
+      id: true,
+      stage: true,
+      email: true,
+      mobile: true,
+      unitCode: true,
+      preferredBranchId: true,
+      note: true,
+    },
+  });
+
+  const ids: string[] = [];
+  for (const c of candidates) {
+    if (c.stage === 'WON' || c.stage === 'LOST') continue;
+    const candidateEmail = c.email?.trim().toLowerCase() || null;
+    const candidateDigits = c.mobile?.trim() ? digitsOnly(c.mobile.trim()) : '';
+    const emailOk = !!email && !!candidateEmail && candidateEmail === email;
+    const mobileOk = !!mobileDigits && mobilesMatch(candidateDigits, mobileDigits);
+    if (!emailOk && !mobileOk) continue;
+    // Narrow by unit/branch only when the lead carries them (effective
+    // unitCode falls back to legacy note-packed lines for pre-v2 rows).
+    const leadUnit = c.unitCode?.trim() || parseLegacyLeadNote(c.note).unitCode || null;
+    if (unitCode && leadUnit && leadUnit !== unitCode) continue;
+    if (branchId && c.preferredBranchId && c.preferredBranchId !== branchId) continue;
+    ids.push(c.id);
+  }
+  if (ids.length === 0) return 0;
+
+  // Conditional on stage so a concurrent webhook/retry flips each row once and
+  // never touches a row that moved to LOST in between (forward-only).
+  const updated = await client.lead.updateMany({
+    where: { id: { in: ids }, stage: { notIn: ['WON', 'LOST'] } },
+    data: { stage: 'WON' },
+  });
+  return updated.count;
+}

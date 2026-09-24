@@ -697,6 +697,40 @@ export const openapiSpec = {
         },
       },
     },
+    '/cms/floor-plans/facility/{branchRef}/metrics': {
+      get: {
+        tags: ['Operator CMS'],
+        summary: 'Facility-level floor-plan metrics rollup (live)',
+        description: [
+          'Sums the per-floor LIVE metrics reports (`GET /cms/floor-plans/{floorId}/metrics`) into one ',
+          'facility aggregate: geometry GFA/UFA/NLA sums with the NLA≤UFA clamp, corridorArea (= common = ',
+          'UFA−NLA), guarded efficiency ratios + GFA→UFA / UFA→NLA pcts, DB-wide totals (unplaced = no-placement ',
+          'units, occupied = OCCUPIED+OVERDUE) and per-size unitGroups (Locker=LOCKER, XS=SMALL, M=MEDIUM, ',
+          'L=LARGE, XL=0/0 — no Extra Large UnitSize exists). Floors without a plan contribute zero geometry ',
+          'and are listed in `floorsWithoutPlan`. Snapshot payloads are never summed (source LIVE).',
+          '',
+          'Operator CMS endpoints are documented here for reference only; they are served on the CMS host under ',
+          '`/api/v1/cms` and require a Bearer JWT issued by `/api/v1/cms/login` (auto-login via `/api/v1/cms/config`).',
+        ].join('\n'),
+        operationId: 'getFacilityFloorPlanMetrics',
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          {
+            name: 'branchRef',
+            in: 'path',
+            required: true,
+            description: 'Branch row id or branch code (e.g. BM).',
+            schema: { type: 'string' },
+          },
+        ],
+        responses: {
+          '200': openapiResponse({ $ref: openapiSchemaRef('FacilityMetricsReport') }),
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '404': openapiErrorResponse('Facility not found.'),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+    },
     '/cms/floor-plans/{floorId}/metrics/snapshots': {
       post: {
         tags: ['Operator CMS'],
@@ -3046,11 +3080,11 @@ export const openapiSpec = {
           id: { type: 'string', description: 'Database unit id.' },
           code: {
             type: 'string',
-            description: 'Unit code (e.g. BM-01-01). Alias of unitCode.',
+            description: 'Unit code (4-digit, e.g. 1001). Alias of unitCode.',
           },
           unitCode: {
             type: 'string',
-            description: 'Unit code (e.g. BM-01-01).',
+            description: 'Unit code (4-digit, e.g. 1001).',
           },
           name: {
             type: 'string',
@@ -3060,7 +3094,13 @@ export const openapiSpec = {
           rate: { type: 'number', description: 'Monthly rate (SGD).' },
           psf: { type: 'number', description: 'Rate per square foot.' },
           status: { $ref: openapiSchemaRef('UnitStatus') },
-          climateControl: { type: ['string', 'null'] },
+          climateControl: {
+            type: ['string', 'null'],
+            description:
+              'Legacy free-text climate note (e.g. "Ambient climate"); prefer hasAC.',
+          },
+          hasAC: { type: 'boolean', description: 'True when the unit is air-conditioned.' },
+          hasPillar: { type: 'boolean', description: 'True when the unit contains a structural pillar.' },
           deletedAt: {
             type: ['string', 'null'],
             format: 'date-time',
@@ -3664,8 +3704,10 @@ export const openapiSpec = {
           climateControl: {
             type: ['string', 'null'],
             description:
-              "Free-text climate note (e.g. \"Ambient climate\"); null when unset.",
+              'Legacy free-text climate note (e.g. "Ambient climate"); prefer hasAC.',
           },
+          hasAC: { type: 'boolean', description: 'True when the unit is air-conditioned.' },
+          hasPillar: { type: 'boolean', description: 'True when the unit contains a structural pillar.' },
           sizeCode: {
             type: 'string',
             description: 'Size code (e.g. LOCKER / SMALL / MEDIUM / LARGE / XL).',
@@ -4350,6 +4392,9 @@ export const openapiSpec = {
               nlaOutdoor: { $ref: openapiSchemaRef('AreaMeasure') },
               nlaTotal: { $ref: openapiSchemaRef('AreaMeasure') },
               common: { $ref: openapiSchemaRef('AreaMeasure') },
+              corridorArea: { $ref: openapiSchemaRef('AreaMeasure'), description: 'Additive alias of common (= UFA − NLA, ≥ 0) — Total Corridor Area.' },
+              gfaToUfaEfficiencyPct: { type: 'number', description: 'Additive: GFA → UFA efficiency (%) = UFA/GFA*100, zero-division guarded.' },
+              ufaToNlaEfficiencyPct: { type: 'number', description: 'Additive: UFA → NLA efficiency (%) = NLA/UFA*100, zero-division guarded.' },
               efficiency: { type: 'number' },
               loadFactor: { type: 'number' },
               derivedCirculation: { $ref: openapiSchemaRef('AreaMeasure') },
@@ -4361,6 +4406,31 @@ export const openapiSpec = {
             description:
               'Authoritative line-only (marked-area) UFA/NLA figures (byte-identical to the plan-read shape; all-zero with boundaryClosed: false when no marked line contributes area).',
             $ref: openapiSchemaRef('BoundaryMetrics'),
+          },
+          unitGroups: {
+            type: 'object',
+            description: 'Additive per-size unit groups (owner-confirmed mapping: Locker=LOCKER, XS=SMALL, M=MEDIUM, L=LARGE, XL=missing → 0/0 flagged; overall = sum of all buckets over nominal Unit.sqft).',
+            properties: {
+              overall: {
+                type: 'object',
+                properties: { units: { type: 'integer' }, areaSqft: { type: 'number' } },
+              },
+              groups: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  properties: {
+                    key: { type: 'string' },
+                    label: { type: 'string' },
+                    sizeCodes: { type: 'array', items: { type: 'string' } },
+                    units: { type: 'integer' },
+                    areaSqft: { type: 'number' },
+                    areaSharePct: { type: 'number' },
+                  },
+                },
+              },
+              notes: { type: 'array', items: { type: 'string' } },
+            },
           },
           occupancy: {
             type: 'object',
@@ -4486,6 +4556,104 @@ export const openapiSpec = {
               },
             },
           },
+        },
+      },
+      FacilityMetricsReport: {
+        type: 'object',
+        required: ['facility', 'source', 'floors', 'geometry', 'totals', 'unitGroups', 'basis_notes'],
+        description:
+          'Facility-level floor-plan rollup: per-floor LIVE reports summed into one aggregate (geometry sums with the NLA≤UFA clamp + guarded efficiencies; DB-wide totals/unitGroups with the owner-confirmed size mapping). Additive — per-floor shapes are unchanged.',
+        properties: {
+          facility: {
+            type: 'object',
+            required: ['id', 'code', 'name'],
+            properties: { id: { type: 'string' }, code: { type: 'string' }, name: { type: 'string' } },
+          },
+          source: { type: 'string', enum: ['LIVE'], description: 'Rollup source: per-floor live reports (snapshots are never summed).' },
+          floors: {
+            type: 'array',
+            description: 'Per-floor contributions (floors without a plan contribute zero geometry).',
+            items: {
+              type: 'object',
+              properties: {
+                floorId: { type: 'string' },
+                level: { type: 'integer' },
+                name: { type: 'string' },
+                hasPlan: { type: 'boolean' },
+                gfaSqft: { type: 'number' },
+                ufaSqft: { type: 'number' },
+                nlaSqft: { type: 'number' },
+                gfaSource: { type: 'string', enum: ['USER', 'CANVAS'] },
+                placedUnits: { type: 'integer' },
+                unplacedUnits: { type: 'integer' },
+                occupiedUnits: { type: 'integer' },
+              },
+            },
+          },
+          floorCount: { type: 'integer' },
+          floorsWithPlan: { type: 'integer' },
+          floorsWithoutPlan: { type: 'array', items: { type: 'string' } },
+          geometry: {
+            type: 'object',
+            description: 'Summed GFA/UFA/NLA with corridorArea (= common = UFA−NLA), guarded efficiency ratios + pcts.',
+            properties: {
+              gfa: { $ref: openapiSchemaRef('AreaMeasure') },
+              gfaSource: { type: 'string', enum: ['USER', 'CANVAS', 'MIXED'] },
+              gfaSourcesByFloor: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  properties: { floorId: { type: 'string' }, gfaSource: { type: 'string', enum: ['USER', 'CANVAS'] } },
+                },
+              },
+              ufa: { $ref: openapiSchemaRef('AreaMeasure') },
+              nlaEnclosed: { $ref: openapiSchemaRef('AreaMeasure') },
+              nlaOutdoor: { $ref: openapiSchemaRef('AreaMeasure') },
+              nlaTotal: { $ref: openapiSchemaRef('AreaMeasure') },
+              common: { $ref: openapiSchemaRef('AreaMeasure') },
+              corridorArea: { $ref: openapiSchemaRef('AreaMeasure') },
+              efficiency: { type: 'number' },
+              loadFactor: { type: 'number' },
+              gfaToUfaEfficiencyPct: { type: 'number' },
+              ufaToNlaEfficiencyPct: { type: 'number' },
+            },
+          },
+          totals: {
+            type: 'object',
+            description: 'Facility sums: unplaced = no-placement units; occupied = OCCUPIED+OVERDUE (RESERVED excluded).',
+            properties: {
+              totalUnits: { type: 'integer' },
+              placedUnits: { type: 'integer' },
+              unplacedUnits: { type: 'integer' },
+              occupiedUnits: { type: 'integer' },
+            },
+          },
+          unitGroups: {
+            type: 'object',
+            description: 'Per-size unit groups over nominal Unit.sqft (overall = sum; XL = 0/0, no DB code).',
+            properties: {
+              overall: {
+                type: 'object',
+                properties: { units: { type: 'integer' }, areaSqft: { type: 'number' } },
+              },
+              groups: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  properties: {
+                    key: { type: 'string' },
+                    label: { type: 'string' },
+                    sizeCodes: { type: 'array', items: { type: 'string' } },
+                    units: { type: 'integer' },
+                    areaSqft: { type: 'number' },
+                    areaSharePct: { type: 'number' },
+                  },
+                },
+              },
+              notes: { type: 'array', items: { type: 'string' } },
+            },
+          },
+          basis_notes: { type: 'array', items: { type: 'string' } },
         },
       },
       MetricsSnapshotInput: {

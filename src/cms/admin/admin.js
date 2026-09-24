@@ -17,8 +17,8 @@ import {
 import {
   setRefreshAll as unitsSetRefreshAll, setRefsLoader as unitsSetRefsLoader,
   fetchUnitsPage, showUnitDetail, getSelectedUnitCode, onUnitSizeChange,
-  populateFloorSelect, openCreateForm, openEditForm, closeUnitModal,
-  submitUnitForm, deleteUnit, openRateForm, closeRateModal, submitRateForm,
+  populateFloorSelect, populateUnitLevelFilter, openCreateForm, openEditForm, closeUnitModal,
+  submitUnitForm, deleteUnit, importUnitsFile, openRateForm, closeRateModal, submitRateForm,
 } from './unitsView.js';
 import { bindPortfolio, wirePortfolio } from './portfolioView.js';
 import { bindQuotes, bindMoveouts, wireOpsQueues } from './opsQueuesView.js';
@@ -3655,6 +3655,11 @@ function wireEvents() {
     fetchUnitMap().catch(() => {});
   });
   $('#statusFilter')?.addEventListener('change', (e) => { state.statusFilter = e.target.value; state.page = 1; fetchUnitsPage().catch(() => {}); });
+  $('#unitBranchFilter')?.addEventListener('change', (e) => { state.unitBranchFilter = e.target.value; state.unitLevelFilter = ''; populateUnitLevelFilter(); state.page = 1; fetchUnitsPage().catch(() => {}); });
+  $('#unitLevelFilter')?.addEventListener('change', (e) => { state.unitLevelFilter = e.target.value; state.page = 1; fetchUnitsPage().catch(() => {}); });
+  $('#unitAcFilter')?.addEventListener('change', (e) => { state.unitAcFilter = e.target.value; state.page = 1; fetchUnitsPage().catch(() => {}); });
+  $('#unitImportBtn')?.addEventListener('click', () => $('#unitImportFile')?.click());
+  $('#unitImportFile')?.addEventListener('change', (e) => { const f = e.target.files && e.target.files[0]; e.target.value = ''; if (f) importUnitsFile(f).catch(() => {}); });
   $('#pagePrev')?.addEventListener('click', () => { if (state.page > 1) { state.page--; fetchUnitsPage().catch(() => {}); } });
   $('#pageNext')?.addEventListener('click', () => { if (state.page < state.totalPages) { state.page++; fetchUnitsPage().catch(() => {}); } });
   // Units CRUD

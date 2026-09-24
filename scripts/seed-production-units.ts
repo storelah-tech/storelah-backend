@@ -25,21 +25,21 @@
  *  - New units: status AVAILABLE, attached to a real Floor of their branch,
  *    distributed roughly evenly across the branch's existing floors
  *    (round-robin over the whole per-branch batch).
- *  - Per-unit attributes are derived from EXISTING live units of the same
- *    branch+size (median sqft, median monthly rate, modal climateControl).
- *    The Unit table has no separate "features" column — climateControl is
- *    its only feature-like attribute. Fallbacks when a size has no live
- *    units in a branch: same size in other branches (median sqft, median
- *    psf × sqft, modal climate) → branch-wide median psf × sqft → size-range
- *    midpoint × default 4.50 psf, climate null.
- *  - unitCode: minted by the CANONICAL codegen — this script inserts through
- *    src/core/units.ts createUnit, the exact POST /units API path. Next code
- *    = BRANCH-LEVEL-SEQ, where SEQ = MAX numeric suffix across ALL rows on
- *    that branch+floor (soft-deleted included, so a deleted unit's code is
- *    never reused) + 1, zero-padded to 2. No codes are invented or hardcoded
- *    anywhere; the dry-run's codes are a read-only projection of the same
- *    algorithm for preview — actual codes are re-derived by createUnit at
- *    insert time, so a concurrent writer can never cause a collision.
+  *  - Per-unit attributes are derived from EXISTING live units of the same
+  *    branch+size (median sqft, median monthly rate, modal climateControl).
+  *    hasAC is derived from that modal climateControl via the canonical
+  *    climateControlToHasAC mapping (hasPillar defaults false — pillars are
+  *    surveyed per unit, never guessed). Fallbacks when a size has no live
+  *    units in a branch: same size in other branches (median sqft, median
+  *    psf × sqft, modal climate) → branch-wide median psf × sqft → size-range
+  *    midpoint × default 4.50 psf, climate null.
+  *  - unitCode: minted by the CANONICAL codegen — this script inserts through
+  *    src/core/units.ts createUnit, the exact POST /units API path. Next code
+  *    = MAX 4-digit code across ALL rows (soft-deleted included, so a deleted
+  *    unit's code is never reused) + 1, starting at 1001. No codes are invented
+  *    or hardcoded anywhere; the dry-run's codes are a read-only projection of
+  *    the same algorithm for preview — actual codes are re-derived by createUnit
+  *    at insert time, so a concurrent writer can never cause a collision.
  *  - NOT idempotent on purpose: re-running adds another batch. Every run
  *    prints exactly what it planned/inserted (unit codes, attributes, and a
  *    before/after count matrix per branch×size) so runs are auditable.
@@ -47,7 +47,7 @@
 import 'dotenv/config';
 import { UnitStatus } from '@prisma/client';
 import { prisma } from '../src/lib/prisma';
-import { createUnit } from '../src/core/units';
+import { createUnit, nextFourDigitCode, climateControlToHasAC } from '../src/core/units';
 import { toNum } from '../src/lib/format';
 
 // ---------- CLI args (strict: an unknown flag is a hard error, never a silent live insert) ----------
@@ -110,7 +110,6 @@ function mode(values: (string | null)[]): string | null {
 }
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
-const pad2 = (n: number) => String(n).padStart(2, '0');
 
 // ---------- types ----------
 
@@ -206,31 +205,19 @@ function deriveBucket(
 
 // ---------- dry-run projection of the canonical createUnit codegen ----------
 
-// Mirrors src/core/units.ts createUnit exactly: next SEQ per (branch, floor) =
-// MAX numeric suffix across ALL rows on that branch+floor (soft-deleted
-// INCLUDED — codes of deleted units are never reused) + 1, zero-padded to 2.
-// The counters persist ACROSS buckets within a branch, matching the
-// sequential insert (each createUnit sees the previous inserts). Floors are
-// assigned round-robin by global batch index within the branch — the insert
-// loop consumes plan.floorSequence, so projection and insert can never drift
-// apart.
+// Mirrors src/core/units.ts createUnit exactly: the next free 4-digit code =
+// MAX 4-digit code across ALL rows (soft-deleted INCLUDED — codes of deleted
+// units are never reused) + 1, starting at 1001. The `nextCode` counter is
+// shared ACROSS branches (one object threaded through every projectBranch
+// call) to match the sequential insert loop, where each createUnit sees the
+// previous inserts. Legacy BM-01-01 codes never match /^\d{4}$/ so they are
+// ignored by both the projection and the real codegen.
 function projectBranch(
-  branchCode: string,
-  branchId: string,
   floors: FloorLite[],
   sizeCount: number,
-  snapshot: UnitRow[],
   perBucket: number,
+  nextCode: { value: number },
 ): { floorSequence: FloorLite[]; codes: string[] }[] {
-  const nextSeq = new Map<string, number>(floors.map((f) => [f.id, 1]));
-  for (const u of snapshot) {
-    if (u.branchId !== branchId) continue;
-    const m = u.unitCode.match(/-(\d+)$/);
-    if (!m) continue;
-    const cur = nextSeq.get(u.floorId);
-    if (cur == null) continue; // defensive: unit on a floor outside this branch's list
-    nextSeq.set(u.floorId, Math.max(cur, Number(m[1]) + 1));
-  }
   return Array.from({ length: sizeCount }, (_, sizeIndex) => {
     const floorSequence: FloorLite[] = [];
     const codes: string[] = [];
@@ -238,8 +225,7 @@ function projectBranch(
       const g = sizeIndex * perBucket + i; // global index within the branch's batch
       const floor = floors[g % floors.length];
       floorSequence.push(floor);
-      codes.push(`${branchCode}-${pad2(floor.level)}-${pad2(nextSeq.get(floor.id)!)}`);
-      nextSeq.set(floor.id, nextSeq.get(floor.id)! + 1);
+      codes.push(String(nextCode.value++));
     }
     return { floorSequence, codes };
   });
@@ -337,20 +323,16 @@ async function main() {
   console.log('');
 
   // ---------- plan ----------
+  // Shared 4-digit code counter across ALL branches (matches the global
+  // codegen): starts above the current MAX 4-digit code in the snapshot.
+  const nextCode = { value: Number(nextFourDigitCode(snapshot.map((u) => u.unitCode))) };
   const plans: BucketPlan[] = [];
   for (const branch of branches) {
     if (!branch.floors.length) {
       console.log(`skip: ${branch.code} has no floors — a unit must attach to a real Floor`);
       continue;
     }
-    const projected = projectBranch(
-      branch.code,
-      branch.id,
-      branch.floors,
-      sizes.length,
-      snapshot,
-      count,
-    );
+    const projected = projectBranch(branch.floors, sizes.length, count, nextCode);
     sizes.forEach((size, sizeIndex) => {
       const derived = deriveBucket(snapshot, branch.id, size.id, size);
       const { floorSequence, codes } = projected[sizeIndex];
@@ -417,7 +399,7 @@ async function main() {
 
   // ---------- insert (via createUnit — the canonical POST /units path) ----------
   console.log('Inserting…');
-  const inserted: string[] = [];
+  const inserted: Array<{ branch: string; code: string }> = [];
   const failures: string[] = [];
   let n = 0;
   for (const p of plans) {
@@ -433,8 +415,12 @@ async function main() {
           monthlyRate: p.rate,
           status: UnitStatus.AVAILABLE,
           climateControl: p.climateControl ?? undefined,
+          // createUnit maps the legacy climate string onto hasAC itself; the
+          // explicit flag here keeps the seeded row honest even if the string
+          // mapping ever changes.
+          hasAC: climateControlToHasAC(p.climateControl) ?? false,
         });
-        inserted.push(unit.unitCode);
+        inserted.push({ branch: p.branchCode, code: unit.unitCode });
         console.log(
           `  [${n}] inserted ${unit.unitCode} — ${p.branchCode}, ${p.sizeCode}, floor ${floor.level}, ` +
             `${p.sqft} sqft, $${p.rate.toFixed(2)}/mo${p.climateControl ? `, climate: ${p.climateControl}` : ''}`,
@@ -481,7 +467,7 @@ async function main() {
     `DONE: inserted ${inserted.length} unit(s), failed ${failures.length}. Inserted unit codes:`,
   );
   for (const b of plannedBranches) {
-    const codes = inserted.filter((c) => c.startsWith(`${b}-`));
+    const codes = inserted.filter((c) => c.branch === b).map((c) => c.code);
     if (codes.length) console.log(`  ${b}: ${codes.join(', ')}`);
   }
   console.log(

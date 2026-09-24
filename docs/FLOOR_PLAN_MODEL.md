@@ -230,7 +230,12 @@ after `fpSaveDoors` succeeds, and markers round-trip through the existing
 
 - `Unit.deletedAt` is an **UPDATE** (per `docs/UNIT_DELETION.md`), so a soft-deleted unit's
   `UnitPlacement` row is untouched — authored geometry survives and reads simply exclude it.
-- Reads render a plan by joining `placement -> unit` and **filtering `unit.deletedAt == null`**;
+- Reads render a plan by joining `placement -> unit` and **filtering `unit.deletedAt == null`
+  AND `unit.status != 'INACTIVE'`** — an INACTIVE unit is out of service and never renders on
+  the editor canvas, the preview modal, the public read, or the metrics service (its placement
+  row survives and re-appears if the unit is reactivated; placing an INACTIVE unit is refused
+  with 400 — see `src/core/floorPlans.ts`). The dashboard **Unit Map** (`getUnitMap`) is
+  intentionally NOT filtered this way — it keeps showing INACTIVE units to operators.
   the round-trip verification shows `findMany({ where: { unit: { deletedAt: null } } })` returns
   0 rows for a soft-deleted unit while the placement row still exists.
 - A future **hard** delete of a unit is blocked while a placement exists (`onDelete: Restrict`)

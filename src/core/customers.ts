@@ -331,6 +331,8 @@ function serializePortalUnit(u: PortalUnit) {
     level: u.floor.level,
     // --- appended (additive) ---
     climateControl: u.climateControl,
+    hasAC: u.hasAC,
+    hasPillar: u.hasPillar,
     sizeCode: u.size.code,
     branch: { address: u.branch.address, operatingHours: u.branch.operatingHours },
   };

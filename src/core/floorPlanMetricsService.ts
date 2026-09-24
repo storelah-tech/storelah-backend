@@ -90,6 +90,124 @@ export { METRICS_SCHEMA_VERSION };
 // OCCUPIED + OVERDUE. RESERVED is leased but not rent-paying.
 const OCCUPIED_STATUSES = new Set(['OCCUPIED', 'OVERDUE']);
 
+// ---------- facility size groups (owner-confirmed mapping) ----------
+//
+// Locker Units = UnitSize LOCKER (Locker stays separate, NOT XS).
+// XS units = UnitSize SMALL. M Units = UnitSize MEDIUM. L Units = UnitSize LARGE.
+// XL Units = Extra Large — NO such UnitSize row exists in the schema, seed or
+// migrations (codes are exactly LOCKER / SMALL / MEDIUM / LARGE; the old XLBIZ
+// market key was dropped with the floor-plan P1 work — see src/core/market.ts).
+// The XL bucket is therefore implemented as 0 units / 0 sqft and flagged in
+// `unitGroups.notes`; no migration or seed row is created.
+export interface FacilitySizeGroupDef {
+  key: 'locker' | 'xs' | 'm' | 'l' | 'xl';
+  label: string;
+  /** UnitSize codes (upper-cased) feeding this bucket; empty = no DB code. */
+  sizeCodes: string[];
+}
+
+export const FACILITY_SIZE_GROUPS: readonly FacilitySizeGroupDef[] = [
+  { key: 'locker', label: 'Locker', sizeCodes: ['LOCKER'] },
+  { key: 'xs', label: 'XS', sizeCodes: ['SMALL'] },
+  { key: 'm', label: 'M', sizeCodes: ['MEDIUM'] },
+  { key: 'l', label: 'L', sizeCodes: ['LARGE'] },
+  { key: 'xl', label: 'XL (Extra Large)', sizeCodes: [] },
+] as const;
+
+export const XL_MISSING_CODE_NOTE =
+  'No Extra Large UnitSize code exists in the DB (codes are LOCKER / SMALL / MEDIUM / LARGE) — the XL bucket reports 0 units / 0 sqft until such a size is added via migration + seed.';
+
+export interface UnitGroupsReport {
+  /** Overall units = all non-deleted units in scope (equals the bucket sum
+   * for the current 4-code catalogue; any future/unknown size code counts in
+   * overall but in no bucket). */
+  overall: { units: number; areaSqft: number };
+  groups: Array<{
+    key: string;
+    label: string;
+    sizeCodes: string[];
+    units: number;
+    areaSqft: number;
+    areaSharePct: number;
+  }>;
+  notes: string[];
+}
+
+/** 1dp guard-wrapped helpers for the facility contract (ratios stay 4dp in core). */
+function round1(v: number): number {
+  return Number.isFinite(v) ? Math.round(v * 10) / 10 : 0;
+}
+
+/** Corridor area = max(0, UFA − NLA), 1dp, null-safe. */
+export function corridorAreaOf(ufaSqft: number | null | undefined, nlaSqft: number | null | undefined): number {
+  const ufa = typeof ufaSqft === 'number' && Number.isFinite(ufaSqft) ? ufaSqft : 0;
+  const nla = typeof nlaSqft === 'number' && Number.isFinite(nlaSqft) ? nlaSqft : 0;
+  return round1(Math.max(0, ufa - nla));
+}
+
+/** GFA → UFA efficiency (%) = UFA/GFA*100, zero-division guarded, 1dp. */
+export function gfaToUfaEfficiencyPctOf(
+  ufaSqft: number | null | undefined,
+  gfaSqft: number | null | undefined,
+): number {
+  const ufa = typeof ufaSqft === 'number' && Number.isFinite(ufaSqft) ? ufaSqft : 0;
+  const gfa = typeof gfaSqft === 'number' && Number.isFinite(gfaSqft) ? gfaSqft : 0;
+  return gfa > 0 ? round1((ufa / gfa) * 100) : 0;
+}
+
+/** UFA → NLA efficiency (%) = NLA/UFA*100, zero-division guarded, 1dp. */
+export function ufaToNlaEfficiencyPctOf(
+  nlaSqft: number | null | undefined,
+  ufaSqft: number | null | undefined,
+): number {
+  const nla = typeof nlaSqft === 'number' && Number.isFinite(nlaSqft) ? nlaSqft : 0;
+  const ufa = typeof ufaSqft === 'number' && Number.isFinite(ufaSqft) ? ufaSqft : 0;
+  return ufa > 0 ? round1((nla / ufa) * 100) : 0;
+}
+
+/**
+ * Per-size unit groups over nominal Unit.sqft sums (placed + unplaced,
+ * soft-deleted units already filtered by the caller). Overall = sum of all
+ * buckets. Additive — unit_mix.bySize (billable-Q histogram) is untouched.
+ */
+export function buildUnitGroups(units: Array<{ sizeCode: string | null | undefined; sqft: number }>): UnitGroupsReport {
+  const perCode = new Map<string, { units: number; areaSqft: number }>();
+  let overallUnits = 0;
+  let overallArea = 0;
+  for (const u of units) {
+    const code = String(u.sizeCode || '').toUpperCase();
+    const sqft = typeof u.sqft === 'number' && Number.isFinite(u.sqft) && u.sqft > 0 ? u.sqft : 0;
+    overallUnits += 1;
+    overallArea += sqft;
+    const band = perCode.get(code) ?? { units: 0, areaSqft: 0 };
+    band.units += 1;
+    band.areaSqft += sqft;
+    perCode.set(code, band);
+  }
+  overallArea = round1(overallArea);
+  const groups = FACILITY_SIZE_GROUPS.map((def) => {
+    let groupUnits = 0;
+    let groupArea = 0;
+    for (const code of def.sizeCodes) {
+      const band = perCode.get(code);
+      if (band) {
+        groupUnits += band.units;
+        groupArea += band.areaSqft;
+      }
+    }
+    groupArea = round1(groupArea);
+    return {
+      key: def.key,
+      label: def.label,
+      sizeCodes: [...def.sizeCodes],
+      units: groupUnits,
+      areaSqft: groupArea,
+      areaSharePct: overallArea > 0 ? round1((groupArea / overallArea) * 100) : 0,
+    };
+  });
+  return { overall: { units: overallUnits, areaSqft: overallArea }, groups, notes: [XL_MISSING_CODE_NOTE] };
+}
+
 function decimalToCents(v: Prisma.Decimal | number | null | undefined): bigint {
   if (v == null) return 0n;
   return BigInt(Math.round(toNum(v) * 100));
@@ -180,6 +298,12 @@ export interface FloorMetricsReport {
     nlaTotal: { q: string; sqft: number };
     /** Marked remainder (UFA − NLA, ≥ 0). */
     common: { q: string; sqft: number };
+    /** Additive alias of `common` (= UFA − NLA, ≥ 0, 1dp) — Total Corridor Area. */
+    corridorArea: { q: string; sqft: number };
+    /** Additive: GFA → UFA efficiency (%) = UFA/GFA*100, guarded, 1dp. */
+    gfaToUfaEfficiencyPct: number;
+    /** Additive: UFA → NLA efficiency (%) = NLA/UFA*100, guarded, 1dp. */
+    ufaToNlaEfficiencyPct: number;
     glaExclusive: { area: { q: string; sqft: number }; convention: string };
     glaInclusive: { area: { q: string; sqft: number }; convention: string };
     efficiency: number;
@@ -190,6 +314,12 @@ export interface FloorMetricsReport {
   };
   /** Authoritative marked-area figures (byte-identical to the plan-read shape). */
   boundaryMetrics: BoundaryMetrics;
+  /**
+   * Additive per-size unit groups (owner-confirmed mapping: Locker=LOCKER,
+   * XS=SMALL, M=MEDIUM, L=LARGE, XL=missing → 0/0 flagged). Overall = sum of
+   * all buckets over nominal Unit.sqft (placed + unplaced, non-deleted).
+   */
+  unitGroups: UnitGroupsReport;
   occupancy: {
     physical: { occupiedUnits: number; totalUnits: number; pct: number };
     sqft: { occupiedQ: string; occupiedSqft: number; nlaQ: string; nlaSqft: number; pct: number };
@@ -294,6 +424,8 @@ interface PlacedUnit {
     status: string;
     monthlyRate: Prisma.Decimal | number;
     climateControl: string | null;
+    hasAC: boolean;
+    hasPillar: boolean;
     size: { code: string; name: string };
   };
 }
@@ -361,7 +493,7 @@ export async function getFloorMetrics(floorId: string): Promise<FloorMetricsRepo
     where: { floorId },
     include: {
       placements: {
-        where: { unit: { deletedAt: null } },
+        where: { unit: { deletedAt: null, status: { not: 'INACTIVE' } } },
         include: { unit: { include: { size: true } } },
         orderBy: { createdAt: 'asc' },
       },
@@ -477,7 +609,10 @@ export async function getFloorMetrics(floorId: string): Promise<FloorMetricsRepo
       actualCents,
       marketCents: market ? market.cents : actualCents,
       marketRateSource: market ? market.source : 'ACTUAL_FALLBACK',
-      climateControlled: isClimateControlled(p.unit.climateControl),
+      // hasAC is the source of truth; the legacy climateControl string
+      // heuristic stays as an OR fallback so pre-flag rows keep their share
+      // (the flag migration defaults old rows to false — never downgrade them).
+      climateControlled: p.unit.hasAC === true || isClimateControlled(p.unit.climateControl),
       billableQ: core ? core.billable.q : 0n,
       clearQ: core ? core.clear.q : 0n,
     };
@@ -516,14 +651,26 @@ export async function getFloorMetrics(floorId: string): Promise<FloorMetricsRepo
   const cubicByRegion = new Map(volumetric.units.map((v) => [v.regionId, v]));
 
   const unplacedUnits = await prisma.unit.findMany({
-    where: { floorId, deletedAt: null, placement: { is: null } },
-    select: { unitCode: true },
+    where: { floorId, deletedAt: null, status: { not: 'INACTIVE' }, placement: { is: null } },
+    select: { unitCode: true, sqft: true, size: { select: { code: true } } },
     orderBy: { unitCode: 'asc' },
   });
   const statusBreakdown: Record<string, number> = {};
   for (const u of perUnit) statusBreakdown[u.p.unit.status] = (statusBreakdown[u.p.unit.status] ?? 0) + 1;
 
   const marketFallbacks = perUnit.filter((u) => u.marketRateSource === 'ACTUAL_FALLBACK').length;
+
+  // Additive facility-contract fields (all existing fields kept byte-identical):
+  // corridorArea aliases geometry.common; the two efficiency pcts are guarded
+  // 1dp percentages; unitGroups covers ALL floor units (placed + unplaced,
+  // non-deleted) over nominal Unit.sqft sums.
+  const corridorSqft = lineCommonSqft;
+  const gfaToUfaEfficiencyPct = gfaToUfaEfficiencyPctOf(boundaryMetrics.ufa, effGfaSqft);
+  const ufaToNlaEfficiencyPct = ufaToNlaEfficiencyPctOf(boundaryMetrics.nla, boundaryMetrics.ufa);
+  const unitGroups = buildUnitGroups([
+    ...perUnit.map((u) => ({ sizeCode: u.p.unit.size.code, sqft: u.p.unit.sqft })),
+    ...unplacedUnits.map((u) => ({ sizeCode: u.size.code, sqft: u.sqft })),
+  ]);
 
   return {
     schema_version: METRICS_SCHEMA_VERSION,
@@ -571,7 +718,7 @@ export async function getFloorMetrics(floorId: string): Promise<FloorMetricsRepo
         'Circulation-kind blocks (Corridor/aisle/lift/lobby/loading) are traversable: a spanning Corridor joins derived circulation instead of splitting it (region-to-circulation connectivity).',
         'Block region kinds are name-heuristic mappings (kind_source heuristic on decoration; placements are exact).',
         'Legacy structure JSON decorations are not measured; rect markers already live as blocks.',
-        `Climate-controlled share uses the Unit.climateControl string heuristic ('Ambient climate' counts as ambient).`,
+        `Climate-controlled share uses the Unit.hasAC flag, OR the legacy Unit.climateControl string heuristic ('Ambient climate' counts as ambient) for pre-flag rows.`,
         `Clear heights are not stored: every unit uses the default ${DEFAULT_CLEAR_HEIGHT_FT} ft ceiling; no per-unit overrides exist yet.`,
         ...(marketFallbacks > 0
           ? [`${marketFallbacks} unit(s) have no MARKET_PSF entry for their size and fall back to actual rent in GPI.`]
@@ -579,6 +726,7 @@ export async function getFloorMetrics(floorId: string): Promise<FloorMetricsRepo
         ...(unplacedUnits.length > 0
           ? [`${unplacedUnits.length} floor unit(s) have no placement and are excluded from measured areas (see coverage.unplacedCodes).`]
           : []),
+        'unitGroups carries the owner-confirmed per-size buckets over nominal Unit.sqft (Locker=LOCKER, XS=SMALL, M=MEDIUM, L=LARGE, overall = sum); the XL (Extra Large) bucket is 0/0 — no such UnitSize code exists in the DB (see unitGroups.notes).',
       ],
     },
     geometry: {
@@ -590,6 +738,9 @@ export async function getFloorMetrics(floorId: string): Promise<FloorMetricsRepo
       nlaOutdoor: zeroArea(),
       nlaTotal: { q: lineNlaQ.toString(), sqft: boundaryMetrics.nla },
       common: { q: lineCommonQ.toString(), sqft: lineCommonSqft },
+      corridorArea: { q: lineCommonQ.toString(), sqft: corridorSqft },
+      gfaToUfaEfficiencyPct,
+      ufaToNlaEfficiencyPct,
       glaExclusive: { area: { q: lineNlaQ.toString(), sqft: boundaryMetrics.nla }, convention: m.glaExclusive.convention },
       glaInclusive: { area: { q: lineUfaQ.toString(), sqft: boundaryMetrics.ufa }, convention: m.glaInclusive.convention },
       efficiency: round4(lineEfficiency),
@@ -599,6 +750,7 @@ export async function getFloorMetrics(floorId: string): Promise<FloorMetricsRepo
       balanced: m.identity.balanced,
     },
     boundaryMetrics,
+    unitGroups,
     occupancy: {
       physical: { ...occupancy.physical, pct: round4(occupancy.physical.pct) },
       sqft: {
@@ -706,6 +858,220 @@ export async function getFloorMetrics(floorId: string): Promise<FloorMetricsRepo
     })),
     validation: m.validations.map((v) => ({ code: v.code, severity: v.severity, region_ids: v.region_ids, message: v.message })),
     statusBreakdown,
+  };
+}
+
+// ---------- facility-level rollup (additive) ----------
+
+export interface FacilityMetricsFloorRow {
+  floorId: string;
+  level: number;
+  name: string;
+  hasPlan: boolean;
+  gfaSqft: number;
+  ufaSqft: number;
+  nlaSqft: number;
+  gfaSource: GfaSource | null;
+  placedUnits: number;
+  unplacedUnits: number;
+  occupiedUnits: number;
+}
+
+export interface FacilityMetricsReport {
+  facility: { id: string; code: string; name: string };
+  /** Live-rollup source: per-floor live reports are summed (no snapshot selection). */
+  source: 'LIVE';
+  floors: FacilityMetricsFloorRow[];
+  floorCount: number;
+  floorsWithPlan: number;
+  floorsWithoutPlan: string[];
+  geometry: {
+    gfa: { q: string; sqft: number };
+    /** USER when every contributing plan is operator-entered, CANVAS when all
+     * fall back to the canvas rect, MIXED otherwise (or when no plan exists). */
+    gfaSource: GfaSource | 'MIXED';
+    gfaSourcesByFloor: Array<{ floorId: string; gfaSource: GfaSource }>;
+    ufa: { q: string; sqft: number };
+    nlaEnclosed: { q: string; sqft: number };
+    nlaOutdoor: { q: string; sqft: number };
+    nlaTotal: { q: string; sqft: number };
+    common: { q: string; sqft: number };
+    /** Additive alias of `common` (= UFA − NLA, ≥ 0, 1dp) — Total Corridor Area. */
+    corridorArea: { q: string; sqft: number };
+    /** NLA/GFA ratio (display-boundary, 4dp) — guarded, 0 when GFA is 0. */
+    efficiency: number;
+    /** UFA/NLA ratio (display-boundary, 4dp) — guarded, 1 when NLA is 0. */
+    loadFactor: number;
+    /** Additive: GFA → UFA efficiency (%) = UFA/GFA*100, guarded, 1dp. */
+    gfaToUfaEfficiencyPct: number;
+    /** Additive: UFA → NLA efficiency (%) = NLA/UFA*100, guarded, 1dp. */
+    ufaToNlaEfficiencyPct: number;
+  };
+  totals: {
+    totalUnits: number;
+    placedUnits: number;
+    /** Facility sum of the coverage.unplacedUnits definition (no placement, non-deleted). */
+    unplacedUnits: number;
+    /** Facility sum of occupied units (status OCCUPIED + OVERDUE, RESERVED excluded). */
+    occupiedUnits: number;
+  };
+  /**
+   * Additive per-size unit groups over nominal Unit.sqft (whole facility,
+   * non-deleted units; overall = all units, equalling the bucket sum for the
+   * current 4-code catalogue). XL is 0/0 — no Extra Large UnitSize code exists
+   * (see notes).
+   */
+  unitGroups: UnitGroupsReport;
+  basis_notes: string[];
+}
+
+/**
+ * Facility-level rollup: sums the per-floor LIVE reports (getFloorMetrics)
+ * into one facility aggregate. Floors without a plan contribute zero geometry
+ * and are listed in `floorsWithoutPlan` (their DB units still count in
+ * totals/unitGroups). Conventions reused from the per-floor report:
+ * zero-division guards on both efficiencies, NLA clamped ≤ UFA, and GFA falls
+ * back to the canvas rect per plan (gfaSource CANVAS) unless the operator
+ * entered a GFA (USER). Snapshot payloads are NOT summed — the rollup is
+ * live; snapshots remain per-floor history. Every read filters
+ * `deletedAt: null` (soft-delete rule) AND excludes INACTIVE units (they never
+ * render on a plan — same rule as the plan reads in src/core/floorPlans.ts).
+ */
+export async function getFacilityMetrics(branchRef: string): Promise<FacilityMetricsReport> {
+  const ref = String(branchRef || '').trim();
+  const branch =
+    (ref ? await prisma.branch.findUnique({ where: { id: ref } }) : null) ??
+    (ref ? await prisma.branch.findUnique({ where: { code: ref } }) : null);
+  if (!branch) throw new AppError(404, 'NOT_FOUND', `Facility ${branchRef} not found`);
+
+  const floors = await prisma.floor.findMany({
+    where: { branchId: branch.id },
+    select: { id: true, level: true, name: true },
+    orderBy: { level: 'asc' },
+  });
+
+  const rows: FacilityMetricsFloorRow[] = [];
+  let gfaSum = 0;
+  let ufaSum = 0;
+  let nlaSum = 0;
+  const gfaSourcesByFloor: Array<{ floorId: string; gfaSource: GfaSource }> = [];
+  for (const f of floors) {
+    try {
+      const report = await getFloorMetrics(f.id);
+      rows.push({
+        floorId: f.id,
+        level: f.level,
+        name: f.name,
+        hasPlan: true,
+        gfaSqft: report.geometry.gfa.sqft,
+        ufaSqft: report.geometry.ufa.sqft,
+        nlaSqft: report.geometry.nlaTotal.sqft,
+        gfaSource: report.geometry.gfaSource,
+        placedUnits: report.coverage.placedUnits,
+        unplacedUnits: report.coverage.unplacedUnits,
+        occupiedUnits: report.occupancy.physical.occupiedUnits,
+      });
+      gfaSum += report.geometry.gfa.sqft;
+      ufaSum += report.geometry.ufa.sqft;
+      nlaSum += report.geometry.nlaTotal.sqft;
+      gfaSourcesByFloor.push({ floorId: f.id, gfaSource: report.geometry.gfaSource });
+    } catch (err) {
+      // Floors with no plan (404) contribute zero geometry but stay visible;
+      // any other error (e.g. invalid canvas geometry) still propagates so a
+      // broken floor can never silently poison the facility aggregate.
+      if (err instanceof AppError && err.status === 404) {
+        rows.push({
+          floorId: f.id,
+          level: f.level,
+          name: f.name,
+          hasPlan: false,
+          gfaSqft: 0,
+          ufaSqft: 0,
+          nlaSqft: 0,
+          gfaSource: null,
+          placedUnits: 0,
+          unplacedUnits: 0,
+          occupiedUnits: 0,
+        });
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  // Facility clamps mirror the per-floor conventions: areas ≥ 0, NLA ≤ UFA.
+  const ufa = round1(Math.max(0, ufaSum));
+  const nla = round1(Math.min(Math.max(0, nlaSum), ufa));
+  const gfa = round1(Math.max(0, gfaSum));
+  const corridor = corridorAreaOf(ufa, nla);
+  const efficiency = gfa > 0 ? Math.round((nla / gfa) * 10000) / 10000 : 0;
+  const loadFactor = nla > 0 ? Math.round((ufa / nla) * 10000) / 10000 : 1;
+  const toQ = (sqft: number): string => BigInt(Math.round(sqft * Number(Q_PER_SQFT))).toString();
+
+  const sources = new Set(gfaSourcesByFloor.map((s) => s.gfaSource));
+  const gfaSource: GfaSource | 'MIXED' =
+    sources.size === 0 ? 'CANVAS' : sources.size === 1 ? [...sources][0] : 'MIXED';
+
+  // Facility-wide unit aggregates straight from the DB (all floors, non-deleted,
+  // non-INACTIVE — INACTIVE units are out of the floorplan, so the rollup keeps
+  // the same denominator as the per-floor coverage figures):
+  // unplaced = the coverage.unplacedUnits definition (no placement row);
+  // occupied = OCCUPIED + OVERDUE (RESERVED excluded, per revenue convention).
+  const inactiveFilter = { status: { not: 'INACTIVE' as const } };
+  const [allUnits, unplacedUnits, occupiedUnits] = await Promise.all([
+    prisma.unit.findMany({
+      where: { branchId: branch.id, deletedAt: null, ...inactiveFilter },
+      select: { sqft: true, size: { select: { code: true } } },
+    }),
+    prisma.unit.count({ where: { branchId: branch.id, deletedAt: null, ...inactiveFilter, placement: { is: null } } }),
+    prisma.unit.count({
+      where: { branchId: branch.id, deletedAt: null, status: { in: ['OCCUPIED', 'OVERDUE'] } },
+    }),
+  ]);
+  const unitGroups = buildUnitGroups(allUnits.map((u) => ({ sizeCode: u.size.code, sqft: u.sqft })));
+  const placedUnits = Math.max(0, allUnits.length - unplacedUnits);
+
+  const floorsWithoutPlan = rows.filter((r) => !r.hasPlan).map((r) => r.floorId);
+  return {
+    facility: { id: branch.id, code: branch.code, name: branch.name },
+    source: 'LIVE',
+    floors: rows,
+    floorCount: floors.length,
+    floorsWithPlan: rows.filter((r) => r.hasPlan).length,
+    floorsWithoutPlan,
+    geometry: {
+      gfa: { q: toQ(gfa), sqft: gfa },
+      gfaSource,
+      gfaSourcesByFloor,
+      ufa: { q: toQ(ufa), sqft: ufa },
+      nlaEnclosed: { q: toQ(nla), sqft: nla },
+      nlaOutdoor: { q: '0', sqft: 0 },
+      nlaTotal: { q: toQ(nla), sqft: nla },
+      common: { q: toQ(corridor), sqft: corridor },
+      corridorArea: { q: toQ(corridor), sqft: corridor },
+      efficiency,
+      loadFactor,
+      gfaToUfaEfficiencyPct: gfaToUfaEfficiencyPctOf(ufa, gfa),
+      ufaToNlaEfficiencyPct: ufaToNlaEfficiencyPctOf(nla, ufa),
+    },
+    totals: { totalUnits: allUnits.length, placedUnits, unplacedUnits, occupiedUnits },
+    unitGroups,
+    basis_notes: [
+      'Facility rollup sums the per-floor LIVE reports (getFloorMetrics) — snapshot payloads are not summed; snapshots remain per-floor history. Re-run per floor after canvas edits to refresh.',
+      gfaSource === 'USER'
+        ? 'Every contributing plan carries an operator-entered GFA (all gfaSource USER).'
+        : gfaSource === 'CANVAS'
+          ? 'GFA falls back to the canvas-derived rect on every contributing plan (all gfaSource CANVAS) — enter a GFA per plan to override.'
+          : 'GFA basis is mixed across floors (see gfaSourcesByFloor): USER where the operator entered a GFA, CANVAS rect fallback elsewhere.',
+      'Facility NLA is clamped ≤ UFA and both efficiencies are zero-division guarded (0 when the denominator is 0).',
+      ...(floorsWithoutPlan.length > 0
+        ? [
+            `${floorsWithoutPlan.length} floor(s) have no plan and contribute zero geometry (${floorsWithoutPlan.join(', ')}); their DB units still count in totals/unitGroups.`,
+          ]
+        : []),
+      'Occupied = Unit.status OCCUPIED + OVERDUE (RESERVED excluded, per the revenue convention); reads filter deletedAt null.',
+      'unitGroups areas are nominal Unit.sqft sums (overall = sum of all buckets); XL (Extra Large) is 0/0 — no such UnitSize code exists in the DB (see unitGroups.notes).',
+    ],
   };
 }
 

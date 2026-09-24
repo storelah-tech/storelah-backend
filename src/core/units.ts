@@ -15,6 +15,11 @@ export interface CreateUnitInput {
   monthlyRate: number;
   status?: UnitStatus;
   climateControl?: string;
+  hasAC?: boolean;
+  hasPillar?: boolean;
+  // Explicit import-path code: must be a free 4-digit code (e.g. "1001").
+  // Omitted in the normal path — codegen mints the next 4-digit code.
+  unitCode?: string;
   name?: string;
 }
 
@@ -23,7 +28,67 @@ export interface UpdateUnitInput {
   monthlyRate?: number;
   status?: UnitStatus;
   climateControl?: string | null;
+  hasAC?: boolean;
+  hasPillar?: boolean;
   name?: string | null;
+}
+
+// ---------- 4-digit unit codes ----------
+//
+// Unit codes are exactly 4 digits (1001..9999), globally unique (the schema
+// keeps unitCode @unique). Codegen mints the next free code above the current
+// MAX across ALL rows (deleted included — codes with history are never
+// re-assigned), starting at 1001. FKs (UnitPlacement.unitId, Tenant.unitId,
+// Booking/Invoice.unitId) all point at Unit.id, never at the code, so codes
+// are cosmetic identity only; Lead.unitCode is a loose (non-FK) reference.
+// Legacy BM-01-01 codes are left untouched by codegen; the opt-in rename lives
+// in scripts/backfill-unit-codes-4digit.ts (dry-run first).
+
+const FOUR_DIGIT_RE = /^\d{4}$/;
+const FIRST_FOUR_DIGIT_CODE = 1001;
+const LAST_FOUR_DIGIT_CODE = 9999;
+
+export function isFourDigitCode(code: string): boolean {
+  return FOUR_DIGIT_RE.test(code);
+}
+
+/** Next free 4-digit code above the max of `existing` (pure — unit-testable). */
+export function nextFourDigitCode(existing: string[]): string {
+  let max = FIRST_FOUR_DIGIT_CODE - 1;
+  for (const c of existing) {
+    if (FOUR_DIGIT_RE.test(c)) max = Math.max(max, Number(c));
+  }
+  const next = max + 1;
+  if (next > LAST_FOUR_DIGIT_CODE) {
+    throw new AppError(409, 'CONFLICT', 'Unit code space exhausted (1001–9999 all taken)');
+  }
+  return String(next);
+}
+
+/**
+ * Legacy climateControl string → hasAC mapping (accept-but-map rule):
+ * 'Ambient climate' / ambient-ish strings map to false; strings mentioning
+ * climate/air-con map to true; anything else (or empty) maps to null =
+ * "no signal, leave hasAC alone". Mirrors isClimateControlled() in
+ * src/core/floorPlanMetricsService.ts without importing it (import direction
+ * is metrics → units, never back).
+ */
+export function climateControlToHasAC(climateControl: string | null | undefined): boolean | null {
+  if (!climateControl) return null;
+  const s = climateControl.toLowerCase();
+  if (/(ambient|non-climate|not climate|uncontrolled)/.test(s)) return false;
+  if (/(climate|air-con|aircon|conditioned)/.test(s)) return true;
+  return null;
+}
+
+/** Flexible yes/no cell parsing for the import template (pure — unit-testable). */
+export function parseYesNoFlag(raw: string | null | undefined): boolean | null {
+  if (raw == null) return null;
+  const s = String(raw).trim().toLowerCase();
+  if (!s) return null;
+  if (['yes', 'y', 'true', '1', 'ac'].includes(s)) return true;
+  if (['no', 'n', 'false', '0', 'non-ac', 'nonac'].includes(s)) return false;
+  return null; // unknown token — callers report a per-row validation error
 }
 
 function serializeUnit(u: UnitWithRelations) {
@@ -38,6 +103,8 @@ function serializeUnit(u: UnitWithRelations) {
     psf: u.sqft ? rate / u.sqft : 0,
     status: u.status,
     climateControl: u.climateControl,
+    hasAC: u.hasAC,
+    hasPillar: u.hasPillar,
     deletedAt: u.deletedAt,
     branchId: u.branchId,
     floorId: u.floorId,
@@ -60,6 +127,7 @@ export async function listUnits(query: UnitListQuery = {}) {
     ...(query.status ? { status: query.status as UnitStatus } : {}),
     ...(query.branch ? { branch: { code: query.branch } } : {}),
     ...(query.level != null ? { floor: { level: query.level } } : {}),
+    ...(query.hasAC != null ? { hasAC: query.hasAC } : {}),
     ...(createdAt.gte || createdAt.lte ? { createdAt } : {}),
   };
   const [units, total] = await Promise.all([
@@ -90,6 +158,7 @@ export interface UnitListQuery {
   status?: string;
   branch?: string;
   level?: number;
+  hasAC?: boolean;
   from?: Date;
   to?: Date;
 }
@@ -133,6 +202,8 @@ export async function listPublicUnits(query: PublicUnitsQuery = {}) {
       psf: u.sqft ? rate / u.sqft : 0,
       status: u.status,
       climateControl: u.climateControl,
+      hasAC: u.hasAC,
+      hasPillar: u.hasPillar,
       deletedAt: u.deletedAt,
       size: { code: u.size.code, name: u.size.name },
       branch: { code: u.branch.code, name: u.branch.name },
@@ -165,21 +236,28 @@ export async function createUnit(input: CreateUnitInput) {
     );
   }
 
-  // Derive the next unitCode from the MAX existing numeric suffix on this branch+floor,
-  // not the row count — counts collide when the floor's numbering has gaps (e.g. seed gaps).
-  // IMPORTANT: deliberately does NOT filter deletedAt — codes of soft-deleted units are never
-  // reused, keeping the sequence monotonic so codes with history are never re-assigned.
-  const existingCodes = await prisma.unit.findMany({
-    where: { branchId: input.branchId, floorId: input.floorId },
-    select: { unitCode: true },
-  });
-  let maxSeq = 0;
-  for (const u of existingCodes) {
-    const m = u.unitCode.match(/-(\d+)$/);
-    if (m) maxSeq = Math.max(maxSeq, Number(m[1]));
+  // 4-digit codegen: next free code above the MAX 4-digit code across ALL
+  // rows (deliberately no deletedAt filter — codes of soft-deleted units are
+  // never reused, keeping the sequence monotonic). Legacy BM-01-01 codes never
+  // match /^\d{4}$/ so they neither collide nor disturb the sequence.
+  let unitCode: string;
+  if (input.unitCode !== undefined) {
+    const explicit = input.unitCode.trim();
+    if (!isFourDigitCode(explicit)) {
+      throw new AppError(400, 'VALIDATION', `unitCode must be a 4-digit code (e.g. 1001) — got ${JSON.stringify(input.unitCode)}`);
+    }
+    const taken = await prisma.unit.findUnique({ where: { unitCode: explicit }, select: { id: true } });
+    if (taken) throw new AppError(409, 'CONFLICT', `Unit ${explicit} already exists`);
+    unitCode = explicit;
+  } else {
+    const existingCodes = await prisma.unit.findMany({ select: { unitCode: true } });
+    unitCode = nextFourDigitCode(existingCodes.map((u) => u.unitCode));
   }
-  const seq = String(maxSeq + 1).padStart(2, '0');
-  const unitCode = `${branch.code}-${String(floor.level).padStart(2, '0')}-${seq}`;
+
+  // Legacy accept-but-map: an explicit hasAC wins; otherwise a supplied
+  // climateControl string maps onto hasAC when it carries a signal.
+  const mappedAC = climateControlToHasAC(input.climateControl);
+  const hasAC = input.hasAC ?? mappedAC ?? false;
 
   const unit = await prisma.unit.create({
     data: {
@@ -192,6 +270,8 @@ export async function createUnit(input: CreateUnitInput) {
       monthlyRate: input.monthlyRate,
       status: input.status ?? 'AVAILABLE',
       climateControl: input.climateControl,
+      hasAC,
+      hasPillar: input.hasPillar ?? false,
     },
     include: { size: true, branch: true, floor: true, tenant: true },
   });
@@ -206,11 +286,16 @@ export async function updateUnit(code: string, input: UpdateUnitInput) {
 
   // name is optional display label only: undefined = not provided (leave unchanged),
   // null or empty string = explicit clear (display name falls back to unitCode).
+  // climateControl is legacy accept-but-map: still stored for backwards compat,
+  // and mapped onto hasAC when the caller doesn't set hasAC explicitly.
+  const mappedAC = climateControlToHasAC(input.climateControl ?? undefined);
   const data: Prisma.UnitUpdateInput = {
     sqft: input.sqft,
     monthlyRate: input.monthlyRate,
     status: input.status,
     climateControl: input.climateControl,
+    ...(input.hasAC !== undefined ? { hasAC: input.hasAC } : mappedAC !== null ? { hasAC: mappedAC } : {}),
+    ...(input.hasPillar !== undefined ? { hasPillar: input.hasPillar } : {}),
     ...(input.name !== undefined
       ? { name: input.name === null ? null : input.name.trim() || null }
       : {}),
@@ -228,7 +313,10 @@ export async function softDeleteUnit(code: string) {
   const unit = await prisma.unit.findUnique({ where: { unitCode: code } });
   if (!unit) throw new AppError(404, 'NOT_FOUND', `Unit ${code} not found`);
   if (unit.deletedAt) throw new AppError(404, 'NOT_FOUND', `Unit ${code} not found`);
-  if (unit.status === 'OCCUPIED' || unit.status === 'OVERDUE') {
+  // Owner rule: a unit that is OCCUPIED, RESERVED or OVERDUE holds a live
+  // commercial interest and cannot be deleted (409). INACTIVE / AVAILABLE /
+  // MAINTENANCE / BLOCKED stay deletable.
+  if (unit.status === 'OCCUPIED' || unit.status === 'OVERDUE' || unit.status === 'RESERVED') {
     throw new AppError(409, 'CONFLICT', `Unit ${code} is ${unit.status} and cannot be deleted`);
   }
   const updated = await prisma.unit.update({
@@ -365,7 +453,9 @@ export async function getUnitMap(branchCode: string, level: number, opts?: UnitM
     units: visible.map((u) => ({
       id: u.unitCode,
       code: u.unitCode,
-      short: u.unitCode.split('-').slice(1).join('-'),
+      // Legacy BM-01-01 codes shorten to the trailing segments; 4-digit codes
+      // have no dashes and shorten to themselves.
+      short: u.unitCode.includes('-') ? u.unitCode.split('-').slice(1).join('-') : u.unitCode,
       size: u.size.name,
       sizeCode: u.size.code,
       // Additive object identity for size grouping (the `size` string + `sizeCode`
@@ -375,6 +465,8 @@ export async function getUnitMap(branchCode: string, level: number, opts?: UnitM
       rate: toNum(u.monthlyRate),
       sqft: u.sqft,
       status: u.status.toLowerCase(),
+      hasAC: u.hasAC,
+      hasPillar: u.hasPillar,
       // Public view must never expose tenant names / PII.
       ...(isPublic ? {} : { tenant: u.tenant?.name ?? null }),
     })),
@@ -462,6 +554,8 @@ export async function getUnitDetail(code: string) {
     branchCode: unit.branch.code,
     level: unit.floor.level,
     climateControl: unit.climateControl,
+    hasAC: unit.hasAC,
+    hasPillar: unit.hasPillar,
     tenant: unit.tenant
       ? {
           name: unit.tenant.name,
@@ -528,8 +622,271 @@ export async function getUnitDetail(code: string) {
   };
 }
 
-// ---------- unit activity feed (dashboard "Latest Unit Activity") ----------
+// ---------- templated spreadsheet import (CSV-only) ----------
+//
+// Template: GET /units/import/template returns a header-only CSV; rows are
+// imported via POST /units/import { csv }. XLSX is NOT accepted (no workbook
+// dep in this repo — operators save-as CSV from Excel/Sheets; see
+// docs/UNIT_IMPORT.md).
+//
+// Policy: create-new by default; an explicit `code` that already exists is
+// SKIPPED (never overwritten — this is what protects OCCUPIED/RESERVED units);
+// rows without a code mint the next 4-digit code via the canonical codegen.
 
+export const UNIT_IMPORT_HEADERS = [
+  'code',
+  'branch',
+  'level',
+  'size',
+  'sqft',
+  'rate',
+  'status',
+  'hasAC',
+  'hasPillar',
+  'name',
+] as const;
+
+export type UnitImportStatus = 'created' | 'skipped' | 'error';
+
+export interface UnitImportRowResult {
+  row: number; // 1-based data-row number (header = row 1)
+  status: UnitImportStatus;
+  code: string | null; // minted/explicit code when created, existing code when skipped
+  message: string;
+}
+
+export interface UnitImportReport {
+  rows: UnitImportRowResult[];
+  meta: { total: number; created: number; skipped: number; errors: number };
+}
+
+/** Header-only template CSV (trailing newline; LF). */
+export function unitImportTemplateCsv(): string {
+  return UNIT_IMPORT_HEADERS.join(',') + '\n';
+}
+
+// Minimal CSV parser: LF/CRLF rows, double-quote escaping ("" = literal "),
+// preserves empty trailing cells. Pure — unit-testable without a DB.
+export function parseImportCsv(text: string): { headers: string[]; records: string[][] } {
+  const normalized = String(text ?? '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const rows: string[][] = [];
+  let field = '';
+  let row: string[] = [];
+  let inQuotes = false;
+  let hasCell = false;
+  for (let i = 0; i < normalized.length; i++) {
+    const ch = normalized[i];
+    if (inQuotes) {
+      if (ch === '"') {
+        if (normalized[i + 1] === '"') {
+          field += '"';
+          i++;
+        } else {
+          inQuotes = false;
+        }
+      } else {
+        field += ch;
+      }
+      continue;
+    }
+    if (ch === '"') {
+      inQuotes = true;
+      hasCell = true;
+    } else if (ch === ',') {
+      row.push(field);
+      field = '';
+      hasCell = false;
+    } else if (ch === '\n') {
+      row.push(field);
+      field = '';
+      rows.push(row);
+      row = [];
+      hasCell = false;
+    } else {
+      field += ch;
+      hasCell = true;
+    }
+  }
+  if (hasCell || field !== '' || row.length > 0) {
+    row.push(field);
+    rows.push(row);
+  }
+  // Drop fully-blank rows (whitespace-only cells).
+  const nonBlank = rows.filter((r) => r.some((c) => c.trim() !== ''));
+  if (!nonBlank.length) return { headers: [], records: [] };
+  const headers = nonBlank[0].map((h) => h.trim());
+  return { headers, records: nonBlank.slice(1) };
+}
+
+const IMPORTABLE_STATUSES: UnitStatus[] = ['AVAILABLE', 'RESERVED', 'MAINTENANCE', 'INACTIVE', 'BLOCKED'];
+
+export async function importUnits(csvText: string): Promise<UnitImportReport> {
+  const rows: UnitImportRowResult[] = [];
+  const fail = (row: number, message: string): UnitImportRowResult => ({ row, status: 'error', code: null, message });
+
+  if (!csvText || !csvText.trim()) {
+    return { rows: [], meta: { total: 0, created: 0, skipped: 0, errors: 0 } };
+  }
+  const { headers, records } = parseImportCsv(csvText);
+  if (!headers.length) {
+    return { rows: [], meta: { total: 0, created: 0, skipped: 0, errors: 0 } };
+  }
+  const idx = (name: string): number => headers.findIndex((h) => h.toLowerCase() === name.toLowerCase());
+  for (const required of ['branch', 'size', 'sqft', 'rate']) {
+    if (idx(required) < 0) {
+      const msg = `Missing required column "${required}" (expected: ${UNIT_IMPORT_HEADERS.join(', ')})`;
+      return {
+        rows: records.map((_, i) => fail(i + 2, msg)),
+        meta: { total: records.length, created: 0, skipped: 0, errors: records.length },
+      };
+    }
+  }
+  const ci = {
+    code: idx('code'),
+    branch: idx('branch'),
+    level: idx('level'),
+    size: idx('size'),
+    sqft: idx('sqft'),
+    rate: idx('rate'),
+    status: idx('status'),
+    hasAC: idx('hasAC'),
+    hasPillar: idx('hasPillar'),
+    name: idx('name'),
+  };
+  const cell = (rec: string[], i: number): string => (i < 0 ? '' : (rec[i] ?? '').trim());
+
+  for (let r = 0; r < records.length; r++) {
+    const rowNum = r + 2;
+    const rec = records[r];
+    try {
+      const codeRaw = cell(rec, ci.code);
+      const branchRaw = cell(rec, ci.branch);
+      const levelRaw = cell(rec, ci.level);
+      const sizeRaw = cell(rec, ci.size);
+      const sqftRaw = cell(rec, ci.sqft);
+      const rateRaw = cell(rec, ci.rate);
+      const statusRaw = cell(rec, ci.status) || 'AVAILABLE';
+      const hasACRaw = cell(rec, ci.hasAC);
+      const hasPillarRaw = cell(rec, ci.hasPillar);
+      const nameRaw = cell(rec, ci.name);
+
+      if (codeRaw && !isFourDigitCode(codeRaw)) {
+        rows.push(fail(rowNum, `code must be a 4-digit code or blank (got ${JSON.stringify(codeRaw)})`));
+        continue;
+      }
+      const branchCode = branchRaw.toUpperCase();
+      const branch =
+        (branchCode ? await prisma.branch.findUnique({ where: { code: branchCode } }) : null) ??
+        (branchRaw ? await prisma.branch.findUnique({ where: { id: branchRaw } }).catch(() => null) : null);
+      if (!branch) {
+        rows.push(fail(rowNum, `unknown branch ${JSON.stringify(branchRaw)} (use branch code, e.g. BM)`));
+        continue;
+      }
+      let floor = null;
+      if (levelRaw) {
+        const level = Number(levelRaw);
+        if (!Number.isInteger(level) || level < 1) {
+          rows.push(fail(rowNum, `level must be a positive integer (got ${JSON.stringify(levelRaw)})`));
+          continue;
+        }
+        floor = await prisma.floor.findFirst({ where: { branchId: branch.id, level } });
+        if (!floor) {
+          rows.push(fail(rowNum, `no level ${level} floor at branch ${branch.code}`));
+          continue;
+        }
+      } else {
+        floor = await prisma.floor.findFirst({ where: { branchId: branch.id }, orderBy: { level: 'asc' } });
+        if (!floor) {
+          rows.push(fail(rowNum, `branch ${branch.code} has no floors yet`));
+          continue;
+        }
+      }
+      const sizeCode = sizeRaw.toUpperCase();
+      const size =
+        (sizeCode ? await prisma.unitSize.findUnique({ where: { code: sizeCode } }) : null) ??
+        (sizeRaw ? await prisma.unitSize.findUnique({ where: { id: sizeRaw } }).catch(() => null) : null);
+      if (!size) {
+        rows.push(fail(rowNum, `unknown size ${JSON.stringify(sizeRaw)} (use size code, e.g. SMALL)`));
+        continue;
+      }
+      const sqft = Number(sqftRaw);
+      if (!Number.isFinite(sqft) || sqft <= 0 || !Number.isInteger(sqft)) {
+        rows.push(fail(rowNum, `sqft must be a positive integer (got ${JSON.stringify(sqftRaw)})`));
+        continue;
+      }
+      const rate = Number(rateRaw);
+      if (!Number.isFinite(rate) || rate < 0) {
+        rows.push(fail(rowNum, `rate must be 0 or greater (got ${JSON.stringify(rateRaw)})`));
+        continue;
+      }
+      const status = statusRaw.toUpperCase() as UnitStatus;
+      if (!IMPORTABLE_STATUSES.includes(status)) {
+        rows.push(
+          fail(
+            rowNum,
+            `status must be one of ${IMPORTABLE_STATUSES.join(' | ')} (got ${JSON.stringify(statusRaw)}; OCCUPIED/OVERDUE cannot be imported — assign a tenant instead)`,
+          ),
+        );
+        continue;
+      }
+      let hasAC: boolean | undefined;
+      if (hasACRaw) {
+        const parsed = parseYesNoFlag(hasACRaw);
+        if (parsed === null) {
+          rows.push(fail(rowNum, `hasAC must be yes/no (got ${JSON.stringify(hasACRaw)})`));
+          continue;
+        }
+        hasAC = parsed;
+      }
+      let hasPillar: boolean | undefined;
+      if (hasPillarRaw) {
+        const parsed = parseYesNoFlag(hasPillarRaw);
+        if (parsed === null) {
+          rows.push(fail(rowNum, `hasPillar must be yes/no (got ${JSON.stringify(hasPillarRaw)})`));
+          continue;
+        }
+        hasPillar = parsed;
+      }
+
+      // Skip-or-create policy: an explicit code that already exists is skipped
+      // (never overwritten — OCCUPIED/RESERVED units are untouchable by import).
+      if (codeRaw) {
+        const existing = await prisma.unit.findUnique({ where: { unitCode: codeRaw }, select: { unitCode: true } });
+        if (existing) {
+          rows.push({ row: rowNum, status: 'skipped', code: codeRaw, message: `Unit ${codeRaw} already exists — skipped` });
+          continue;
+        }
+      }
+
+      const created = await createUnit({
+        branchId: branch.id,
+        floorId: floor.id,
+        sizeId: size.id,
+        sqft,
+        monthlyRate: rate,
+        status,
+        hasAC,
+        hasPillar,
+        ...(codeRaw ? { unitCode: codeRaw } : {}),
+        ...(nameRaw ? { name: nameRaw } : {}),
+      });
+      rows.push({ row: rowNum, status: 'created', code: created.unitCode, message: `Created ${created.unitCode}` });
+    } catch (err) {
+      const message = err instanceof AppError ? err.message : 'Unexpected import failure';
+      rows.push(fail(rowNum, message));
+    }
+  }
+
+  const meta = {
+    total: rows.length,
+    created: rows.filter((r) => r.status === 'created').length,
+    skipped: rows.filter((r) => r.status === 'skipped').length,
+    errors: rows.filter((r) => r.status === 'error').length,
+  };
+  return { rows, meta };
+}
+
+// ---------- unit activity feed (dashboard "Latest Unit Activity") ----------
 export interface UnitActivityItem {
   type: 'unit_created' | 'unit_updated' | 'rate_change' | 'move_in' | 'booking';
   unitCode: string;

@@ -24,8 +24,9 @@ import { Prisma } from '@prisma/client';
 // back to a documented per-size aspect formula otherwise. Writes validate
 // area-vs-sqft within AREA_TOLERANCE (P3) and reject overlaps (409).
 //
-// Soft-delete rule: every plan read joins placements → unit and filters out
-// placements whose unit has deletedAt != null. Never touch Unit rows.
+// Soft-delete + INACTIVE rule: every plan read joins placements → unit and
+// filters out placements whose unit has deletedAt != null OR status INACTIVE.
+// Never touch Unit rows.
 
 export const CANVAS_DEFAULTS = { width: 70, height: 80 } as const;
 const MAX_CANVAS = 500; // feet per axis, sanity cap
@@ -84,13 +85,17 @@ export function rectsOverlap(
   return a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
 }
 
-// Plan payload used by every read; placements exclude soft-deleted units;
-// blocks are plain name+rect rows in authored order (stable for the editor);
-// boundaries are line-item polylines in sort order (stable for the editor).
+// Plan payload used by every read; placements exclude soft-deleted units AND
+// INACTIVE units (an INACTIVE unit is out of service and must not render on
+// the editor canvas, the preview modal, or the public read — while staying
+// fully visible in the CMS units list and the dashboard Unit Map, which have
+// their own expectations); blocks are plain name+rect rows in authored order
+// (stable for the editor); boundaries are line-item polylines in sort order
+// (stable for the editor).
 const planInclude = {
   floor: { include: { branch: true } },
   placements: {
-    where: { unit: { deletedAt: null } },
+    where: { unit: { deletedAt: null, status: { not: 'INACTIVE' } } },
     include: { unit: { include: { size: true } } },
     orderBy: { createdAt: 'asc' },
   },
@@ -634,8 +639,9 @@ export async function listFloorPlans(query: ListFloorPlansQuery = {}) {
 
 /**
  * Get THE plan for a floor (its upsert key) with placements joined to
- * unit code/name/size/status (soft-deleted units filtered out), plus the
- * floor's unplaced units. If no plan exists yet, returns an empty scaffold
+ * unit code/name/size/status (soft-deleted AND inactive units filtered out),
+ * plus the floor's unplaced units (same filters — INACTIVE units stay out of
+ * the editor palette). If no plan exists yet, returns an empty scaffold
  * so an editor can start fresh — callers decide how to present it.
  */
 export async function getFloorPlan(floorId: string) {
@@ -644,7 +650,7 @@ export async function getFloorPlan(floorId: string) {
 
   const plan = await prisma.floorPlan.findFirst({ where: { floorId }, include: planInclude });
   const unplacedUnits = await prisma.unit.findMany({
-    where: { floorId, deletedAt: null, placement: { is: null } },
+    where: { floorId, deletedAt: null, status: { not: 'INACTIVE' }, placement: { is: null } },
     include: { size: true },
     orderBy: { unitCode: 'asc' },
   });
@@ -749,7 +755,7 @@ async function ensureCanvasPlan(floorId: string) {
 
 /**
  * Upsert one unit placement keyed by unitId + floorPlanId. Validates the unit
- * belongs to the plan's floor and is not soft-deleted, that the geometry
+ * belongs to the plan's floor and is neither soft-deleted nor INACTIVE, that the geometry
  * fits inside the canvas, that the drawn area is within AREA_TOLERANCE of the
  * unit's sqft (P3), and that the rect does not overlap another unit's
  * placement (409 PLACEMENT_OVERLAP — client pre-checks the same rule and
@@ -774,6 +780,13 @@ export async function setUnitPlacement(floorId: string, unitId: string, geom: Pl
   if (!unit) throw new AppError(404, 'NOT_FOUND', `Unit ${unitId} not found`);
   if (unit.deletedAt) {
     throw new AppError(400, 'VALIDATION', `Unit ${unit.unitCode} is deleted and cannot be placed on a plan`);
+  }
+  // INACTIVE units never render on a plan (reads filter them out) — refuse the
+  // placement instead of writing invisible geometry. Reactivate the unit first
+  // to place it; a unit deactivated while placed keeps its row but stays hidden
+  // until reactivated.
+  if (unit.status === 'INACTIVE') {
+    throw new AppError(400, 'VALIDATION', `Unit ${unit.unitCode} is INACTIVE and cannot be placed on a plan — reactivate it first`);
   }
   if (unit.floorId !== floorId) {
     throw new AppError(400, 'VALIDATION', `Unit ${unit.unitCode} does not belong to floor ${floorId}`);
@@ -1250,8 +1263,8 @@ export async function deleteFloorPlan(floorId: string) {
 /**
  * PUBLIC read of a floor's plan for the booking renderer: canvas + legacy
  * structure + blocks (name+rect) + placements joined to unit
- * unitCode/name/size/status, soft-deleted units filtered out. No tenant/PII/rates
- * anywhere (serializePlan is public-safe).
+ * unitCode/name/size/status, soft-deleted AND inactive units filtered out. No
+ * tenant/PII/rates anywhere (serializePlan is public-safe).
  */
 export async function getPublicFloorPlan(branchCode: string, level: number) {
   const floor = await prisma.floor.findFirst({

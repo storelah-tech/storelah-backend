@@ -894,9 +894,9 @@ body.lead-drawer-open{overflow-x:hidden}
       <div class="module-panel" id="facility-units">
         <div class="tbl-card">
           <div class="sec-hdr"><div><div class="sec-title">Units</div><div class="sec-sub" id="unitsSub">All units across branches</div></div><div style="display:flex;gap:7px;"><button class="tb-btn primary" id="addUnitBtn">+ Add Unit</button></div></div>
-          <div class="tbl-toolbar"><select id="statusFilter" class="tbl-select"><option value="">All statuses</option><option value="OCCUPIED">Occupied</option><option value="AVAILABLE">Available</option><option value="RESERVED">Reserved</option><option value="OVERDUE">Overdue</option><option value="MAINTENANCE">Maintenance</option><option value="INACTIVE">Inactive</option><option value="BLOCKED">Blocked</option></select></div>
+          <div class="tbl-toolbar"><select id="unitBranchFilter" class="tbl-select"><option value="">All facilities</option></select><select id="unitLevelFilter" class="tbl-select"><option value="">All levels</option></select><select id="statusFilter" class="tbl-select"><option value="">All statuses</option><option value="OCCUPIED">Occupied</option><option value="AVAILABLE">Available</option><option value="RESERVED">Reserved</option><option value="OVERDUE">Overdue</option><option value="MAINTENANCE">Maintenance</option><option value="INACTIVE">Inactive</option><option value="BLOCKED">Blocked</option></select><select id="unitAcFilter" class="tbl-select"><option value="">AC + Non-AC</option><option value="ac">AC</option><option value="nonac">Non-AC</option></select><span style="flex:1"></span><button class="tb-btn" id="unitImportBtn" type="button">⭳ Import</button><input type="file" id="unitImportFile" accept=".csv,text/csv" hidden></div>
           <div class="modal-alert" id="unitsBanner" hidden></div>
-          <table class="data-tbl" id="unitsTable"><thead><tr><th>Code</th><th>Name</th><th>Size</th><th>Branch</th><th>Floor</th><th>Sqft</th><th>Rate/mo</th><th>PSF</th><th>Status</th><th>Tenant</th><th></th></tr></thead><tbody></tbody></table>
+          <table class="data-tbl" id="unitsTable"><thead><tr><th>Code</th><th>Name</th><th>Size</th><th>Branch</th><th>Floor</th><th>Type</th><th>Sqft</th><th>Rate/mo</th><th>PSF</th><th>Status</th><th>Tenant</th><th></th></tr></thead><tbody></tbody></table>
           <div class="tbl-pager"><div class="tbl-pager-info" id="pageInfo">Page 1 of 1</div><div class="tbl-pager-btns"><button class="tb-btn ghost" id="pagePrev">‹ Prev</button><button class="tb-btn ghost" id="pageNext">Next ›</button></div></div>
         </div>
       </div>
@@ -1445,7 +1445,8 @@ body.lead-drawer-open{overflow-x:hidden}
         <div class="field full"><label for="f-name">Name (optional)</label><input type="text" id="f-name" name="name" maxlength="80" placeholder="Defaults to unit code"><div class="field-err" id="e-name"></div></div>
         <div class="field"><label for="f-sqft">Sq Ft</label><input type="number" id="f-sqft" name="sqft" min="1" step="1"><div class="field-err" id="e-sqft"></div></div>
         <div class="field"><label for="f-monthlyRate">Monthly Rate ($)</label><input type="number" id="f-monthlyRate" name="monthlyRate" min="0" step="0.01"><div class="field-err" id="e-monthlyRate"></div></div>
-        <div class="field full"><label for="f-climateControl">Climate Control</label><input type="text" id="f-climateControl" name="climateControl" placeholder="Ambient climate"><div class="field-err" id="e-climateControl"></div></div>
+        <div class="field"><label for="f-hasAC">Air-con (AC)</label><select id="f-hasAC" name="hasAC"><option value="no">No — Non-AC</option><option value="yes">Yes — AC</option></select><div class="field-err" id="e-hasAC"></div></div>
+        <div class="field"><label for="f-hasPillar">Pillar</label><select id="f-hasPillar" name="hasPillar"><option value="no">No</option><option value="yes">Yes</option></select><div class="field-err" id="e-hasPillar"></div></div>
       </div>
       <div class="modal-foot"><button class="act-btn" type="button" id="unitFormCancel">Cancel</button><button class="act-btn primary" type="submit" id="unitFormSubmit">Save Unit</button></div>
     </form>

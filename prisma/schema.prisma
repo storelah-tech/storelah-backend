@@ -339,12 +339,17 @@ model Unit {
   floor          Floor      @relation(fields: [floorId], references: [id])
   sizeId         String
   size           UnitSize   @relation(fields: [sizeId], references: [id])
-  unitCode       String     @unique // e.g. BM-01-01
+  unitCode       String     @unique // 4-digit numeric code, e.g. 1001 (globally unique; see docs/UNIT_CODE_AND_NAME.md)
   name           String? // optional display label; null/empty => display name falls back to unitCode
   sqft           Int
   monthlyRate    Decimal    @default(0) @db.Decimal(10, 2)
   status         UnitStatus @default(AVAILABLE)
-  climateControl String? // e.g. "Ambient climate"
+  climateControl String? // LEGACY free-text climate note (e.g. "Ambient climate"). Kept readable/writable for
+                         // backwards compat; the source of truth for AC is now hasAC below. New writes should
+                         // use hasAC/hasPillar; a supplied climateControl string is mapped onto hasAC (see
+                         // src/core/units.ts) but never required.
+  hasAC          Boolean    @default(false) // true = air-conditioned unit (unit type filter + import column)
+  hasPillar      Boolean    @default(false) // true = unit contains a structural pillar
   deletedAt      DateTime? // soft-delete lifecycle marker: null = active; set = hidden from all reads
   createdAt      DateTime   @default(now())
   updatedAt      DateTime   @updatedAt

@@ -56,6 +56,10 @@ export const state = {
   branchCode: 'BM', // drives map + table filter (sidebar branch switcher)
   level: 1, // drives map + table filter (floor tabs)
   statusFilter: '',
+  // Units-toolbar explicit filters (override the sidebar scope while set).
+  unitBranchFilter: '', // branch code or '' = follow sidebar
+  unitLevelFilter: '', // level number as string or '' = all/follow sidebar
+  unitAcFilter: '', // '' | 'ac' | 'nonac' (unit type filter)
   // P1 item 3: unit-map read-path filters (size code + near-lift proximity).
   mapSize: '',
   mapNearLift: false,

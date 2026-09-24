@@ -7,7 +7,6 @@
 
 import { STATUS_TONE, STATUS_LABEL, fmtMoney } from './constants.js';
 import { $, $$, escapeHtml, showBanner } from './dom.js';
-import { createDateFilter, withDateQuery, isRangeActive, rangeLabel } from './dateFilter.js';
 import { confirmDialog } from './confirmDialog.js';
 import { ApiError, request, get, describeError } from './api.js';
 import { state, ensureActiveLevel, isAllFacilities } from './state.js';
@@ -59,6 +58,8 @@ function normalizeUnit(u) {
     branchName: listLike ? u.branch?.name : u.branch,
     level: listLike ? u.floor?.level : u.level,
     climateControl: u.climateControl,
+    hasAC: u.hasAC === true,
+    hasPillar: u.hasPillar === true,
     tenant,
     rateHistory: u.rateHistory || [],
     operations: u.operations || null,
@@ -72,13 +73,14 @@ function renderUnitsTable() {
   tbody.innerHTML = state.units
     .map((u) => {
       const blocked = u.status === 'INACTIVE';
-      const guarded = u.status === 'OCCUPIED' || u.status === 'OVERDUE';
+      const guarded = u.status === 'OCCUPIED' || u.status === 'OVERDUE' || u.status === 'RESERVED';
       return `<tr data-code="${u.code}" class="${blocked ? 'row-blocked' : ''}">
         <td><strong>${u.code}</strong></td>
         <td>${escapeHtml(u.name)}</td>
         <td>${u.sizeName || '—'}${u.sizeCode ? `<div class="t-type">${u.sizeCode}</div>` : ''}</td>
         <td>${u.branchCode || '—'}</td>
         <td>${u.level ? 'Level ' + u.level : '—'}</td>
+        <td>${u.hasAC ? 'AC' : 'Non-AC'}${u.hasPillar ? `<div class="t-type">Pillar</div>` : ''}</td>
         <td>${u.sqft != null ? u.sqft : '—'}</td>
         <td>${u.rate != null ? fmtMoney(u.rate) : '—'}</td>
         <td><span class="psf-val">${u.psf != null ? '$' + Number(u.psf).toFixed(2) : '—'}</span></td>
@@ -88,7 +90,7 @@ function renderUnitsTable() {
           <button class="act-btn" data-act="view" data-code="${u.code}">View</button>
           <button class="act-btn" data-act="edit" data-code="${u.code}">Edit</button>
           <button class="act-btn primary" data-act="rate" data-code="${u.code}">Rate</button>
-          <button class="act-btn danger" data-act="delete" data-code="${u.code}" ${guarded ? 'title="Occupied/overdue units cannot be deactivated"' : ''}>Delete</button>
+          <button class="act-btn danger" data-act="delete" data-code="${u.code}" ${guarded ? 'title="Occupied/reserved/overdue units cannot be deleted"' : ''}>Delete</button>
         </td>
       </tr>`;
     })
@@ -97,41 +99,58 @@ function renderUnitsTable() {
   if (sub) {
     const start = state.total === 0 ? 0 : (state.page - 1) * state.perPage + 1;
     const end = Math.min(state.page * state.perPage, state.total);
-    sub.textContent = `${state.total} unit${state.total === 1 ? '' : 's'} · showing ${start}–${end}` +
-      (isRangeActive(state.unitDate) ? ` · ${rangeLabel(state.unitDate)}` : '');
+    sub.textContent = `${state.total} unit${state.total === 1 ? '' : 's'} · showing ${start}–${end}`;
   }
 }
 
-// Date-range control lives in the units toolbar; changing the range resets to page 1.
-function ensureUnitsDateFilter() {
-  const bar = document.querySelector('#facility-units .tbl-toolbar');
-  if (!bar || bar.dataset.dateFilterMounted) return;
-  bar.dataset.dateFilterMounted = '1';
-  const handle = createDateFilter({
-    onChange: (r) => {
-      state.unitDate = r;
-      state.page = 1;
-      fetchUnitsPage().catch((err) => showBanner('Units: ' + describeError(err)));
-    },
-  });
-  // Date-range trigger is the FIRST control in the toolbar (before the status select).
-  bar.prepend(handle.el);
+// Units toolbar filter selects (facility / level / AC type). The date-range
+// control was intentionally removed from this view only — other tables keep
+// theirs (see dateFilter.js usages in bookingsView/tenantsView/admin.js).
+function populateUnitBranchFilter() {
+  const sel = $('#unitBranchFilter');
+  if (!sel) return;
+  const current = state.unitBranchFilter || '';
+  sel.innerHTML = '<option value="">All facilities</option>' +
+    state.branches.map((b) => `<option value="${b.code}">${b.code} · ${b.name}</option>`).join('');
+  sel.value = [...sel.options].some((o) => o.value === current) ? current : '';
+  state.unitBranchFilter = sel.value;
+}
+
+export function populateUnitLevelFilter() {
+  const sel = $('#unitLevelFilter');
+  if (!sel) return;
+  const floors = state.unitBranchFilter
+    ? state.floors.filter((f) => f.branchId === (state.branches.find((b) => b.code === state.unitBranchFilter) || {}).id)
+    : state.floors;
+  const levels = [...new Set(floors.map((f) => f.level))].sort((a, b) => a - b);
+  const current = state.unitLevelFilter || '';
+  sel.innerHTML = '<option value="">All levels</option>' +
+    levels.map((l) => `<option value="${l}">Level ${l}</option>`).join('');
+  sel.value = levels.some((l) => String(l) === current) ? current : '';
+  state.unitLevelFilter = sel.value;
 }
 
 // ---------- server-side pagination ----------
 export async function fetchUnitsPage() {
-  ensureUnitsDateFilter();
+  populateUnitBranchFilter();
+  populateUnitLevelFilter();
   // Clamp a stale level (e.g. just deactivated) to the first active level so
   // the table never filters on a hidden floor. ALL mode omits level anyway.
   if (!isAllFacilities()) ensureActiveLevel(state.branchCode);
   const qs = new URLSearchParams({ page: String(state.page), perPage: String(state.perPage) });
   if (state.statusFilter) qs.set('status', state.statusFilter);
-  // All Facilities → omit branch/level so the backend returns every unit.
-  if (!isAllFacilities()) {
+  // Explicit toolbar facility/level overrides win; otherwise the sidebar
+  // facility scope applies (All Facilities → omit branch/level entirely).
+  if (state.unitBranchFilter) {
+    qs.set('branch', state.unitBranchFilter);
+    if (state.unitLevelFilter) qs.set('level', state.unitLevelFilter);
+  } else if (!isAllFacilities()) {
     if (state.branchCode) qs.set('branch', state.branchCode);
     if (state.level) qs.set('level', String(state.level));
   }
-  const body = await request(withDateQuery(`/units?${qs}`, state.unitDate));
+  if (state.unitAcFilter === 'ac') qs.set('hasAC', 'true');
+  else if (state.unitAcFilter === 'nonac') qs.set('hasAC', 'false');
+  const body = await request(`/units?${qs}`);
   state.units = (body.data || []).map(normalizeUnit);
   const m = body.meta || {};
   state.total = m.total != null ? m.total : state.units.length;
@@ -189,7 +208,8 @@ export async function showUnitDetail(code) {
         ${u.name !== u.code ? `<span class="badge neutral">${escapeHtml(u.code)}</span>` : ''}
         ${u.sqft ? `<span class="badge terra">${u.sqft} sq ft</span>` : ''}
         ${u.branchName && u.level ? `<span class="badge neutral">Level ${u.level} · ${u.branchName}</span>` : ''}
-        ${u.climateControl ? `<span class="badge neutral">${u.climateControl}</span>` : ''}`;
+        <span class="badge neutral">${u.hasAC ? 'AC' : 'Non-AC'}</span>
+        ${u.hasPillar ? `<span class="badge neutral">Pillar</span>` : ''}`;
     }
     const setVal = (sel, v) => {
       const el = $(sel);
@@ -200,7 +220,7 @@ export async function showUnitDetail(code) {
     setVal('#udRate', u.rate != null ? fmtMoney(u.rate) : '—');
     setVal('#udRateSub', u.psf != null ? '$' + Number(u.psf).toFixed(2) + '/sq ft' : '—');
     setVal('#udStatus', STATUS_LABEL[u.status] || u.status);
-    setVal('#udStatusSub', u.climateControl || '—');
+    setVal('#udStatusSub', `${u.hasAC ? 'AC' : 'Non-AC'}${u.hasPillar ? ' · Pillar' : ''}`);
     setVal('#udBranch', u.branchName || '—');
     setVal('#udLevel', u.level ? 'Level ' + u.level : '—');
     setVal('#udSize', u.sizeName || '—');
@@ -341,7 +361,8 @@ const FIELD_ID = {
   sqft: 'sqft',
   monthlyRate: 'monthlyRate',
   status: 'status',
-  climateControl: 'climateControl',
+  hasAC: 'hasAC',
+  hasPillar: 'hasPillar',
   newRate: 'newRate',
   reason: 'reason',
 };
@@ -372,7 +393,8 @@ export async function openCreateForm() {
   populateStatusSelect('create');
   $('#f-sqft').value = '';
   $('#f-monthlyRate').value = '';
-  $('#f-climateControl').value = 'Ambient climate';
+  $('#f-hasAC').value = 'no';
+  $('#f-hasPillar').value = 'no';
   $('#f-name').value = '';
   $('#unitFormSubmit').textContent = 'Save Unit';
   clearFieldErrors();
@@ -394,7 +416,8 @@ export async function openEditForm(code) {
     populateStatusSelect('edit', u.status);
     $('#f-sqft').value = u.sqft ?? '';
     $('#f-monthlyRate').value = u.rate ?? '';
-    $('#f-climateControl').value = u.climateControl ?? '';
+    $('#f-hasAC').value = u.hasAC ? 'yes' : 'no';
+    $('#f-hasPillar').value = u.hasPillar ? 'yes' : 'no';
     $('#f-name').value = u.name && u.name !== u.code ? u.name : '';
     $('#f-branch').disabled = true;
     $('#f-floor').disabled = true;
@@ -425,9 +448,9 @@ export async function submitUnitForm(e) {
     sqft: Number($('#f-sqft').value),
     monthlyRate: Number($('#f-monthlyRate').value),
     status: $('#f-status').value,
+    hasAC: $('#f-hasAC').value === 'yes',
+    hasPillar: $('#f-hasPillar').value === 'yes',
   };
-  const cc = $('#f-climateControl').value.trim();
-  if (cc) body.climateControl = cc;
   const nm = $('#f-name').value.trim();
   if (nm) body.name = nm;
 
@@ -454,13 +477,14 @@ export async function submitUnitForm(e) {
       const res = await request('/units', { method: 'POST', body: JSON.stringify(body) });
       showBanner(`Created ${res.data.code}`, true);
     } else {
-      // PUT /units/:code accepts sqft / monthlyRate / status / climateControl / name.
+      // PUT /units/:code accepts sqft / monthlyRate / status / hasAC / hasPillar / name.
       // Name: non-empty → set it; empty → name: null (clears back to the unit code).
       const patch = {
         sqft: body.sqft,
         monthlyRate: body.monthlyRate,
         status: body.status,
-        climateControl: body.climateControl,
+        hasAC: body.hasAC,
+        hasPillar: body.hasPillar,
         name: nm ? nm : null,
       };
       await request(`/units/${encodeURIComponent(currentEditCode)}`, { method: 'PUT', body: JSON.stringify(patch) });
@@ -478,7 +502,7 @@ export async function submitUnitForm(e) {
 
 export async function deleteUnit(code) {
   const unit = state.units.find((u) => u.code === code);
-  if (unit && (unit.status === 'OCCUPIED' || unit.status === 'OVERDUE')) {
+  if (unit && (unit.status === 'OCCUPIED' || unit.status === 'OVERDUE' || unit.status === 'RESERVED')) {
     // Known-guarded: hit the API so the 409 guard message surfaces, then blunt the row.
     try {
       await request(`/units/${encodeURIComponent(code)}`, { method: 'DELETE' });
@@ -514,6 +538,34 @@ export async function deleteUnit(code) {
       return;
     }
     showBanner(describeError(err));
+  }
+}
+
+// ---------- templated CSV import (Import button + file picker) ----------
+// Reads the picked .csv as text and POSTs { csv } to /units/import. The result
+// summary (created / skipped / errors) toasts via the banner; per-row errors
+// surface in the units banner (first 8) with the full list in the console.
+export async function importUnitsFile(file) {
+  setUnitsBanner('');
+  try {
+    const text = await file.text();
+    const body = await request('/units/import', { method: 'POST', body: JSON.stringify({ csv: text }) });
+    const m = body.meta || { total: 0, created: 0, skipped: 0, errors: 0 };
+    const failed = (body.data || []).filter((r) => r.status === 'error');
+    if (failed.length) {
+      // eslint-disable-next-line no-console
+      console.warn('[units import] row errors:', body.data);
+      setUnitsBanner(
+        `Import: ${m.created} created · ${m.skipped} skipped · ${m.errors} errors — ` +
+        failed.slice(0, 8).map((r) => `row ${r.row}: ${r.message}`).join(' · ') +
+        (failed.length > 8 ? ` · …+${failed.length - 8} more (see console)` : ''),
+        '',
+      );
+    }
+    showBanner(`Import: ${m.created} created · ${m.skipped} skipped · ${m.errors} errors`, failed.length === 0);
+    await refreshAll();
+  } catch (err) {
+    showBanner('Import: ' + describeError(err));
   }
 }
 

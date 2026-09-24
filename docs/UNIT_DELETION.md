@@ -23,8 +23,9 @@ Every `Unit` row has two independent markers that are **never mixed**:
 ## Rules (must follow)
 
 1. **The only delete primitive is `softDeleteUnit`** (`src/core/units.ts`). It sets
-   `data: { deletedAt: new Date() }`. It keeps the 409 guard: units that are `OCCUPIED` or
-   `OVERDUE` cannot be deleted. Deleting an already-deleted unit → 404.
+   `data: { deletedAt: new Date() }`. It keeps the 409 guard: units that are `OCCUPIED`,
+   `RESERVED` or `OVERDUE` cannot be deleted. Deleting an already-deleted unit → 404.
+   `INACTIVE`, `AVAILABLE`, `MAINTENANCE` and `BLOCKED` units stay deletable.
 2. **Every read of units must filter `deletedAt: null`** — lists (`findMany` **and** the count),
    the public listing, the map, the detail lookup, the activity feed, summary/KPI counts, rate
    adjustment lookups, and the customer portal. A unit that can be seen anywhere must not be
@@ -48,7 +49,7 @@ All endpoints under `/api/v1/cms` (admin, Bearer JWT) unless noted.
 
 | Endpoint                     | Behavior for a deleted unit                          |
 | ---------------------------- | ---------------------------------------------------- |
-| `DELETE /units/:code`        | Sets `deletedAt`; **status unchanged**; `OCCUPIED`/`OVERDUE` → 409 |
+| `DELETE /units/:code`        | Sets `deletedAt`; **status unchanged**; `OCCUPIED`/`RESERVED`/`OVERDUE` → 409 |
 | `GET /units`                 | Excluded (never appears)                             |
 | `GET /units/map`             | Excluded (never appears)                             |
 | `GET /units/:code`           | 404 NOT_FOUND                                        |

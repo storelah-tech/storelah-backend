@@ -16,6 +16,8 @@ import {
   softDeleteUnit,
   listSizes,
   getUnitActivity,
+  unitImportTemplateCsv,
+  importUnits,
 } from '../core/units';
 import {
   listFloors,
@@ -157,6 +159,7 @@ import {
 } from '../core/floorPlans';
 import {
   getFloorMetrics,
+  getFacilityMetrics,
   createMetricsSnapshot,
   listMetricsSnapshots,
 } from '../core/floorPlanMetricsService';
@@ -192,7 +195,11 @@ const createUnitSchema = z.object({
   sqft: z.number().positive(),
   monthlyRate: z.number().nonnegative(),
   status: z.enum(['AVAILABLE', 'RESERVED', 'MAINTENANCE', 'INACTIVE', 'BLOCKED']).optional(),
+  // climateControl is legacy: accepted and stored for backwards compat, and
+  // mapped onto hasAC when hasAC is omitted (see src/core/units.ts).
   climateControl: z.string().optional(),
+  hasAC: z.boolean().optional(),
+  hasPillar: z.boolean().optional(),
   name: z.string().trim().max(80).optional(),
 });
 
@@ -203,8 +210,20 @@ const updateUnitSchema = z.object({
     .enum(['OCCUPIED', 'AVAILABLE', 'RESERVED', 'OVERDUE', 'MAINTENANCE', 'INACTIVE', 'BLOCKED'])
     .optional(),
   climateControl: z.string().nullable().optional(),
+  hasAC: z.boolean().optional(),
+  hasPillar: z.boolean().optional(),
   name: z.string().trim().max(80).nullable().optional(),
 });
+
+// ?hasAC= filter: accepts true/false/1/0/yes/no (case-insensitive); garbage → 400.
+const yesNoQueryField = z.preprocess((v) => {
+  if (v === undefined || v === null || v === '') return undefined;
+  if (typeof v === 'boolean') return v;
+  const s = String(v).trim().toLowerCase();
+  if (['true', '1', 'yes', 'y', 'ac'].includes(s)) return true;
+  if (['false', '0', 'no', 'n', 'non-ac', 'nonac'].includes(s)) return false;
+  return v;
+}, z.boolean().optional());
 
 const unitListQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
@@ -214,6 +233,7 @@ const unitListQuerySchema = z.object({
     .optional(),
   branch: z.string().trim().min(1).optional(),
   level: z.coerce.number().int().min(1).optional(),
+  hasAC: yesNoQueryField,
   ...dateRangeFields,
 });
 
@@ -399,6 +419,7 @@ router.get('/units', requireAuth, async (req: Request, res: Response) => {
     status: parsed.data.status,
     branch: parsed.data.branch,
     level: parsed.data.level,
+    hasAC: parsed.data.hasAC,
     ...range,
   });
   ok(res, rows, meta);
@@ -435,6 +456,38 @@ router.put('/units/:code', requireAuth, async (req: Request, res: Response) => {
 
 router.delete('/units/:code', requireAuth, async (req: Request, res: Response) => {
   ok(res, await softDeleteUnit(String(req.params.code)));
+});
+
+// --- Templated unit import (CSV-only) ---
+// NOTE: both routes are registered BEFORE GET /units/:code so "import" and
+// "import/template" are never parsed as a unit code.
+
+// Header-only CSV template download (not an envelope — file download).
+router.get('/units/import/template', requireAuth, async (_req: Request, res: Response) => {
+  const csv = unitImportTemplateCsv();
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', 'attachment; filename="units-import-template.csv"');
+  res.send(csv);
+});
+
+// Import rows from a CSV string: { csv }. Per-row create/skip/error report in
+// data with { total, created, skipped, errors } meta. Skip-or-create policy:
+// an explicit code that already exists is skipped, never overwritten (this is
+// what keeps OCCUPIED/RESERVED units safe). Practical batch cap: the global
+// express.json() limit (~100kb ≈ 1500 rows) applies — split bigger files (see
+// docs/UNIT_IMPORT.md). XLSX is NOT accepted (CSV-only, no workbook dep).
+const unitImportSchema = z.object({
+  csv: z.string().min(1).max(1_000_000),
+});
+
+router.post('/units/import', requireAuth, async (req: Request, res: Response) => {
+  const parsed = unitImportSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid import payload (expected { csv: string })', parsed.error.flatten());
+    return;
+  }
+  const report = await importUnits(parsed.data.csv);
+  ok(res, report.rows, report.meta);
 });
 
 router.get('/units/:code', requireAuth, async (req: Request, res: Response) => {
@@ -975,6 +1028,15 @@ router.get('/floor-plans', requireAuth, async (req: Request, res: Response) => {
   }
   const rows = await listFloorPlans(parsed.data);
   ok(res, rows, { count: rows.length });
+});
+
+// Facility-level rollup: sums the per-floor LIVE metrics reports into one
+// facility aggregate (geometry sums with the NLA<=UFA clamp + guarded
+// efficiencies, DB-wide unitGroups/totals with the owner-confirmed size
+// mapping). NOTE: registered BEFORE /floor-plans/:floorId so "facility" is
+// never parsed as a floor id. Additive — no existing route changes.
+router.get('/floor-plans/facility/:branchRef/metrics', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await getFacilityMetrics(String(req.params.branchRef)));
 });
 
 // The plan for a floor (floorId is the upsert key). Includes placements joined

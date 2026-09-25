@@ -2,7 +2,7 @@
 // Fees & deposits with per-facility override (GET/POST/DELETE /fees +
 // /fees/resolve preview), business-rules section (GET/PUT /business-rules),
 // Users section (GET/POST/PATCH/DELETE /users + access + permissions).
-// The 13 scalar settings in #settingsGrid are untouched.
+// The 14 scalar settings in #settingsGrid are untouched.
 
 import { $, escapeHtml, showBanner } from './dom.js';
 import { get, post, put, del, describeError } from './api.js';

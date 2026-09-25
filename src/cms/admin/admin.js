@@ -1720,6 +1720,7 @@ const SETTINGS_GROUPS = [
     keys: [
       { key: 'billing.graceDays', kind: 'number', label: 'Payment grace period (days)', desc: 'Days after the due date before an invoice counts as overdue.' },
       { key: 'billing.lateFeeEnabled', kind: 'boolean', label: 'Late fees', desc: 'Apply late fees to invoices past the grace period.' },
+      { key: 'billing.gstEnabled', kind: 'boolean', label: 'GST enabled', desc: 'Show GST in the booking flow. OFF hides all GST UI and pricing.' },
       { key: 'billing.invoicePrefix', kind: 'text', label: 'Invoice prefix', desc: 'Prefix for generated invoice numbers.' },
     ],
   },

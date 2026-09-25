@@ -442,9 +442,33 @@ export const openapiSpec = {
         },
       },
     },
-    '/public/leads': {
-      post: {
+    '/public/settings': {
+      get: {
         tags: ['Public'],
+        summary: 'Read public booking settings (GST flag)',
+        description: [
+          'Public-safe settings subset for the booking frontend. Currently `{ gstEnabled }`, ',
+          'backed by the CMS Global Settings key `billing.gstEnabled` (default false = GST hidden). ',
+          'The booking app reads `data.gstEnabled` to decide whether to show GST UI/pricing. ',
+          'Operators toggle it on the CMS Global Settings page or via `PUT /cms/settings`. ',
+          'No authentication. Envelope `{ data }`. This surface is additive.',
+        ].join('\n'),
+        operationId: 'getPublicSettings',
+        security: [],
+        responses: {
+          '200': openapiResponse({
+            type: 'object',
+            properties: {
+              gstEnabled: { type: 'boolean', description: 'True = show GST UI/pricing in the booking flow.' },
+            },
+            required: ['gstEnabled'],
+          }),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+    },
+    '/public/leads': {
+      post: {        tags: ['Public'],
         summary: 'Submit a lead (booking "Your details")',
         description: [
           'Unauthenticated lead capture for the booking frontend: creates a Lead with stage ',

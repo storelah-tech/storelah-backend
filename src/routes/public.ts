@@ -7,6 +7,7 @@ import { listActivePromotions, validatePromotion, DEFAULT_PROMO_TYPE, DEFAULT_PR
 import { listActivePublicPromotionPlans } from '../core/promotionPlans';
 import { getPublicFloorPlan } from '../core/floorPlans';
 import { listProtectionPlans, listAddons } from '../core/extras';
+import { getPublicSettings } from '../core/settings';
 import { createPublicLead } from '../core/leads';
 
 const router = Router();
@@ -139,6 +140,17 @@ router.get('/addons', async (_req: Request, res: Response) => {
 
 router.get('/promotion-plans', async (_req: Request, res: Response) => {
   ok(res, await listActivePublicPromotionPlans());
+});
+
+// PUBLIC settings subset for the booking frontend (unauthenticated).
+// Additive: `{ data: { gstEnabled } }` — the booking app reads
+// `data.gstEnabled` to decide whether to show GST UI/pricing. Backed by
+// the CMS Global Settings key `billing.gstEnabled` (default false = GST
+// hidden); operators toggle it on the CMS Global Settings page or via
+// PUT /api/v1/cms/settings. No auth, no PII. Existing public routes are
+// untouched.
+router.get('/settings', async (_req: Request, res: Response) => {
+  ok(res, await getPublicSettings());
 });
 
 // PUBLIC lead capture for the booking frontend "Your details" step —

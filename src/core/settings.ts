@@ -116,6 +116,14 @@ export const SETTING_DEFS: SettingDef[] = [
     default: true,
   },
   {
+    key: 'billing.gstEnabled',
+    group: 'billing',
+    kind: 'boolean',
+    label: 'GST enabled',
+    description: 'Show GST in the booking flow. OFF hides all GST UI and pricing.',
+    default: false,
+  },
+  {
     key: 'billing.invoicePrefix',
     group: 'billing',
     kind: 'text',
@@ -286,4 +294,22 @@ export async function upsertSettings(input: unknown): Promise<SettingsMap> {
     ),
   );
   return getSettings();
+}
+
+// --- Public settings (unauthenticated booking-app surface) ---
+//
+// Only flags the booking frontend is allowed to read. The CMS key
+// `billing.gstEnabled` is exposed as `gstEnabled` on
+// GET /api/v1/public/settings so the booking app can decide whether to
+// show GST UI/pricing. Reads fall back to the code default (false) when
+// no row exists, so a fresh DB behaves as GST-off without any seed.
+export interface PublicSettings {
+  gstEnabled: boolean;
+}
+
+export const GST_ENABLED_KEY = 'billing.gstEnabled';
+
+export async function getPublicSettings(): Promise<PublicSettings> {
+  const v = await getSetting(GST_ENABLED_KEY);
+  return { gstEnabled: v === true };
 }

@@ -21,7 +21,6 @@ let metricsTimer = null;
 let wired = false;
 
 const fmtSqft = (n) => Number(n || 0).toLocaleString('en-SG', { maximumFractionDigits: 1 });
-const fmtPct = (n) => (Number(n || 0) * 100).toFixed(2) + '%';
 const todayIso = () => new Date().toISOString().slice(0, 10);
 
 function metricsBanner(msg, ok) {
@@ -61,6 +60,12 @@ function statCard(label, value, sub) {
     escapeHtml(value) + '</div>' + (sub ? '<div class="trend">' + escapeHtml(sub) + '</div>' : '') + '</div>';
 }
 
+// Owner-confirmed final KPI set — exactly 14 cards, display-only (all values
+// come from the live GET /floor-plans/:floorId/metrics report, never computed
+// client-side). Missing/non-numeric fields render '—', never NaN/throw.
+// Removed (never render): split net-lettable cards, GLA excl/incl variants,
+// legacy NLA/GFA efficiency, load/circulation/volumetric cards,
+// placed-units-only, or any other KPI outside the 14 below.
 function renderKpis(r) {
   const el = $('#metricsKpis');
   if (!el) return;
@@ -69,28 +74,65 @@ function renderKpis(r) {
     return;
   }
   const g = r.geometry || {};
-  const sqft = (a) => (a && a.sqft != null ? fmtSqft(a.sqft) : '—');
-  // UFA is LINE-ONLY (marked-area, never the whole canvas): prefer the
-  // authoritative boundaryMetrics.ufa; with no contributing marked line
-  // (boundaryClosed false) the KPI is 0 with an explicit "no marked area"
-  // empty state. GFA is untouched (operator-entered vs canvas fallback).
-  const bm = r.boundaryMetrics || null;
-  const ufaSqft = bm ? bm.ufa : (g.ufa && g.ufa.sqft);
-  const ufaSub = !bm ? 'usable floor area' : (bm.boundaryClosed ? 'usable floor area · line-only' : 'no marked area — draw lines to measure');
-  const circRatio = g.gfa && g.gfa.sqft > 0 && g.derivedCirculation ? g.derivedCirculation.sqft / g.gfa.sqft : 0;
+  const sqft = (a) => (a && a.sqft != null && Number.isFinite(Number(a.sqft)) ? fmtSqft(a.sqft) : '—');
+  // Total Corridor Area = UFA − NLA: prefer the additive corridorArea alias,
+  // fall back to the identical geometry.common remainder on older payloads.
+  const corridor = g.corridorArea && g.corridorArea.sqft != null ? g.corridorArea : g.common;
+  // Efficiencies arrive as 1dp numbers from the service — append %.
+  const pct = (v) => {
+    const n = typeof v === 'number' ? v : Number(v);
+    return Number.isFinite(n) ? n.toFixed(1) + '%' : '—';
+  };
+  // 1. GFA basis: operator-entered (USER) vs canvas-rect fallback.
+  const gfaSub = g.gfaSource === 'USER' ? 'operator-entered' : 'canvas fallback — enter GFA per plan';
+  // 2. UFA is line-only (marked-area). Show the empty-state sub when there is
+  // no measured area (0/missing) or the boundary loop is not closed.
+  const ufaSqftNum = g.ufa && g.ufa.sqft != null ? Number(g.ufa.sqft) : NaN;
+  const boundaryClosed = r.boundaryMetrics ? r.boundaryMetrics.boundaryClosed : undefined;
+  const hasMarkedArea = Number.isFinite(ufaSqftNum) && ufaSqftNum > 0 && boundaryClosed !== false;
+  const ufaSub = hasMarkedArea ? 'usable floor area · line-only' : 'no marked area — draw lines to measure';
+  // unitGroups.groups is an array keyed by `key` (locker/xs/m/l/xl); tolerate
+  // a keyed-object shape just in case.
+  const ug = r.unitGroups || {};
+  const groups = Array.isArray(ug.groups)
+    ? ug.groups
+    : (ug.groups && typeof ug.groups === 'object' ? Object.values(ug.groups) : []);
+  const groupByKey = (key) => groups.find((x) => x && x.key === key) || null;
+  const groupVal = (grp) => {
+    if (!grp) return '—';
+    const n = typeof grp.units === 'number' ? grp.units : Number(grp.units);
+    const a = typeof grp.areaSqft === 'number' ? grp.areaSqft : Number(grp.areaSqft);
+    if (!Number.isFinite(n) || !Number.isFinite(a)) return '—';
+    return n + ' units · ' + fmtSqft(a) + ' sqft';
+  };
+  const coverage = r.coverage || {};
+  const unplacedRaw = coverage.unplacedUnits;
+  const unplacedNum = unplacedRaw != null ? Number(unplacedRaw) : NaN;
+  const unplacedVal = Number.isFinite(unplacedNum) ? unplacedNum + ' units unplaced' : '—';
+  // Occupied follows the revenue convention (OCCUPIED + OVERDUE, RESERVED
+  // excluded) via occupancy.physical.occupiedUnits.
+  const occupancy = r.occupancy || {};
+  const physical = occupancy.physical || {};
+  const occupiedRaw = physical.occupiedUnits;
+  const occupiedNum = occupiedRaw != null ? Number(occupiedRaw) : NaN;
+  const occupiedVal = Number.isFinite(occupiedNum) ? occupiedNum + ' units occupied' : '—';
   el.innerHTML = [
-    statCard('GFA', sqft(g.gfa), 'gross floor area'),
-    statCard('UFA', ufaSqft != null ? fmtSqft(ufaSqft) : '—', ufaSub),
-    statCard('NLA enclosed', sqft(g.nlaEnclosed), 'billable, enclosed'),
-    statCard('NLA outdoor', sqft(g.nlaOutdoor), 'billable, outdoor'),
-    statCard('NLA total', sqft(g.nlaTotal), 'enclosed + outdoor'),
-    statCard('GLA exclusive', sqft(g.glaExclusive && g.glaExclusive.area), '= NLA · exclusive'),
-    statCard('GLA inclusive', sqft(g.glaInclusive && g.glaInclusive.area), '= NLA + COMMON · inclusive'),
-    statCard('Efficiency', fmtPct(g.efficiency), 'NLA enclosed / GFA'),
-    statCard('Load factor', Number(g.loadFactor || 0).toFixed(4) + '×', 'GLA inclusive / NLA'),
-    statCard('Circulation ratio', fmtPct(circRatio), 'derived circulation / GFA'),
-    statCard('Units', String((r.coverage && r.coverage.placedUnits) || 0), ((r.coverage && r.coverage.unplacedUnits) || 0) + ' unplaced'),
-    statCard('Cubic capacity', fmtSqft(r.volumetric && r.volumetric.totalCubicFt), 'clear area × ceiling'),
+    statCard('GFA (GROSS FLOOR AREA)', sqft(g.gfa), gfaSub),
+    statCard('UFA (USABLE FLOOR AREA)', sqft(g.ufa), ufaSub),
+    statCard('NLA (NET LETTABLE AREA)', sqft(g.nlaTotal), 'billable, enclosed + outdoor'),
+    statCard('Total Corridor Area (= UFA − NLA)', sqft(corridor), 'UFA − NLA'),
+    statCard('GFA to UFA Efficiency (%)', pct(g.gfaToUfaEfficiencyPct), 'UFA / GFA'),
+    statCard('UFA to NLA Efficiency (%)', pct(g.ufaToNlaEfficiencyPct), 'NLA / UFA'),
+    statCard('Overall Units', groupVal(ug.overall), 'all sizes · nominal sqft'),
+    statCard('Locker Units', groupVal(groupByKey('locker')), 'LOCKER'),
+    statCard('XS units', groupVal(groupByKey('xs')), 'SMALL'),
+    statCard('M Units', groupVal(groupByKey('m')), 'MEDIUM'),
+    statCard('L Units', groupVal(groupByKey('l')), 'LARGE'),
+    // XL (Extra Large) has no UnitSize code in the DB — the service reports
+    // 0/0 flagged in unitGroups.notes; surface the zero with that note.
+    statCard('XL Units', groupVal(groupByKey('xl')), 'no Extra Large code in DB'),
+    statCard('Unplaced units', unplacedVal, 'no placement on canvas'),
+    statCard('Occupied units', occupiedVal, 'OCCUPIED + OVERDUE per revenue convention'),
   ].join('');
 }
 

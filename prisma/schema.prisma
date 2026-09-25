@@ -206,8 +206,11 @@ model Floor {
 //
 // SINGLE plan per floor, enforced by `@@unique([floorId])`: a floor has one
 // physical layout, so consumers can always read THE plan for a floor without
-// resolving versions/activation. If draft/versioning is ever needed it can be
-// added additively (e.g. a `status` column).
+// resolving versions/activation. Draft/publish rides on a `status` column
+// (PlanStatus vocabulary shared with promotion plans): CMS writes always
+// persist DRAFT, POST /floor-plans/:floorId/publish walks DRAFT → ACTIVE,
+// and public reads resolve ONLY ACTIVE plans (draft-only floors read as
+// plan: null).
 //
 // `structure` is a JSONB document rather than relational rows because the
 // decorations are presentational and heterogeneously shaped (walls, rooms,
@@ -221,6 +224,13 @@ model FloorPlan {
   id        String   @id @default(cuid())
   floorId   String   @unique
   floor     Floor    @relation(fields: [floorId], references: [id], onDelete: Cascade)
+  // Draft/publish lifecycle: DRAFT = CMS-only working copy (every CMS write
+  // lands here, never auto-promotes); ACTIVE = published, the only state the
+  // public booking renderer resolves. VALIDATED/SCHEDULED are unused for floor
+  // plans (reserved vocabulary only — publish walks DRAFT → ACTIVE directly,
+  // publishing an ACTIVE plan is idempotent). Pre-workflow rows backfilled to
+  // ACTIVE so live plans stay visible (see migration `floor_plan_status`).
+  status    PlanStatus @default(DRAFT)
   width     Int      @default(0) // canvas width in FEET (1 grid unit = 1 ft)
   height    Int      @default(0) // canvas height in FEET (1 grid unit = 1 ft)
   structure Json? // LEGACY free-form decorations (walls / corridors / entrance /
@@ -239,6 +249,7 @@ model FloorPlan {
   placements UnitPlacement[]
   blocks     FloorPlanBlock[]
   boundaries FloorPlanBoundary[]
+  markers    FloorPlanMarker[]
 }
 
 // Operator-authored layout-decoration rectangles on a plan canvas — e.g. lift,
@@ -302,6 +313,24 @@ model FloorPlanBoundary {
                                         // polylines (chord-closed) feed boundaryMetrics; open 2-vertex segments
                                         // contribute 0 until extended/closed (see docs/FLOOR_PLAN_MODEL.md)
   sortOrder   Int       @default(0) // stable editor ordering (lowest first)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([floorPlanId])
+}
+
+model FloorPlanMarker {
+  id          String    @id @default(cuid())
+  floorPlanId String
+  floorPlan   FloorPlan @relation(fields: [floorPlanId], references: [id], onDelete: Cascade)
+  kind        String // safety/facility marker kind, validated against FP_MARKER_KINDS
+                     // in src/core/floorPlans.ts (e.g. FIRE_EXTINGUISHER, DO_NOT_ENTER,
+                     // EXIT_SIGN, FIRE_HOSE, FIRST_AID, KEEP_CLEAR). Plain String (not
+                     // an enum) so new marker kinds stay additive without a migration —
+                     // same rationale as FloorPlanBoundary.kind.
+  label       String? // optional operator label (<= 80 chars); renderers fall back to the kind's display label
+  x           Int // grid-ft POINT on the plan canvas (1 grid unit = 1 ft)
+  y           Int // edge-inclusive (0..width / 0..height), same contract as boundary vertices
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 
@@ -1238,32 +1267,45 @@ model OperatorFacilityAccess {
   @@index([adminUserId])
 }
 
-// Floor-plan area-metrics snapshots (Phase 2: Floor Plan Area Metrics).
+// Floor-plan area-metrics snapshots (Phase 2: Floor Plan Area Metrics, plus a
+// promotions-mirrored draft workflow: POST creates a DRAFT row, PATCH
+// :id/status walks DRAFT → VALIDATED → SCHEDULED → ACTIVE, ACTIVE is
+// immutable and corrections are new draft rows).
 //
-// APPEND-ONLY history of published metric reports, one row per POST
+// APPEND-ONLY history, one row per POST
 // /api/v1/cms/floor-plans/:floorId/metrics/snapshots. There is deliberately
 // NO unique constraint on (floor, effective_date): publishing the same date
-// twice creates two rows (history, not state). There is no PUT/PATCH route.
-// Rows whose geometry failed validation are never persisted (the service
-// throws 422 before writing). payload is the full live report at publish
-// time (areas as exact decimal-string Q + sqft floats; money as integer
-// cents + 2dp SGD — JSON-safe, no BigInt). The lookup key for history reads
-// is (branchId, floorId, effectiveDate); schemaVersion tags the payload shape
-// (see METRICS_SCHEMA_VERSION in src/core/floorPlanMetrics.ts).
+// twice creates two rows (history, not state). There is no PUT route and no
+// direct payload PATCH (payload refreshes only via the SCHEDULED → ACTIVE
+// publish edge, which recomputes live metrics). Draft rows may carry
+// validation ERRORs (draft-blocked — DRAFT → VALIDATED requires zero
+// blockers); ACTIVE rows were always error-free at publish time. payload is
+// the full live report (areas as exact decimal-string Q + sqft floats; money
+// as integer cents + 2dp SGD — JSON-safe, no BigInt). The lookup key for
+// history reads is (branchId, floorId, effectiveDate); schemaVersion tags the
+// payload shape (see METRICS_SCHEMA_VERSION in src/core/floorPlanMetrics.ts).
+// status reuses the PlanStatus enum (same vocabulary as promotion plans;
+// ENDED is never assigned to snapshots). Pre-workflow rows backfilled to
+// ACTIVE via the column default (published equivalent).
 model FloorplanMetricsSnapshot {
-  id            String   @id @default(cuid())
+  id            String     @id @default(cuid())
   branchId      String
-  branch        Branch   @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  branch        Branch     @relation(fields: [branchId], references: [id], onDelete: Cascade)
   floorId       String
-  floor         Floor    @relation(fields: [floorId], references: [id], onDelete: Cascade)
+  floor         Floor      @relation(fields: [floorId], references: [id], onDelete: Cascade)
   effectiveDate DateTime // UTC midnight of the operator-supplied YYYY-MM-DD effective_date
-  schemaVersion Int      @default(1)
+  schemaVersion Int        @default(1)
   geometryHash  String // SHA-256 over the canonicalised sorted region set
-  payload       Json // full FloorMetricsReport at publish time
-  createdAt     DateTime @default(now())
+  payload       Json // full FloorMetricsReport at draft/publish time
+  status        PlanStatus @default(ACTIVE)
+  approverRole  String? // free-text approver label recorded on go-live edges (promotions mirror)
+  validatedAt   DateTime? // stamped on entry to VALIDATED
+  publishedAt   DateTime? // stamped on entry to ACTIVE (publish)
+  createdAt     DateTime   @default(now())
 
   @@index([branchId, floorId, effectiveDate])
   @@index([floorId])
+  @@index([floorId, status])
 }
 
 // ---------------------------------------------------------------------------

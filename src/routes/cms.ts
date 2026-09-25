@@ -149,6 +149,7 @@ import {
   setUnitPlacement,
   removeUnitPlacement,
   deleteFloorPlan,
+  publishFloorPlan,
   createFloorPlanBlock,
   setFloorPlanBlock,
   removeFloorPlanBlock,
@@ -156,12 +157,19 @@ import {
   createFloorPlanBoundary,
   updateFloorPlanBoundary,
   removeFloorPlanBoundary,
+  FP_MARKER_KINDS,
+  listFloorPlanMarkers,
+  createFloorPlanMarker,
+  updateFloorPlanMarker,
+  removeFloorPlanMarker,
 } from '../core/floorPlans';
 import {
   getFloorMetrics,
   getFacilityMetrics,
-  createMetricsSnapshot,
+  createDraftSnapshot,
+  transitionSnapshotStatus,
   listMetricsSnapshots,
+  getAuthoritativeSnapshot,
 } from '../core/floorPlanMetricsService';
 import {
   listProtectionPlans,
@@ -339,6 +347,24 @@ const floorPlanBlockSchema = z.object({
   // Authored door edges round-trip per region (same keep/clear/replace
   // semantics as placements; blocks are non-leasable so metrics ignores them).
   doorEdges: z.array(z.enum(['N', 'S', 'E', 'W'])).max(4).nullish(),
+});
+
+// Safety/facility map markers: grid-ft POINTS (fire extinguisher,
+// do-not-enter, exit sign, ...) — one icon per row, draggable in the editor.
+// `label` is an optional operator override (≤ 80 chars); renderers fall back
+// to the kind's display label when null.
+const floorPlanMarkerSchema = z.object({
+  kind: z.enum(FP_MARKER_KINDS),
+  label: z.string().trim().max(80).nullish(), // optional override; null/empty clears back to the kind label
+  x: z.number().int().min(0),
+  y: z.number().int().min(0),
+});
+
+const floorPlanMarkerPatchSchema = z.object({
+  kind: z.enum(FP_MARKER_KINDS).optional(),
+  label: z.string().trim().max(80).nullish(),
+  x: z.number().int().min(0).optional(),
+  y: z.number().int().min(0).optional(),
 });
 
 // Facility-boundary line items: polylines in grid-ft units marking the
@@ -1047,7 +1073,8 @@ router.get('/floor-plans/:floorId', requireAuth, async (req: Request, res: Respo
 });
 
 // Upsert the plan canvas (width / height / structure / operator-entered GFA) —
-// create if absent, then update the provided fields. 201 (created/upserted).
+// create if absent, then update the provided fields. ALWAYS persists as DRAFT
+// (Save Canvas never publishes — see POST .../publish). 201 (created/upserted).
 router.post('/floor-plans/:floorId', requireAuth, async (req: Request, res: Response) => {
   const parsed = floorPlanCanvasSchema.safeParse(req.body);
   if (!parsed.success) {
@@ -1153,6 +1180,57 @@ router.put('/floor-plans/:floorId/boundaries/:boundaryId', requireAuth, async (r
 // Remove a boundary line item (scoped to the plan; cross-plan ids 404).
 router.delete('/floor-plans/:floorId/boundaries/:boundaryId', requireAuth, async (req: Request, res: Response) => {
   ok(res, await removeFloorPlanBoundary(String(req.params.floorId), String(req.params.boundaryId)));
+});
+
+// --- Floor-plan safety/facility markers (point icons) ---
+// One icon per row (kind + grid-ft point + optional label override), drawn by
+// the editor and the read-only preview. Points carry no area, so markers never
+// feed boundaryMetrics — they are purely visual, like blocks but pointless
+// (single grid-ft points, draggable, deletable).
+
+// List a floor's markers (authored order; [] when no plan yet).
+router.get('/floor-plans/:floorId/markers', requireAuth, async (req: Request, res: Response) => {
+  const rows = await listFloorPlanMarkers(String(req.params.floorId));
+  ok(res, rows, { count: rows.length });
+});
+
+// Place a marker on the floor's plan (lazily creates the canvas when the
+// floor has none yet). 201 (created).
+router.post('/floor-plans/:floorId/markers', requireAuth, async (req: Request, res: Response) => {
+  const parsed = floorPlanMarkerSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid marker payload', parsed.error.flatten());
+    return;
+  }
+  created(res, await createFloorPlanMarker(String(req.params.floorId), parsed.data));
+});
+
+// Move / relabel a marker scoped to the plan. Omitted fields keep their
+// values. Cross-plan ids 404.
+router.put('/floor-plans/:floorId/markers/:markerId', requireAuth, async (req: Request, res: Response) => {
+  const parsed = floorPlanMarkerPatchSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid marker payload', parsed.error.flatten());
+    return;
+  }
+  ok(res, await updateFloorPlanMarker(String(req.params.floorId), String(req.params.markerId), parsed.data));
+});
+
+// Remove a marker (scoped to the plan; cross-plan ids 404).
+router.delete('/floor-plans/:floorId/markers/:markerId', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await removeFloorPlanMarker(String(req.params.floorId), String(req.params.markerId)));
+});
+
+// Publish a floor's plan: DRAFT → ACTIVE (direct — VALIDATED/SCHEDULED are
+// reserved vocabulary only; publishing ACTIVE is idempotent). The ONLY path
+// that exposes the plan to the public booking renderer (GET
+// /public/floor-plans/:branchCode/:level resolves ACTIVE only; draft-only
+// floors read as plan: null). Every other CMS floor-plan write persists as
+// DRAFT, so corrections are edit-draft + re-publish. Permission gate mirrors
+// PATCH /promotion-plans/:id/status (gated 'promotions.approve' for actors
+// that hold permission rows, legacy fallback otherwise).
+router.post('/floor-plans/:floorId/publish', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await publishFloorPlan(String(req.params.floorId), { actorId: (req as any).user?.sub }));
 });
 
 // --- Promotion Plans ---
@@ -1413,14 +1491,23 @@ router.delete('/floor-plans/:floorId', requireAuth, async (req: Request, res: Re
   ok(res, await deleteFloorPlan(String(req.params.floorId)));
 });
 
-// --- Floor-plan area metrics (Phase 2) ---
+// --- Floor-plan area metrics (Phase 2, save-draft → approve → publish) ---
 // Live compute runs over the current canvas geometry (placements + blocks)
-// joined to Unit status/rates/sizes; snapshots are append-only history rows.
-// There is deliberately no PUT/PATCH on snapshots (updates forbidden by
-// design) and non-rectangular geometry is rejected at the boundary (400).
+// joined to Unit status/rates/sizes; snapshots are append-only history rows
+// with a promotions-mirrored status workflow (DRAFT → VALIDATED → SCHEDULED
+// → ACTIVE via PATCH .../snapshots/:id/status). There is deliberately no PUT
+// and no direct payload PATCH on snapshots (payload refreshes only via the
+// SCHEDULED → ACTIVE publish edge); ACTIVE rows are immutable and corrections
+// are new draft rows. Non-rectangular geometry is rejected at the boundary (400).
 
 const metricsSnapshotSchema = z.object({
   effective_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'effective_date must be YYYY-MM-DD'),
+});
+
+const metricsSnapshotStatusSchema = z.object({
+  status: z.enum(['DRAFT', 'VALIDATED', 'SCHEDULED', 'ACTIVE']),
+  changedBy: z.string().trim().max(80).optional(),
+  approverRole: z.string().trim().max(80).optional(),
 });
 
 // Live metrics for a floor: full payload with the assumptions block
@@ -1436,22 +1523,47 @@ router.get('/floor-plans/:floorId/metrics', requireAuth, async (req: Request, re
   ok(res, await getFloorMetrics(String(req.params.floorId)));
 });
 
-// Publish an append-only snapshot for an effective date. Validation ERRORs
-// block with 422 + the validation array (invalid geometry is never persisted).
-// Publishing the same date twice creates two rows (history, not state).
+// Save a DRAFT snapshot for an effective date. Validation warnings AND
+// errors are allowed on the draft (draft-blocked state rides in
+// payload.validation); promotion to VALIDATED requires zero blockers.
+// Saving the same date twice creates two rows (history, not state).
 router.post('/floor-plans/:floorId/metrics/snapshots', requireAuth, async (req: Request, res: Response) => {
   const parsed = metricsSnapshotSchema.safeParse(req.body);
   if (!parsed.success) {
     fail(res, 400, 'VALIDATION', 'Invalid snapshot payload', parsed.error.flatten());
     return;
   }
-  created(res, await createMetricsSnapshot(String(req.params.floorId), parsed.data.effective_date));
+  created(res, await createDraftSnapshot(String(req.params.floorId), parsed.data.effective_date));
 });
 
-// Snapshot history for a floor (newest effective date first, payloads included).
+// Snapshot history for a floor (newest effective date first, payloads included — all statuses).
 router.get('/floor-plans/:floorId/metrics/snapshots', requireAuth, async (req: Request, res: Response) => {
   const rows = await listMetricsSnapshots(String(req.params.floorId));
   ok(res, rows, { count: rows.length });
+});
+
+// Authoritative snapshot for a floor: the latest ACTIVE row (payload
+// included). Drafts never resolve here — 404 when no ACTIVE snapshot exists.
+router.get('/floor-plans/:floorId/metrics/snapshots/authoritative', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await getAuthoritativeSnapshot(String(req.params.floorId)));
+});
+
+// Walk a snapshot through DRAFT → VALIDATED → SCHEDULED → ACTIVE (rollback to
+// DRAFT allowed for rework; ACTIVE is immutable). Go-live edges (→ SCHEDULED
+// / → ACTIVE) require the verified 'promotions.approve' permission for actors
+// that hold permission rows (legacy label-only fallback otherwise — same
+// gated pattern as PATCH /promotion-plans/:id/status).
+router.patch('/floor-plans/metrics/snapshots/:id/status', requireAuth, async (req: Request, res: Response) => {
+  const parsed = metricsSnapshotStatusSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid status', parsed.error.flatten());
+    return;
+  }
+  ok(res, await transitionSnapshotStatus(String(req.params.id), parsed.data.status as 'DRAFT' | 'VALIDATED' | 'SCHEDULED' | 'ACTIVE', {
+    changedBy: parsed.data.changedBy,
+    approverRole: parsed.data.approverRole,
+    actorId: (req as any).user?.sub,
+  }));
 });
 
 // --- Maintenance (facilities sidebar module 2) ---

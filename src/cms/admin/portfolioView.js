@@ -62,10 +62,9 @@ export async function bindPortfolio() {
 }
 
 // ---------- Recent NLA + UFA per facility ----------
-// Per floor, the source is the latest metrics snapshot (snapshots list
-// endpoint, newest effective date first — payload.geometry carries the
-// figures), falling back to the live-compute metrics endpoint when a floor
-// has no snapshot. Figures are summed across the facility's floors. Every
+// Per floor, the source is the authoritative (latest ACTIVE) metrics
+// snapshot — drafts never resolve there — falling back to the live-compute
+// metrics endpoint when a floor has no ACTIVE snapshot. Figures are summed across the facility's floors. Every
 // card carries an explicit freshness tag — "as of <date>" for snapshot-backed
 // figures, "live" when any floor fell back to live compute — and a labeled
 // empty state when neither source yields data (never fake numbers).
@@ -133,11 +132,12 @@ function paintAreaFigures(code, sum, tags) {
 }
 
 async function floorArea(floorId) {
+  // Authoritative source is the latest ACTIVE snapshot (drafts never resolve
+  // there); fall through to live compute when no ACTIVE snapshot exists.
   try {
-    const rows = await get('/floor-plans/' + encodeURIComponent(floorId) + '/metrics/snapshots');
-    const latest = (rows || [])[0];
-    const figs = reportFigures(latest && latest.payload);
-    if (figs) return { figs, effectiveDate: latest.effectiveDate || '', live: false };
+    const snap = await get('/floor-plans/' + encodeURIComponent(floorId) + '/metrics/snapshots/authoritative');
+    const figs = reportFigures(snap && snap.payload);
+    if (figs) return { figs, effectiveDate: snap.effectiveDate || '', live: false };
   } catch (e) { /* fall through to live compute */ }
   try {
     const report = await get('/floor-plans/' + encodeURIComponent(floorId) + '/metrics');

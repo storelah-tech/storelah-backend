@@ -449,6 +449,7 @@ main{min-width:0;display:flex;flex-direction:column;min-height:100vh}
 .fp-layout.collapsed{grid-template-columns:1fr}
 .fp-layout.collapsed .fp-palette{display:none}
 .fp-toolbar{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-bottom:8px}
+.fp-sep{width:1px;align-self:stretch;background:var(--line);margin:2px 3px;flex:none}
 .fp-zoom{display:flex;align-items:center;gap:5px;margin-left:auto}
 .fp-canvas-wrap{background:var(--white);border:1px solid var(--line);border-radius:9px;padding:12px;overflow:auto;max-height:640px;min-height:360px}
 .fp-canvas{position:relative;background-color:var(--cream);border:1px solid var(--line);background-image:linear-gradient(var(--line) 1px,transparent 1px),linear-gradient(90deg,var(--line) 1px,transparent 1px)}
@@ -529,6 +530,43 @@ main{min-width:0;display:flex;flex-direction:column;min-height:100vh}
 /* Navigation toggle / mobile drawer (inert at desktop) */
 .nav-toggle{display:none}
 .sb-backdrop{position:fixed;inset:0;z-index:90;background:rgba(32,36,31,.45);opacity:0;visibility:hidden;pointer-events:none;transition:opacity.2s ease,visibility.2s ease}
+
+/* ============ SIDEBAR AUTO-COLLAPSE (desktop icon-rail; mobile drawer below) ============
+   Canonical state: body.sb-collapsed. Rail rules are scoped to min-width:761px so the
+   existing <=760px overlay drawer (.side.open + body.sb-open) keeps full labels.
+   Widths reuse --side; tones reuse --terra/--olive/--cream/--line. */
+.top .nav-toggle{display:inline-flex;align-items:center;justify-content:center;width:40px;height:40px;flex-shrink:0}
+.top .nav-toggle:focus-visible,.side .nav:focus-visible,.side .nav-subitem:focus-visible{outline:2px solid var(--terra);outline-offset:2px}
+@media(min-width:761px){
+  body.sb-collapsed:not(.sb-hover) .app{grid-template-columns:72px minmax(0,1fr)}
+  body.sb-collapsed:not(.sb-hover) .side{padding:22px 10px;overflow-x:hidden}
+  body.sb-collapsed:not(.sb-hover) .side .brand{font-size:0;line-height:1;text-align:center;padding:0 0 20px;white-space:nowrap}
+  body.sb-collapsed:not(.sb-hover) .side .brand span{font-size:0}
+  body.sb-collapsed:not(.sb-hover) .side .brand::after{content:"S";font-size:23px;font-weight:800;color:#fff}
+  body.sb-collapsed:not(.sb-hover) .side .workspace{justify-content:center;padding:8px 4px}
+  body.sb-collapsed:not(.sb-hover) .side .workspace>div:last-child{display:none}
+  body.sb-collapsed:not(.sb-hover) .side #sbBranch{display:none}
+  body.sb-collapsed:not(.sb-hover) .side .nav-group{display:none}
+  body.sb-collapsed:not(.sb-hover) .side .nav{justify-content:center;padding:10px 0}
+  body.sb-collapsed:not(.sb-hover) .side .nav span,body.sb-collapsed:not(.sb-hover) .side .nav .badge{display:none}
+  body.sb-collapsed:not(.sb-hover) .side .nav.has-children{padding-right:0}
+  body.sb-collapsed:not(.sb-hover) .side .nav.has-children:after{display:none}
+  body.sb-collapsed:not(.sb-hover) .side .nav.has-children.expanded+.nav-submenu{display:none}
+  body.sb-collapsed:not(.sb-hover) .side .user{justify-content:center;padding:9px 0}
+  body.sb-collapsed:not(.sb-hover) .side .user>div:last-child{display:none}
+}
+
+/* ============ SIDEBAR HOVER-EXPAND (desktop rail preview) ============
+   Transient state: body.sb-hover while pinned-collapsed. The rail rules
+   above are scoped to :not(.sb-hover), so adding .sb-hover restores the
+   full-width sidebar in place; removing it falls back to the rail. Width
+   animates via grid-template-columns (~220ms ease); main keeps
+   min-width:0 so content reflows with the rail, no horizontal overflow. */
+@media(min-width:761px){
+  .app{transition:grid-template-columns .22s ease}
+  .side{transition:padding .22s ease}
+  body.sb-collapsed.sb-hover .app{grid-template-columns:var(--side) minmax(0,1fr)}
+}
 
 /* Error banner */
 #errorBanner{font-size:11px;font-weight:700;margin-left:12px;color:var(--red)}
@@ -682,7 +720,7 @@ body.lead-drawer-open{overflow-x:hidden}
   .kpi-strip{grid-template-columns:1fr}
 }
 @media(prefers-reduced-motion:reduce){
-  .side,.sb-backdrop,.drawer-panel{transition:none}
+  .side,.sb-backdrop,.drawer-panel,.app{transition:none}
 }
 ::-webkit-scrollbar{width:4px;height:4px}
 ::-webkit-scrollbar-track{background:transparent}
@@ -697,7 +735,7 @@ body.lead-drawer-open{overflow-x:hidden}
 <div class="app">
 
 <!-- ============ SIDEBAR ============ -->
-<aside class="side" id="sidebar">
+<aside class="side" id="sidebar" aria-label="Primary navigation">
   <div class="brand">Store<span>Lah</span></div>
   <div class="workspace"><div class="mark">SL</div><div><b>StoreLah SG</b><br><small>Operating platform</small></div></div>
   <div class="workspace" id="sbBranch" style="margin-top:0;margin-bottom:14px;padding:6px 10px;" title="Filter everything by facility">
@@ -719,7 +757,7 @@ body.lead-drawer-open{overflow-x:hidden}
 <main>
   <!-- ============ TOPBAR ============ -->
   <header class="top">
-    <button class="iconbtn nav-toggle" id="navToggle" aria-label="Open navigation">☰</button>
+    <button class="iconbtn nav-toggle" id="navToggle" aria-label="Open navigation" aria-controls="sidebar" aria-expanded="true">☰</button>
     <div class="search"><svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="7.5" cy="7.5" r="5"/><path d="M11.5 11.5L16 16"/></svg><input id="globalSearch" placeholder="Search leads, phone, unit, conversation…"><kbd class="shortcut">⌘K</kbd></div>
     <div class="top-actions">
       <button class="iconbtn" title="Notifications"><svg viewBox="0 0 18 18" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2a5 5 0 00-5 5v3l-1 2h12l-1-2V7a5 5 0 00-5-5z"/><path d="M6 14a3 3 0 006 0"/></svg></button>
@@ -870,7 +908,7 @@ body.lead-drawer-open{overflow-x:hidden}
 
     <!-- ============ FACILITIES ============ -->
     <section class="page" id="facilities">
-      <div class="subtabs" data-tabs="facility"><button class="active" data-tab="facility-map">Unit Map</button><button data-tab="facility-units">Units</button><button data-tab="facility-floors">Floors</button><button data-tab="facility-floorplans">Floor Plans</button><button data-tab="facility-maintenance">Maintenance</button><button data-tab="facility-assets">Assets &amp; Vendors</button><button data-tab="facility-incidents">Incidents</button><button data-tab="facility-access">Access Control</button><button data-tab="facility-inspections">Inspections</button><button data-tab="facility-extras">Protection Plans &amp; Addons</button></div>
+      <div class="subtabs" data-tabs="facility"><button class="active" data-tab="facility-map">Unit Map</button><button data-tab="facility-units">Units</button><button data-tab="facility-floors">Floors</button><button data-tab="facility-floorplans">Floor Plan Designer</button><button data-tab="facility-maintenance">Maintenance</button><button data-tab="facility-assets">Assets &amp; Vendors</button><button data-tab="facility-incidents">Incidents</button><button data-tab="facility-access">Access Control</button><button data-tab="facility-inspections">Inspections</button><button data-tab="facility-extras">Protection Plans &amp; Addons</button></div>
       <!-- Unit Map -->
       <div class="module-panel active" id="facility-map">
         <div class="unit-map-card">
@@ -943,18 +981,88 @@ body.lead-drawer-open{overflow-x:hidden}
         #facility-floorplans #fpBlockName,#facility-floorplans #fpBlockRename,#facility-floorplans .fp-name-icon{transition:none}
       }
       </style>
-      <div class="module-panel" id="facility-floorplans">
+<style>
+/* StoreLah Floor Plan Designer Studio — 2-tier header + 5-segment ribbon + workspace.
+   Strictly scoped to #facility-floorplans so the frozen dashboard shell is untouched.
+   Tokens: Inter type, terracotta #C1664C primary, slate-50/80 ribbon, slate-200/70 stage. */
+#facility-floorplans .fp-studio{font-family:Inter,Manrope,system-ui,-apple-system,"Segoe UI",sans-serif}
+/* ===== Tier 1: Studio top bar ===== */
+#facility-floorplans .fp-top{display:flex;align-items:center;gap:12px;flex-wrap:wrap;background:#fff;border:1px solid var(--line);border-radius:12px;padding:10px 14px;margin-bottom:10px}
+#facility-floorplans .fp-brand{display:flex;align-items:center;gap:9px;margin-right:2px}
+#facility-floorplans .fp-brand-mark{width:32px;height:32px;border-radius:9px;background:#C1664C;color:#fff;display:grid;place-items:center;font-weight:800;font-size:17px;flex:none}
+#facility-floorplans .fp-brand-name{font-size:15px;font-weight:600;color:var(--ink);white-space:nowrap}
+#facility-floorplans .fp-brand-name strong{font-weight:800}
+#facility-floorplans .fp-loc{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+#facility-floorplans .fp-loc .tbl-select{max-width:220px}
+#facility-floorplans .fp-status-badge{display:inline-flex;align-items:center;gap:6px;border-radius:99px;padding:5px 12px;font-size:11px;font-weight:800;white-space:nowrap;background:#ede8e2;color:var(--muted);border:1px solid var(--line)}
+#facility-floorplans .fp-status-badge.is-draft{background:#faebcf;color:#8b6324;border-color:#ecd9a8}
+#facility-floorplans .fp-status-badge.is-live{background:#dfe7dd;color:#39503f;border-color:#c4d3c2}
+#facility-floorplans .fp-top-actions{display:flex;align-items:center;gap:8px;margin-left:auto}
+#facility-floorplans .fp-publish{background:#C1664C;border-color:#C1664C;color:#fff}
+#facility-floorplans .fp-publish:hover{background:#a9553e;border-color:#a9553e}
+#facility-floorplans .fp-del{padding:7px 10px}
+/* ===== Tier 2: ribbon ===== */
+#facility-floorplans .fp-ribbon{display:flex;align-items:stretch;gap:0;flex-wrap:wrap;background:rgba(248,250,252,.8);border:1px solid var(--line);border-radius:12px;padding:8px 10px;margin-bottom:8px}
+#facility-floorplans .fp-seg{display:flex;align-items:center;gap:7px;flex-wrap:wrap;padding:2px 12px}
+#facility-floorplans .fp-seg:first-child{padding-left:2px}
+#facility-floorplans .fp-seg-label{font-size:9.5px;font-weight:800;text-transform:uppercase;letter-spacing:.6px;color:var(--muted)}
+#facility-floorplans .fp-sep{width:1px;align-self:stretch;background:var(--line);margin:2px 0;flex:none}
+#facility-floorplans .fp-tool-group{display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap}
+#facility-floorplans .fp-ribbon input.tbl-search{width:76px;padding:6px 9px}
+#facility-floorplans .fp-ribbon input#fpGfa{width:96px}
+#facility-floorplans .fp-metrics-badge{display:inline-flex;align-items:center;border-radius:99px;padding:4px 11px;font-size:10.5px;font-weight:800;background:var(--sage);color:var(--olive);border:1px solid #c4d3c2;white-space:nowrap}
+/* Segmented mode control */
+#facility-floorplans .fp-segctl{display:inline-flex;gap:0;border:1.5px solid var(--line);border-radius:10px;overflow:hidden;background:#fff}
+#facility-floorplans .fp-segctl .tb-btn{border:0;border-radius:0;border-right:1.5px solid var(--line);padding:7px 12px;background:#fff}
+#facility-floorplans .fp-segctl .tb-btn:last-child{border-right:0}
+#facility-floorplans .fp-segctl .tb-btn.on{background:var(--terra-light);color:var(--terra2);box-shadow:inset 0 0 0 1.5px var(--terra)}
+/* Markers dropdown */
+#facility-floorplans .fp-dd{position:relative;display:inline-flex}
+#facility-floorplans .fp-count{display:inline-grid;place-items:center;min-width:19px;height:19px;border-radius:99px;background:var(--olive);color:#fff;font-size:10px;font-weight:800;padding:0 5px;margin-left:5px}
+#facility-floorplans .fp-menu{position:absolute;top:calc(100% + 6px);left:0;z-index:60;min-width:210px;background:#fff;border:1px solid var(--line);border-radius:11px;box-shadow:0 12px 32px rgba(30,30,20,.14);padding:7px;display:flex;flex-direction:column;gap:5px}
+#facility-floorplans .fp-menu[hidden]{display:none}
+#facility-floorplans .fp-menu #fpMarkerTools{display:flex;flex-direction:column;gap:5px}
+#facility-floorplans .fp-menu #fpMarkerTools .tb-btn{justify-content:flex-start;width:100%}
+/* Zoom preset + grid toggle */
+#facility-floorplans .fp-zoompreset{border:1.5px solid var(--line);border-radius:9px;padding:6px 8px;font-family:inherit;font-size:11px;font-weight:700;color:var(--ink);background:#fff;outline:none;cursor:pointer}
+#facility-floorplans .fp-zoompreset:focus{border-color:var(--terra)}
+/* Selection strip (info group row) */
+#facility-floorplans .fp-selstrip{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-height:26px;margin:0 2px 8px}
+/* ===== Workspace stage ===== */
+#facility-floorplans .fp-stage{position:relative;display:flex;justify-content:flex-start;background:rgba(226,232,240,.7);border:1px solid var(--line);border-radius:12px;padding:26px 18px;overflow:auto;max-height:700px;scrollbar-width:thin;scrollbar-color:#b6bcc7 transparent}
+#facility-floorplans .fp-stage::-webkit-scrollbar,#facility-floorplans .fp-canvas-wrap::-webkit-scrollbar{height:10px;width:10px}
+#facility-floorplans .fp-stage::-webkit-scrollbar-thumb,#facility-floorplans .fp-canvas-wrap::-webkit-scrollbar-thumb{background:#b6bcc7;border-radius:8px;border:2px solid transparent;background-clip:content-box}
+#facility-floorplans .fp-stage::-webkit-scrollbar-track,#facility-floorplans .fp-canvas-wrap::-webkit-scrollbar-track{background:transparent}
+#facility-floorplans .fp-stage .fp-canvas-wrap{max-height:none;min-height:280px;background:#fff;box-shadow:0 12px 32px rgba(30,30,20,.12);flex:none;margin:auto}
+#facility-floorplans .fp-mode-badge{position:absolute;top:10px;left:12px;z-index:20;background:var(--ink);color:#fff;font-size:10px;font-weight:800;letter-spacing:.8px;border-radius:8px;padding:5px 10px;pointer-events:none;box-shadow:0 4px 14px rgba(0,0,0,.2)}
+/* Studio toasts (bottom-right stack; #fpBanner legacy banner retained) */
+#facility-floorplans .fp-toasts{position:absolute;right:14px;bottom:14px;z-index:70;display:flex;flex-direction:column;gap:8px;max-width:min(360px,80%);pointer-events:none}
+#facility-floorplans .fp-toast{background:var(--ink);color:#fff;font-size:12px;font-weight:600;border-radius:11px;padding:10px 14px;box-shadow:0 10px 28px rgba(0,0,0,.25);opacity:1;transition:opacity .25s,transform .25s;pointer-events:auto}
+#facility-floorplans .fp-toast.ok{background:#39503f}
+#facility-floorplans .fp-toast.err{background:#9e3f38}
+#facility-floorplans .fp-toast.out{opacity:0;transform:translateY(6px)}
+#facility-floorplans .fp-title-row{margin:0 2px 8px}
+@media(max-width:900px){
+  #facility-floorplans .fp-top-actions{margin-left:0}
+  #facility-floorplans .fp-sep{display:none}
+  #facility-floorplans .fp-seg{padding:4px 2px}
+}
+@media(prefers-reduced-motion:reduce){
+  #facility-floorplans .fp-toast{transition:none}
+}
+</style>      <div class="module-panel" id="facility-floorplans">
         <div class="unit-map-card">
-          <div class="sec-hdr"><div><div class="sec-title" id="fpTitle">Floor Plan Editor</div><div class="sec-sub" id="fpSub">Design the layout: drag units onto the canvas</div></div><div style="display:flex;gap:8px;flex-wrap:wrap;"><select id="fpBranch" class="tbl-select"></select><select id="fpFloor" class="tbl-select"></select><button class="tb-btn ghost" id="fpDeletePlan">🗑 Delete plan</button><button class="tb-btn primary" id="fpSaveCanvas">💾 Save Canvas</button></div></div>
+          <div class="fp-top"><div class="fp-brand"><span class="fp-brand-mark">S</span><span class="fp-brand-name">StoreLah <strong>Studio</strong></span></div><div class="fp-loc"><label class="fp-sr" for="fpBranch">Facility</label><select id="fpBranch" class="tbl-select" aria-label="Facility"></select><label class="fp-sr" for="fpFloor">Floor</label><select id="fpFloor" class="tbl-select" aria-label="Floor"></select></div><span id="fpPlanStatus" class="fp-status-badge" role="status">No plan yet</span><div class="fp-top-actions"><button class="tb-btn ghost" id="fpSaveCanvas" type="button" title="Save the canvas (draft — not visible to booking)">Save Canvas</button><button class="tb-btn primary fp-publish" id="fpPublishPlan" type="button" title="Publish the plan — expose it to booking">Publish</button><button class="tb-btn danger fp-del" id="fpDeletePlan" type="button" title="Delete plan" aria-label="Delete plan">🗑</button></div></div>
+          <div class="fp-title-row"><div class="sec-title" id="fpTitle">Floor Plan Designer</div><div class="sec-sub" id="fpSub">Design the layout: drag units onto the canvas</div></div>
           <div class="modal-alert" id="fpBanner" hidden></div>
-          <div class="fp-layout" id="fpLayout"><div class="fp-palette" id="fpPalettePane"><div class="fp-palette-hdr"><span class="chart-title">Units</span><button class="fp-collapse-btn" id="fpPaletteToggle" type="button" title="Collapse the units palette to give the canvas more space" aria-expanded="true">‹</button></div><div class="t-type" id="fpPaletteSub">Drag a unit onto the canvas</div><div class="fp-unit-list" id="fpPalette"></div><div class="fp-block-form fp-name" id="fpBlockForm" hidden><div class="chart-title" style="font-size:11px;margin-bottom:4px;">New block</div><label class="fp-name-label" for="fpBlockName">Block name</label><div class="fp-name-wrap"><svg class="fp-name-icon" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M2.5 2.5H10l5.5 5.5-7.5 7.5-5.5-5.5V2.5z"/><circle cx="6.6" cy="6.6" r="1.3"/></svg><input type="text" id="fpBlockName" class="fp-name-input" maxlength="80" spellcheck="false" autocomplete="off" placeholder='Name — e.g. "Lift", "Stair"' aria-describedby="fpBlockNameHint"></div><div class="fp-name-hint" id="fpBlockNameHint">Lift · Stairs · Walking area · Exit</div><div style="display:flex;gap:6px;margin-top:6px;"><button class="act-btn primary" id="fpBlockAdd" style="flex:1;text-align:center;">Add block</button><button class="act-btn" id="fpBlockCancel" style="flex:1;text-align:center;">Cancel</button></div></div></div><div class="fp-editor"><div class="fp-toolbar"><button class="tb-btn ghost" id="fpPaletteReopen" type="button" hidden title="Show the units palette">☰ Units</button><span class="t-type">Canvas (ft)</span><input type="number" id="fpWidth" class="tbl-search" min="1" max="500" step="1" title="Canvas width in feet" style="width:80px;"><span class="t-type">×</span><input type="number" id="fpHeight" class="tbl-search" min="1" max="500" step="1" title="Canvas height in feet" style="width:80px;"><span class="t-type">GFA (sqft)</span><input type="number" id="fpGfa" class="tbl-search" min="0" step="0.1" title="Operator-entered gross floor area in sqft — saved with the canvas; empty unsets (metrics fall back to the canvas rect)" placeholder="e.g. 5600" style="width:110px;"><button class="tb-btn ghost" id="fpAddBlock">＋ Block</button><button class="tb-btn ghost" id="fpRotateGhost" title="Swap palette ghost orientation (W×H ↔ H×W) for rectangular units" aria-pressed="false">⟳ Rotate</button><button class="tb-btn ghost on" id="fpLockSqft" title="Lock resize to the nearest rect preserving area ≈ sqft (toggle off for free resize; server rejects >15% deviation)" aria-pressed="true">🔒 sqft</button><button class="tb-btn ghost" id="fpBoundaryTool" title="Line tool — press and drag on the canvas to draw a straight grid-ft line, release to save (Escape cancels). Click a drawn line to select, close the loop, or remove it." aria-pressed="false">✎ Line</button><button class="tb-btn ghost" id="fpAutoPlace" title="Place all unplaced units of this floor at the first free spot (asks for confirmation first)">⤵ Auto-place all</button><span class="fp-zoom"><button class="tb-btn ghost" id="fpZoomOut" title="Zoom out (or Ctrl/Cmd + scroll over the canvas)">−</button><span class="t-type" id="fpZoomLbl">100%</span><button class="tb-btn ghost" id="fpZoomIn" title="Zoom in (or Ctrl/Cmd + scroll over the canvas)">+</button></span><span class="t-type fp-boundary-metrics" id="fpBoundaryMetrics" role="status"></span><span class="fp-sel-info" id="fpSelInfo"></span></div><div class="fp-canvas-wrap" id="fpCanvasWrap"><div class="fp-canvas" id="fpCanvas"></div></div></div></div>
+<div class="fp-layout" id="fpLayout"><div class="fp-palette" id="fpPalettePane"><div class="fp-palette-hdr"><span class="chart-title">Units</span><button class="fp-collapse-btn" id="fpPaletteToggle" type="button" title="Collapse the units palette to give the canvas more space" aria-expanded="true">‹</button></div><div class="t-type" id="fpPaletteSub">Drag a unit onto the canvas</div><div class="fp-unit-list" id="fpPalette"></div><div class="fp-block-form fp-name" id="fpBlockForm" hidden><div class="chart-title" style="font-size:11px;margin-bottom:4px;">New block</div><label class="fp-name-label" for="fpBlockName">Block name</label><div class="fp-name-wrap"><svg class="fp-name-icon" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M2.5 2.5H10l5.5 5.5-7.5 7.5-5.5-5.5V2.5z"/><circle cx="6.6" cy="6.6" r="1.3"/></svg><input type="text" id="fpBlockName" class="fp-name-input" maxlength="80" spellcheck="false" autocomplete="off" placeholder='Name — e.g. "Lift", "Stair"' aria-describedby="fpBlockNameHint"></div><div class="fp-name-hint" id="fpBlockNameHint">Lift · Stairs · Walking area · Exit</div><div class="chart-title" style="font-size:11px;margin:6px 0 4px;">Fill colour</div><div id="fpBlockSwatches" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;"></div><div style="display:flex;gap:6px;align-items:center;margin-top:6px;"><input type="color" id="fpBlockColor" value="#e6e0d7" title="Custom fill colour" style="width:34px;height:26px;padding:0;border:1px solid var(--line);border-radius:6px;background:#fff;"><span class="t-type">Custom</span><button class="act-btn" id="fpBlockColorClear" type="button" style="padding:2px 9px;font-size:10px;" title="Use the default block tone">Default</button></div><div style="display:flex;gap:6px;margin-top:6px;"><button class="act-btn primary" id="fpBlockAdd" style="flex:1;text-align:center;">Add block</button><button class="act-btn" id="fpBlockCancel" style="flex:1;text-align:center;">Cancel</button></div></div></div><div class="fp-editor"><div class="fp-ribbon" id="fpToolbar" role="toolbar" aria-label="Floor plan tools"><div class="fp-seg" aria-label="Canvas specs"><span class="fp-seg-label">Canvas</span><span class="fp-tool-group" data-fp-group="canvas" data-fp-label="Canvas"><input type="number" id="fpWidth" class="tbl-search" min="1" max="500" step="1" title="Canvas width in feet" style="width:80px;"><span class="t-type">×</span><input type="number" id="fpHeight" class="tbl-search" min="1" max="500" step="1" title="Canvas height in feet" style="width:80px;"><span class="t-type">ft</span></span><span class="fp-tool-group" data-fp-group="plan" data-fp-label="Plan"><span class="t-type">GFA</span><input type="number" id="fpGfa" class="tbl-search" min="0" step="0.1" title="Operator-entered gross floor area in sqft — saved with the canvas; empty unsets (metrics fall back to the canvas rect)" placeholder="e.g. 5600" style="width:110px;"><span class="t-type">sqft</span><span class="t-type fp-boundary-metrics fp-metrics-badge" id="fpBoundaryMetrics" role="status"></span></span></div><span class="fp-sep" aria-hidden="true"></span><div class="fp-seg" aria-label="Mode tools"><span class="fp-seg-label">Mode</span><span class="fp-tool-group fp-segctl" data-fp-group="mode" data-fp-label="Mode"><button class="tb-btn ghost on" id="fpModeSelect" type="button" title="Select — move, resize and inspect units, blocks and lines" aria-pressed="true">Select</button><button class="tb-btn ghost" id="fpModeAddUnit" type="button" title="Add unit — open the palette, then drag a unit onto the canvas" aria-pressed="false">Add Unit</button><button class="tb-btn ghost" id="fpBoundaryTool" title="Line tool — press and drag on the canvas to draw a straight grid-ft line, release to save (Escape cancels). Click a drawn line to select, close the loop, or remove it." aria-pressed="false">✎ Draw Wall</button><button class="tb-btn ghost" id="fpAddBlock">＋ Add Block</button></span></div><span class="fp-sep" aria-hidden="true"></span><div class="fp-seg" aria-label="Quick actions"><span class="fp-seg-label">Quick</span><span class="fp-tool-group" data-fp-group="units" data-fp-label="Units"><button class="tb-btn ghost" id="fpPaletteReopen" type="button" hidden title="Show the units palette">☰ Units</button><button class="tb-btn ghost" id="fpAutoPlace" title="Place all unplaced units of this floor at the first free spot (asks for confirmation first)">⤵ Auto-place all</button><button class="tb-btn ghost" id="fpRotateGhost" title="Swap palette ghost orientation (W×H ↔ H×W) for rectangular units" aria-pressed="false">⟳ Rotate</button><button class="tb-btn ghost on" id="fpLockSqft" title="Lock resize to the nearest rect preserving area ≈ sqft (toggle off for free resize; server rejects >15% deviation)" aria-pressed="true">🔒 sqft</button></span></div><span class="fp-sep" aria-hidden="true"></span><div class="fp-seg" aria-label="Markers"><span class="fp-seg-label">Markers</span><span class="fp-tool-group" data-fp-group="markers" data-fp-label="Markers/Safety"><span class="fp-dd"><button class="tb-btn ghost" id="fpMarkersBtn" type="button" aria-haspopup="true" aria-expanded="false" title="Safety markers — pick a kind, then click the canvas to place">📍 Markers<span class="fp-count" id="fpMarkersCount">0</span></button><span class="fp-menu" id="fpMarkersMenu" hidden><span id="fpMarkerTools"></span></span></span></span></div><span class="fp-sep" aria-hidden="true"></span><div class="fp-seg" aria-label="Zoom"><span class="fp-seg-label">Zoom</span><span class="fp-tool-group" data-fp-group="view" data-fp-label="View"><span class="fp-zoom"><button class="tb-btn ghost" id="fpZoomOut" title="Zoom out (or Ctrl/Cmd + scroll over the canvas)">−</button><span class="t-type" id="fpZoomLbl">100%</span><button class="tb-btn ghost" id="fpZoomIn" title="Zoom in (or Ctrl/Cmd + scroll over the canvas)">+</button><select class="fp-zoompreset" id="fpZoomPreset" aria-label="Zoom preset"><option value="custom" hidden>Zoom</option><option value="0.5">50%</option><option value="0.75">75%</option><option value="1" selected>100%</option><option value="1.5">150%</option><option value="fit">Fit Canvas</option></select><button class="tb-btn ghost on" id="fpGridToggle" type="button" aria-pressed="true" title="Toggle the 1-ft grid overlay">Grid</button></span></span></div></div><div class="fp-selstrip"><span class="fp-tool-group" data-fp-group="info" data-fp-label="Labels"><span class="fp-sel-info" id="fpSelInfo"></span></span></div><div class="fp-stage" id="fpStage"><span class="fp-mode-badge" id="fpModeIndicator" role="status">MODE: SELECT</span><div class="fp-canvas-wrap" id="fpCanvasWrap"><div class="fp-canvas" id="fpCanvas"></div></div><div class="fp-toasts" id="fpToasts" aria-live="polite"></div></div></div></div>
           <details class="fp-structure"><summary>Advanced — legacy structure JSON <span class="t-type">(walls / corridors)</span></summary><textarea id="fpStructure" class="fp-structure-input" rows="6" spellcheck="false"></textarea><div class="fp-legacy-note" id="fpLegacyNote" hidden>Legacy structure attached.</div></details>
         </div>
         <div class="unit-map-card" id="metricsCard">
-          <div class="sec-hdr"><div><div class="sec-title" id="metricsTitle">Area metrics</div><div class="sec-sub" id="metricsSub">Live compute from the current canvas — the published snapshot is authoritative</div></div><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;"><label class="t-type" for="metricsPublishDate">Effective date</label><input type="date" id="metricsPublishDate" class="tbl-select"><button class="tb-btn primary" id="metricsPublishBtn">Publish snapshot</button><button class="tb-btn ghost" id="metricsRefreshBtn">Refresh</button></div></div>
+          <div class="sec-hdr"><div><div class="sec-title" id="metricsTitle">Area metrics</div><div class="sec-sub" id="metricsSub">Live compute from the current canvas — the published snapshot is authoritative</div></div><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;"><label class="t-type" for="metricsPublishDate">Effective date</label><input type="date" id="metricsPublishDate" class="tbl-select"><button class="tb-btn primary" id="metricsSaveDraftBtn">Save draft</button><button class="tb-btn ghost" id="metricsRefreshBtn">Refresh</button></div></div>
           <div class="modal-alert" id="metricsBanner" hidden></div>
           <div class="stats" id="metricsKpis"></div>
-          <div class="tbl-card"><div class="sec-hdr"><div><div class="sec-title">Snapshot history</div><div class="sec-sub" id="metricsSnapshotsSub">Append-only · newest effective date first</div></div></div><div class="table-wrap"><table class="data-tbl" id="metricsSnapshotsTable"><thead><tr><th>Effective date</th><th>Schema</th><th>Geometry hash</th><th>Published</th></tr></thead><tbody id="metricsSnapshotsBody"></tbody></table></div></div>
+          <div class="tbl-card"><div class="sec-hdr"><div><div class="sec-title">Snapshot history</div><div class="sec-sub" id="metricsSnapshotsSub">Append-only · newest effective date first</div></div></div><div class="table-wrap"><table class="data-tbl" id="metricsSnapshotsTable"><thead><tr><th>Effective date</th><th>Status</th><th>Schema</th><th>Geometry hash</th><th>Published</th><th>Actions</th></tr></thead><tbody id="metricsSnapshotsBody"></tbody></table></div></div>
         </div>
       </div>
       <!-- Maintenance: work orders + preventive checklist tasks -->

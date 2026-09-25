@@ -24,6 +24,86 @@ let fpDimsTimer = null;
 // Transient drag state only — persisted lines live in state.fp.boundaries.
 let fpDraftLine = null;
 
+// ---------- toolbar groups (canonical order + audit) ----------
+// The toolbar markup (#fpToolbar in dashboard.html) groups tools as
+// units → mode → markers → canvas → plan → view → info. This registry is the single
+// source of truth for that order (operator mental model: Units = unit
+// placement (palette toggle adjacent to the palette, auto-place, rotate,
+// sqft lock); Select/Draw = draw; Blocks = decoration blocks;
+// Markers/Safety = markers; Labels/readouts = info; canvas + plan + view are
+// the canvas-size, GFA and zoom chrome around them; save/delete plan actions
+// live in the header with delete last).
+// fpAuditToolbar() runs once at boot: every registered tool must exist, and
+// every button inside #fpToolbar must be registered — an unregistered button
+// is a future dead tool, so it warns instead of silently lingering. Audit is
+// console-only and never blocks the editor.
+const FP_TOOLBAR_GROUPS = [
+  { id: 'units', label: 'Units', tools: ['fpPaletteReopen', 'fpAutoPlace', 'fpRotateGhost', 'fpLockSqft'] },
+  // Studio ribbon: the Select/Add-Unit/Draw-Wall/Add-Block segmented control.
+  // fpBoundaryTool (line tool) + fpAddBlock (block form) are the Draw/Block
+  // segments — no duplicate buttons, one handler each.
+  { id: 'mode', label: 'Mode', tools: ['fpModeSelect', 'fpModeAddUnit', 'fpBoundaryTool', 'fpAddBlock'] },
+  { id: 'markers', label: 'Markers/Safety', tools: ['fpMarkersBtn', 'fpMarkerTools'] },
+  { id: 'canvas', label: 'Canvas', tools: ['fpWidth', 'fpHeight'] },
+  { id: 'plan', label: 'Plan', tools: ['fpGfa', 'fpBoundaryMetrics'] },
+  { id: 'view', label: 'View', tools: ['fpZoomOut', 'fpZoomIn', 'fpZoomPreset', 'fpGridToggle'] },
+  { id: 'info', label: 'Labels', tools: ['fpSelInfo'] },
+];
+
+function fpAuditToolbar() {
+  try {
+    const bar = document.getElementById('fpToolbar');
+    if (!bar) return;
+    const known = new Set(FP_TOOLBAR_GROUPS.flatMap((g) => g.tools));
+    for (const g of FP_TOOLBAR_GROUPS) {
+      for (const id of g.tools) {
+        if (!document.getElementById(id)) console.warn(`[floorplan] toolbar group "${g.id}" lists missing #${id}`);
+      }
+      const wrap = bar.querySelector(`[data-fp-group="${g.id}"]`);
+      if (!wrap) console.warn(`[floorplan] toolbar markup is missing the "${g.id}" (${g.label}) group wrapper`);
+    }
+    for (const btn of bar.querySelectorAll('button[id]')) {
+      if (!known.has(btn.id)) console.warn(`[floorplan] unregistered toolbar button #${btn.id} — register it in FP_TOOLBAR_GROUPS or remove it`);
+    }
+  } catch (err) {
+    console.warn('[floorplan] toolbar audit failed', err);
+  }
+}
+
+// ---------- safety/facility map markers (point icons) ----------
+// Single source of truth for the Markers/Safety toolbar group: kind (persisted
+// verbatim — must match FP_MARKER_KINDS in src/core/floorPlans.ts), operator
+// label, toolbar/canvas icon, and badge ring tone. Distinct icon + label +
+// tone per kind so markers are distinguishable at a glance.
+const FP_MARKER_KINDS = [
+  { kind: 'FIRE_EXTINGUISHER', label: 'Fire extinguisher', icon: '🧯', tone: '#C0392B' },
+  { kind: 'DO_NOT_ENTER', label: 'Do not enter', icon: '⛔', tone: '#C0392B' },
+  { kind: 'EXIT_SIGN', label: 'Exit sign', icon: '🚪', tone: '#1E8449' },
+  { kind: 'FIRE_HOSE', label: 'Fire hose reel', icon: '💧', tone: '#2471A3' },
+  { kind: 'FIRST_AID', label: 'First aid', icon: '⛑', tone: '#0E6655' },
+  { kind: 'KEEP_CLEAR', label: 'Keep clear', icon: '🚫', tone: '#B7950B' },
+];
+
+function fpMarkerDef(kind) {
+  return FP_MARKER_KINDS.find((m) => m.kind === kind) || { kind, label: String(kind), icon: '📍', tone: '#8a8478' };
+}
+
+function fpMarkerLabel(m) {
+  const def = fpMarkerDef(m.kind);
+  return m.label || def.label;
+}
+
+// ---------- block fill colours ----------
+// Default palette offered in the block form + the selection strip, plus the
+// fallback tone when a block has no persisted colour (== var(--line), the
+// .fp-block CSS default, so unset blocks render exactly as before).
+const FP_DEFAULT_BLOCK_COLOR = '#E6E0D7';
+const FP_BLOCK_PALETTE = ['#E6E0D7', '#F7E2D7', '#DCE7DC', '#D7E3F0', '#F5E6B8', '#EFC9C0', '#D9CFBF', '#CBD5CB'];
+
+function fpBlockFill(blk) {
+  return (blk && blk.color) || FP_DEFAULT_BLOCK_COLOR;
+}
+
 // ---------- blueprint footprints (P1): 1 grid unit = 1 ft ----------
 // Canonical dims mirror the UnitSize.widthFt/heightFt catalogue backfill (see
 // docs/FLOOR_PLAN_MODEL.md + migration `add_unit_size_footprint`): LOCKER
@@ -148,7 +228,7 @@ async function fpStackMovedOn(pl, hit, orig) {
     return;
   }
   try {
-    await request(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/units/${encodeURIComponent(pl.unitId)}`, {
+    await fpMutate(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/units/${encodeURIComponent(pl.unitId)}`, {
       method: 'PUT',
       body: JSON.stringify({ x: hit.x, y: hit.y, width: hit.width, height: hit.height, stackTier: 1 }),
     });
@@ -254,6 +334,18 @@ function fpNormalizeBlocks(plan) {
     height: b.height,
     color: b.color || null,
     doorEdges: Array.isArray(b.doorEdges) && b.doorEdges.length ? b.doorEdges.slice() : null,
+  }));
+}
+
+// Safety/facility point icons as { id, kind, label|null, x, y } — mirrors
+// serializeMarker() in src/core/floorPlans.ts (keep the two in sync).
+function fpNormalizeMarkers(plan) {
+  return (plan && plan.markers ? plan.markers : []).map((m) => ({
+    id: m.id,
+    kind: m.kind,
+    label: m.label || null,
+    x: m.x,
+    y: m.y,
   }));
 }
 
@@ -493,6 +585,12 @@ function fpClampCanvasContent(w, h) {
   };
   state.fp.placements.forEach(clampItem);
   state.fp.blocks.forEach(clampItem);
+  // Marker points clamp edge-INCLUSIVE (0..w / 0..h — the same contract as
+  // checkMarkerPoint in src/core/floorPlans.ts).
+  (state.fp.markers || []).forEach((m) => {
+    m.x = Math.min(Math.max(0, m.x), w);
+    m.y = Math.min(Math.max(0, m.y), h);
+  });
   // Boundary vertices clamp edge-INCLUSIVE (0..w / 0..h — the same contract as
   // checkBoundaryPoints in src/core/floorPlans.ts) so drawn lines never render
   // off-grid after a canvas shrink.
@@ -559,6 +657,7 @@ function fpToast(msg, ok) {
   b.hidden = false;
   b.textContent = msg;
   b.className = 'modal-alert ' + (ok ? ' olive' : '');
+  fpStudioToast(msg, ok);
   clearTimeout(fpToast._t);
   fpToast._t = setTimeout(() => {
     b.hidden = true;
@@ -569,6 +668,33 @@ function fpToast(msg, ok) {
 function fpZoomLabel() {
   const el = $('#fpZoomLbl');
   if (el) el.textContent = Math.round(state.fp.scale * 100) + '%';
+  // Keep the Studio zoom-preset dropdown truthful: show the matching preset,
+  // otherwise fall back to the neutral "Zoom" placeholder.
+  const preset = $('#fpZoomPreset');
+  if (preset) {
+    const cur = String(state.fp.scale);
+    preset.value = ['0.5', '0.75', '1', '1.5'].includes(cur) ? cur : 'custom';
+  }
+}
+
+// Fit Canvas preset: scale the board to the visible stage, honouring the
+// shared 0.4–3x clamp so zoom behaviour stays identical everywhere.
+function fpZoomFit() {
+  const wrap = $('#fpCanvasWrap');
+  const stage = $('#fpStage');
+  const d = fpCanvasDims();
+  if (!wrap || !(d.w > 0) || !(d.h > 0)) return;
+  // Measure the stage viewport — the wrap shrink-wraps its content, so fitting
+  // against the wrap's own size is circular. Subtract the real chrome: stage
+  // padding (26px vertical / 18px horizontal) + wrap padding/border (12px +
+  // 1px per side) + a breathing margin, so the fitted board never hides its
+  // first/last row/column under padding or scrollbars.
+  const vw = (stage && stage.clientWidth) || wrap.clientWidth || 800;
+  const vh = (stage && stage.clientHeight) || wrap.clientHeight || 480;
+  const availW = Math.max(160, vw - 80);
+  const availH = Math.max(160, vh - 120);
+  state.fp.scale = Math.min(3, Math.max(0.4, Math.min(availW / (d.w * FP_BASE), availH / (d.h * FP_BASE))));
+  fpRenderCanvas(); // re-renders the canvas and refreshes the zoom label
 }
 
 // Shared zoom step: the ± buttons and canvas wheel-zoom converge here so the
@@ -634,6 +760,7 @@ async function fpFetch() {
     state.fp.placements = fpNormalizePlacements(body.plan);
     state.fp.blocks = fpNormalizeBlocks(body.plan);
     state.fp.boundaries = fpNormalizeBoundaries(body.plan);
+    state.fp.markers = fpNormalizeMarkers(body.plan);
     state.fp.gfa = body.plan && body.plan.gfaSqft != null && Number.isFinite(body.plan.gfaSqft) ? body.plan.gfaSqft : null;
     state.fp.unplaced = (body.unplacedUnits || []).map(fpNormalizeUnit);
     state.fp.branchName = body.branch && body.branch.name;
@@ -641,6 +768,8 @@ async function fpFetch() {
     state.fp.selected = null;
     state.fp.selectedBlock = null;
     state.fp.selectedBoundary = null;
+    state.fp.selectedMarker = null;
+    state.fp.armedMarker = null;
     state.fp.scale = 1;
     // A (re)load resets the live-typed canvas size back to server state, and
     // shrink-fits any placements/blocks the server may hold beyond a (possibly
@@ -649,6 +778,7 @@ async function fpFetch() {
     const d = fpCanvasDims();
     fpClampCanvasContent(d.w, d.h);
     fpRender();
+    fpRenderMarkerTools();
     fpSetPaletteCollapsed(false);
     notifyMetricsFloorChanged();
   } catch (err) {
@@ -822,10 +952,15 @@ function fpRenderCanvas() {
   canvas.style.width = w * u + 'px';
   canvas.style.height = h * u + 'px';
   canvas.style.backgroundSize = `${u}px ${u}px`;
+  // Studio grid toggle: off removes the 1-ft grid overlay (state.fp.showGrid,
+  // default true) without touching dims, zoom or content.
+  canvas.style.backgroundImage = state.fp.showGrid === false ? 'none' : '';
   canvas.innerHTML = '';
   fpRenderStructure(canvas, u);
   fpRenderBoundaryLayer(canvas, u, fpCanvasDims(), state.fp.boundaries || [], fpDraftLine, state.fp.selectedBoundary);
   // Decoration blocks — BELOW units in z-order (blocks z-index 1, units 2).
+  // Fill falls back to FP_DEFAULT_BLOCK_COLOR (== the .fp-block CSS tone) when
+  // the block has no persisted colour, so unset blocks render exactly as before.
   for (const blk of state.fp.blocks) {
     const el = document.createElement('div');
     el.className = 'fp-block' + (state.fp.selectedBlock === blk.id ? ' selected' : '');
@@ -834,7 +969,7 @@ function fpRenderCanvas() {
     el.style.top = blk.y * u + 'px';
     el.style.width = blk.width * u + 'px';
     el.style.height = blk.height * u + 'px';
-    if (blk.color) el.style.background = blk.color;
+    el.style.background = fpBlockFill(blk);
     const name = document.createElement('span');
     name.className = 'fp-block-name';
     name.textContent = blk.name || 'Block';
@@ -891,9 +1026,49 @@ function fpRenderCanvas() {
     canvas.appendChild(el);
   }
   // Line-tool affordance: crosshair while draw mode is armed (mode-gated —
-  // placement/block drags only run when the tool is toggled off).
-  canvas.style.cursor = state.fp.drawMode ? 'crosshair' : '';
+  // placement/block drags only run when the tool is toggled off). An armed
+  // marker (Markers/Safety group) behaves the same — the next canvas click
+  // places it, so the crosshair applies there too.
+  canvas.style.cursor = state.fp.drawMode || state.fp.armedMarker ? 'crosshair' : '';
+  // Safety/facility point icons render LAST (top of the z-order) so a marker
+  // never hides under a placement.
+  fpRenderMarkerLayer(canvas, u, state.fp.markers || [], true, state.fp.selectedMarker);
   fpZoomLabel();
+}
+
+// Safety/facility point icons as circular badges (distinct icon + ring tone per
+// kind, see FP_MARKER_KINDS). Inline styles only — no dashboard CSS changes.
+// Interactive badges (editor) drag to move and click to select; the read-only
+// preview renders them statically (pointer-events none).
+function fpRenderMarkerLayer(canvas, u, markers, interactive, selectedId) {
+  for (const m of markers || []) {
+    const def = fpMarkerDef(m.kind);
+    const size = Math.max(22, Math.round(u * 1.1));
+    const el = document.createElement('div');
+    el.className = 'fp-marker' + (m.id && m.id === selectedId ? ' selected' : '');
+    el.dataset.markerId = m.id;
+    el.title = `${fpMarkerLabel(m)} · ${m.x},${m.y} ft${interactive ? ' — drag to move, click to select' : ''}`;
+    el.style.position = 'absolute';
+    el.style.left = m.x * u - size / 2 + 'px';
+    el.style.top = m.y * u - size / 2 + 'px';
+    el.style.width = size + 'px';
+    el.style.height = size + 'px';
+    el.style.borderRadius = '50%';
+    el.style.background = '#fff';
+    el.style.border = `2px solid ${def.tone}`;
+    el.style.display = 'flex';
+    el.style.alignItems = 'center';
+    el.style.justifyContent = 'center';
+    el.style.fontSize = Math.round(size * 0.55) + 'px';
+    el.style.lineHeight = '1';
+    el.style.cursor = interactive ? 'grab' : 'default';
+    el.style.boxSizing = 'border-box';
+    el.style.zIndex = '3';
+    if (!interactive) el.style.pointerEvents = 'none';
+    if (m.id && m.id === selectedId) el.style.boxShadow = `0 0 0 2px ${def.tone}`;
+    el.textContent = def.icon;
+    canvas.appendChild(el);
+  }
 }
 
 function fpRenderSelInfo() {
@@ -902,12 +1077,19 @@ function fpRenderSelInfo() {
   // A selected decoration block takes priority over any selected unit.
   const blk = state.fp.blocks.find((b) => b.id === state.fp.selectedBlock);
   if (blk) {
+    const swatches = FP_BLOCK_PALETTE.map(
+      (c) =>
+        `<button class="act-btn${(blk.color || '').toUpperCase() === c ? ' primary' : ''}" data-block-color="${c}" style="padding:0;width:18px;height:18px;min-width:18px;border-radius:50%;background:${c};border:1px solid var(--line);" title="Fill ${c}" aria-label="Fill block ${c}"></button>`,
+    ).join('');
     info.innerHTML =
       `<span class="t-type">Block · ${escapeHtml(blk.name)} · ${blk.x},${blk.y} · ${blk.width}×${blk.height}</span>` +
       `<span class="fp-rename-wrap"><label class="fp-sr" for="fpBlockRename">Block name</label>` +
       `<svg class="fp-name-icon" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M2.5 2.5H10l5.5 5.5-7.5 7.5-5.5-5.5V2.5z"/><circle cx="6.6" cy="6.6" r="1.3"/></svg>` +
       `<input type="text" id="fpBlockRename" class="tbl-search fp-name-input" maxlength="80" value="${escapeHtml(blk.name)}" placeholder="Rename block" aria-label="Rename block" autocomplete="off" spellcheck="false"></span>` +
       `<button class="act-btn" id="fpBlockRenameBtn" style="padding:2px 9px;font-size:10px;">Rename</button>` +
+      `<span class="t-type">Fill${blk.color ? '' : ' (default)'}:</span>` + swatches +
+      `<input type="color" id="fpBlockColorPick" value="${escapeHtml(fpBlockFill(blk))}" title="Custom fill colour" aria-label="Custom fill colour" style="width:30px;height:20px;padding:0;border:1px solid var(--line);border-radius:6px;background:#fff;">` +
+      (blk.color ? `<button class="act-btn" id="fpBlockColorDefault" style="padding:2px 9px;font-size:10px;" title="Clear the fill back to the default block tone">Default</button>` : '') +
       `<button class="act-btn danger" id="fpBlockRemoveBtn" style="padding:2px 9px;font-size:10px;">Remove block</button>`;
     return;
   }
@@ -936,6 +1118,20 @@ function fpRenderSelInfo() {
         ? `<button class="act-btn primary" id="fpBoundaryCloseBtn" style="padding:2px 9px;font-size:10px;" title="Close the loop — the marked area starts feeding UFA/NLA">Close loop</button>`
         : '') +
       `<button class="act-btn danger" id="fpBoundaryRemoveBtn" style="padding:2px 9px;font-size:10px;">Remove line</button>`;
+    return;
+  }
+  // A selected safety/facility marker renders like the block branch: a short
+  // descriptor plus an optional label override, move/delete actions. Markers
+  // are points (no area), so no resize/rotate/door controls apply.
+  const mk = (state.fp.markers || []).find((m) => m.id === state.fp.selectedMarker);
+  if (mk) {
+    const def = fpMarkerDef(mk.kind);
+    info.innerHTML =
+      `<span class="t-type">${escapeHtml(def.icon)} ${escapeHtml(def.label)} · ${mk.x},${mk.y} ft</span>` +
+      `<span class="fp-rename-wrap"><label class="fp-sr" for="fpMarkerRename">Marker label</label>` +
+      `<input type="text" id="fpMarkerRename" class="tbl-search fp-name-input" maxlength="80" value="${escapeHtml(mk.label || '')}" placeholder="${escapeHtml(def.label)} (optional)" aria-label="Marker label override" autocomplete="off" spellcheck="false"></span>` +
+      `<button class="act-btn" id="fpMarkerRenameBtn" style="padding:2px 9px;font-size:10px;">Set label</button>` +
+      `<button class="act-btn danger" id="fpMarkerRemoveBtn" style="padding:2px 9px;font-size:10px;">Remove marker</button>`;
     return;
   }
   const pl = state.fp.placements.find((p) => p.unitId === state.fp.selected);
@@ -984,7 +1180,7 @@ function fpRenderSelInfo() {
 // already all edges), so toggles are singles-only.
 async function fpSaveDoors(pl, edges) {
   try {
-    const res = await request(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/units/${encodeURIComponent(pl.unitId)}`, {
+    const res = await fpMutate(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/units/${encodeURIComponent(pl.unitId)}`, {
       method: 'PUT',
       body: JSON.stringify({ x: pl.x, y: pl.y, width: pl.width, height: pl.height, stackTier: pl.stackTier || 0, doorEdges: edges }),
     });
@@ -1059,7 +1255,7 @@ async function fpStackSelected() {
   });
   if (!stackOk) return;
   try {
-    await request(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/units/${encodeURIComponent(cand.id)}`, {
+    await fpMutate(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/units/${encodeURIComponent(cand.id)}`, {
       method: 'PUT',
       body: JSON.stringify({ x: pl.x, y: pl.y, width: pl.width, height: pl.height, stackTier: 1 }),
     });
@@ -1104,7 +1300,7 @@ async function fpUnstackSelected() {
   });
   if (!unstackOk) return;
   try {
-    await request(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/units/${encodeURIComponent(upper.unitId)}`, {
+    await fpMutate(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/units/${encodeURIComponent(upper.unitId)}`, {
       method: 'DELETE',
     });
     fpToast(`${upper.unitCode} unstacked — ${lower.unitCode} is now a single.`, true);
@@ -1119,14 +1315,15 @@ function fpRender() {
   const title = $('#fpTitle');
   if (title) {
     const where = [state.fp.branchName, state.fp.floorName].filter(Boolean).join(' · ');
-    title.textContent = 'Floor Plan Editor' + (where ? ' — ' + where : '');
+    title.textContent = 'Floor Plan Designer' + (where ? ' — ' + where : '');
   }
   const sub = $('#fpSub');
   if (sub) {
     const unitLabel = `${state.fp.placements.length} unit${state.fp.placements.length === 1 ? '' : 's'}`;
     const blockLabel = `${state.fp.blocks.length} block${state.fp.blocks.length === 1 ? '' : 's'}`;
+    const markerLabel = `${(state.fp.markers || []).length} marker${(state.fp.markers || []).length === 1 ? '' : 's'}`;
     sub.textContent = state.fp.plan
-      ? `${unitLabel} placed · ${blockLabel} on a ${d.w}×${d.h} ft canvas — drag to move, corner handle to resize`
+      ? `${unitLabel} placed · ${blockLabel} · ${markerLabel} on a ${d.w}×${d.h} ft canvas — drag to move, corner handle to resize`
       : "No plan yet — set a canvas size and click Save Canvas, then drag this floor's units from the palette.";
   }
   fpSyncDimInputs(d);
@@ -1141,6 +1338,8 @@ function fpRender() {
   fpRenderPalette();
   fpRenderCanvas();
   fpRenderSelInfo();
+  fpRenderPlanStatus();
+  fpSyncModeUI();
 }
 
 function fpCanvasCellAt(clientX, clientY) {
@@ -1181,6 +1380,7 @@ function fpDrawStart(e) {
   e.preventDefault();
   state.fp.selected = null;
   state.fp.selectedBlock = null;
+  state.fp.selectedMarker = null;
   state.fp.selectedBoundary = null;
   fpDraftLine = { x1: start.x, y1: start.y, x2: start.x, y2: start.y };
   fpRenderCanvas();
@@ -1228,7 +1428,7 @@ function fpDrawStart(e) {
 // via chord-close; a 2-vertex segment contributes 0 until extended/closed.
 async function fpPersistLine(x1, y1, x2, y2) {
   try {
-    const res = await request(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/boundaries`, {
+    const res = await fpMutate(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/boundaries`, {
       method: 'POST',
       body: JSON.stringify({ label: 'Line', kind: 'PENCIL', points: [[x1, y1], [x2, y2]], closed: false }),
     });
@@ -1288,7 +1488,7 @@ function fpBoundaryHitAt(clientX, clientY) {
 
 async function fpPersist(pl, verb) {
   try {
-    await request(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/units/${encodeURIComponent(pl.unitId)}`, {
+    await fpMutate(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/units/${encodeURIComponent(pl.unitId)}`, {
       method: 'PUT',
       body: JSON.stringify({ x: pl.x, y: pl.y, width: pl.width, height: pl.height, stackTier: pl.stackTier || 0 }),
     });
@@ -1306,7 +1506,7 @@ async function fpPersist(pl, verb) {
 async function fpPersistPair(lower, upper, verb) {
   try {
     for (const p of [lower, upper]) {
-      await request(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/units/${encodeURIComponent(p.unitId)}`, {
+      await fpMutate(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/units/${encodeURIComponent(p.unitId)}`, {
         method: 'PUT',
         body: JSON.stringify({ x: p.x, y: p.y, width: p.width, height: p.height, stackTier: p.stackTier || 0 }),
       });
@@ -1368,7 +1568,7 @@ async function fpPlaceUnit(unit, footprint, gx, gy) {
     });
     if (!stackOk) return;
     try {
-      await request(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/units/${encodeURIComponent(unit.id)}`, {
+      await fpMutate(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/units/${encodeURIComponent(unit.id)}`, {
         method: 'PUT',
         body: JSON.stringify({ x, y, width: footprint.w, height: footprint.h, stackTier: 1 }),
       });
@@ -1403,7 +1603,7 @@ async function fpPlaceUnit(unit, footprint, gx, gy) {
     return;
   }
   try {
-    await request(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/units/${encodeURIComponent(unit.id)}`, {
+    await fpMutate(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/units/${encodeURIComponent(unit.id)}`, {
       method: 'PUT',
       body: JSON.stringify({ x, y, width: footprint.w, height: footprint.h, stackTier: 0 }),
     });
@@ -1479,10 +1679,11 @@ function fpStartMove(e, el) {
   const offsetX = e.clientX - startRect.left;
   const offsetY = e.clientY - startRect.top;
   state.fp.selected = uid;
-  // A unit interaction supersedes any block selection — otherwise the info
-  // strip would keep showing the stale block while the operator is acting on
-  // the unit (fpRenderSelInfo gives a selected block priority over a unit).
+  // A unit interaction supersedes any block/marker selection — otherwise the
+  // info strip would keep showing the stale block while the operator is acting
+  // on the unit (fpRenderSelInfo gives a selected block priority over a unit).
   state.fp.selectedBlock = null;
+  state.fp.selectedMarker = null;
   state.fp.selectedBoundary = null;
   fpRenderCanvas();
   fpRenderSelInfo();
@@ -1573,6 +1774,7 @@ function fpStartResize(e, pl) {
   if (state.fp.selected !== pl.unitId) {
     state.fp.selected = pl.unitId;
     state.fp.selectedBlock = null;
+    state.fp.selectedMarker = null;
     state.fp.selectedBoundary = null;
     fpRenderCanvas();
     fpRenderSelInfo();
@@ -1674,6 +1876,10 @@ function fpToggleBlockForm(show) {
   if (show) fpSetPaletteCollapsed(false);
   form.hidden = !show;
   if (show) {
+    // A fresh form starts at the default tone; swatches re-render from the
+    // staged state.fp.blockColor (null = default).
+    state.fp.blockColor = null;
+    fpRenderBlockFormSwatches();
     const input = $('#fpBlockName');
     if (input) {
       input.value = '';
@@ -1684,7 +1890,11 @@ function fpToggleBlockForm(show) {
 
 function fpFirstFreeSpot(size) {
   const { w: cw, h: ch } = fpCanvasDims();
-  const occupied = state.fp.blocks.concat(state.fp.placements);
+  // Markers occupy a single grid-ft point each — count them as 1×1 obstacles so
+  // a new block never spawns on top of a marker badge.
+  const occupied = state.fp.blocks
+    .concat(state.fp.placements)
+    .concat((state.fp.markers || []).map((m) => ({ x: m.x, y: m.y, width: 1, height: 1 })));
   const collides = (x, y) =>
     occupied.some((o) => x < o.x + o.width && o.x < x + size && y < o.y + o.height && o.y < y + size);
   for (let y = 0; y + size <= ch; y++) {
@@ -1934,11 +2144,13 @@ async function fpAutoPlaceAll() {
   if (!placeOk) return;
   if (btn) btn.disabled = true;
   const { w: cw, h: ch } = fpCanvasDims();
-  // Placements + blocks + solid structure rects count as occupied for the scan.
+  // Placements + blocks + markers (as 1×1 points) + solid structure rects count
+  // as occupied for the scan.
   const taken = state.fp.placements
     .map((p) => ({ x: p.x, y: p.y, width: p.width, height: p.height }))
     .concat(
       state.fp.blocks.map((b) => ({ x: b.x, y: b.y, width: b.width, height: b.height })),
+      (state.fp.markers || []).map((m) => ({ x: m.x, y: m.y, width: 1, height: 1 })),
       fpStructureRects(),
     );
   const placed = [];
@@ -1964,7 +2176,7 @@ async function fpAutoPlaceAll() {
         continue;
       }
       try {
-        await request(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/units/${encodeURIComponent(unit.id)}`, {
+        await fpMutate(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/units/${encodeURIComponent(unit.id)}`, {
           method: 'PUT',
           body: JSON.stringify({ x: spot.x, y: spot.y, width: geom.w, height: geom.h, stackTier: 0 }),
         });
@@ -2023,10 +2235,12 @@ async function fpAddBlock() {
   const { w: cw, h: ch } = fpCanvasDims();
   const size = Math.min(6, cw, ch);
   const { x, y } = fpFirstFreeSpot(size);
+  // The staged fill from the form palette/custom picker (null = default tone).
+  const color = state.fp.blockColor || null;
   try {
-    const res = await request(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/blocks`, {
+    const res = await fpMutate(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/blocks`, {
       method: 'POST',
-      body: JSON.stringify({ name, x, y, width: size, height: size }),
+      body: JSON.stringify({ name, x, y, width: size, height: size, color }),
     });
     const b = res.data;
     // The plan is lazily created server-side when a floor has none yet; adopt
@@ -2037,7 +2251,9 @@ async function fpAddBlock() {
     state.fp.blocks.push({ id: b.id, name: b.name, x: b.x, y: b.y, width: b.width, height: b.height, color: b.color || null });
     state.fp.selectedBlock = b.id;
     state.fp.selected = null;
+    state.fp.blockColor = null;
     fpToggleBlockForm(false);
+    state.fp.tool = 'select';
     fpRender();
     notifyMetricsFloorChanged();
     fpToast(`Added block "${name}" (${size}×${size}) at ${x},${y} — drag it into place or resize from the corner.`, true);
@@ -2048,7 +2264,7 @@ async function fpAddBlock() {
 
 async function fpPersistBlock(blk, verb) {
   try {
-    await request(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/blocks/${encodeURIComponent(blk.id)}`, {
+    await fpMutate(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/blocks/${encodeURIComponent(blk.id)}`, {
       method: 'PUT',
       body: JSON.stringify({ name: blk.name, x: blk.x, y: blk.y, width: blk.width, height: blk.height, color: blk.color || null }),
     });
@@ -2076,6 +2292,7 @@ function fpBlockStartMove(e, el) {
   const offsetY = e.clientY - startRect.top;
   state.fp.selectedBlock = bid;
   state.fp.selected = null;
+  state.fp.selectedMarker = null;
   state.fp.selectedBoundary = null;
   fpRenderCanvas();
   fpRenderSelInfo();
@@ -2102,6 +2319,7 @@ function fpBlockStartResize(e, blk) {
   if (state.fp.selectedBlock !== blk.id) {
     state.fp.selectedBlock = blk.id;
     state.fp.selected = null;
+    state.fp.selectedMarker = null;
     state.fp.selectedBoundary = null;
     fpRenderCanvas();
     fpRenderSelInfo();
@@ -2143,7 +2361,7 @@ async function fpRenameBlock() {
   const prev = blk.name;
   blk.name = name;
   try {
-    await request(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/blocks/${encodeURIComponent(blk.id)}`, {
+    await fpMutate(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/blocks/${encodeURIComponent(blk.id)}`, {
       method: 'PUT',
       body: JSON.stringify({ name, x: blk.x, y: blk.y, width: blk.width, height: blk.height, color: blk.color || null }),
     });
@@ -2168,7 +2386,7 @@ async function fpRemoveBlock() {
   });
   if (!blockOk) return;
   try {
-    await request(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/blocks/${encodeURIComponent(blk.id)}`, {
+    await fpMutate(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/blocks/${encodeURIComponent(blk.id)}`, {
       method: 'DELETE',
     });
     fpToast(`Block "${blk.name}" removed.`, true);
@@ -2192,7 +2410,7 @@ async function fpRemoveBoundary() {
   });
   if (!removeOk) return;
   try {
-    await request(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/boundaries/${encodeURIComponent(bnd.id)}`, {
+    await fpMutate(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/boundaries/${encodeURIComponent(bnd.id)}`, {
       method: 'DELETE',
     });
     fpToast(`Line "${bnd.label || 'Line'}" removed.`, true);
@@ -2210,7 +2428,7 @@ async function fpCloseBoundary() {
   const bnd = (state.fp.boundaries || []).find((b) => b.id === state.fp.selectedBoundary);
   if (!bnd || bnd.closed) return;
   try {
-    const res = await request(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/boundaries/${encodeURIComponent(bnd.id)}`, {
+    const res = await fpMutate(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/boundaries/${encodeURIComponent(bnd.id)}`, {
       method: 'PUT',
       body: JSON.stringify({ closed: true }),
     });
@@ -2223,6 +2441,311 @@ async function fpCloseBoundary() {
   } catch (err) {
     fpToast('Close loop: ' + describeError(err), false);
   }
+}
+
+// ---------- safety/facility markers (Markers/Safety toolbar group) ----------
+// Toolbar buttons (rendered by fpRenderMarkerTools from FP_MARKER_KINDS) arm a
+// kind; the next canvas click places it (same mode-gated pattern as the ✎ line
+// tool — Esc cancels). Badges drag to move and persist via the marker
+// endpoints; the read-only preview renders them statically.
+
+// Render the Markers/Safety toolbar buttons from FP_MARKER_KINDS (single
+// source of truth — no per-kind HTML to drift). Armed kinds read `.on`, like
+// the line-tool toggle.
+function fpRenderMarkerTools() {
+  const wrap = $('#fpMarkerTools');
+  if (!wrap) return;
+  wrap.innerHTML = '';
+  for (const def of FP_MARKER_KINDS) {
+    const armed = state.fp.armedMarker === def.kind;
+    const b = document.createElement('button');
+    b.className = 'tb-btn ghost' + (armed ? ' on' : '');
+    b.type = 'button';
+    b.dataset.markerKind = def.kind;
+    b.title = `${def.label} — arm placement, then click the canvas to place (Esc cancels)`;
+    b.setAttribute('aria-pressed', String(armed));
+    const icon = document.createElement('span');
+    icon.setAttribute('aria-hidden', 'true');
+    icon.textContent = def.icon;
+    b.appendChild(icon);
+    b.appendChild(document.createTextNode(` ${def.label}`));
+    wrap.appendChild(b);
+  }
+  // Studio markers dropdown: the count badge tracks placed markers (it
+  // increments on every fpPlaceMarker via fpRender/fpRenderMarkerTools), and
+  // the dropdown button mirrors the armed state like the line-tool toggle.
+  const cnt = $('#fpMarkersCount');
+  if (cnt) cnt.textContent = String((state.fp.markers || []).length);
+  const mbtn = $('#fpMarkersBtn');
+  if (mbtn) {
+    const armed = !!state.fp.armedMarker;
+    mbtn.classList.toggle('on', armed);
+    mbtn.setAttribute('aria-pressed', String(armed));
+  }
+}
+
+function fpToggleArmedMarker(kind) {
+  state.fp.armedMarker = state.fp.armedMarker === kind ? null : kind;
+  if (state.fp.armedMarker) {
+    // Arming a marker disarms the line tool (one placement mode at a time).
+    state.fp.drawMode = false;
+    fpDraftLine = null;
+    const pencilBtn = $('#fpBoundaryTool');
+    if (pencilBtn) {
+      pencilBtn.classList.remove('on');
+      pencilBtn.setAttribute('aria-pressed', 'false');
+    }
+    fpToast(`${fpMarkerDef(kind).label} armed — click the canvas to place (Esc cancels).`, true);
+  }
+  // Studio: placing from the dropdown closes the menu so the canvas is visible.
+  const menu = $('#fpMarkersMenu');
+  if (menu && state.fp.armedMarker) {
+    menu.hidden = true;
+    $('#fpMarkersBtn')?.setAttribute('aria-expanded', 'false');
+  }
+  fpRenderMarkerTools();
+  fpRenderCanvas();
+  fpSyncModeUI();
+}
+
+// Escape cancels an armed marker placement (module-level so it coexists with
+// the line tool's own transient Escape handler, which only fires mid-draft).
+function fpOnEscapeTool(e) {
+  if (e.key !== 'Escape' || e.defaultPrevented) return;
+  if (!state.fp.armedMarker) return;
+  e.preventDefault();
+  state.fp.armedMarker = null;
+  fpRenderMarkerTools();
+  fpRenderCanvas();
+  fpToast('Marker placement cancelled.', true);
+  fpSyncModeUI();
+}
+
+async function fpPlaceMarker(kind, gx, gy) {
+  const def = fpMarkerDef(kind);
+  const { w: cw, h: ch } = fpCanvasDims();
+  const x = Math.min(Math.max(0, gx), cw);
+  const y = Math.min(Math.max(0, gy), ch);
+  try {
+    const res = await fpMutate(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/markers`, {
+      method: 'POST',
+      body: JSON.stringify({ kind, x, y }),
+    });
+    const b = res.data;
+    // The plan is lazily created server-side when a floor has none yet (same
+    // lazy adoption as fpAddBlock) — give the new marker a local surface.
+    if (!state.fp.plan) {
+      state.fp.plan = { width: state.fp.canvasDefaults.width, height: state.fp.canvasDefaults.height };
+    }
+    state.fp.markers.push({ id: b.id, kind: b.kind, label: b.label || null, x: b.x, y: b.y });
+    state.fp.selectedMarker = b.id;
+    state.fp.selected = null;
+    state.fp.selectedBlock = null;
+    state.fp.selectedBoundary = null;
+    state.fp.armedMarker = null;
+    state.fp.tool = 'select';
+    fpRender();
+    fpRenderMarkerTools();
+    // Points carry no area, so the metrics panel is untouched (unlike blocks,
+    // which subtract from UFA) — no notifyMetricsFloorChanged() here.
+    fpToast(`${def.label} placed at ${x},${y} ft — drag to move.`, true);
+  } catch (err) {
+    fpToast('Place marker: ' + describeError(err), false);
+  }
+}
+
+async function fpPersistMarker(m, verb) {
+  try {
+    await fpMutate(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/markers/${encodeURIComponent(m.id)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ x: m.x, y: m.y }),
+    });
+    fpToast(`${verb} ${fpMarkerLabel(m)} → ${m.x},${m.y} ft`, true);
+  } catch (err) {
+    fpToast(`${verb} marker: ${describeError(err)}`, false);
+    await fpFetch(); // revert local state to what the server has
+  }
+}
+
+// Marker drag: badges are small, so the pointer snaps straight to the grid-ft
+// point (no grab offset — unlike rect drags). Points clamp edge-INCLUSIVE
+// (0..w / 0..h), the same contract as checkMarkerPoint server-side.
+function fpMarkerStartMove(e, el) {
+  if (e.button !== 0) return;
+  const m = (state.fp.markers || []).find((x) => x.id === el.dataset.markerId);
+  if (!m) return;
+  e.preventDefault();
+  state.fp.selectedMarker = m.id;
+  state.fp.selected = null;
+  state.fp.selectedBlock = null;
+  state.fp.selectedBoundary = null;
+  fpRenderCanvas();
+  fpRenderSelInfo();
+  const { w: cw, h: ch } = fpCanvasDims();
+  const move = (ev) => {
+    const p = fpCanvasPointAt(ev.clientX, ev.clientY);
+    if (!p) return;
+    m.x = Math.min(Math.max(0, p.x), cw);
+    m.y = Math.min(Math.max(0, p.y), ch);
+    fpRenderCanvas();
+  };
+  const up = () => {
+    document.removeEventListener('pointermove', move);
+    document.removeEventListener('pointerup', up);
+    fpPersistMarker(m, 'Moved');
+  };
+  document.addEventListener('pointermove', move);
+  document.addEventListener('pointerup', up);
+}
+
+// Persist an operator label override for the selected marker (empty clears
+// back to the kind's display label — the server stores null).
+async function fpRenameMarker() {
+  const m = (state.fp.markers || []).find((x) => x.id === state.fp.selectedMarker);
+  if (!m) return;
+  const input = $('#fpMarkerRename');
+  const raw = input ? input.value.trim() : '';
+  if (raw.length > 80) {
+    fpToast('Marker label must be at most 80 characters.', false);
+    return;
+  }
+  const next = raw || null;
+  if (next === m.label) return;
+  const prev = m.label;
+  m.label = next;
+  try {
+    const res = await fpMutate(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/markers/${encodeURIComponent(m.id)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ label: next }),
+    });
+    m.label = res && res.data ? res.data.label || null : next;
+    fpToast(next ? `Marker labelled "${next}".` : `Marker label cleared — back to "${fpMarkerDef(m.kind).label}".`, true);
+    fpRenderCanvas();
+    fpRenderSelInfo();
+  } catch (err) {
+    m.label = prev;
+    fpToast('Label marker: ' + describeError(err), false);
+  }
+}
+
+// Remove the selected marker (same select → confirm → DELETE → refresh flow as
+// blocks; scoped server-side to this floor's plan). Units and blocks are
+// unaffected; points carry no area, so metrics never recompute.
+async function fpRemoveMarker() {
+  const m = (state.fp.markers || []).find((x) => x.id === state.fp.selectedMarker);
+  if (!m) return;
+  const removeOk = await confirmDialog({
+    title: `Remove ${fpMarkerLabel(m)} marker from the plan?`,
+    message: 'The marker is removed from the canvas. Units and blocks are unaffected.',
+    confirmLabel: 'Remove',
+    danger: true,
+  });
+  if (!removeOk) return;
+  try {
+    await fpMutate(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/markers/${encodeURIComponent(m.id)}`, {
+      method: 'DELETE',
+    });
+    fpToast(`${fpMarkerLabel(m)} marker removed.`, true);
+    await fpFetch();
+  } catch (err) {
+    fpToast('Remove marker: ' + describeError(err), false);
+  }
+}
+
+// ---------- block fill colour ----------
+// Persist a block's fill: hex (#RGB/#RRGGBB, stored uppercased) or null for the
+// default tone. Geometry/name ride along unchanged (the block PUT is a full
+// replace). A fill change never moves geometry, so metrics stay untouched.
+async function fpSetBlockColor(blk, color) {
+  const next = color ? String(color).trim().toUpperCase() : null;
+  if (next && !/^#(?:[0-9A-F]{3}|[0-9A-F]{6})$/.test(next)) {
+    fpToast(`Block colour must be a hex colour (#RGB or #RRGGBB) — got ${JSON.stringify(color)}`, false);
+    fpRenderSelInfo();
+    return;
+  }
+  if ((blk.color || null) === next) {
+    fpRenderCanvas();
+    fpRenderSelInfo();
+    return;
+  }
+  const prev = blk.color || null;
+  blk.color = next;
+  try {
+    await fpMutate(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/blocks/${encodeURIComponent(blk.id)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ name: blk.name, x: blk.x, y: blk.y, width: blk.width, height: blk.height, color: next }),
+    });
+    fpToast(next ? `Block "${blk.name}" fill → ${next}.` : `Block "${blk.name}" fill → default.`, true);
+    fpRenderCanvas();
+    fpRenderSelInfo();
+  } catch (err) {
+    blk.color = prev;
+    fpToast('Block colour: ' + describeError(err), false);
+  }
+}
+
+// Palette swatches for the "New block" form, rendered from FP_BLOCK_PALETTE
+// (single source of truth — shared with the selection strip). Clicking a
+// swatch stages state.fp.blockColor for the next fpAddBlock; the native colour
+// input stages a custom hex; Default clears back to the default tone.
+function fpRenderBlockFormSwatches() {
+  const wrap = $('#fpBlockSwatches');
+  if (!wrap) return;
+  wrap.innerHTML = '';
+  for (const c of FP_BLOCK_PALETTE) {
+    const b = document.createElement('button');
+    const active = (state.fp.blockColor || '').toUpperCase() === c;
+    b.className = 'act-btn' + (active ? ' primary' : '');
+    b.type = 'button';
+    b.dataset.blockColor = c;
+    b.title = c === FP_DEFAULT_BLOCK_COLOR ? `Default block tone (${c})` : `Fill ${c}`;
+    b.setAttribute('aria-label', `Block fill ${c}`);
+    b.style.padding = '0';
+    b.style.width = '22px';
+    b.style.height = '22px';
+    b.style.minWidth = '22px';
+    b.style.borderRadius = '50%';
+    b.style.background = c;
+    b.style.border = '1px solid var(--line)';
+    wrap.appendChild(b);
+  }
+  const custom = $('#fpBlockColor');
+  if (custom && document.activeElement !== custom) custom.value = state.fp.blockColor || FP_DEFAULT_BLOCK_COLOR.toLowerCase();
+}
+
+// Draft/publish pill (header, next to Save Canvas): Save Canvas and every
+// other designer write persist as DRAFT (CMS-only, invisible to booking);
+// only Publish exposes the plan publicly. textContent-only (escaped by
+// nature); no layout/CSS changes — reuses the existing .t-type tone.
+function fpRenderPlanStatus() {
+  const el = $('#fpPlanStatus');
+  if (!el) return;
+  // Studio Tier-1 status badge: textContent-only copy (escaped by nature) plus
+  // tone classes on the existing node — the header keeps working if the badge
+  // CSS is ever absent.
+  el.classList.add('fp-status-badge');
+  if (!state.fp.plan) {
+    el.textContent = 'No plan yet';
+    el.classList.remove('is-draft', 'is-live');
+    return;
+  }
+  const st = String(state.fp.plan.status || 'DRAFT').toUpperCase();
+  const live = st === 'ACTIVE';
+  el.textContent = live ? '● Published · Visible' : '○ Draft — Not visible';
+  el.classList.toggle('is-live', live);
+  el.classList.toggle('is-draft', !live);
+}
+
+// All designer writes funnel through fpMutate (never raw request()): the
+// server persists every write as DRAFT, so the local plan status is flipped
+// optimistically and the pill re-renders without a refetch after every
+// drag/resize/drop. Reads keep using get(); Publish uses request() directly
+// (the server sets ACTIVE, then fpFetch reloads).
+async function fpMutate(url, opts) {
+  const res = await request(url, opts);
+  if (state.fp.plan) state.fp.plan.status = 'DRAFT';
+  fpRenderPlanStatus();
+  return res;
 }
 
 async function fpSaveCanvas() {
@@ -2253,15 +2776,40 @@ async function fpSaveCanvas() {
     }
   }
   try {
-    await request(`/floor-plans/${encodeURIComponent(state.fp.floorId)}`, {
+    await fpMutate(`/floor-plans/${encodeURIComponent(state.fp.floorId)}`, {
       method: 'POST',
       body: JSON.stringify({ width: w, height: h, structure, gfaSqft: gfaParsed.value }),
     });
     state.fp.gfa = gfaParsed.value;
-    fpToast(`Canvas saved (${w}×${h} ft${gfaParsed.value != null ? `, GFA ${fpFmt1(gfaParsed.value)} sqft` : ', GFA unset — metrics use the canvas rect'}).`, true);
+    fpToast(`Canvas saved as draft (${w}×${h} ft${gfaParsed.value != null ? `, GFA ${fpFmt1(gfaParsed.value)} sqft` : ', GFA unset — metrics use the canvas rect'}). Publish to expose it to booking.`, true);
     await fpFetch();
   } catch (err) {
     fpToast('Save canvas: ' + describeError(err), false);
+  }
+}
+
+async function fpPublishPlan() {
+  if (!state.fp.floorId || !state.fp.plan) {
+    fpToast('No plan to publish — set a canvas size and save first.', false);
+    return;
+  }
+  if (String(state.fp.plan.status || '').toUpperCase() === 'ACTIVE') {
+    fpToast('Plan is already published.', true);
+    return;
+  }
+  // Publish/destructive only — Save Canvas stays a plain draft write.
+  const pubOk = await confirmDialog({
+    title: 'Publish this floor plan?',
+    message: 'The current draft becomes visible to the booking frontend. Further edits return it to draft until re-published.',
+    confirmLabel: 'Publish',
+  });
+  if (!pubOk) return;
+  try {
+    await request(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/publish`, { method: 'POST' });
+    fpToast('Plan published — now visible to booking.', true);
+    await fpFetch();
+  } catch (err) {
+    fpToast('Publish plan: ' + describeError(err), false);
   }
 }
 
@@ -2278,7 +2826,7 @@ async function fpDeletePlan() {
   });
   if (!planOk) return;
   try {
-    await request(`/floor-plans/${encodeURIComponent(state.fp.floorId)}`, { method: 'DELETE' });
+    await fpMutate(`/floor-plans/${encodeURIComponent(state.fp.floorId)}`, { method: 'DELETE' });
     fpToast('Floor plan deleted.', true);
     await fpFetch();
   } catch (err) {
@@ -2297,7 +2845,7 @@ async function fpRemovePlacement() {
   });
   if (!plOk) return;
   try {
-    await request(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/units/${encodeURIComponent(pl.unitId)}`, {
+    await fpMutate(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/units/${encodeURIComponent(pl.unitId)}`, {
       method: 'DELETE',
     });
     fpToast(`${pl.unitCode} removed from the floor plan.`, true);
@@ -2313,6 +2861,7 @@ const fpView = {
   placements: [], // normalized placed units
   blocks: [], // normalized decoration blocks
   boundaries: [], // normalized boundary line items (incl. pencil-drawn lines)
+  markers: [], // normalized safety/facility point icons
   dims: { w: 70, h: 80 }, // plan grid size (plan dims, else canvas defaults)
   floorId: null, // floor whose level === state.level (for the current branch)
 };
@@ -2359,6 +2908,7 @@ async function fpViewFetch(floorId) {
   fpView.placements = fpNormalizePlacements(body.plan);
   fpView.blocks = fpNormalizeBlocks(body.plan);
   fpView.boundaries = fpNormalizeBoundaries(body.plan);
+  fpView.markers = fpNormalizeMarkers(body.plan);
   const defs = body.canvasDefaults || { width: 70, height: 80 };
   fpView.dims = {
     w: body.plan && body.plan.width > 0 ? body.plan.width : defs.width,
@@ -2403,7 +2953,7 @@ function fpViewRender() {
     el.style.top = blk.y * u + 'px';
     el.style.width = blk.width * u + 'px';
     el.style.height = blk.height * u + 'px';
-    if (blk.color) el.style.background = blk.color;
+    el.style.background = fpBlockFill(blk);
     const name = document.createElement('span');
     name.className = 'fp-block-name';
     name.textContent = blk.name || 'Block';
@@ -2453,6 +3003,8 @@ function fpViewRender() {
       `<div class="fp-resize" title="Drag to resize"></div>`;
     canvas.appendChild(el);
   }
+  // Safety/facility point icons, static in the read-only preview.
+  fpRenderMarkerLayer(canvas, u, fpView.markers || [], false, null);
 }
 
 export function fpViewClose() {
@@ -2487,10 +3039,11 @@ function fpOnCanvasWheel(e) {
 // fpInitEvents() (never per-render); the transient drag Escape handlers
 // (fpDrawStart) live on document too but only react to Escape, so there is no
 // conflict. Guards: typing (inputs/selects/contenteditable — covers the
-// block-name, canvas-dims and structure-JSON fields), the read-only
+// block-name, marker-label, canvas-dims and structure-JSON fields), the read-only
 // #fpViewModal preview (editor-only shortcut), and an open #confirmModal (a
 // re-press must not supersede the pending confirm). Priority mirrors
-// fpRenderSelInfo: boundary line, then decoration block, then unit placement.
+// fpRenderSelInfo: boundary line, then marker, then decoration block, then
+// unit placement.
 // fpDeletePlan (whole-plan delete) is NEVER bound here.
 function fpOnDeleteKey(e) {
   if (e.key !== 'Delete' && e.key !== 'Backspace') return;
@@ -2509,6 +3062,9 @@ function fpOnDeleteKey(e) {
   if (state.fp.selectedBoundary) {
     e.preventDefault();
     fpRemoveBoundary();
+  } else if (state.fp.selectedMarker) {
+    e.preventDefault();
+    fpRemoveMarker();
   } else if (state.fp.selectedBlock) {
     e.preventDefault();
     fpRemoveBlock();
@@ -2519,7 +3075,88 @@ function fpOnDeleteKey(e) {
   // else: nothing selected → no-op
 }
 
+// ---------- Studio ribbon helpers (additive; existing flows untouched) ----------
+// Bottom-right toast stack. fpToast() keeps driving the legacy #fpBanner (all
+// existing callers rely on it) and mirrors every message here.
+function fpStudioToast(msg, ok) {
+  try {
+    const stack = $('#fpToasts');
+    if (!stack || !msg) return;
+    const el = document.createElement('div');
+    el.className = 'fp-toast' + (ok === false ? ' err' : ok === true ? ' ok' : '');
+    el.textContent = msg;
+    stack.appendChild(el);
+    while (stack.children.length > 4) stack.firstChild.remove();
+    setTimeout(() => {
+      el.classList.add('out');
+      setTimeout(() => el.remove(), 250);
+    }, 4200);
+  } catch (_) {
+    // Toasts are cosmetic — never break the editor.
+  }
+}
+
+// Effective Studio mode for the segmented control + MODE badge. Placement
+// modes (armed marker, line tool) win over the sticky tool so the badge is
+// always truthful; block mode sticks while its form is open.
+function fpEffectiveMode() {
+  if (state.fp.armedMarker) return 'marker';
+  if (state.fp.drawMode) return 'draw';
+  if (state.fp.tool === 'add') return 'add';
+  if (state.fp.tool === 'block') return 'block';
+  return 'select';
+}
+
+// Highlight the active Mode segment, sync aria-pressed, and paint the
+// workspace MODE: badge. Null-safe so it can run on every fpRender().
+function fpSyncModeUI() {
+  const mode = fpEffectiveMode();
+  const badge = $('#fpModeIndicator');
+  if (badge) {
+    badge.textContent =
+      mode === 'marker'
+        ? 'MODE: MARKER'
+        : mode === 'draw'
+          ? 'MODE: DRAW'
+          : mode === 'add'
+            ? 'MODE: ADD UNIT'
+            : mode === 'block'
+              ? 'MODE: BLOCK'
+              : 'MODE: SELECT';
+  }
+  const set = (id, on) => {
+    const b = $(id);
+    if (!b) return;
+    b.classList.toggle('on', on);
+    b.setAttribute('aria-pressed', String(on));
+  };
+  set('#fpModeSelect', mode === 'select');
+  set('#fpModeAddUnit', mode === 'add');
+  // fpBoundaryTool/fpAddBlock keep their own .on sync (pencil toggle / block
+  // form); mirror the effective mode here so the segmented control reads as one.
+  const pencil = $('#fpBoundaryTool');
+  if (pencil) {
+    pencil.classList.toggle('on', mode === 'draw');
+    pencil.setAttribute('aria-pressed', String(mode === 'draw'));
+  }
+  const blk = $('#fpAddBlock');
+  if (blk) {
+    blk.classList.toggle('on', mode === 'block');
+    blk.setAttribute('aria-pressed', String(mode === 'block'));
+  }
+}
+
+function fpSetMarkersMenu(open) {
+  const menu = $('#fpMarkersMenu');
+  if (!menu) return;
+  menu.hidden = !open;
+  $('#fpMarkersBtn')?.setAttribute('aria-expanded', String(!!open));
+}
+
 export function fpInitEvents() {
+  // Wiring follows the toolbar groups in canonical order (see
+  // FP_TOOLBAR_GROUPS): units → mode → markers → canvas → plan → view → info.
+  // --- Group: header (branch/floor scope + save/delete plan actions, delete last) ---
   $('#fpBranch').addEventListener('change', (e) => {
     state.fp.branchCode = e.target.value;
     state.fp.floorId = null;
@@ -2531,7 +3168,9 @@ export function fpInitEvents() {
     fpFetch().catch(() => {});
   });
   $('#fpSaveCanvas').addEventListener('click', fpSaveCanvas);
+  $('#fpPublishPlan').addEventListener('click', fpPublishPlan);
   $('#fpDeletePlan').addEventListener('click', fpDeletePlan);
+  // --- Group: units (Units) — palette ghost orientation + sqft lock ---
   // Orientation toggle for rectangular palette ghosts (placement-time only).
   const rotBtn = $('#fpRotateGhost');
   const syncRotBtn = () => {
@@ -2570,6 +3209,7 @@ export function fpInitEvents() {
       }
     });
   }
+  // --- Group: draw (Select/Draw) — pencil (line) tool ---
   // Pencil (line) tool: toggles draw mode like the other ghost toggles. While
   // ON, canvas press-drag draws a straight grid-ft line persisted as an OPEN
   // boundary polyline (kind 'PENCIL') via POST /floor-plans/:id/boundaries.
@@ -2587,8 +3227,16 @@ export function fpInitEvents() {
     pencilBtn.addEventListener('click', () => {
       state.fp.drawMode = !state.fp.drawMode;
       fpDraftLine = null;
+      if (state.fp.drawMode && state.fp.armedMarker) {
+        // One placement mode at a time — arming the line tool disarms markers.
+        state.fp.armedMarker = null;
+        fpRenderMarkerTools();
+      }
       syncPencilBtn();
       fpRenderCanvas();
+      // Studio Mode segment follows the line tool.
+      state.fp.tool = state.fp.drawMode ? 'draw' : 'select';
+      fpSyncModeUI();
       fpToast(
         state.fp.drawMode
           ? 'Line tool ON — press and drag on the canvas to draw a line, release to save. Click a drawn line to select it.'
@@ -2614,12 +3262,16 @@ export function fpInitEvents() {
       e.target.blur();
     }
   });
+  // --- Group: view (zoom) ---
   $('#fpZoomIn').addEventListener('click', () => fpZoomStep(1));
   $('#fpZoomOut').addEventListener('click', () => fpZoomStep(-1));
   // Modifier-gated canvas zoom (see fpOnCanvasWheel) + editor Delete shortcut
   // (see fpOnDeleteKey) — both attached once here, never per-render.
   $('#fpCanvasWrap').addEventListener('wheel', fpOnCanvasWheel, { passive: false });
   document.addEventListener('keydown', fpOnDeleteKey);
+  // Escape cancels an armed marker (the line tool owns its own mid-draft Escape).
+  document.addEventListener('keydown', fpOnEscapeTool);
+  // --- Group: units (palette drag, palette toggle, auto-place) + blocks (block form) ---
   $('#fpPalette').addEventListener('pointerdown', (e) => {
     const chip = e.target.closest('.fp-unit-chip');
     if (!chip) return;
@@ -2630,11 +3282,20 @@ export function fpInitEvents() {
     fpSetPaletteCollapsed(!fpPaletteCollapsed());
   });
   $('#fpPaletteReopen')?.addEventListener('click', () => fpSetPaletteCollapsed(false));
-  $('#fpAddBlock').addEventListener('click', () => fpToggleBlockForm(true));
+  $('#fpAddBlock').addEventListener('click', () => {
+    fpToggleBlockForm(true);
+    // Studio Mode segment follows the block form.
+    state.fp.tool = 'block';
+    fpSyncModeUI();
+  });
   const fpAutoBtn = $('#fpAutoPlace');
   if (fpAutoBtn) fpAutoBtn.addEventListener('click', fpAutoPlaceAll);
   $('#fpBlockAdd').addEventListener('click', fpAddBlock);
-  $('#fpBlockCancel').addEventListener('click', () => fpToggleBlockForm(false));
+  $('#fpBlockCancel').addEventListener('click', () => {
+    fpToggleBlockForm(false);
+    if (state.fp.tool === 'block') state.fp.tool = 'select';
+    fpSyncModeUI();
+  });
   $('#fpBlockName').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
       e.preventDefault();
@@ -2643,7 +3304,42 @@ export function fpInitEvents() {
       fpToggleBlockForm(false);
     }
   });
+  // Block-form fill controls: palette swatches stage state.fp.blockColor, the
+  // native input stages a custom hex, Default clears back to the default tone.
+  $('#fpBlockSwatches')?.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-block-color]');
+    if (!btn) return;
+    state.fp.blockColor = String(btn.dataset.blockColor || '').toUpperCase() || null;
+    fpRenderBlockFormSwatches();
+  });
+  $('#fpBlockColor')?.addEventListener('input', (e) => {
+    state.fp.blockColor = String(e.target.value || '').toUpperCase() || null;
+    fpRenderBlockFormSwatches();
+  });
+  $('#fpBlockColorClear')?.addEventListener('click', () => {
+    state.fp.blockColor = null;
+    fpRenderBlockFormSwatches();
+  });
+  // --- Group: markers (Markers/Safety) — arm-a-kind buttons render from
+  // FP_MARKER_KINDS via fpRenderMarkerTools(); clicks delegate by data-kind.
+  $('#fpMarkerTools')?.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-marker-kind]');
+    if (!btn) return;
+    fpToggleArmedMarker(btn.dataset.markerKind);
+  });
+  // --- Group: info (Labels) — canvas selection/drag dispatch + selection strip ---
   $('#fpCanvasWrap').addEventListener('pointerdown', (e) => {
+    // Armed marker (Markers/Safety group): the next canvas click places the
+    // armed kind and disarms — same mode-gated pattern as the line tool below
+    // (placement/block/line interactions stay off until placed or cancelled).
+    if (state.fp.armedMarker) {
+      const canvas = $('#fpCanvas');
+      if (canvas && canvas.contains(e.target)) {
+        const p = fpCanvasPointAt(e.clientX, e.clientY);
+        if (p) fpPlaceMarker(state.fp.armedMarker, p.x, p.y);
+      }
+      return;
+    }
     // Line tool active: canvas press-drag draws a straight line and the
     // placement/block interactions below are mode-gated off until the tool
     // toggles off. Only canvas surfaces start a line (wrap padding is inert).
@@ -2655,6 +3351,12 @@ export function fpInitEvents() {
     const placed = e.target.closest('.fp-placed');
     if (placed) {
       fpStartMove(e, placed);
+      return;
+    }
+    // Marker badges render topmost, so they hit-test before blocks.
+    const marker = e.target.closest('.fp-marker');
+    if (marker) {
+      fpMarkerStartMove(e, marker);
       return;
     }
     const blk = e.target.closest('.fp-block');
@@ -2669,6 +3371,7 @@ export function fpInitEvents() {
       state.fp.selectedBoundary = bndHit;
       state.fp.selected = null;
       state.fp.selectedBlock = null;
+      state.fp.selectedMarker = null;
       fpRenderCanvas();
       fpRenderSelInfo();
       return;
@@ -2676,6 +3379,7 @@ export function fpInitEvents() {
     // click on empty canvas → deselect
     state.fp.selected = null;
     state.fp.selectedBlock = null;
+    state.fp.selectedMarker = null;
     state.fp.selectedBoundary = null;
     fpRenderCanvas();
     fpRenderSelInfo();
@@ -2689,17 +3393,103 @@ export function fpInitEvents() {
     else if (e.target && e.target.id === 'fpBoundaryRemoveBtn') fpRemoveBoundary();
     else if (e.target && e.target.id === 'fpBoundaryCloseBtn') fpCloseBoundary();
     else if (e.target && e.target.id === 'fpBlockRenameBtn') fpRenameBlock();
-    else if (e.target && e.target.id === 'fpDoorsAutoBtn') fpResetDoors();
+    else if (e.target && e.target.id === 'fpMarkerRenameBtn') fpRenameMarker();
+    else if (e.target && e.target.id === 'fpMarkerRemoveBtn') fpRemoveMarker();
+    else if (e.target && e.target.id === 'fpBlockColorDefault') {
+      const cblk = state.fp.blocks.find((b) => b.id === state.fp.selectedBlock);
+      if (cblk) fpSetBlockColor(cblk, null);
+    } else if (e.target && e.target.dataset && e.target.dataset.blockColor) {
+      const cblk = state.fp.blocks.find((b) => b.id === state.fp.selectedBlock);
+      if (cblk) fpSetBlockColor(cblk, e.target.dataset.blockColor);
+    } else if (e.target && e.target.id === 'fpDoorsAutoBtn') fpResetDoors();
     else if (e.target && e.target.dataset && e.target.dataset.door) fpToggleDoor(e.target.dataset.door);
   });
   $('#fpSelInfo').addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && e.target && e.target.id === 'fpBlockRename') {
       e.preventDefault();
       fpRenameBlock();
+    } else if (e.key === 'Enter' && e.target && e.target.id === 'fpMarkerRename') {
+      e.preventDefault();
+      fpRenameMarker();
+    }
+  });
+  // Native colour pickers commit via `change` (not click), so the selection
+  // strip's custom fill input is wired here rather than in the click delegate.
+  $('#fpSelInfo').addEventListener('change', (e) => {
+    if (e.target && e.target.id === 'fpBlockColorPick') {
+      const cblk = state.fp.blocks.find((b) => b.id === state.fp.selectedBlock);
+      if (cblk) fpSetBlockColor(cblk, e.target.value);
     }
   });
   // read-only preview (opened from the Units view detail panel)
   $('#unitShowFloorPlan').addEventListener('click', fpViewOpen);
   $('#fpViewClose').addEventListener('click', fpViewClose);
   $('#fpViewCloseBtn').addEventListener('click', fpViewClose);
+  // --- Studio ribbon: Mode segments (Select / Add Unit) ---
+  // Draw Wall + Add Block reuse #fpBoundaryTool / #fpAddBlock above, so the
+  // segmented control has one handler per tool and the audit stays green.
+  $('#fpModeSelect')?.addEventListener('click', () => {
+    state.fp.tool = 'select';
+    state.fp.drawMode = false;
+    fpDraftLine = null;
+    state.fp.armedMarker = null;
+    const pencilBtn = $('#fpBoundaryTool');
+    if (pencilBtn) {
+      pencilBtn.classList.remove('on');
+      pencilBtn.setAttribute('aria-pressed', 'false');
+    }
+    fpSetMarkersMenu(false);
+    fpRenderMarkerTools();
+    fpRenderCanvas();
+    fpSyncModeUI();
+  });
+  $('#fpModeAddUnit')?.addEventListener('click', () => {
+    state.fp.tool = 'add';
+    state.fp.drawMode = false;
+    fpDraftLine = null;
+    state.fp.armedMarker = null;
+    fpSetPaletteCollapsed(false);
+    fpRenderMarkerTools();
+    fpRenderCanvas();
+    fpSyncModeUI();
+    fpToast('Add-unit mode — drag a unit chip from the palette onto the canvas.', true);
+  });
+  // --- Studio ribbon: Markers dropdown (outside-click closes) ---
+  $('#fpMarkersBtn')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    fpSetMarkersMenu($('#fpMarkersMenu')?.hidden !== false);
+  });
+  document.addEventListener('pointerdown', (e) => {
+    const menu = $('#fpMarkersMenu');
+    if (menu && !menu.hidden && !e.target?.closest?.('#fpMarkersMenu, #fpMarkersBtn')) {
+      fpSetMarkersMenu(false);
+    }
+  });
+  // --- Studio ribbon: Zoom presets + grid toggle ---
+  $('#fpZoomPreset')?.addEventListener('change', (e) => {
+    const v = String(e.target.value);
+    if (v === 'fit') fpZoomFit();
+    else {
+      const n = Number(v);
+      if (Number.isFinite(n)) {
+        state.fp.scale = Math.min(3, Math.max(0.4, n));
+        fpRenderCanvas();
+      }
+    }
+  });
+  $('#fpGridToggle')?.addEventListener('click', () => {
+    const btn = $('#fpGridToggle');
+    state.fp.showGrid = state.fp.showGrid === false;
+    if (btn) {
+      btn.classList.toggle('on', state.fp.showGrid !== false);
+      btn.setAttribute('aria-pressed', String(state.fp.showGrid !== false));
+    }
+    fpRenderCanvas();
+  });
+  // First paint for toolbar-driven state + a boot-time audit that warns about
+  // missing or unregistered (dead) toolbar tools — see FP_TOOLBAR_GROUPS.
+  fpRenderMarkerTools();
+  fpRenderBlockFormSwatches();
+  fpSyncModeUI();
+  fpAuditToolbar();
 }

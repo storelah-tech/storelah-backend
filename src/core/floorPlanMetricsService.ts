@@ -60,7 +60,7 @@
 import { prisma } from '../lib/prisma';
 import { toNum } from '../lib/format';
 import { AppError } from '../lib/http';
-import type { Prisma } from '@prisma/client';
+import type { PlanStatus, Prisma } from '@prisma/client';
 import { MARKET_PSF } from './market';
 import { computeBoundaryMetrics, doorEdgesToArray, type BoundaryMetrics, type GfaSource } from './floorPlans';
 import {
@@ -1075,7 +1075,9 @@ export async function getFacilityMetrics(branchRef: string): Promise<FacilityMet
   };
 }
 
-// ---------- snapshots (append-only; no update route exists by design) ----------
+// ---------- snapshots (save-draft → approve → publish, promotions mirror) ----------
+
+export type MetricsSnapshotStatus = 'DRAFT' | 'VALIDATED' | 'SCHEDULED' | 'ACTIVE';
 
 export interface MetricsSnapshotSummary {
   id: string;
@@ -1084,6 +1086,10 @@ export interface MetricsSnapshotSummary {
   effectiveDate: string;
   schemaVersion: number;
   geometryHash: string;
+  status: MetricsSnapshotStatus;
+  approverRole: string | null;
+  validatedAt: string | null;
+  publishedAt: string | null;
   createdAt: string;
 }
 
@@ -1094,6 +1100,10 @@ function serializeSnapshot(row: {
   effectiveDate: Date;
   schemaVersion: number;
   geometryHash: string;
+  status: PlanStatus;
+  approverRole: string | null;
+  validatedAt: Date | null;
+  publishedAt: Date | null;
   createdAt: Date;
 }): MetricsSnapshotSummary {
   return {
@@ -1103,26 +1113,31 @@ function serializeSnapshot(row: {
     effectiveDate: row.effectiveDate.toISOString().slice(0, 10),
     schemaVersion: row.schemaVersion,
     geometryHash: row.geometryHash,
+    status: row.status as MetricsSnapshotStatus,
+    approverRole: row.approverRole,
+    validatedAt: row.validatedAt ? row.validatedAt.toISOString() : null,
+    publishedAt: row.publishedAt ? row.publishedAt.toISOString() : null,
     createdAt: row.createdAt.toISOString(),
   };
 }
 
-/**
- * Persist an append-only snapshot of the live metrics. Validation ERRORs
- * block publication (422 + validation array) — invalid geometry is never
- * persisted. Same (floor, date) twice creates two rows: history, not state.
- */
-export async function createMetricsSnapshot(floorId: string, effectiveDate: string): Promise<MetricsSnapshotSummary> {
+function assertEffectiveDate(effectiveDate: string): void {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(effectiveDate) || Number.isNaN(Date.parse(`${effectiveDate}T00:00:00Z`))) {
     throw new AppError(400, 'VALIDATION', `effective_date must be a valid YYYY-MM-DD date, got ${JSON.stringify(effectiveDate)}`);
   }
+}
+
+/**
+ * Save a DRAFT snapshot of the live metrics. Validation warnings AND errors
+ * are allowed on the draft (they ride along in payload.validation as
+ * draft-blocked state) — the DRAFT → VALIDATED edge requires zero blockers,
+ * mirroring promotion plans (createPlan never validates; setPlanStatus
+ * re-validates on the VALIDATED edge). Same (floor, date) twice creates two
+ * rows: history, not state.
+ */
+export async function createDraftSnapshot(floorId: string, effectiveDate: string): Promise<MetricsSnapshotSummary> {
+  assertEffectiveDate(effectiveDate);
   const report = await getFloorMetrics(floorId);
-  const errors = report.validation.filter((v) => v.severity === 'error');
-  if (errors.length > 0) {
-    throw new AppError(422, 'METRICS_INVALID', `Floor ${floorId} metrics have ${errors.length} blocking validation error(s) — snapshot not persisted`, {
-      validation: errors,
-    });
-  }
   const created = await prisma.floorplanMetricsSnapshot.create({
     data: {
       floorId: report.floor.id,
@@ -1131,12 +1146,131 @@ export async function createMetricsSnapshot(floorId: string, effectiveDate: stri
       schemaVersion: METRICS_SCHEMA_VERSION,
       geometryHash: report.geometry_hash,
       payload: report as unknown as Prisma.InputJsonValue,
+      status: 'DRAFT',
     },
   });
   return serializeSnapshot(created);
 }
 
-/** Snapshot history for a floor (newest effective date first), payloads included. */
+/**
+ * Legacy entry point, kept so existing callers/imports keep compiling: POST
+ * now saves a DRAFT (validation no longer 422-blocks the write — drafts may
+ * be draft-blocked; promotion happens via transitionSnapshotStatus).
+ */
+export async function createMetricsSnapshot(floorId: string, effectiveDate: string): Promise<MetricsSnapshotSummary> {
+  return createDraftSnapshot(floorId, effectiveDate);
+}
+
+// --- Snapshot approval state machine (mirrors promotionPlans.ts) ---
+//
+// Allowed transitions:
+//
+//   DRAFT ──► VALIDATED ──► SCHEDULED ──► ACTIVE (immutable)
+//     ▲          │              │
+//     └──────────┘              │  (rollback to DRAFT for rework)
+//     └────────────────────────┘
+//
+// - DRAFT → VALIDATED: recomputes live metrics, requires zero ERROR blockers.
+// - VALIDATED → SCHEDULED: re-checks zero blockers (a canvas edited after
+//   validation cannot slip through stale) + requires the verified
+//   'promotions.approve' permission via requirePermission (same gated pattern
+//   as setPlanStatus: actors without any permission row keep the legacy
+//   label-only behavior). No new 'metrics.approve' permission was invented —
+//   reusing the promotions vocabulary keeps one approval capability.
+// - SCHEDULED → ACTIVE (publish): same permission gate; the payload +
+//   geometryHash + schemaVersion refresh from a final live recompute (zero
+//   blockers required) so ACTIVE is always fresh canvas truth; publishedAt is
+//   stamped. effectiveDate stays as drafted.
+// - VALIDATED → DRAFT and SCHEDULED → DRAFT: safe rollback for rework.
+//   ACTIVE → anything is FORBIDDEN (a published snapshot is immutable —
+//   corrections are a NEW draft row via POST, the promotions restore-as-draft
+//   equivalent). ENDED is never assigned to snapshots.
+// - Any other edge is rejected with 400 INVALID_TRANSITION.
+const SNAPSHOT_TRANSITIONS: Record<MetricsSnapshotStatus, MetricsSnapshotStatus[]> = {
+  DRAFT: ['VALIDATED'],
+  VALIDATED: ['SCHEDULED', 'DRAFT'],
+  SCHEDULED: ['ACTIVE', 'DRAFT'],
+  ACTIVE: [],
+};
+
+export function allowedSnapshotTransitions(from: MetricsSnapshotStatus): MetricsSnapshotStatus[] {
+  return SNAPSHOT_TRANSITIONS[from] ?? [];
+}
+
+function snapshotBlockers(report: FloorMetricsReport): Array<{ code: string; severity: string; region_ids: string[]; message: string }> {
+  return report.validation.filter((v) => v.severity === 'error');
+}
+
+export async function transitionSnapshotStatus(
+  id: string,
+  status: MetricsSnapshotStatus,
+  opts?: { changedBy?: string; approverRole?: string; actorId?: string },
+): Promise<MetricsSnapshotSummary> {
+  const existing = await prisma.floorplanMetricsSnapshot.findUnique({ where: { id } });
+  if (!existing) throw new AppError(404, 'NOT_FOUND', `Metrics snapshot ${id} not found`);
+
+  const from = existing.status as MetricsSnapshotStatus;
+  if (from !== status && !allowedSnapshotTransitions(from).includes(status)) {
+    throw new AppError(
+      400,
+      'INVALID_TRANSITION',
+      `Cannot move snapshot from ${from} to ${status}`,
+      { from, to: status, allowed: allowedSnapshotTransitions(from) },
+    );
+  }
+  if (from === status) return serializeSnapshot(existing);
+
+  // Gated go-live edges (promotions mirror — lazy import avoids a
+  // core/users ⇄ metrics service cycle; legacy fallback when the actor holds
+  // no permission rows — see mayAct in src/core/users.ts).
+  if (status === 'SCHEDULED' || status === 'ACTIVE') {
+    if (opts?.actorId) {
+      const { requirePermission } = await import('./users');
+      await requirePermission(opts.actorId, 'promotions.approve');
+    }
+  }
+
+  // Validation gates recompute live metrics so a canvas edited after the
+  // draft was saved cannot slip through stale.
+  let fresh: FloorMetricsReport | null = null;
+  if (
+    (from === 'DRAFT' && status === 'VALIDATED') ||
+    (from === 'VALIDATED' && status === 'SCHEDULED') ||
+    (from === 'SCHEDULED' && status === 'ACTIVE')
+  ) {
+    fresh = await getFloorMetrics(existing.floorId);
+    const errors = snapshotBlockers(fresh);
+    if (errors.length > 0) {
+      throw new AppError(400, 'VALIDATION_FAILED', `Snapshot has ${errors.length} validation blocker(s) — resolve before moving from ${from} to ${status}`, {
+        blockers: errors,
+        from,
+        to: status,
+      });
+    }
+  }
+
+  const updated = await prisma.floorplanMetricsSnapshot.update({
+    where: { id },
+    data: {
+      status,
+      ...(opts?.approverRole !== undefined ? { approverRole: opts.approverRole || null } : {}),
+      ...(status === 'VALIDATED' ? { validatedAt: new Date() } : {}),
+      // Publish refreshes the payload to fresh canvas truth (draft rows are
+      // mutable; ACTIVE rows are never touched again afterwards).
+      ...(status === 'ACTIVE' && fresh
+        ? {
+            payload: fresh as unknown as Prisma.InputJsonValue,
+            geometryHash: fresh.geometry_hash,
+            schemaVersion: METRICS_SCHEMA_VERSION,
+            publishedAt: new Date(),
+          }
+        : {}),
+    },
+  });
+  return serializeSnapshot(updated);
+}
+
+/** Snapshot history for a floor (newest effective date first), payloads included. All statuses. */
 export async function listMetricsSnapshots(floorId: string): Promise<Array<MetricsSnapshotSummary & { payload: unknown }>> {
   const floor = await prisma.floor.findUnique({ where: { id: floorId }, select: { id: true } });
   if (!floor) throw new AppError(404, 'NOT_FOUND', `Floor ${floorId} not found`);
@@ -1145,4 +1279,21 @@ export async function listMetricsSnapshots(floorId: string): Promise<Array<Metri
     orderBy: [{ effectiveDate: 'desc' }, { createdAt: 'desc' }],
   });
   return rows.map((r) => ({ ...serializeSnapshot(r), payload: r.payload }));
+}
+
+/**
+ * Authoritative snapshot for a floor: the latest ACTIVE row (newest
+ * effective date, then newest creation), payload included. Drafts
+ * (DRAFT/VALIDATED/SCHEDULED) never resolve here — only published ACTIVE
+ * rows are authoritative. 404s when the floor has no ACTIVE snapshot.
+ */
+export async function getAuthoritativeSnapshot(floorId: string): Promise<MetricsSnapshotSummary & { payload: unknown }> {
+  const floor = await prisma.floor.findUnique({ where: { id: floorId }, select: { id: true } });
+  if (!floor) throw new AppError(404, 'NOT_FOUND', `Floor ${floorId} not found`);
+  const row = await prisma.floorplanMetricsSnapshot.findFirst({
+    where: { floorId, status: 'ACTIVE' },
+    orderBy: [{ effectiveDate: 'desc' }, { createdAt: 'desc' }],
+  });
+  if (!row) throw new AppError(404, 'NOT_FOUND', `No published (ACTIVE) metrics snapshot for floor ${floorId}`);
+  return { ...serializeSnapshot(row), payload: row.payload };
 }

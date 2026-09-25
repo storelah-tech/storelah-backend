@@ -25,7 +25,7 @@ export const openapiSpec = {
   openapi: '3.0.3',
   info: {
     title: 'StoreLah Booking API',
-    version: '1.7.0',
+    version: '1.8.0',
     description: [
       'Customer-facing booking API for the StoreLah self-storage business.',
       '',
@@ -168,6 +168,22 @@ export const openapiSpec = {
       '`name` + ≥1 contact still required, `consentPdpa` must be true when supplied). ',
       'New rows write columns directly (`note` carries only the message head); pre-v2 ',
       'note-packed rows keep reading via the server-side legacy parser fallback. ',
+      'All pre-existing shapes are unchanged.',
+      '',
+      'v1.8.0 is ADDITIVE-ONLY over 1.7.0: save-draft → approve → publish for ',
+      'floor-plan metrics snapshots (promotions mirror) — `POST ',
+      '/cms/floor-plans/{floorId}/metrics/snapshots` now saves a DRAFT row ',
+      '(validation warnings AND errors allowed as draft-blocked state), new ',
+      '`PATCH /cms/floor-plans/metrics/snapshots/{id}/status` walks ',
+      'DRAFT → VALIDATED → SCHEDULED → ACTIVE (VALIDATED/SCHEDULED → DRAFT ',
+      'rollback for rework; ACTIVE immutable, corrections are new draft rows; ',
+      'go-live edges → SCHEDULED / → ACTIVE require the verified ',
+      '`promotions.approve` permission for actors holding permission rows, ',
+      'legacy label-only fallback otherwise), and new `GET ',
+      '/cms/floor-plans/{floorId}/metrics/snapshots/authoritative` resolves ',
+      'the latest ACTIVE row (the authoritative read — drafts never resolve ',
+      'there). Snapshot shapes gain `status` + `approverRole` / ',
+      '`validatedAt` / `publishedAt`; pre-workflow rows backfill to ACTIVE. ',
       'All pre-existing shapes are unchanged.',
     ].join('\n'),
   },
@@ -734,12 +750,14 @@ export const openapiSpec = {
     '/cms/floor-plans/{floorId}/metrics/snapshots': {
       post: {
         tags: ['Operator CMS'],
-        summary: 'Publish a metrics snapshot (append-only)',
+        summary: 'Save a draft metrics snapshot (append-only)',
         description: [
-          'Persists the live metrics as an append-only history row for `{effective_date}` (201 with the ',
-          'created snapshot id + keys). Validation ERRORs block publication with 422 and the validation ',
-          'array in the error details — invalid geometry is never persisted. Publishing the same date twice ',
-          'creates two rows (history, not state); there is no PUT/PATCH route — updates are forbidden by design.',
+          'Persists the live metrics as an append-only DRAFT history row for `{effective_date}` (201 with the ',
+          'created snapshot id + keys). Validation warnings AND errors are allowed on the draft — they ride ',
+          'along in `payload.validation` as draft-blocked state; promotion to VALIDATED requires zero ',
+          'blockers (see the status endpoint). Saving the same date twice creates two rows (history, not ',
+          'state); there is no PUT route and no direct payload PATCH — ACTIVE rows are immutable and ',
+          'corrections are new draft rows.',
           '',
           'Operator CMS endpoints are documented here for reference only; they are served on the CMS host under ',
           '`/api/v1/cms` and require a Bearer JWT issued by `/api/v1/cms/login` (auto-login via `/api/v1/cms/config`).',
@@ -768,14 +786,6 @@ export const openapiSpec = {
           '400': openapiErrorResponse('Invalid effective_date (must be YYYY-MM-DD).'),
           '401': openapiErrorResponse('Missing/invalid bearer token.'),
           '404': openapiErrorResponse('Floor or floor plan not found.'),
-          '422': {
-            description: 'Blocking validation errors — snapshot not persisted.',
-            content: {
-              'application/json': {
-                schema: { $ref: '#/components/schemas/ErrorEnvelope' },
-              },
-            },
-          },
           '500': openapiErrorResponse('Unexpected server error'),
         },
       },
@@ -783,8 +793,9 @@ export const openapiSpec = {
         tags: ['Operator CMS'],
         summary: 'List metrics snapshots',
         description: [
-          'Append-only snapshot history for a floor, newest effective date first, payloads included. ',
-          'Every row carries its `schemaVersion` and `geometryHash`.',
+          'Append-only snapshot history for a floor, newest effective date first, payloads included — all ',
+          'statuses (DRAFT / VALIDATED / SCHEDULED / ACTIVE). Every row carries its `schemaVersion`, ',
+          '`geometryHash` and workflow `status`.',
           '',
           'Operator CMS endpoints are documented here for reference only; they are served on the CMS host under ',
           '`/api/v1/cms` and require a Bearer JWT issued by `/api/v1/cms/login` (auto-login via `/api/v1/cms/config`).',
@@ -807,6 +818,82 @@ export const openapiSpec = {
           }),
           '401': openapiErrorResponse('Missing/invalid bearer token.'),
           '404': openapiErrorResponse('Floor not found.'),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+    },
+    '/cms/floor-plans/{floorId}/metrics/snapshots/authoritative': {
+      get: {
+        tags: ['Operator CMS'],
+        summary: 'Get the authoritative metrics snapshot',
+        description: [
+          'Resolves the latest ACTIVE snapshot for a floor (newest effective date, then newest creation), ',
+          'payload included. Drafts (DRAFT / VALIDATED / SCHEDULED) never resolve here — only published ',
+          'ACTIVE rows are authoritative. 404s when the floor has no ACTIVE snapshot.',
+          '',
+          'Operator CMS endpoints are documented here for reference only; they are served on the CMS host under ',
+          '`/api/v1/cms` and require a Bearer JWT issued by `/api/v1/cms/login` (auto-login via `/api/v1/cms/config`).',
+        ].join('\n'),
+        operationId: 'getAuthoritativeFloorPlanMetricsSnapshot',
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          {
+            name: 'floorId',
+            in: 'path',
+            required: true,
+            description: 'Floor row id (the plan upsert key).',
+            schema: { type: 'string' },
+          },
+        ],
+        responses: {
+          '200': openapiResponse({ $ref: openapiSchemaRef('MetricsSnapshotWithPayload') }),
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '404': openapiErrorResponse('Floor not found, or no published (ACTIVE) snapshot for the floor.'),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+    },
+    '/cms/floor-plans/metrics/snapshots/{id}/status': {
+      patch: {
+        tags: ['Operator CMS'],
+        summary: 'Transition a metrics snapshot status',
+        description: [
+          'Walks a snapshot through DRAFT → VALIDATED → SCHEDULED → ACTIVE (the promotions-mirrored ',
+          'workflow). DRAFT → VALIDATED and VALIDATED → SCHEDULED recompute live metrics and require zero ',
+          'ERROR blockers; SCHEDULED → ACTIVE (publish) refreshes the payload to fresh canvas truth and ',
+          'stamps `publishedAt`. VALIDATED / SCHEDULED → DRAFT rolls back for rework; ACTIVE is immutable ',
+          '(corrections are new draft rows) and any other edge is 400 INVALID_TRANSITION. Go-live edges ',
+          '(→ SCHEDULED / → ACTIVE) require the verified `promotions.approve` permission for actors that ',
+          'hold permission rows (legacy label-only fallback otherwise — same gate as promotion plans).',
+          '',
+          'Operator CMS endpoints are documented here for reference only; they are served on the CMS host under ',
+          '`/api/v1/cms` and require a Bearer JWT issued by `/api/v1/cms/login` (auto-login via `/api/v1/cms/config`).',
+        ].join('\n'),
+        operationId: 'transitionFloorPlanMetricsSnapshotStatus',
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          {
+            name: 'id',
+            in: 'path',
+            required: true,
+            description: 'Snapshot row id.',
+            schema: { type: 'string' },
+          },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: { $ref: openapiSchemaRef('MetricsSnapshotStatusInput') },
+            },
+          },
+        },
+        responses: {
+          '200': openapiResponse({ $ref: openapiSchemaRef('MetricsSnapshot') }),
+          '400': openapiErrorResponse('Invalid status, transition, or validation blockers.'),
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '403': openapiErrorResponse('Requires permission "promotions.approve".'),
+          '404': openapiErrorResponse('Snapshot not found.'),
           '500': openapiErrorResponse('Unexpected server error'),
         },
       },
@@ -4077,7 +4164,7 @@ export const openapiSpec = {
           height: { type: 'integer', description: 'Bounding box height in feet (1 grid unit = 1 ft).' },
           color: {
             type: ['string', 'null'],
-            description: 'Optional render tint (hex); renderers default to a neutral tone when null.',
+            description: 'Block fill colour — hex #RGB/#RRGGBB (stored uppercased) or null for the default tone (#E6E0D7).',
           },
           doorEdges: {
             type: ['array', 'null'],
@@ -4160,6 +4247,26 @@ export const openapiSpec = {
           sortOrder: { type: 'integer', minimum: 0, maximum: 100000 },
         },
       },
+      PlanMarker: {
+        type: 'object',
+        required: ['id', 'kind', 'label', 'x', 'y'],
+        description:
+          'A safety/facility point icon on a floor plan (fire extinguisher, do-not-enter, exit sign, ...). Grid-ft point in feet, edge-inclusive (1 grid unit = 1 ft). Display only — points carry no area, so boundaryMetrics ignores them.',
+        properties: {
+          id: { type: 'string', description: 'FloorPlanMarker row id (cuid).' },
+          kind: {
+            type: 'string',
+            enum: ['FIRE_EXTINGUISHER', 'DO_NOT_ENTER', 'EXIT_SIGN', 'FIRE_HOSE', 'FIRST_AID', 'KEEP_CLEAR'],
+            description: 'Marker kind (additive — new kinds need no migration).',
+          },
+          label: {
+            type: ['string', 'null'],
+            description: 'Optional operator label override (renderers fall back to the kind display label when null).',
+          },
+          x: { type: 'integer', description: 'Grid-ft point x (0..canvas width, edge-inclusive).' },
+          y: { type: 'integer', description: 'Grid-ft point y (0..canvas height, edge-inclusive).' },
+        },
+      },
       BoundaryMetrics: {
         type: 'object',
         required: ['gla', 'ufa', 'nla', 'unit', 'boundaryClosed'],
@@ -4203,7 +4310,7 @@ export const openapiSpec = {
           plan: {
             type: 'object',
             nullable: true,
-            required: ['id', 'floorId', 'width', 'height', 'structure', 'placements', 'blocks', 'boundaries', 'boundaryMetrics'],
+            required: ['id', 'floorId', 'width', 'height', 'structure', 'placements', 'blocks', 'boundaries', 'markers', 'boundaryMetrics'],
             description:
               'The canvas + decorations when a plan has been authored; null when the floor has no plan yet (renderers should fall back to a synthesized grid).',
             properties: {
@@ -4228,6 +4335,12 @@ export const openapiSpec = {
                 description:
                   'Facility-boundary line-item polylines (grid-ft vertices) in editor sort order.',
                 items: { $ref: openapiSchemaRef('PlanBoundary') },
+              },
+              markers: {
+                type: 'array',
+                description:
+                  'Safety/facility point icons (grid-ft points) in authored order. Display only — points carry no area, so boundaryMetrics ignores them.',
+                items: { $ref: openapiSchemaRef('PlanMarker') },
               },
               boundaryMetrics: {
                 description:
@@ -4659,15 +4772,30 @@ export const openapiSpec = {
       MetricsSnapshotInput: {
         type: 'object',
         required: ['effective_date'],
-        description: 'Publish a metrics snapshot for an effective date (append-only).',
+        description: 'Save a draft metrics snapshot for an effective date (append-only).',
         properties: {
           effective_date: { type: 'string', description: 'Effective date (YYYY-MM-DD).' },
         },
       },
+      MetricsSnapshotStatusInput: {
+        type: 'object',
+        required: ['status'],
+        description: 'Walk a snapshot through DRAFT → VALIDATED → SCHEDULED → ACTIVE (rollback to DRAFT for rework; ACTIVE immutable).',
+        properties: {
+          status: { $ref: openapiSchemaRef('MetricsSnapshotStatus') },
+          changedBy: { type: 'string', description: 'Operator label recorded on the transition.' },
+          approverRole: { type: 'string', description: 'Free-text approver role label (e.g. MANAGER).' },
+        },
+      },
+      MetricsSnapshotStatus: {
+        type: 'string',
+        enum: ['DRAFT', 'VALIDATED', 'SCHEDULED', 'ACTIVE'],
+        description: 'Snapshot workflow status (promotions-mirrored vocabulary; ACTIVE = published and immutable).',
+      },
       MetricsSnapshot: {
         type: 'object',
-        required: ['id', 'floorId', 'branchId', 'effectiveDate', 'schemaVersion', 'geometryHash', 'createdAt'],
-        description: 'Created snapshot id + keys (append-only row; same date twice yields two rows).',
+        required: ['id', 'floorId', 'branchId', 'effectiveDate', 'schemaVersion', 'geometryHash', 'status', 'createdAt'],
+        description: 'Created snapshot id + keys (append-only row; same date twice yields two rows). Pre-workflow rows read as ACTIVE.',
         properties: {
           id: { type: 'string' },
           floorId: { type: 'string' },
@@ -4675,13 +4803,17 @@ export const openapiSpec = {
           effectiveDate: { type: 'string', description: 'Effective date (YYYY-MM-DD).' },
           schemaVersion: { type: 'integer' },
           geometryHash: { type: 'string' },
+          status: { $ref: openapiSchemaRef('MetricsSnapshotStatus') },
+          approverRole: { type: ['string', 'null'], description: 'Approver label recorded on go-live edges.' },
+          validatedAt: { type: ['string', 'null'], format: 'date-time' },
+          publishedAt: { type: ['string', 'null'], format: 'date-time' },
           createdAt: { type: 'string', format: 'date-time' },
         },
       },
       MetricsSnapshotWithPayload: {
         type: 'object',
-        required: ['id', 'floorId', 'branchId', 'effectiveDate', 'schemaVersion', 'geometryHash', 'createdAt', 'payload'],
-        description: 'Snapshot history row with the full published FloorMetricsReport payload.',
+        required: ['id', 'floorId', 'branchId', 'effectiveDate', 'schemaVersion', 'geometryHash', 'status', 'createdAt', 'payload'],
+        description: 'Snapshot history row with the full FloorMetricsReport payload (draft-time report, refreshed to live truth on publish).',
         properties: {
           id: { type: 'string' },
           floorId: { type: 'string' },
@@ -4689,6 +4821,10 @@ export const openapiSpec = {
           effectiveDate: { type: 'string', description: 'Effective date (YYYY-MM-DD).' },
           schemaVersion: { type: 'integer' },
           geometryHash: { type: 'string' },
+          status: { $ref: openapiSchemaRef('MetricsSnapshotStatus') },
+          approverRole: { type: ['string', 'null'], description: 'Approver label recorded on go-live edges.' },
+          validatedAt: { type: ['string', 'null'], format: 'date-time' },
+          publishedAt: { type: ['string', 'null'], format: 'date-time' },
           createdAt: { type: 'string', format: 'date-time' },
           payload: { $ref: openapiSchemaRef('FloorMetricsReport') },
         },

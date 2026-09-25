@@ -66,7 +66,7 @@ relation in the schema.
 | `name`        | `String`  | operator-given label ("Lift", "Stair", "Walking area", "Exit", ...) |
 | `x`, `y`      | `Int`     | top-left position in **FEET** (same coordinate space as placements) |
 | `width`, `height` | `Int` | rendered bounding box in **FEET** (drag/resize)            |
-| `color`       | `String?` | optional render tint (hex); renderers default to a neutral tone when null |
+| `color`       | `String?` | fill colour — hex `#RGB`/`#RRGGBB` (stored uppercased) or null for the default tone (`#E6E0D7`); anything else is 400. The editor offers a fixed palette (`FP_BLOCK_PALETTE`) + a native colour picker. |
 | timestamps    |           | `createdAt` / `updatedAt`                                        |
 
 **Why relational rows and not more JSON?** Blocks are user-authored layout-decoration
@@ -83,6 +83,27 @@ the feature does not depend on it (NULL → neutral tone).
 
 Delete semantics mirror placements: deleting a `FloorPlan` cascades its blocks; blocks
 never reference business rows (no unit/tenant PK), so nothing else is touched.
+
+### `FloorPlanMarker` — one safety/facility point icon per row on the plan
+
+| Field         | Type      | Meaning                                                          |
+| ------------- | --------- | ---------------------------------------------------------------- |
+| `id`          | `cuid`    | PK                                                               |
+| `floorPlanId` | FK → FloorPlan | `@@index([floorPlanId])` for plan-scoped reads; `onDelete: Cascade` |
+| `kind`        | `String`  | marker kind, validated against `FP_MARKER_KINDS` (`FIRE_EXTINGUISHER`, `DO_NOT_ENTER`, `EXIT_SIGN`, `FIRE_HOSE`, `FIRST_AID`, `KEEP_CLEAR`); plain `String` (not an enum) so new kinds stay additive without a migration — same rationale as `FloorPlanBoundary.kind` |
+| `label`       | `String?` | optional operator label override (≤ 80 chars); renderers fall back to the kind's display label when null |
+| `x`, `y`      | `Int`     | grid-ft **POINT** in FEET, edge-inclusive (`0..width` / `0..height`, same contract as boundary vertices) |
+
+Markers are **points, not rects**: one icon each (fire extinguisher, do-not-enter,
+exit sign, fire hose reel, first aid, keep-clear), draggable in the editor and
+rendered with a distinct icon/label/ring tone (`FP_MARKER_KINDS` in
+`src/cms/admin/floorplanView.js`). Points carry **no area**, so the metrics
+bridge ignores them (unlike blocks, which subtract from UFA) — `boundaryMetrics`
+is byte-identical with or without markers. Plan reads (CMS + public) embed
+`markers` in authored order; the endpoints are
+`GET|POST /floor-plans/:floorId/markers` + `PUT|DELETE
+/floor-plans/:floorId/markers/:markerId` (Bearer JWT, `PUT` is a partial patch —
+omitted fields keep their values).
 
 ## Footprints, overlap, and area tolerance (P1–P3)
 
@@ -245,7 +266,7 @@ after `fpSaveDoors` succeeds, and markers round-trip through the existing
 
 | Action                    | Result                                                                    |
 | ------------------------- | ------------------------------------------------------------------------- |
-| Delete a `FloorPlan`      | Cascades its `UnitPlacement` **and `FloorPlanBlock`** rows; **Unit rows untouched** (FKs point placement/block → plan, never back) |
+| Delete a `FloorPlan`      | Cascades its `UnitPlacement` + `FloorPlanBlock` + `FloorPlanBoundary` + `FloorPlanMarker` rows; **Unit rows untouched** (FKs point placement/block/boundary/marker → plan, never back) |
 | Delete a `Floor`          | Cascades its plan (and so its placements/blocks); a floor with units is already undeletable (`Unit.floorId` has no cascade) |
 | Soft-delete a `Unit`      | Placement row persists; visible reads filter it out                       |
 | Hard-delete a `Unit` (future) | Blocked (`Restrict`) until its placement is removed (or the decision is revisited) |

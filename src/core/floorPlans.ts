@@ -18,6 +18,9 @@ import { Prisma } from '@prisma/client';
 //     (lifts, stairs, exits, walking areas, ...) — display only, no behaviour.
 //     They REPLACE authoring the legacy `structure` JSON markers, which stays
 //     readable/writable for old clients and renders statically.
+//   - markers (FloorPlanMarker): safety/facility POINT icons (fire
+//     extinguisher, do-not-enter, exit sign, ...) — one grid-ft point each,
+//     draggable, display only, no behaviour and no area (metrics ignores them).
 //
 // Footprints: a unit's drawn rect must approximate its real area —
 // `sqftFootprint()` resolves UnitSize.widthFt/heightFt when present and falls
@@ -91,7 +94,8 @@ export function rectsOverlap(
 // fully visible in the CMS units list and the dashboard Unit Map, which have
 // their own expectations); blocks are plain name+rect rows in authored order
 // (stable for the editor); boundaries are line-item polylines in sort order
-// (stable for the editor).
+// (stable for the editor); markers are safety/facility point icons in
+// authored order (stable for the editor).
 const planInclude = {
   floor: { include: { branch: true } },
   placements: {
@@ -104,6 +108,9 @@ const planInclude = {
   },
   boundaries: {
     orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
+  },
+  markers: {
+    orderBy: { createdAt: 'asc' },
   },
 } satisfies Prisma.FloorPlanInclude;
 
@@ -149,6 +156,8 @@ function serializePlacement(p: { id: string; x: number; y: number; width: number
 }
 
 type BlockRow = { id: string; name: string; x: number; y: number; width: number; height: number; color: string | null; doorEdges: string | null };
+
+type MarkerRow = { id: string; kind: string; label: string | null; x: number; y: number };
 
 type BoundaryRow = {
   id: string;
@@ -201,6 +210,19 @@ function serializeBlock(b: BlockRow) {
     // Authored door edges round-trip per region; blocks are non-leasable so
     // the metrics bridge ignores them (placements carry unit doors).
     doorEdges: doorEdgesToArray(b.doorEdges),
+  };
+}
+
+// Safety/facility point icons (fire extinguisher, do-not-enter, ...): kind +
+// grid-ft point + optional operator label. Points carry no area, so the
+// metrics bridge ignores them (unlike blocks, which subtract from UFA).
+function serializeMarker(m: MarkerRow) {
+  return {
+    id: m.id,
+    kind: m.kind,
+    label: m.label,
+    x: m.x,
+    y: m.y,
   };
 }
 
@@ -461,10 +483,18 @@ export function computeBoundaryMetrics(input: {
 }
 
 // Public-safe: branch/floor/unit summaries only — no tenant, no PII, no rates.
+// `status` rides along additively (DRAFT = CMS-only working copy, ACTIVE =
+// published): the CMS designer renders the draft pill from it, and public
+// readers ignore it (a draft-only floor reads as plan: null, never as a
+// draft payload).
 function serializePlan(p: PlanPayload) {
   return {
     id: p.id,
     floorId: p.floorId,
+    // Draft/publish lifecycle (PlanStatus vocabulary shared with promotion
+    // plans). Floor plans use the DRAFT/ACTIVE subset only — publish walks
+    // DRAFT → ACTIVE directly (see publishFloorPlan).
+    status: p.status,
     width: p.width,
     height: p.height,
     structure: p.structure,
@@ -472,6 +502,8 @@ function serializePlan(p: PlanPayload) {
     floor: { id: p.floor.id, level: p.floor.level, name: p.floor.name },
     placements: p.placements.map(serializePlacement),
     blocks: p.blocks.map(serializeBlock),
+    // Safety/facility point icons (grid-ft points) in authored order.
+    markers: p.markers.map(serializeMarker),
     // Facility-boundary line items (grid-ft polylines) in editor sort order.
     boundaries: p.boundaries.map(serializeBoundary),
     // Operator-entered gross floor area (sqft); null when unset — the metrics
@@ -523,6 +555,20 @@ function checkBlockName(name: string): string {
     throw new AppError(400, 'VALIDATION', 'Block name must be a non-empty string of at most 80 characters');
   }
   return trimmed;
+}
+
+// Block fill colour: null/undefined = unset (renderers fall back to the
+// default block tone); otherwise a CSS hex colour (#RGB or #RRGGBB, stored
+// uppercased). Anything else is 400 — the editor offers a fixed palette plus
+// a native colour picker, both of which produce hex.
+export function checkBlockColor(color: string | null | undefined): string | null {
+  if (color === undefined || color === null) return null;
+  const trimmed = color.trim();
+  if (!trimmed) return null;
+  if (!/^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(trimmed)) {
+    throw new AppError(400, 'VALIDATION', `Block color must be a hex colour (#RGB or #RRGGBB) or null for the default tone — got ${JSON.stringify(color)}`);
+  }
+  return trimmed.toUpperCase();
 }
 
 // ---------- authored door edges (Phase 3) ----------
@@ -585,11 +631,16 @@ function checkGfaSqft(v: number): number {
   return Math.round(v * 10) / 10;
 }
 
-/** Upsert the canvas for a floor: create if absent, then update given fields. */
+/** Upsert the canvas for a floor: create if absent, then update given fields.
+ * Every CMS write persists as DRAFT (create starts DRAFT, update demotes a
+ * published plan back to DRAFT) — Save Canvas never auto-promotes. Only
+ * publishFloorPlan exposes the plan publicly; corrections are edit + re-publish. */
 export async function upsertFloorPlan(floorId: string, input: UpsertFloorPlanInput = {}) {
   await assertFloor(floorId);
 
-  const update: Prisma.FloorPlanUpdateInput = {};
+  // Draft latch: any canvas save returns the plan to DRAFT (no-op when
+  // already a draft — updateMany is skipped via the status guard below).
+  const update: Prisma.FloorPlanUpdateInput = { status: 'DRAFT' };
   if (input.width !== undefined) update.width = checkCanvasDim(input.width, 'width');
   if (input.height !== undefined) update.height = checkCanvasDim(input.height, 'height');
   if (input.structure !== undefined) {
@@ -601,6 +652,8 @@ export async function upsertFloorPlan(floorId: string, input: UpsertFloorPlanInp
 
   const create: Prisma.FloorPlanCreateInput = {
     floor: { connect: { id: floorId } },
+    // New plans start as CMS-only drafts — public reads resolve ACTIVE only.
+    status: 'DRAFT',
     width: input.width !== undefined ? checkCanvasDim(input.width, 'width') : CANVAS_DEFAULTS.width,
     height: input.height !== undefined ? checkCanvasDim(input.height, 'height') : CANVAS_DEFAULTS.height,
     ...(input.gfaSqft !== undefined && input.gfaSqft !== null ? { gfaSqft: checkGfaSqft(input.gfaSqft) } : {}),
@@ -623,7 +676,9 @@ export interface ListFloorPlansQuery {
   level?: number; // floor level 1..4
 }
 
-/** List plans across branches/floors (optionally filtered), each with placements + unit summaries. */
+/** List plans across branches/floors (optionally filtered), each with placements + unit summaries.
+ * CMS admin read — returns ALL statuses (drafts must reload in the designer);
+ * only the PUBLIC read (getPublicFloorPlan) gates on ACTIVE. */
 export async function listFloorPlans(query: ListFloorPlansQuery = {}) {
   const floorFilter: Prisma.FloorWhereInput = {};
   if (query.branch) floorFilter.branch = { code: query.branch };
@@ -641,7 +696,8 @@ export async function listFloorPlans(query: ListFloorPlansQuery = {}) {
  * Get THE plan for a floor (its upsert key) with placements joined to
  * unit code/name/size/status (soft-deleted AND inactive units filtered out),
  * plus the floor's unplaced units (same filters — INACTIVE units stay out of
- * the editor palette). If no plan exists yet, returns an empty scaffold
+ * the editor palette). CMS admin read — resolves ANY status so drafts reload
+ * on floor switch/refresh. If no plan exists yet, returns an empty scaffold
  * so an editor can start fresh — callers decide how to present it.
  */
 export async function getFloorPlan(floorId: string) {
@@ -742,7 +798,9 @@ async function ensureCanvasPlan(floorId: string) {
   let plan = await prisma.floorPlan.findUnique({ where: { floorId } });
   if (!plan) {
     plan = await prisma.floorPlan.create({
-      data: { floorId, width: CANVAS_DEFAULTS.width, height: CANVAS_DEFAULTS.height, structure: Prisma.JsonNull },
+      // Lazily-created canvases start as CMS-only drafts (explicit — the
+      // schema default is DRAFT too, so geometry always has a surface).
+      data: { floorId, status: 'DRAFT', width: CANVAS_DEFAULTS.width, height: CANVAS_DEFAULTS.height, structure: Prisma.JsonNull },
     });
   } else if (plan.width <= 0 || plan.height <= 0) {
     plan = await prisma.floorPlan.update({
@@ -751,6 +809,61 @@ async function ensureCanvasPlan(floorId: string) {
     });
   }
   return plan;
+}
+
+// ---------- draft/publish lifecycle ----------
+//
+// Every CMS geometry/content mutation (placements, blocks, boundaries,
+// markers, canvas saves, GFA) funnels through markDraft: the plan returns to
+// DRAFT and stays CMS-only until publishFloorPlan walks it DRAFT → ACTIVE.
+// updateMany with the status guard keeps an already-draft plan a single
+// no-op write (no updatedAt churn); a published plan edited mid-life demotes
+// to DRAFT, so corrections are always edit-draft + re-publish and nothing
+// ever auto-promotes to ACTIVE.
+async function markDraft(planId: string): Promise<void> {
+  await prisma.floorPlan.updateMany({
+    where: { id: planId, status: { not: 'DRAFT' } },
+    data: { status: 'DRAFT' },
+  });
+}
+
+/**
+ * Publish a floor's plan: DRAFT → ACTIVE (direct — VALIDATED/SCHEDULED are
+ * reserved vocabulary only and are never assigned to floor plans, so there
+ * is no intermediate state to walk through). Publishing an ACTIVE plan is
+ * idempotent (returns the plan unchanged). Any CMS write after publishing
+ * demotes the plan back to DRAFT via markDraft (ACTIVE is never edited
+ * in place — corrections are edit-draft + re-publish).
+ *
+ * Permission gate mirrors PATCH /promotion-plans/:id/status (same gated
+ * pattern): actors that hold any Permission row must also hold
+ * 'promotions.approve'; actors without rows keep the legacy ungated behavior
+ * so existing auth flows never break.
+ */
+export async function publishFloorPlan(floorId: string, opts?: { actorId?: string }) {
+  const plan = await prisma.floorPlan.findUnique({ where: { floorId } });
+  if (!plan) throw new AppError(404, 'NOT_FOUND', `No floor plan exists for floor ${floorId} — save a canvas first`);
+  if (plan.status === 'ACTIVE') {
+    const full = await prisma.floorPlan.findUniqueOrThrow({ where: { floorId }, include: planInclude });
+    return serializePlan(full);
+  }
+  if (plan.status !== 'DRAFT') {
+    throw new AppError(400, 'INVALID_TRANSITION', `Cannot publish a floor plan from ${plan.status} — expected DRAFT`, {
+      from: plan.status,
+      to: 'ACTIVE',
+      allowed: ['ACTIVE'],
+    });
+  }
+  if (opts?.actorId) {
+    const { requirePermission } = await import('./users');
+    await requirePermission(opts.actorId, 'promotions.approve');
+  }
+  const published = await prisma.floorPlan.update({
+    where: { floorId },
+    data: { status: 'ACTIVE' },
+    include: planInclude,
+  });
+  return serializePlan(published);
 }
 
 /**
@@ -970,6 +1083,9 @@ export async function setUnitPlacement(floorId: string, unitId: string, geom: Pl
     await demoteOrphanedUppers(plan.id, { x: existing.x, y: existing.y, width: existing.width, height: existing.height });
   }
 
+  // Placement writes never auto-promote — the plan returns to DRAFT.
+  await markDraft(plan.id);
+
   return serializePlacement(placement);
 }
 
@@ -988,6 +1104,8 @@ export async function removeUnitPlacement(floorId: string, unitId: string) {
   if (placement.stackTier === 0) {
     await demoteOrphanedUppers(plan.id, { x: placement.x, y: placement.y, width: placement.width, height: placement.height });
   }
+  // Placement removals never auto-promote — the plan returns to DRAFT.
+  await markDraft(plan.id);
   return { floorId, unitId, removed: true };
 }
 
@@ -1011,6 +1129,7 @@ export interface BlockInput {
 export async function createFloorPlanBlock(floorId: string, input: BlockInput) {
   checkBlockName(input.name);
   checkGeometry(input);
+  const color = checkBlockColor(input.color);
   const doorEdges = normalizeDoorEdges(input.doorEdges);
   const plan = await ensureCanvasPlan(floorId);
   if (input.x + input.width > plan.width || input.y + input.height > plan.height) {
@@ -1028,10 +1147,12 @@ export async function createFloorPlanBlock(floorId: string, input: BlockInput) {
       y: input.y,
       width: input.width,
       height: input.height,
-      color: input.color ?? null,
+      color,
       ...(doorEdges !== undefined ? { doorEdges } : {}),
     },
   });
+  // Block writes never auto-promote — the plan returns to DRAFT.
+  await markDraft(plan.id);
   return serializeBlock(block);
 }
 
@@ -1044,6 +1165,7 @@ export async function createFloorPlanBlock(floorId: string, input: BlockInput) {
 export async function setFloorPlanBlock(floorId: string, blockId: string, input: BlockInput) {
   checkBlockName(input.name);
   checkGeometry(input);
+  const color = checkBlockColor(input.color);
   const doorEdges = normalizeDoorEdges(input.doorEdges);
   const plan = await ensureCanvasPlan(floorId);
   if (input.x + input.width > plan.width || input.y + input.height > plan.height) {
@@ -1067,10 +1189,12 @@ export async function setFloorPlanBlock(floorId: string, blockId: string, input:
         y: input.y,
         width: input.width,
         height: input.height,
-        color: input.color ?? null,
+        color,
         ...(doorEdges !== undefined ? { doorEdges } : {}),
       },
     });
+    // Block writes never auto-promote — the plan returns to DRAFT.
+    await markDraft(plan.id);
     return serializeBlock(block);
   }
 
@@ -1083,10 +1207,12 @@ export async function setFloorPlanBlock(floorId: string, blockId: string, input:
       y: input.y,
       width: input.width,
       height: input.height,
-      color: input.color ?? null,
+      color,
       ...(doorEdges !== undefined ? { doorEdges } : {}),
     },
   });
+  // Block writes never auto-promote — the plan returns to DRAFT.
+  await markDraft(plan.id);
   return serializeBlock(block);
 }
 
@@ -1099,6 +1225,8 @@ export async function removeFloorPlanBlock(floorId: string, blockId: string) {
     throw new AppError(404, 'NOT_FOUND', `Block ${blockId} does not belong to floor ${floorId}'s plan`);
   }
   await prisma.floorPlanBlock.delete({ where: { id: blockId } });
+  // Block removals never auto-promote — the plan returns to DRAFT.
+  await markDraft(plan.id);
   return { floorId, blockId, removed: true };
 }
 
@@ -1204,6 +1332,8 @@ export async function createFloorPlanBoundary(floorId: string, input: BoundaryIn
   const boundary = await prisma.floorPlanBoundary.create({
     data: { floorPlanId: plan.id, label, kind, points, closed, sortOrder },
   });
+  // Boundary writes never auto-promote — the plan returns to DRAFT.
+  await markDraft(plan.id);
   return serializeBoundary(boundary);
 }
 
@@ -1235,6 +1365,8 @@ export async function updateFloorPlanBoundary(floorId: string, boundaryId: strin
   }
   data.closed = closed;
   const boundary = await prisma.floorPlanBoundary.update({ where: { id: boundaryId }, data });
+  // Boundary writes never auto-promote — the plan returns to DRAFT.
+  await markDraft(plan.id);
   return serializeBoundary(boundary);
 }
 
@@ -1247,10 +1379,144 @@ export async function removeFloorPlanBoundary(floorId: string, boundaryId: strin
     throw new AppError(404, 'NOT_FOUND', `Boundary ${boundaryId} does not belong to floor ${floorId}'s plan`);
   }
   await prisma.floorPlanBoundary.delete({ where: { id: boundaryId } });
+  // Boundary removals never auto-promote — the plan returns to DRAFT.
+  await markDraft(plan.id);
   return { floorId, boundaryId, removed: true };
 }
 
-/** Delete the plan for a floor (cascades its placements; Unit rows untouched). */
+// ---------- safety/facility map markers (point icons) ----------
+//
+// Markers are grid-ft POINTS (not rects): a fire extinguisher, a do-not-enter
+// sign, an exit sign, ... Each row is one icon — addressable for
+// place/drag/delete. Points carry no area, so the metrics bridge ignores them
+// (unlike blocks, which subtract from UFA). `kind` stays a plain String (same
+// rationale as FloorPlanBoundary.kind) so new kinds are additive without a
+// migration; unknown kinds are rejected here, never persisted.
+export const FP_MARKER_KINDS = [
+  'FIRE_EXTINGUISHER',
+  'DO_NOT_ENTER',
+  'EXIT_SIGN',
+  'FIRE_HOSE',
+  'FIRST_AID',
+  'KEEP_CLEAR',
+] as const;
+
+export type FloorPlanMarkerKind = (typeof FP_MARKER_KINDS)[number];
+
+function checkMarkerKind(kind: string): FloorPlanMarkerKind {
+  if (!(FP_MARKER_KINDS as readonly string[]).includes(kind)) {
+    throw new AppError(
+      400,
+      'VALIDATION',
+      `Marker kind must be one of ${FP_MARKER_KINDS.join(', ')} — got ${JSON.stringify(kind)}`,
+    );
+  }
+  return kind as FloorPlanMarkerKind;
+}
+
+function checkMarkerLabel(label: string | null | undefined): string | null {
+  if (label === undefined || label === null) return null;
+  const trimmed = label.trim();
+  if (!trimmed) return null;
+  if (trimmed.length > 80) {
+    throw new AppError(400, 'VALIDATION', 'Marker label must be at most 80 characters');
+  }
+  return trimmed;
+}
+
+// Marker points sit ON the canvas edge-inclusive (0..width / 0..height) — the
+// same contract as boundary vertices in checkBoundaryPoints.
+function checkMarkerPoint(x: number, y: number, plan: { width: number; height: number }): void {
+  for (const [v, name, max] of [[x, 'x', plan.width], [y, 'y', plan.height]] as const) {
+    if (!Number.isInteger(v) || v < 0 || v > max) {
+      throw new AppError(
+        400,
+        'VALIDATION',
+        `Marker point ${x},${y} sits outside the ${plan.width}×${plan.height} ft canvas for this plan — ${name} must be an integer between 0 and ${max}`,
+      );
+    }
+  }
+}
+
+export interface MarkerInput {
+  kind: string;
+  label?: string | null;
+  x: number;
+  y: number;
+}
+
+/** List a floor's safety/facility markers (authored order). Empty when no plan exists yet. */
+export async function listFloorPlanMarkers(floorId: string) {
+  const plan = await prisma.floorPlan.findUnique({
+    where: { floorId },
+    include: { markers: { orderBy: { createdAt: 'asc' } } },
+  });
+  if (!plan) return [];
+  return plan.markers.map(serializeMarker);
+}
+
+/**
+ * Place a safety/facility marker on a floor's plan. The plan is lazily created
+ * at the default canvas when the floor has none yet (same as blocks).
+ */
+export async function createFloorPlanMarker(floorId: string, input: MarkerInput) {
+  const kind = checkMarkerKind(input.kind);
+  const label = checkMarkerLabel(input.label);
+  const plan = await ensureCanvasPlan(floorId);
+  checkMarkerPoint(input.x, input.y, plan);
+  const marker = await prisma.floorPlanMarker.create({
+    data: { floorPlanId: plan.id, kind, label, x: input.x, y: input.y },
+  });
+  // Marker writes never auto-promote — the plan returns to DRAFT.
+  await markDraft(plan.id);
+  return serializeMarker(marker);
+}
+
+/**
+ * Move / relabel a marker scoped to the floor's plan. Omitted fields keep
+ * their values; `label: null` clears back to the kind's display label. A
+ * marker id on a DIFFERENT plan 404s.
+ */
+export async function updateFloorPlanMarker(floorId: string, markerId: string, input: Partial<MarkerInput>) {
+  const plan = await prisma.floorPlan.findUnique({ where: { floorId } });
+  if (!plan) throw new AppError(404, 'NOT_FOUND', `No floor plan exists for floor ${floorId}`);
+  const existing = await prisma.floorPlanMarker.findUnique({ where: { id: markerId } });
+  if (!existing || existing.floorPlanId !== plan.id) {
+    throw new AppError(404, 'NOT_FOUND', `Marker ${markerId} does not belong to floor ${floorId}'s plan`);
+  }
+  const data: Prisma.FloorPlanMarkerUpdateInput = {};
+  if (input.kind !== undefined) data.kind = checkMarkerKind(input.kind);
+  if (input.label !== undefined) data.label = checkMarkerLabel(input.label);
+  let x = existing.x;
+  let y = existing.y;
+  if (input.x !== undefined) x = input.x;
+  if (input.y !== undefined) y = input.y;
+  if (input.x !== undefined || input.y !== undefined) {
+    checkMarkerPoint(x, y, plan);
+    data.x = x;
+    data.y = y;
+  }
+  const marker = await prisma.floorPlanMarker.update({ where: { id: markerId }, data });
+  // Marker writes never auto-promote — the plan returns to DRAFT.
+  await markDraft(plan.id);
+  return serializeMarker(marker);
+}
+
+/** Remove a safety/facility marker (scoped to the plan; cross-plan ids 404). */
+export async function removeFloorPlanMarker(floorId: string, markerId: string) {
+  const plan = await prisma.floorPlan.findUnique({ where: { floorId } });
+  if (!plan) throw new AppError(404, 'NOT_FOUND', `No floor plan exists for floor ${floorId}`);
+  const marker = await prisma.floorPlanMarker.findUnique({ where: { id: markerId } });
+  if (!marker || marker.floorPlanId !== plan.id) {
+    throw new AppError(404, 'NOT_FOUND', `Marker ${markerId} does not belong to floor ${floorId}'s plan`);
+  }
+  await prisma.floorPlanMarker.delete({ where: { id: markerId } });
+  // Marker removals never auto-promote — the plan returns to DRAFT.
+  await markDraft(plan.id);
+  return { floorId, markerId, removed: true };
+}
+
+/** Delete the plan for a floor (cascades its placements, blocks, boundaries and markers; Unit rows untouched). */
 export async function deleteFloorPlan(floorId: string) {
   const plan = await prisma.floorPlan.findUnique({ where: { floorId } });
   if (!plan) throw new AppError(404, 'NOT_FOUND', `No floor plan exists for floor ${floorId}`);
@@ -1262,9 +1528,13 @@ export async function deleteFloorPlan(floorId: string) {
 
 /**
  * PUBLIC read of a floor's plan for the booking renderer: canvas + legacy
- * structure + blocks (name+rect) + placements joined to unit
+ * structure + blocks (name+rect) + markers (kind+point) + placements joined to unit
  * unitCode/name/size/status, soft-deleted AND inactive units filtered out. No
  * tenant/PII/rates anywhere (serializePlan is public-safe).
+ *
+ * Draft/publish gate: ONLY ACTIVE plans resolve. A draft-only floor reads as
+ * plan: null — the exact shape booking already handles with its
+ * UnitListFallback (no new public fields, no shape change).
  */
 export async function getPublicFloorPlan(branchCode: string, level: number) {
   const floor = await prisma.floor.findFirst({
@@ -1278,7 +1548,7 @@ export async function getPublicFloorPlan(branchCode: string, level: number) {
     throw new AppError(404, 'NOT_FOUND', `Floor ${level} not found at branch ${branchCode}`);
   }
 
-  const plan = await prisma.floorPlan.findFirst({ where: { floorId: floor.id }, include: planInclude });
+  const plan = await prisma.floorPlan.findFirst({ where: { floorId: floor.id, status: 'ACTIVE' }, include: planInclude });
   return {
     branch: { id: floor.branchId, code: floor.branch.code, name: floor.branch.name },
     floor: { id: floor.id, level: floor.level, name: floor.name },

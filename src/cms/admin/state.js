@@ -85,7 +85,13 @@ export const state = {
     boundaries: [], // normalized boundary line items (grid-ft polylines; kind 'PENCIL' = pencil-drawn lines)
     drawMode: false, // ✎ line tool active — canvas press-drag draws a line, placement/block drags gated off
     selectedBoundary: null, // selected boundary line-item id (info strip shows Remove line)
+    markers: [], // normalized safety/facility point icons (extinguisher, do-not-enter, ...)
+    selectedMarker: null, // selected marker id (info strip shows rename/remove)
+    armedMarker: null, // marker kind armed from the Markers/Safety toolbar group — next canvas click places it (Esc cancels)
+    blockColor: null, // pending fill colour for the next block created via the block form (null = default tone)
     gfa: null, // operator-entered plan GFA in sqft (mirrors FloorPlan.gfaSqft; null = unset, metrics fall back to canvas rect)
+    tool: 'select', // Studio ribbon sticky tool: 'select' | 'add' | 'draw' | 'block' (placement modes drawMode/armedMarker win for the MODE badge)
+    showGrid: true, // Studio 1-ft grid overlay on the editor canvas (view-only; preview keeps its grid)
   },
   // Area-metrics panel state (facility setup view; read-only live reads of
   // the Phase-2 endpoints for the editor's selected floor).

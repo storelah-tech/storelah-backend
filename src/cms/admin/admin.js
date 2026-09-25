@@ -66,7 +66,7 @@ const sideNav = {
     ['Move-ins', 'customers', 'customer-moveins'], ['Quotes', 'customers', 'customer-quotes'],
     ['Move-outs', 'customers', 'customer-moveouts']],
   facilities: [['Unit map', 'facilities', 'facility-map'], ['Units', 'facilities', 'facility-units'],
-    ['Floors', 'facilities', 'facility-floors'], ['Floor plans', 'facilities', 'facility-floorplans'], ['Maintenance', 'facilities', 'facility-maintenance'],
+    ['Floors', 'facilities', 'facility-floors'], ['Floor Plan Designer', 'facilities', 'facility-floorplans'], ['Maintenance', 'facilities', 'facility-maintenance'],
     ['Assets & vendors', 'facilities', 'facility-assets'], ['Incidents', 'facilities', 'facility-incidents'],
     ['Access control', 'facilities', 'facility-access'], ['Inspections', 'facilities', 'facility-inspections'],
     ['Protection plans & addons', 'facilities', 'facility-extras']],
@@ -130,6 +130,11 @@ function openPage(id) {
   }
   document.getElementById('sidebar')?.classList.remove('open');
   document.body.classList.remove('sb-open');
+  // Keep the hamburger's aria-expanded truthful when a drawer-mode tap
+  // auto-closes the overlay; desktop rail state is untouched here.
+  if (window.matchMedia('(max-width: 760px)').matches) {
+    document.getElementById('navToggle')?.setAttribute('aria-expanded', 'false');
+  }
   window.scrollTo(0, 0);
   try { history.replaceState(null, '', '#' + id); } catch (e) { }
   // Notify admin state
@@ -3610,24 +3615,170 @@ function wireEvents() {
     if (tab) tab.click();
     openPage('command');
   });
-  if (toggle && backdrop) {
-    toggle.addEventListener('click', function () {
-      const open = !document.body.classList.contains('sb-open');
-      document.body.classList.toggle('sb-open', open);
-      this.setAttribute('aria-expanded', String(open));
-      document.getElementById('sidebar')?.classList.toggle('open', open);
-    });
-    backdrop.addEventListener('click', function () {
-      document.body.classList.remove('sb-open');
-      document.getElementById('sidebar')?.classList.remove('open');
-    });
-    document.getElementById('sidebar')?.addEventListener('click', function (e) {
-      if (e.target.closest('[data-core-page]') || e.target.closest('.nav-subitem')) {
-        document.body.classList.remove('sb-open');
-        document.getElementById('sidebar')?.classList.remove('open');
+  // ---- Sidebar auto-collapse: begin (DOM-shim harness extracts this block) ----
+  // Canonical state is body.sb-collapsed (desktop icon-rail). At <=760px the
+  // sidebar is an overlay drawer driven by body.sb-open + .side.open; the
+  // same hamburger controls both. The user's explicit toggle choice persists
+  // in localStorage; the responsive default (collapsed at/below SB_COLLAPSE_BP)
+  // applies on boot and on breakpoint crossings only while no explicit choice
+  // is stored — resize never clobbers the stored preference.
+  const SB_COLLAPSE_BP = 900; // px — at/below: start collapsed
+  const SB_STORE_KEY = 'storelah:admin:sidebar-collapsed'; // '1' collapsed · '0' expanded
+  const sbNarrow = window.matchMedia('(max-width: ' + SB_COLLAPSE_BP + 'px)');
+  const sbDrawer = window.matchMedia('(max-width: 760px)');
+  const sbAside = document.getElementById('sidebar');
+  // Hover preview runs only where a hover pointer exists — touch keeps the
+  // toggle/drawer behaviour unchanged (touch never fires mouseenter; a
+  // (hover: none) device skips the mouse wiring below outright).
+  let sbNoHover = null;
+  try { sbNoHover = window.matchMedia('(hover: none)'); } catch (e) { sbNoHover = null; }
+  // Transient preview flag: body.sb-hover while pinned-collapsed. Never
+  // persisted; an explicit toggle choice always clears it (pin wins).
+  let sbHovering = false;
+  function sbReadExplicit() {
+    try {
+      const v = window.localStorage.getItem(SB_STORE_KEY);
+      return v === null ? null : v === '1';
+    } catch (e) { return null; }
+  }
+  function sbIsCollapsed() {
+    return sbDrawer.matches
+      ? !document.body.classList.contains('sb-open')
+      : document.body.classList.contains('sb-collapsed');
+  }
+  function sbSyncChrome(effectiveCollapsed) {
+    if (toggle) {
+      toggle.setAttribute('aria-expanded', String(!effectiveCollapsed));
+      toggle.setAttribute('aria-label', effectiveCollapsed ? 'Open navigation' : 'Close navigation');
+    }
+    // Rail hides the text labels — mirror them into titles so icon-only
+    // buttons keep accessible names/tooltips; remove them when expanded.
+    document.querySelectorAll('#sidebar .nav').forEach((n) => {
+      if (effectiveCollapsed && !sbDrawer.matches) {
+        if (!n.hasAttribute('title')) {
+          const label = (n.textContent || '').trim().replace(/\s+/g, ' ');
+          if (label) { n.setAttribute('title', label); n.setAttribute('data-sb-title', '1'); }
+        }
+      } else if (n.getAttribute('data-sb-title') === '1') {
+        n.removeAttribute('title');
+        n.removeAttribute('data-sb-title');
       }
     });
   }
+  function sbPinnedCollapsed() {
+    return document.body.classList.contains('sb-collapsed');
+  }
+  function sbHoverOpen() {
+    return !sbDrawer.matches && sbPinnedCollapsed() && document.body.classList.contains('sb-hover');
+  }
+  function sbHoverExpand() {
+    if (sbDrawer.matches || !sbPinnedCollapsed() || !sbAside) return;
+    document.body.classList.add('sb-hover');
+    sbSyncChrome(false); // aria-expanded true while previewing
+  }
+  function sbHoverCollapse() {
+    sbHovering = false;
+    if (!document.body.classList.contains('sb-hover')) return;
+    document.body.classList.remove('sb-hover');
+    // Transient only — never persisted; restore chrome to the pinned state.
+    sbSyncChrome(sbDrawer.matches ? sbIsCollapsed() : sbPinnedCollapsed());
+  }
+  function sbApply(collapsed) {
+    // Explicit choice wins over any transient preview (pin beats hover).
+    sbHovering = false;
+    document.body.classList.remove('sb-hover');
+    if (sbDrawer.matches) {
+      document.body.classList.toggle('sb-open', !collapsed);
+      if (sbAside) sbAside.classList.toggle('open', !collapsed);
+    } else {
+      document.body.classList.remove('sb-open');
+      if (sbAside) sbAside.classList.remove('open');
+      document.body.classList.toggle('sb-collapsed', collapsed);
+    }
+    sbSyncChrome(collapsed);
+  }
+  function sbPersist(collapsed) {
+    try { window.localStorage.setItem(SB_STORE_KEY, collapsed ? '1' : '0'); } catch (e) {}
+  }
+  if (toggle && backdrop) {
+    // Boot: explicit choice wins; otherwise follow the viewport
+    // (narrow starts collapsed, wide starts expanded).
+    sbApply(sbReadExplicit() !== null ? sbReadExplicit() : sbNarrow.matches);
+    toggle.addEventListener('click', function () {
+      // Exactly one flip per click; the toggle is the explicit choice.
+      const next = !sbIsCollapsed();
+      sbApply(next);
+      sbPersist(next);
+    });
+    backdrop.addEventListener('click', function () {
+      sbApply(true); // overlay dismiss — not persisted
+    });
+    if (sbAside) sbAside.addEventListener('click', function (e) {
+      if (!sbDrawer.matches) return; // desktop rail keeps its pinned state
+      if (e.target.closest('[data-core-page]') || e.target.closest('.nav-subitem')) {
+        sbApply(true); // drawer-mode tap closes the overlay — not persisted
+      }
+    });
+    // Hover-expand / hover-collapse (desktop rail only): pointer in previews
+    // full width, pointer out restores the rail. Transient — never persisted,
+    // and a pinned-expanded sidebar (no .sb-collapsed) ignores hover entirely.
+    if (sbAside && !(sbNoHover && sbNoHover.matches)) {
+      sbAside.addEventListener('mouseenter', function () {
+        sbHovering = true;
+        sbHoverExpand();
+      });
+      sbAside.addEventListener('mouseleave', function () {
+        sbHovering = false;
+        // Don't yank the preview from a keyboard user tabbed into the rail.
+        try { if (sbAside.contains(document.activeElement)) return; } catch (e) {}
+        sbHoverCollapse();
+      });
+    }
+    // Keyboard parity: focus entering the rail previews full width, focus
+    // leaving it restores the rail — same transient semantics as hover.
+    if (sbAside) {
+      sbAside.addEventListener('focusin', function () {
+        sbHoverExpand();
+      });
+      sbAside.addEventListener('focusout', function (e) {
+        if (sbHovering) return; // pointer still over the rail — hover owns it
+        const to = e && e.relatedTarget;
+        if (to && sbAside.contains(to)) return; // focus stayed inside
+        sbHoverCollapse();
+      });
+    }
+    document.addEventListener('keydown', function (e) {
+      if (e.key !== 'Escape') return;
+      if (sbDrawer.matches) {
+        if (!sbIsCollapsed()) sbApply(true);
+        return;
+      }
+      // Desktop: Escape collapses a transient hover/focus preview without
+      // persisting it as a pinned choice.
+      sbHoverCollapse();
+    });
+    // Responsive auto-collapse across the 900px breakpoint — only while the
+    // user has not stored an explicit choice. Drawer entry/exit always drops
+    // the stale overlay classes so content never overlaps the sidebar.
+    const sbOnNarrowChange = function () {
+      if (sbReadExplicit() === null) sbApply(sbNarrow.matches);
+    };
+    if (typeof sbNarrow.addEventListener === 'function') sbNarrow.addEventListener('change', sbOnNarrowChange);
+    else if (typeof sbNarrow.addListener === 'function') sbNarrow.addListener(sbOnNarrowChange);
+    const sbOnDrawerChange = function () {
+      document.body.classList.remove('sb-open');
+      if (sbAside) sbAside.classList.remove('open');
+      sbHovering = false;
+      document.body.classList.remove('sb-hover');
+      if (toggle) {
+        toggle.setAttribute('aria-expanded', String(!sbIsCollapsed()));
+        toggle.setAttribute('aria-label', sbIsCollapsed() ? 'Open navigation' : 'Close navigation');
+      }
+    };
+    if (typeof sbDrawer.addEventListener === 'function') sbDrawer.addEventListener('change', sbOnDrawerChange);
+    else if (typeof sbDrawer.addListener === 'function') sbDrawer.addListener(sbOnDrawerChange);
+  }
+  // ---- Sidebar auto-collapse: end ----
 
   // ---- Existing admin CRUD wiring (unchanged) ----
   $$('.nav-item[data-view]').forEach((el) =>

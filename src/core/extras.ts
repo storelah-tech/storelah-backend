@@ -33,6 +33,7 @@ function serializePlan(p: PlanRow) {
     name: p.name,
     price: toNum(p.price),
     coverage: p.coverage,
+    imageUrl: p.imageUrl ?? null,
     sortOrder: p.sortOrder,
     active: p.active,
   };
@@ -44,6 +45,7 @@ function serializeAddon(a: AddonRow) {
     name: a.name,
     price: toNum(a.price),
     unit: a.unit,
+    imageUrl: a.imageUrl ?? null,
     sortOrder: a.sortOrder,
     active: a.active,
   };
@@ -56,6 +58,7 @@ export interface ProtectionPlanInput {
   name: string;
   price: number;
   coverage?: string | null;
+  imageUrl?: string | null;
   sortOrder?: number;
   active?: boolean;
 }
@@ -78,6 +81,7 @@ export async function createProtectionPlan(input: ProtectionPlanInput) {
       name: input.name.trim(),
       price: input.price,
       coverage: input.coverage?.trim() || null,
+      imageUrl: input.imageUrl?.trim() || null,
       sortOrder: input.sortOrder ?? 0,
       active: input.active ?? true,
     },
@@ -94,6 +98,7 @@ export async function updateProtectionPlan(id: string, input: Partial<Omit<Prote
       ...(input.name !== undefined ? { name: input.name.trim() } : {}),
       ...(input.price !== undefined ? { price: input.price } : {}),
       ...(input.coverage !== undefined ? { coverage: input.coverage?.trim() || null } : {}),
+      ...(input.imageUrl !== undefined ? { imageUrl: input.imageUrl?.trim() || null } : {}),
       ...(input.sortOrder !== undefined ? { sortOrder: input.sortOrder } : {}),
       ...(input.active !== undefined ? { active: input.active } : {}),
     },
@@ -115,6 +120,7 @@ export interface AddonInput {
   name: string;
   price: number;
   unit?: string | null;
+  imageUrl?: string | null;
   sortOrder?: number;
   active?: boolean;
 }
@@ -137,6 +143,7 @@ export async function createAddon(input: AddonInput) {
       name: input.name.trim(),
       price: input.price,
       unit: input.unit?.trim() || null,
+      imageUrl: input.imageUrl?.trim() || null,
       sortOrder: input.sortOrder ?? 0,
       active: input.active ?? true,
     },
@@ -153,6 +160,7 @@ export async function updateAddon(id: string, input: Partial<Omit<AddonInput, 'i
       ...(input.name !== undefined ? { name: input.name.trim() } : {}),
       ...(input.price !== undefined ? { price: input.price } : {}),
       ...(input.unit !== undefined ? { unit: input.unit?.trim() || null } : {}),
+      ...(input.imageUrl !== undefined ? { imageUrl: input.imageUrl?.trim() || null } : {}),
       ...(input.sortOrder !== undefined ? { sortOrder: input.sortOrder } : {}),
       ...(input.active !== undefined ? { active: input.active } : {}),
     },
@@ -199,6 +207,7 @@ export async function seedExtras() {
         name: p.name,
         price: p.price,
         coverage: p.coverage ?? null,
+        imageUrl: p.imageUrl?.trim() || null,
         sortOrder: p.sortOrder ?? 0,
         active: p.active ?? true,
       },
@@ -208,6 +217,8 @@ export async function seedExtras() {
         coverage: p.coverage ?? null,
         sortOrder: p.sortOrder ?? 0,
         active: p.active ?? true,
+        // NOTE: imageUrl intentionally omitted — re-seeds must never wipe an
+        // operator-set image (seed rows carry null). Set images via CMS PATCH.
       },
     });
   }
@@ -219,6 +230,7 @@ export async function seedExtras() {
         name: a.name,
         price: a.price,
         unit: a.unit ?? null,
+        imageUrl: a.imageUrl?.trim() || null,
         sortOrder: a.sortOrder ?? 0,
         active: a.active ?? true,
       },
@@ -228,6 +240,7 @@ export async function seedExtras() {
         unit: a.unit ?? null,
         sortOrder: a.sortOrder ?? 0,
         active: a.active ?? true,
+        // NOTE: imageUrl intentionally omitted — see above.
       },
     });
   }

@@ -1324,6 +1324,10 @@ model ProtectionPlan {
   name      String // display name, e.g. "Essential"
   price     Decimal  @db.Decimal(10, 2) // monthly recurring SGD
   coverage  String? // short coverage description shown at checkout
+  // Optional checkout artwork (validated HTTPS URL string, never binary —
+  // the repo has no upload/S3 pattern; CMS sets/updates it as text).
+  // NULL = no image; public reads always emit the key (string | null).
+  imageUrl  String?
   sortOrder Int      @default(0) // ascending display order (1..n)
   active    Boolean  @default(true) // false = hidden from public reads, kept for history
   createdAt DateTime @default(now())
@@ -1337,6 +1341,10 @@ model Addon {
   name      String // display name, e.g. "Medium Box"
   price     Decimal  @db.Decimal(10, 2) // one-off SGD
   unit      String? // sale unit shown at checkout, e.g. "box" / "each"
+  // Optional checkout artwork (validated HTTPS URL string, never binary —
+  // the repo has no upload/S3 pattern; CMS sets/updates it as text).
+  // NULL = no image; public reads always emit the key (string | null).
+  imageUrl  String?
   sortOrder Int      @default(0) // ascending display order (1..n)
   active    Boolean  @default(true) // false = hidden from public reads, kept for history
   createdAt DateTime @default(now())

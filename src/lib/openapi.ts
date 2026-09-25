@@ -122,12 +122,14 @@ export const openapiSpec = {
       '',
       'v1.6.0 is ADDITIVE-ONLY over 1.5.5: CMS-editable booking-extras catalog — ' +
         'protection tiers (`ProtectionPlan`: id slug, name, price monthly recurring, coverage, ' +
-        'sortOrder, active) and packing-supply addons (`Addon`: id slug, name, price one-off, ' +
-        'unit, sortOrder, active) with unauthenticated `GET /public/protection-plans` + ' +
+        'imageUrl, sortOrder, active) and packing-supply addons (`Addon`: id slug, name, price one-off, ' +
+        'unit, imageUrl, sortOrder, active) with unauthenticated `GET /public/protection-plans` + ' +
         '`GET /public/addons` (active only, sortOrder ascending, `{ data, meta: { count } }`) ' +
         'and operator CMS CRUD `GET|POST /cms/protection-plans`, ' +
         '`PATCH|DELETE /cms/protection-plans/{id}` (same 4 for `/cms/addons`; Bearer JWT; ' +
-        'PATCH carries the active toggle — deactivation preferred over hard delete). ' +
+        'PATCH carries the active toggle — deactivation preferred over hard delete — plus an ' +
+        'optional `imageUrl` HTTPS string for checkout artwork, updatable on POST/PATCH, served on ' +
+        'every read as `imageUrl` (string | null)). ' +
         'All pre-existing shapes are unchanged.',
       '',
       'v1.6.1 is ADDITIVE-ONLY over 1.6.0: Stripe Checkout hardening (TEST MODE, no shape changes) — ' +
@@ -406,7 +408,7 @@ export const openapiSpec = {
         summary: 'List active protection plans',
         description: [
           'CMS-editable protection tiers for the booking checkout (id slug, name, monthly recurring ',
-          'price, coverage, sortOrder). Active rows only, sortOrder ascending. The id is the stable ',
+          'price, coverage, imageUrl HTTPS artwork, sortOrder). Active rows only, sortOrder ascending. The id is the stable ',
           'frontend slug so the app can fall back to its baked-in copy when a row is missing. ',
           'No authentication. Envelope `{ data, meta: { count } }`.',
         ].join('\n'),
@@ -427,7 +429,7 @@ export const openapiSpec = {
         summary: 'List active packing-supply addons',
         description: [
           'CMS-editable packing supplies for the booking checkout (id slug, name, one-off price, ',
-          'unit, sortOrder). Active rows only, sortOrder ascending. The id is the stable frontend ',
+          'unit, imageUrl HTTPS artwork, sortOrder). Active rows only, sortOrder ascending. The id is the stable frontend ',
           'slug so the app can fall back to its baked-in copy when a row is missing. ',
           'No authentication. Envelope `{ data, meta: { count } }`.',
         ].join('\n'),
@@ -1633,7 +1635,7 @@ export const openapiSpec = {
       patch: {
         tags: ['Operator CMS'],
         summary: 'Update a protection plan (incl. active toggle)',
-        description: 'Partial update. `{ active: false }` deactivates (preferred over delete — hides the tier from public reads, keeps history).',
+        description: 'Partial update. `{ active: false }` deactivates (preferred over delete — hides the tier from public reads, keeps history). `{ imageUrl }` sets checkout artwork (HTTPS URL string; null/empty clears).',
         operationId: 'updateProtectionPlan',
         security: [{ bearerAuth: [] }],
         parameters: [
@@ -1728,7 +1730,7 @@ export const openapiSpec = {
       patch: {
         tags: ['Operator CMS'],
         summary: 'Update a packing-supply addon (incl. active toggle)',
-        description: 'Partial update. `{ active: false }` deactivates (preferred over delete — hides the addon from public reads, keeps history).',
+        description: 'Partial update. `{ active: false }` deactivates (preferred over delete — hides the addon from public reads, keeps history). `{ imageUrl }` sets checkout artwork (HTTPS URL string; null/empty clears).',
         operationId: 'updateAddon',
         security: [{ bearerAuth: [] }],
         parameters: [
@@ -3418,7 +3420,7 @@ export const openapiSpec = {
       // --- Booking-extras catalog (v1.6.0, additive) ---
       ProtectionPlan: {
         type: 'object',
-        required: ['id', 'name', 'price', 'coverage', 'sortOrder', 'active'],
+        required: ['id', 'name', 'price', 'coverage', 'imageUrl', 'sortOrder', 'active'],
         description:
           'A CMS-editable protection tier (monthly recurring price). `id` is the stable frontend slug.',
         properties: {
@@ -3426,6 +3428,7 @@ export const openapiSpec = {
           name: { type: 'string', description: 'Display name, e.g. Essential.' },
           price: { type: 'number', description: 'Monthly recurring price (SGD).' },
           coverage: { type: ['string', 'null'], description: 'Short coverage description shown at checkout.' },
+          imageUrl: { type: ['string', 'null'], description: 'Checkout artwork: validated HTTPS URL string, null = no image.' },
           sortOrder: { type: 'integer', description: 'Ascending display order.' },
           active: { type: 'boolean', description: 'False = hidden from public reads, kept for history.' },
         },
@@ -3439,13 +3442,14 @@ export const openapiSpec = {
           name: { type: 'string' },
           price: { type: 'number', minimum: 0 },
           coverage: { type: ['string', 'null'] },
+          imageUrl: { type: ['string', 'null'], description: 'HTTPS URL string (max 2048 chars); null/empty clears the image.' },
           sortOrder: { type: 'integer', minimum: 0 },
           active: { type: 'boolean' },
         },
       },
       Addon: {
         type: 'object',
-        required: ['id', 'name', 'price', 'unit', 'sortOrder', 'active'],
+        required: ['id', 'name', 'price', 'unit', 'imageUrl', 'sortOrder', 'active'],
         description:
           'A CMS-editable packing-supply addon (one-off price). `id` is the stable frontend slug.',
         properties: {
@@ -3453,6 +3457,7 @@ export const openapiSpec = {
           name: { type: 'string', description: 'Display name, e.g. Medium Box.' },
           price: { type: 'number', description: 'One-off price (SGD).' },
           unit: { type: ['string', 'null'], description: 'Sale unit shown at checkout, e.g. box / each.' },
+          imageUrl: { type: ['string', 'null'], description: 'Checkout artwork: validated HTTPS URL string, null = no image.' },
           sortOrder: { type: 'integer', description: 'Ascending display order.' },
           active: { type: 'boolean', description: 'False = hidden from public reads, kept for history.' },
         },
@@ -3466,6 +3471,7 @@ export const openapiSpec = {
           name: { type: 'string' },
           price: { type: 'number', minimum: 0 },
           unit: { type: ['string', 'null'] },
+          imageUrl: { type: ['string', 'null'], description: 'HTTPS URL string (max 2048 chars); null/empty clears the image.' },
           sortOrder: { type: 'integer', minimum: 0 },
           active: { type: 'boolean' },
         },

@@ -2375,6 +2375,21 @@ router.delete('/users/:id/permissions/:permission', requireAuth, async (req: Req
 // bookings snapshot catalog values as free text). DELETE is a hard delete.
 // Writes are intentionally NOT permission-gated (catalog edits, like
 // promotions) — Bearer JWT via requireAuth is the gate.
+//
+// imageUrl is a validated HTTPS URL *string* (nullable, max 2048 chars) —
+// the repo has no binary upload/S3 pattern, so CMS sets/updates artwork as
+// text. Empty string is accepted and normalised to null in core (clears the
+// image). PATCH schemas below derive via .partial(), so image updates ride
+// the same PATCH { imageUrl } path as every other field.
+const imageUrlField = z
+  .string()
+  .trim()
+  .max(2048)
+  .nullable()
+  .optional()
+  .refine((v) => v == null || v === '' || /^https:\/\//i.test(v), {
+    message: 'imageUrl must be a valid HTTPS URL (or null to clear)',
+  });
 
 const protectionPlanPayloadSchema = z.object({
   id: z
@@ -2386,6 +2401,7 @@ const protectionPlanPayloadSchema = z.object({
   name: z.string().trim().min(1).max(120),
   price: z.number().nonnegative(),
   coverage: z.string().trim().max(500).nullable().optional(),
+  imageUrl: imageUrlField,
   sortOrder: z.number().int().min(0).max(100000).optional(),
   active: z.boolean().optional(),
 });
@@ -2402,6 +2418,7 @@ const addonPayloadSchema = z.object({
   name: z.string().trim().min(1).max(120),
   price: z.number().nonnegative(),
   unit: z.string().trim().max(40).nullable().optional(),
+  imageUrl: imageUrlField,
   sortOrder: z.number().int().min(0).max(100000).optional(),
   active: z.boolean().optional(),
 });

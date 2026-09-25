@@ -124,8 +124,9 @@ router.post('/promotions/validate', async (req: Request, res: Response) => {
 // GET /promotions + POST /promotions/validate are untouched above.
 // PUBLIC booking-extras catalog for the booking frontend (unauthenticated).
 // Additive: active rows only, sortOrder ascending, envelope { data, meta }.
-// ProtectionPlan: { id, name, price (monthly recurring), coverage, sortOrder,
-// active } — Addon: { id, name, price (one-off), unit, sortOrder, active }.
+// ProtectionPlan: { id, name, price (monthly recurring), coverage, imageUrl
+// (HTTPS string | null), sortOrder, active } — Addon: { id, name, price
+// (one-off), unit, imageUrl (HTTPS string | null), sortOrder, active }.
 // `id` is the stable frontend slug so the app can fall back to its baked-in
 // copy when a row is missing. No auth, no PII.
 router.get('/protection-plans', async (_req: Request, res: Response) => {

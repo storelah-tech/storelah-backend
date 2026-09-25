@@ -47,9 +47,15 @@ function ensureSection() {
 
 // ---------- lists ----------
 
+function thumb(url) {
+  return url
+    ? `<img src="${escapeHtml(url)}" alt="" loading="lazy" style="width:40px;height:40px;object-fit:cover;border-radius:6px;vertical-align:middle;margin-right:8px;" onerror="this.remove()">`
+    : '';
+}
+
 function planRow(p) {
   return (
-    `<tr><td><b>${escapeHtml(p.name)}</b><div class="t-type">${escapeHtml(p.id)}</div></td>` +
+    `<tr><td><b>${thumb(p.imageUrl)}${escapeHtml(p.name)}</b><div class="t-type">${escapeHtml(p.id)}</div></td>` +
     `<td><b>${fmtMoney(p.price)}</b><div class="t-type">/ month</div></td>` +
     `<td>${p.coverage ? escapeHtml(p.coverage) : '<span class="t-type">—</span>'}</td>` +
     `<td>${escapeHtml(String(p.sortOrder))}</td>` +
@@ -62,7 +68,7 @@ function planRow(p) {
 
 function addonRow(a) {
   return (
-    `<tr><td><b>${escapeHtml(a.name)}</b><div class="t-type">${escapeHtml(a.id)}</div></td>` +
+    `<tr><td><b>${thumb(a.imageUrl)}${escapeHtml(a.name)}</b><div class="t-type">${escapeHtml(a.id)}</div></td>` +
     `<td><b>${fmtMoney(a.price)}</b><div class="t-type">one-off</div></td>` +
     `<td>${a.unit ? escapeHtml(a.unit) : '<span class="t-type">—</span>'}</td>` +
     `<td>${escapeHtml(String(a.sortOrder))}</td>` +
@@ -126,6 +132,7 @@ function openExtraModal(kind, row) {
       '<div class="field"><label for="xp-price">Price (SGD)</label><input id="xp-price" type="number" min="0" step="0.01"><div class="field-err" id="xp-e-price"></div></div>' +
       '<div class="field"><label for="xp-sort">Sort order</label><input id="xp-sort" type="number" min="0" step="1"><div class="field-err" id="xp-e-sort"></div></div>' +
       '<div class="field full"><label for="xp-extra" id="xp-extra-label">Coverage</label><input id="xp-extra" maxlength="500"><div class="field-err" id="xp-e-extra"></div></div>' +
+      '<div class="field full"><label for="xp-image">Image URL (https, optional)</label><input id="xp-image" maxlength="2048" placeholder="https://…"><div class="field-err" id="xp-e-image"></div></div>' +
       '</div></form>' +
       '<div class="modal-foot"><button class="tb-btn ghost" id="xpModalCancel" type="button">Cancel</button>' +
       '<button class="tb-btn primary" id="xpModalSave" type="button">Save</button></div></div>';
@@ -151,6 +158,7 @@ function openExtraModal(kind, row) {
   $('#xp-price').value = editing ? String(row.price ?? '') : '';
   $('#xp-sort').value = editing ? String(row.sortOrder ?? 0) : '';
   $('#xp-extra').value = editing ? (isPlan ? (row.coverage || '') : (row.unit || '')) : '';
+  $('#xp-image').value = editing ? (row.imageUrl || '') : '';
   const alert = $('#xpModalAlert');
   alert.hidden = true;
   alert.textContent = '';
@@ -178,6 +186,11 @@ async function submitExtraModal() {
   const priceRaw = $('#xp-price')?.value.trim() || '';
   const sortRaw = $('#xp-sort')?.value.trim() || '';
   const extra = $('#xp-extra')?.value.trim() || '';
+  const imageUrl = $('#xp-image')?.value.trim() || '';
+  if (imageUrl && !/^https:\/\//i.test(imageUrl)) {
+    modalFail('Image URL must start with https:// (or leave it empty for no image).');
+    return;
+  }
   if (!editId && !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(id)) {
     modalFail('ID must be a URL-safe slug (lowercase, numbers, hyphens).');
     return;
@@ -197,12 +210,14 @@ async function submitExtraModal() {
       const body = { name, price };
       if (sortRaw !== '') body.sortOrder = Math.max(0, Math.floor(Number(sortRaw)));
       body[isPlan ? 'coverage' : 'unit'] = extra || null;
+      body.imageUrl = imageUrl || null;
       await patch(`${path}/${encodeURIComponent(editId)}`, body);
       showBanner(`${isPlan ? 'Plan' : 'Addon'} ${editId} saved`, true);
     } else {
       const body = { id, name, price };
       if (sortRaw !== '') body.sortOrder = Math.max(0, Math.floor(Number(sortRaw)));
       if (extra) body[isPlan ? 'coverage' : 'unit'] = extra;
+      if (imageUrl) body.imageUrl = imageUrl;
       await post(path, body);
       showBanner(`${isPlan ? 'Plan' : 'Addon'} ${id} created`, true);
     }

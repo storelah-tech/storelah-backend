@@ -1407,6 +1407,11 @@ export const openapiSpec = {
           'Additive since 1.1.0: `data.notice` echoes the latest persisted move-out notice (null when none was ' +
             'submitted — previously notices were not persisted at all) and `data.tenancy` carries the tenancy ' +
             'move-in and next-billing dates (null when the customer has no tenant record).',
+          '',
+          'Additive: `data.units` lists EVERY unit the customer rents (one entry per physical unit, ' +
+            '`[]` when none) — each entry is the portal unit shape plus the tenancy `status`, ' +
+            '`moveInDate` and `nextPayment`. The singular `data.unit`, `data.invoices`, `data.bookings`, ' +
+            '`data.notice` and `data.tenancy` keys are unchanged.',
         ].join('\n'),
         operationId: 'getCustomerPortal',
         security: [{ bearerAuth: [] }],
@@ -3908,7 +3913,43 @@ export const openapiSpec = {
               },
             },
           },
+          units: {
+            type: 'array',
+            description:
+              'Every unit the customer rents — one entry per physical unit (soft-deleted units excluded), `[]` when none (additive; pre-existing keys are unchanged).',
+            items: { $ref: openapiSchemaRef('PortalUnitHolding') },
+          },
         },
+      },
+      TenantStatus: {
+        type: 'string',
+        enum: ['ACTIVE', 'DUE_SOON', 'OVERDUE', 'NOTICE', 'INACTIVE'],
+        description: 'Tenancy status (operator-managed in the CMS).',
+      },
+      PortalUnitHolding: {
+        type: 'object',
+        description:
+          'One rented unit: the PortalUnit shape plus the tenancy dates. `status` is the TENANCY status (TenantStatus), not the unit status.',
+        allOf: [
+          { $ref: openapiSchemaRef('PortalUnit') },
+          {
+            type: 'object',
+            required: ['status', 'moveInDate', 'nextPayment'],
+            properties: {
+              status: { $ref: openapiSchemaRef('TenantStatus') },
+              moveInDate: {
+                type: ['string', 'null'],
+                format: 'date-time',
+                description: 'Tenancy start / move-in date for this unit.',
+              },
+              nextPayment: {
+                type: ['string', 'null'],
+                format: 'date-time',
+                description: 'Next billing date for this unit.',
+              },
+            },
+          },
+        ],
       },
       PortalNotice: {
         type: 'object',

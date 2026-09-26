@@ -479,6 +479,15 @@ main{min-width:0;display:flex;flex-direction:column;min-height:100vh}
 .fp-boundary.open{fill:none}
 .fp-boundary.draft{fill:none;stroke:var(--terra);stroke-width:2.5;stroke-dasharray:7 5}
 .fp-boundary.selected{stroke:var(--terra);stroke-width:3}
+/* Auto-place usable-area preview (see fpUsablePlaceArea + fpRenderBoundaryLayer):
+   the interior auto-place treats as "inside the lines" renders under the
+   strokes — stitched loop interiors as a translucent olive wash, the
+   open-lines fallback box as a dashed amber rect (close the loop for exact
+   interior placement). Tones reuse the plan palette (available sage edge,
+   reserved amber); the layer stays pointer-events:none so canvas tools are
+   untouched. */
+.fp-boundary-layer .fp-usable-fill{fill:rgba(90,122,96,.10);stroke:none}
+.fp-boundary-layer .fp-usable-bbox{fill:rgba(212,134,10,.06);stroke:#D4860A;stroke-width:1.5;stroke-dasharray:6 4}
 .fp-boundary-label{font-size:10px;font-weight:800;fill:var(--olive);paint-order:stroke;stroke:var(--cream);stroke-width:3px}
 .fp-bvertex{fill:var(--white);stroke:var(--terra);stroke-width:2;cursor:grab;pointer-events:auto;touch-action:none}
 .fp-bvertex.first{fill:var(--terra)}

@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import bcrypt from 'bcryptjs';
-import { AccountType, Customer, Prisma } from '@prisma/client';
+import { AccountType, Customer, Prisma, TenantStatus } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { toNum } from '../lib/format';
 import { AppError } from '../lib/http';
@@ -382,6 +382,40 @@ export async function getCustomerPortal(payload: CustomerJwtPayload) {
     }
   }
 
+  // Additive multi-unit list: every Tenant row for this email that points at
+  // a live (non-soft-deleted) unit, one entry per physical unit. The singular
+  // `unit` key above is untouched for old clients.
+  const units: Array<
+    Omit<ReturnType<typeof serializePortalUnit>, 'status'> & {
+      status: TenantStatus;
+      moveInDate: Date | null;
+      nextPayment: Date | null;
+    }
+  > = [];
+  if (customer.email) {
+    const tenants = await prisma.tenant.findMany({
+      where: { email: customer.email, unitId: { not: null } },
+      include: { unit: { include: { size: true, branch: true, floor: true } } },
+    });
+    const seen = new Set<string>();
+    for (const t of tenants) {
+      const u = t.unit;
+      // Soft-deleted units never surface (see docs/UNIT_DELETION.md).
+      if (!u || u.deletedAt) continue;
+      if (seen.has(u.id) || seen.has(u.unitCode)) continue;
+      seen.add(u.id);
+      seen.add(u.unitCode);
+      units.push({
+        ...serializePortalUnit(u),
+        // NOTE: `status` here is the TENANCY status (TenantStatus), not the
+        // unit status — the singular `unit` key above keeps UnitStatus.
+        status: t.status,
+        moveInDate: t.moveInDate,
+        nextPayment: t.nextPayment,
+      });
+    }
+  }
+
   const invoices = tenant
     ? (
         await prisma.invoice.findMany({
@@ -420,6 +454,8 @@ export async function getCustomerPortal(payload: CustomerJwtPayload) {
     tenancy: tenant
       ? { moveInDate: tenant.moveInDate, nextPayment: tenant.nextPayment }
       : null,
+    // --- appended (additive): every unit this customer rents ---
+    units,
   };
 }
 
@@ -603,12 +639,24 @@ export async function createCustomerBooking(customer: Customer, input: CreateBoo
       ? await tx.tenant.findFirst({ where: { email: customer.email } })
       : null;
     if (!tenant) {
-      // Tenant.unitId is UNIQUE (one active tenancy per unit). A RESERVED unit
-      // may already belong to a different customer — reject cleanly with 409
-      // instead of letting tenant.create blow up with a raw unique violation.
+      // Hold check (agrees with the public list, which is Unit.status-sourced):
+      // a tenant row still referencing this unit is a genuine hold ONLY while
+      // the unit is marketed as held (RESERVED) — the booking flow always
+      // flips AVAILABLE → RESERVED when it links a tenant, so a link on an
+      // AVAILABLE unit is dangling (bulk status reset / operator status edit
+      // that bypassed the release paths in deactivateTenant/transitionMoveOut,
+      // or seed theater). The listed AVAILABLE status is customer-facing truth,
+      // so the dangling link is released in-transaction — tenant row preserved,
+      // unitId nulled, same release semantics as deactivateTenant — instead of
+      // 409ing a listed-AVAILABLE unit. RESERVED + foreign link stays 409
+      // (second-customer double-booking guard; same-customer re-books never
+      // reach here because their tenant row is found by email above).
       const unitTenant = await tx.tenant.findFirst({ where: { unitId: unit.id } });
-      if (unitTenant) {
+      if (unitTenant && unit.status !== 'AVAILABLE') {
         throw new AppError(409, 'CONFLICT', `Unit ${input.unitCode} is already booked`);
+      }
+      if (unitTenant) {
+        await tx.tenant.update({ where: { id: unitTenant.id }, data: { unitId: null } });
       }
       tenant = await tx.tenant.create({
         data: {

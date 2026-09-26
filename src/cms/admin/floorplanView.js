@@ -911,6 +911,14 @@ function fpRenderStructure(canvas, u, structure) {
 // in-flight pencil draft previews dashed). Reused by the editor canvas AND the
 // read-only fpView canvas.
 // Pencil lines (kind 'PENCIL') only show their label while selected.
+//
+// Usable-area preview (auto-place interior): the_fpUsablePlaceArea_ interior
+// derived from these same rows renders FIRST (under the strokes) — stitched
+// loop interiors as a translucent wash, or the open-lines fallback box as a
+// dashed amber rect. The operator therefore SEES what "inside the boundary
+// lines" means before pressing auto-place: units will only ever land in the
+// washed region, and the amber box says "close the loop for exact interior
+// placement" without a toast round-trip.
 function fpRenderBoundaryLayer(canvas, u, dims, boundaries, draft, selectedId) {
   const SVG_NS = 'http://www.w3.org/2000/svg';
   const svg = document.createElementNS(SVG_NS, 'svg');
@@ -918,6 +926,26 @@ function fpRenderBoundaryLayer(canvas, u, dims, boundaries, draft, selectedId) {
   svg.setAttribute('width', String(dims.w * u));
   svg.setAttribute('height', String(dims.h * u));
   svg.setAttribute('viewBox', `0 0 ${dims.w * u} ${dims.h * u}`);
+  const usable = fpUsablePlaceArea(boundaries || []);
+  if (usable) {
+    if (usable.kind === 'loops') {
+      for (const poly of usable.polys) {
+        const el = document.createElementNS(SVG_NS, 'polygon');
+        el.setAttribute('points', poly.map(([x, y]) => `${x * u},${y * u}`).join(' '));
+        el.setAttribute('class', 'fp-usable-fill');
+        svg.appendChild(el);
+      }
+    } else {
+      const { x0, y0, x1, y1 } = usable.bbox;
+      const el = document.createElementNS(SVG_NS, 'rect');
+      el.setAttribute('x', String(x0 * u));
+      el.setAttribute('y', String(y0 * u));
+      el.setAttribute('width', String(Math.max(0, x1 - x0) * u));
+      el.setAttribute('height', String(Math.max(0, y1 - y0) * u));
+      el.setAttribute('class', 'fp-usable-bbox');
+      svg.appendChild(el);
+    }
+  }
   const addShape = (points, closed, cls) => {
     const el = document.createElementNS(SVG_NS, closed ? 'polygon' : 'polyline');
     el.setAttribute('points', points.map(([x, y]) => `${x * u},${y * u}`).join(' '));
@@ -1989,23 +2017,40 @@ function fpPolyBBox(pts) {
 
 // Usable auto-place area derived from the boundary lines (rect-in-polygon
 // clipping for fpFirstFreeRect). Closed loops (closed:true, >=3 distinct
-// vertices, nonzero area) define the interior and win when present; otherwise
-// open >=3-vertex polylines chord-close under the same marked-area rule as
-// fpBoundaryMetricsLocal; when only open 2-vertex segments exist (e.g. the
-// Bukit Merah L1 perimeter of single Line strokes) there is no loop interior,
-// so the fallback is the union bbox of all line vertices — an over-approx-
+// vertices, nonzero area) and open >=3-vertex polylines (chord-closed under
+// the marked-area rule) define the interior directly; leftover strokes are
+// STITCHED endpoint-to-endpoint (fpChainBoundarySegments — the same rule as
+// fpBoundaryMetricsLocal, so a perimeter drawn as separate Line strokes that
+// join into a closed ring counts as its true polygonal interior, notch and
+// all). Only when nothing forms a loop (e.g. lone open 2-vertex segments)
+// the fallback is the union bbox of all line vertices — an over-approx-
 // imation for non-rectangular marks, surfaced as "line area" in the confirm
-// and toast copy until the loop is closed.
-function fpUsablePlaceArea() {
-  const rows = (state.fp.boundaries || [])
+// and toast copy plus the dashed preview box until the loop is closed.
+// `input` defaults to the editor's boundaries so fpAutoPlaceAll keeps its
+// call shape; the canvas preview passes its own rows (shared with read-only
+// fpView, where editor state may be stale).
+function fpUsablePlaceArea(input) {
+  const rows = (input !== undefined ? input : state.fp.boundaries || [])
     .map((b) => ({ pts: fpBoundaryPoints(b.points), closed: !!b.closed }))
     .filter((b) => b.pts.length >= 2 && b.pts.some(([x, y]) => x !== b.pts[0][0] || y !== b.pts[0][1]));
   if (!rows.length) return null;
   const distinct = (pts) => new Set(pts.map(([x, y]) => `${x},${y}`)).size;
-  const closedLoops = rows.filter((b) => b.closed && distinct(b.pts) >= 3 && fpPolygonArea(b.pts) > 0).map((b) => b.pts);
-  if (closedLoops.length) return { kind: 'loops', polys: closedLoops, bbox: fpPolyBBox(closedLoops.flat()) };
-  const openLoops = rows.filter((b) => !b.closed && b.pts.length >= 3 && fpPolygonArea(b.pts) > 0).map((b) => b.pts);
-  if (openLoops.length) return { kind: 'loops', polys: openLoops, bbox: fpPolyBBox(openLoops.flat()) };
+  const hasArea = (pts) => pts.length >= 3 && fpPolygonArea(pts) > 0;
+  // Direct loops: closed rows with >=3 distinct vertices, plus open
+  // >=3-vertex rows (chord-closed under the marked-area rule).
+  const direct = rows
+    .filter((b) => (b.closed ? distinct(b.pts) >= 3 : true) && hasArea(b.pts))
+    .map((b) => b.pts);
+  // Stitched loops: endpoint-connected leftover strokes forming rings (or
+  // chord-closed chains) with area — e.g. a perimeter drawn as single Line
+  // strokes. Same rule as the metrics bridge; without this the placer would
+  // fall back to the union bbox (a "square") for exactly the perimeters the
+  // metrics already report as closed loops.
+  const directSet = new Set(direct);
+  const leftover = rows.filter((b) => !directSet.has(b.pts)).map((b) => b.pts);
+  const stitched = fpChainBoundarySegments(leftover).filter((pts) => hasArea(pts));
+  const loops = [...direct, ...stitched];
+  if (loops.length) return { kind: 'loops', polys: loops, bbox: fpPolyBBox(loops.flat()) };
   return { kind: 'bbox', polys: [], bbox: fpPolyBBox(rows.flatMap((b) => b.pts)) };
 }
 
@@ -2132,13 +2177,16 @@ async function fpAutoPlaceAll() {
     fpToast('Cannot place units — there is no usable boundary area. Draw a boundary with the Line tool first.', false);
     return;
   }
+  const usableSqft = usable.kind === 'loops'
+    ? Math.round(usable.polys.reduce((sum, poly) => sum + fpPolygonArea(poly), 0))
+    : 0;
   const placeOk = await confirmDialog({
     title: `Place ${queue.length} unplaced unit${queue.length === 1 ? '' : 's'}?`,
     message:
       'Units are placed into the first free space inside the boundary lines. Already-placed units are kept.' +
       (usable.kind === 'bbox'
         ? ' The boundary is open lines, so placement is bounded by the lines\u2019 overall box — close the loop for exact interior placement.'
-        : ''),
+        : ` The closed boundary interior covers ~${usableSqft.toLocaleString('en-SG')} sqft across ${usable.polys.length} loop${usable.polys.length === 1 ? '' : 's'} (shaded on the canvas).`),
     confirmLabel: 'Place units',
   });
   if (!placeOk) return;

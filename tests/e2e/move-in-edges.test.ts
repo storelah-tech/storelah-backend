@@ -149,6 +149,71 @@ describe('move-in edge cases', () => {
     expect(dup.body.error.code).toBe('CONFLICT');
   });
 
+  it('AVAILABLE unit with a dangling tenant link is still bookable → 201 (list truth wins)', async () => {
+    // Regression: the public list is Unit.status-sourced, so a unit marketed
+    // AVAILABLE must stay bookable even when a stale Tenant.unitId row still
+    // references it (bulk status reset / operator status edit that bypassed
+    // the release paths). The dangling link is released in-transaction.
+    const stale = await prisma.tenant.create({
+      data: {
+        name: 'E2E Dangling',
+        type: 'PERSONAL',
+        email: uniqueEmail(),
+        monthlyRate: 120,
+        psf: 2.4,
+        status: 'ACTIVE',
+        unit: { connect: { unitCode: PIN.rentableUnit } },
+      },
+    });
+
+    const token = await register(uniqueEmail());
+    const res = await api
+      .post('/api/v1/customer/bookings')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ unitCode: PIN.rentableUnit, moveInDate: futureMoveInISO(), durationMonths: 1 });
+    expect(res.status).toBe(201);
+    expect(res.body.data.unit.code).toBe(PIN.rentableUnit);
+
+    // Dangling row preserved, link released; unit flipped to RESERVED as usual.
+    const released = await prisma.tenant.findUnique({ where: { id: stale.id } });
+    expect(released).not.toBeNull();
+    expect(released!.unitId).toBeNull();
+    const unit = await prisma.unit.findUnique({ where: { unitCode: PIN.rentableUnit } });
+    expect(unit!.status).toBe('RESERVED');
+  });
+
+  it('RESERVED unit with a foreign tenant link still rejects → 409 CONFLICT', async () => {
+    // The genuine-hold counterpart to the test above: a marketed-as-held unit
+    // keeps the second-customer double-booking guard (status gate passes
+    // RESERVED; the tenant-link gate must still fire).
+    const holder = await prisma.tenant.create({
+      data: {
+        name: 'E2E Holder',
+        type: 'PERSONAL',
+        email: uniqueEmail(),
+        monthlyRate: 120,
+        psf: 2.4,
+        status: 'ACTIVE',
+        unit: { connect: { unitCode: PIN.rentableUnit } },
+      },
+    });
+    await prisma.unit.update({ where: { unitCode: PIN.rentableUnit }, data: { status: 'RESERVED' } });
+
+    const token = await register(uniqueEmail());
+    const res = await api
+      .post('/api/v1/customer/bookings')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ unitCode: PIN.rentableUnit, moveInDate: futureMoveInISO(), durationMonths: 1 });
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe('CONFLICT');
+
+    // Hold untouched: link and status preserved.
+    const kept = await prisma.tenant.findUnique({ where: { id: holder.id } });
+    expect(kept!.unitId).not.toBeNull();
+    const unit = await prisma.unit.findUnique({ where: { unitCode: PIN.rentableUnit } });
+    expect(unit!.status).toBe('RESERVED');
+  });
+
   it('floor without an authored plan → 200 with plan:null (empty state)', async () => {
     const res = await api.get(`/api/v1/public/floor-plans/${PIN.branchCode}/${PIN.planlessLevel}`);
     expect(res.status).toBe(200);

@@ -25,7 +25,7 @@ export const openapiSpec = {
   openapi: '3.0.3',
   info: {
     title: 'StoreLah Booking API',
-    version: '1.8.0',
+    version: '1.8.1',
     description: [
       'Customer-facing booking API for the StoreLah self-storage business.',
       '',
@@ -185,8 +185,16 @@ export const openapiSpec = {
       '/cms/floor-plans/{floorId}/metrics/snapshots/authoritative` resolves ',
       'the latest ACTIVE row (the authoritative read — drafts never resolve ',
       'there). Snapshot shapes gain `status` + `approverRole` / ',
-      '`validatedAt` / `publishedAt`; pre-workflow rows backfill to ACTIVE. ',
-      'All pre-existing shapes are unchanged.',
+      '`validatedAt` / `publishedAt`; pre-workflow rows backfill to ACTIVE. ' +
+        'All pre-existing shapes are unchanged.',
+
+      'v1.8.1 is ADDITIVE-ONLY over 1.8.0: paid bookings surface in My Units — ' +
+        '`GET /customer/portal` `data.units` lists EVERY unit the customer has PAID for ' +
+        '(no primary/secondary distinction). The tenant→unit linkage is created at payment ' +
+        'confirmation (`checkout.session.completed` flips the booking to CONFIRMED and the ' +
+        'invoice to PAID), so an unpaid (`PENDING_PAYMENT`) booking appears under ' +
+        '`data.bookings` only and never in `data.units`. No shape changes — entry shapes, ' +
+        'the envelope and every other key are unchanged.',
     ].join('\n'),
   },
   servers: [
@@ -1408,8 +1416,9 @@ export const openapiSpec = {
             'submitted — previously notices were not persisted at all) and `data.tenancy` carries the tenancy ' +
             'move-in and next-billing dates (null when the customer has no tenant record).',
           '',
-          'Additive: `data.units` lists EVERY unit the customer rents (one entry per physical unit, ' +
-            '`[]` when none) — each entry is the portal unit shape plus the tenancy `status`, ' +
+          'Additive: `data.units` lists EVERY unit the customer has PAID for (one entry per physical unit, ' +
+            '`[]` when none — unpaid `PENDING_PAYMENT` bookings appear under `data.bookings` only; the ' +
+            'tenant→unit linkage behind each entry is created at payment confirmation) — each entry is the portal unit shape plus the tenancy `status`, ' +
             '`moveInDate` and `nextPayment`. The singular `data.unit`, `data.invoices`, `data.bookings`, ' +
             '`data.notice` and `data.tenancy` keys are unchanged.',
         ].join('\n'),
@@ -3916,7 +3925,7 @@ export const openapiSpec = {
           units: {
             type: 'array',
             description:
-              'Every unit the customer rents — one entry per physical unit (soft-deleted units excluded), `[]` when none (additive; pre-existing keys are unchanged).',
+              'Every unit the customer has PAID for — one entry per physical unit (soft-deleted units excluded), `[]` when none (additive; pre-existing keys are unchanged). Unpaid (PENDING_PAYMENT) bookings never appear here — see `bookings`.',
             items: { $ref: openapiSchemaRef('PortalUnitHolding') },
           },
         },

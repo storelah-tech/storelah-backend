@@ -16,6 +16,10 @@
 // Payment-state mapping (no new states invented — schema already fits):
 //   - Booking.status PENDING_PAYMENT → CONFIRMED on payment.
 //   - Invoice.status DUE → PAID on payment (method recorded as 'Card').
+//   - Tenant linkage: the paid unit gains a Tenant row (email + unitId) via
+//     linkTenantForPaidBooking, so GET /portal `units[]` (My Units = every
+//     paid unit, no primary/secondary) surfaces it. Unpaid bookings stay under
+//     `bookings[]` only.
 // A booking that is already CONFIRMED/ACTIVE with no DUE invoice left for the
 // session is a no-op (webhook retries). A CANCELLED booking is never resurrected.
 
@@ -26,6 +30,7 @@ import { toNum } from '../lib/format';
 import { AppError } from '../lib/http';
 import type { CustomerJwtPayload } from '../middleware/auth';
 import { markLeadWonForBooking } from './leads';
+import { linkTenantForPaidBooking } from './customers';
 
 let stripeClient: Stripe | null = null;
 
@@ -378,12 +383,18 @@ export async function applyCheckoutCompleted(
   // No DUE invoice left for the session and the booking already left
   // PENDING_PAYMENT → this delivery (or an earlier one) already applied.
   // Still heal leads created after the first delivery (e.g. a late enquiry
-  // for the same contact) — best-effort, never fails the webhook.
+  // for the same contact) — best-effort, never fails the webhook. Also heal
+  // the My-Units tenant linkage in case the first delivery predated it.
   if (!target && (booking.status === 'CONFIRMED' || booking.status === 'ACTIVE')) {
     try {
       await markLeadWonForBooking(prisma, leadMatch);
     } catch {
       // Best-effort attribution only — the payment itself already applied.
+    }
+    try {
+      await prisma.$transaction((tx) => linkTenantForPaidBooking(tx, { bookingId: booking!.id }));
+    } catch {
+      // Best-effort linkage heal only — the payment itself already applied.
     }
     return { bookingRef: booking.bookingRef, applied: false };
   }
@@ -432,6 +443,15 @@ export async function applyCheckoutCompleted(
       }
     } catch {
       console.log(`[checkout] bookingRef=${booking!.bookingRef} lead WON attribution skipped`);
+    }
+    // My-Units tenant linkage INSIDE the same transaction: the paid unit
+    // becomes a Tenant row (email + unitId) so GET /portal `units[]` — and
+    // every other email-keyed downstream read (map, summary, KPIs) — surfaces
+    // it. Unlike lead attribution this is load-bearing (not best-effort): a
+    // failure rolls back with the payment stamps and Stripe redelivers.
+    const link = await linkTenantForPaidBooking(tx, { bookingId: booking!.id });
+    if (link.created) {
+      console.log(`[checkout] bookingRef=${booking!.bookingRef} linked additional unit tenant ${link.tenantId}`);
     }
   });
 

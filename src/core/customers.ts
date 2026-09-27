@@ -638,33 +638,61 @@ export async function createCustomerBooking(customer: Customer, input: CreateBoo
     let tenant = customer.email
       ? await tx.tenant.findFirst({ where: { email: customer.email } })
       : null;
-    if (!tenant) {
+    // My-Units rule (product decision): a unit surfaces in GET /portal
+    // `units[]` ONLY once it is paid for. Tenant→unit linkage is therefore
+    // created at PAYMENT confirmation (see linkTenantForPaidBooking, called by
+    // the Stripe checkout.session.completed webhook) — never here. A freshly
+    // created tenant row starts with unitId NULL (identity for the booking +
+    // invoice FKs only) and an unpaid booking is visible under `bookings[]`
+    // alone. The unit hold in the unpaid window is still enforced below via
+    // the PENDING_PAYMENT booking guard (tenant rows cannot be the hold
+    // signal anymore since they only link post-payment).
+    const currentTenantId = tenant?.id ?? null;
+    if (unit.status === 'AVAILABLE') {
       // Hold check (agrees with the public list, which is Unit.status-sourced):
       // a tenant row still referencing this unit is a genuine hold ONLY while
-      // the unit is marketed as held (RESERVED) — the booking flow always
-      // flips AVAILABLE → RESERVED when it links a tenant, so a link on an
-      // AVAILABLE unit is dangling (bulk status reset / operator status edit
-      // that bypassed the release paths in deactivateTenant/transitionMoveOut,
-      // or seed theater). The listed AVAILABLE status is customer-facing truth,
-      // so the dangling link is released in-transaction — tenant row preserved,
-      // unitId nulled, same release semantics as deactivateTenant — instead of
-      // 409ing a listed-AVAILABLE unit. RESERVED + foreign link stays 409
-      // (second-customer double-booking guard; same-customer re-books never
-      // reach here because their tenant row is found by email above).
+      // the unit is marketed as held (RESERVED) — the payment flow links a
+      // tenant at confirmation, so a link on an AVAILABLE unit is dangling
+      // (bulk status reset / operator status edit that bypassed the release
+      // paths in deactivateTenant/transitionMoveOut, or seed theater). The
+      // listed AVAILABLE status is customer-facing truth, so the dangling link
+      // is released in-transaction — tenant row preserved, unitId nulled, same
+      // release semantics as deactivateTenant — instead of 409ing a
+      // listed-AVAILABLE unit.
       const unitTenant = await tx.tenant.findFirst({ where: { unitId: unit.id } });
-      if (unitTenant && unit.status !== 'AVAILABLE') {
-        throw new AppError(409, 'CONFLICT', `Unit ${input.unitCode} is already booked`);
-      }
       if (unitTenant) {
         await tx.tenant.update({ where: { id: unitTenant.id }, data: { unitId: null } });
       }
+    } else {
+      // Unit is marketed as held (RESERVED or otherwise non-AVAILABLE).
+      // Double-booking guard, uniform for new and returning customers:
+      //  - a tenant row linking this unit (a PAID hold) owned by someone else,
+      //  - a PENDING_PAYMENT booking on this unit (an UNPAID hold) owned by
+      //    someone else,
+      //  either 409s. The customer's OWN hold/booking always proceeds (same-
+      //  customer re-books were already allowed before deferred linkage).
+      const unitTenant = await tx.tenant.findFirst({ where: { unitId: unit.id } });
+      if (unitTenant && unitTenant.id !== currentTenantId) {
+        throw new AppError(409, 'CONFLICT', `Unit ${input.unitCode} is already booked`);
+      }
+      const pendingHold = await tx.booking.findFirst({
+        where: { unitId: unit.id, status: 'PENDING_PAYMENT' },
+        select: { tenantId: true },
+      });
+      if (pendingHold && pendingHold.tenantId !== currentTenantId) {
+        throw new AppError(409, 'CONFLICT', `Unit ${input.unitCode} is already booked`);
+      }
+    }
+    if (!tenant) {
       tenant = await tx.tenant.create({
         data: {
           name: customer.name,
           type: customer.type,
           email: customer.email,
           mobile: customer.mobile,
-          unitId: unit.id,
+          // unitId stays NULL until payment confirmation (see above) — this
+          // row is booking/invoice identity only for now.
+          unitId: null,
           moveInDate,
           monthlyRate: unit.monthlyRate,
           psf: unit.sqft ? toNum(unit.monthlyRate) / unit.sqft : toNum(unit.monthlyRate),
@@ -732,6 +760,68 @@ export async function createCustomerBooking(customer: Customer, input: CreateBoo
       amount: toNum(booking.amount),
     };
   });
+}
+
+// --- Payment-time tenant linkage (My Units) ----------------------------------
+//
+// Product rule: NO primary/secondary distinction — My Units (GET /portal
+// `units[]`) = every unit the user has PAID for. The portal serializer reads
+// `units[]` purely from Tenant rows (email match + unitId NOT NULL), so this
+// helper creates that linkage when a booking is paid. Called by the Stripe
+// checkout.session.completed webhook (applyCheckoutCompleted) inside the same
+// transaction as the booking/invoice paid-stamps, and again on the idempotent
+// retry path (already-CONFIRMED, no DUE invoice left) to heal any linkage a
+// first delivery may have missed.
+//
+// Tenant.unitId is @unique (one unit per row), so:
+//  - booking tenant already points at the paid unit → no-op (idempotent);
+//  - booking tenant points NOWHERE (first paid unit) → link it in place;
+//  - booking tenant points at a DIFFERENT unit (second+ paid unit) → create a
+//    NEW tenant row for the paid unit (contact fields mirrored). The booking
+//    and invoice rows stay on the original tenant row (identity/audit trail
+//    untouched — `bookings[]`, `invoices[]` and the webhook's session scoping
+//    keep working exactly as before).
+//
+// No migration: Tenant already carries every column written here.
+export async function linkTenantForPaidBooking(
+  tx: Prisma.TransactionClient,
+  args: { bookingId: string },
+): Promise<{ tenantId: string; created: boolean }> {
+  const booking = await tx.booking.findUnique({
+    where: { id: args.bookingId },
+    include: { tenant: true },
+  });
+  if (!booking) throw new AppError(404, 'NOT_FOUND', 'Booking not found');
+  if (booking.status !== 'CONFIRMED' && booking.status !== 'ACTIVE') return { tenantId: booking.tenantId, created: false };
+
+  const tenant = booking.tenant;
+  if (tenant.unitId === booking.unitId) return { tenantId: tenant.id, created: false };
+
+  const unit = await tx.unit.findUnique({ where: { id: booking.unitId } });
+  if (!unit || unit.deletedAt) return { tenantId: tenant.id, created: false };
+
+  if (tenant.unitId === null) {
+    const patch: Prisma.TenantUpdateInput = { unit: { connect: { id: unit.id } } };
+    if (tenant.branchId == null && unit.branchId) patch.branch = { connect: { id: unit.branchId } };
+    await tx.tenant.update({ where: { id: tenant.id }, data: patch });
+    return { tenantId: tenant.id, created: false };
+  }
+
+  const created = await tx.tenant.create({
+    data: {
+      name: tenant.name,
+      type: tenant.type,
+      email: tenant.email,
+      mobile: tenant.mobile,
+      unitId: unit.id,
+      moveInDate: booking.moveInDate,
+      monthlyRate: unit.monthlyRate,
+      psf: unit.sqft ? toNum(unit.monthlyRate) / unit.sqft : toNum(unit.monthlyRate),
+      status: 'ACTIVE',
+      branchId: unit.branchId,
+    },
+  });
+  return { tenantId: created.id, created: true };
 }
 
 // --- Requests & notice ----------------------------------------------------

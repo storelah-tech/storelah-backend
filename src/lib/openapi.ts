@@ -1273,6 +1273,68 @@ export const openapiSpec = {
         },
       },
     },
+    '/customer/claim-status': {
+      get: {
+        tags: ['Customer'],
+        summary: 'Check whether portal password setup is still required',
+        description: [
+          'Routing probe for /portal/setup: proves identity with the SAME bookingRef + email + mobile ',
+          'triple as POST /claim, then reports whether the account still needs password setup ',
+          '(`setupRequired: true` only while the account is type GUEST). Already-claimed or registered ',
+          'accounts answer `setupRequired: false` so the frontend routes straight to /portal/login ',
+          'without showing the setup form.',
+          '',
+          'Mismatches return `404 NOT_FOUND` (never 401) so frontend proxies never mistake this for a ',
+          'stale session. Failed attempts are rate-limited on their own window: 5 per rolling minute ',
+          'per IP+email, separate from the claim budget.',
+        ].join('\n'),
+        operationId: 'getClaimStatus',
+        security: [],
+        parameters: [
+          {
+            name: 'email',
+            in: 'query',
+            required: true,
+            schema: { type: 'string', format: 'email' },
+          },
+          {
+            name: 'bookingRef',
+            in: 'query',
+            required: true,
+            schema: { type: 'string' },
+          },
+          {
+            name: 'mobile',
+            in: 'query',
+            required: true,
+            schema: { type: 'string' },
+          },
+        ],
+        responses: {
+          '200': openapiResponse({
+            type: 'object',
+            required: ['setupRequired'],
+            properties: {
+              setupRequired: {
+                type: 'boolean',
+                description:
+                  'True while the account is type GUEST (show setup); false when portal access already exists (go to login).',
+              },
+            },
+          }),
+          '400': openapiErrorResponse(
+            'Invalid claim-status query (zod-flattened details).',
+          ),
+          '404': openapiErrorResponse(
+            "Uniform failure for any mismatch: we couldn't match those details to a recent booking.",
+          ),
+          '429': openapiErrorResponse(
+            'Too many failed attempts: 5 per rolling minute per IP+email. Successes do not count.',
+          ),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+    },
     '/customer/forgot-password': {
       post: {
         tags: ['Customer'],

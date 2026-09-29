@@ -11,6 +11,7 @@ import {
   registerCustomer,
   loginCustomer,
   claimGuestAccount,
+  getClaimStatus,
   forgotPassword,
   resetPassword,
   getCustomerProfile,
@@ -139,6 +140,25 @@ router.post('/claim', async (req: Request, res: Response) => {
     return;
   }
   ok(res, await claimGuestAccount(parsed.data, req.ip ?? 'unknown'));
+});
+
+// Public like /claim (no requireCustomerAuth) — identity is proven by the
+// confirmation-delivered bookingRef + email + mobile triple, not by a
+// session. Lets /portal/setup route GUEST accounts to setup and everyone
+// else straight to /portal/login, before any password is entered.
+const claimStatusSchema = z.object({
+  email: z.string().trim().email(),
+  bookingRef: z.string().trim().min(1),
+  mobile: z.string().trim().min(6),
+});
+
+router.get('/claim-status', async (req: Request, res: Response) => {
+  const parsed = claimStatusSchema.safeParse(req.query);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid claim-status query', parsed.error.flatten());
+    return;
+  }
+  ok(res, await getClaimStatus(parsed.data, req.ip ?? 'unknown'));
 });
 
 router.post('/forgot-password', async (req: Request, res: Response) => {

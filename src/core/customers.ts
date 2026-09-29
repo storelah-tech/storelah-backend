@@ -233,6 +233,91 @@ export async function claimGuestAccount(
   return { token: signCustomerToken(updated), customer: serializeCustomer(updated) };
 }
 
+// --- Claim status (portal setup routing) ------------------------------------
+//
+// GET /customer/claim-status: lets /portal/setup route the visitor BEFORE any
+// password is entered — GUEST accounts stay on setup, already-claimed or
+// properly registered accounts go straight to /portal/login. Identity is
+// proven by the SAME bookingRef + email + mobile triple as POST /claim, so
+// the answer leaks nothing beyond what /claim already reveals through its
+// 409-vs-401 distinction.
+//
+// Mismatches return 404 (never 401) so the booking frontend's catch-all
+// proxy never mistakes this for a stale session and clears the cookie.
+// Failures are rate-limited on their own window (never burns the claim
+// budget); successes never count.
+
+export interface ClaimStatusInput {
+  email: string;
+  bookingRef: string;
+  mobile: string;
+}
+
+const CLAIM_STATUS_ATTEMPT_LIMIT = 5;
+const CLAIM_STATUS_WINDOW_MS = 60_000;
+const claimStatusFailures = new Map<string, { windowStart: number; count: number }>();
+
+function assertClaimStatusNotRateLimited(key: string): void {
+  const entry = claimStatusFailures.get(key);
+  if (!entry) return;
+  if (Date.now() - entry.windowStart >= CLAIM_STATUS_WINDOW_MS) {
+    claimStatusFailures.delete(key); // expired windows clear themselves
+    return;
+  }
+  if (entry.count >= CLAIM_STATUS_ATTEMPT_LIMIT) {
+    throw new AppError(429, 'TOO_MANY_REQUESTS', 'Too many attempts. Please try again shortly.');
+  }
+}
+
+function recordClaimStatusFailure(key: string): void {
+  const now = Date.now();
+  const entry = claimStatusFailures.get(key);
+  if (!entry || now - entry.windowStart >= CLAIM_STATUS_WINDOW_MS) {
+    claimStatusFailures.set(key, { windowStart: now, count: 1 });
+    return;
+  }
+  entry.count += 1;
+}
+
+export async function getClaimStatus(
+  input: ClaimStatusInput,
+  ip: string,
+): Promise<{ setupRequired: boolean }> {
+  const key = `${ip}|${input.email.toLowerCase()}`;
+  assertClaimStatusNotRateLimited(key);
+
+  const booking = await prisma.booking.findUnique({
+    where: { bookingRef: input.bookingRef },
+    include: { tenant: true },
+  });
+
+  // Same triple match as claimGuestAccount above (mobile normalized to
+  // digits-only, fewer than 6 digits counts as no-match).
+  const tenantDigits = digitsOnly(booking?.tenant.mobile ?? '');
+  const matched =
+    !!booking &&
+    !!booking.tenant.email &&
+    booking.tenant.email.toLowerCase() === input.email.toLowerCase() &&
+    tenantDigits.length >= 6 &&
+    tenantDigits === digitsOnly(input.mobile);
+
+  if (!matched) {
+    recordClaimStatusFailure(key);
+    throw new AppError(404, 'NOT_FOUND', CLAIM_MISMATCH_MESSAGE);
+  }
+
+  const customer = await prisma.customer.findUnique({ where: { email: input.email.toLowerCase() } });
+  if (!customer) {
+    recordClaimStatusFailure(key);
+    throw new AppError(404, 'NOT_FOUND', CLAIM_MISMATCH_MESSAGE);
+  }
+
+  // Type GUEST is only ever set by findOrCreateGuestCustomer, so any other
+  // value means portal access was already claimed or the account was
+  // properly registered — setup must be skipped in favour of sign-in.
+  return { setupRequired: customer.type === AccountType.GUEST };
+}
+
 // --- Forgot / Reset password --------------------------------------------------
 
 export async function forgotPassword(input: { email: string }) {

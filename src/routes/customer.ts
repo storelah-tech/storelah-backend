@@ -6,6 +6,7 @@ import {
   requireCustomerAuth,
   extractCustomerPayload,
   hasAuthorizationHeader,
+  type CustomerJwtPayload,
 } from '../middleware/auth';
 import {
   registerCustomer,
@@ -143,13 +144,15 @@ router.post('/claim', async (req: Request, res: Response) => {
 });
 
 // Public like /claim (no requireCustomerAuth) — identity is proven by the
-// confirmation-delivered bookingRef + email + mobile triple, not by a
+// confirmation-delivered bookingRef + email, with mobile as an optional
+// strengthening leg (additive fallback: email+bookingRef alone now also
+// routes; the full triple keeps working exactly as before), not by a
 // session. Lets /portal/setup route GUEST accounts to setup and everyone
 // else straight to /portal/login, before any password is entered.
 const claimStatusSchema = z.object({
   email: z.string().trim().email(),
   bookingRef: z.string().trim().min(1),
-  mobile: z.string().trim().min(6),
+  mobile: z.string().trim().min(6).optional(),
 });
 
 router.get('/claim-status', async (req: Request, res: Response) => {
@@ -184,11 +187,12 @@ router.get('/me', requireCustomerAuth, async (req: Request, res: Response) => {
 });
 
 // Dual-mode booking creation:
-//  - WITH Authorization header → authenticated customer (unchanged behavior;
-//    a present-but-invalid token is a hard 401, never downgraded to guest).
-//  - WITHOUT any header → guest checkout: body must include a valid `email`;
-//    the customer record is found-or-created (new ones saved as GUEST with a
-//    bcrypt-hashed default password) and the booking linked to it.
+//  - WITH a valid Authorization header → authenticated customer.
+//  - WITHOUT any header, OR with a stale/invalid Bearer but valid guest
+//    email-proof in the body → guest checkout: the customer record is
+//    found-or-created (normalized, never duplicated) and the booking linked
+//    to it. A present-but-invalid token WITHOUT guest proof is still a hard
+//    401 UNAUTHORIZED (stable code); it is never accepted as authenticated.
 router.post('/bookings', async (req: Request, res: Response) => {
   const parsed = createBookingSchema.safeParse(req.body);
   if (!parsed.success) {
@@ -197,10 +201,15 @@ router.post('/bookings', async (req: Request, res: Response) => {
   }
 
   if (hasAuthorizationHeader(req)) {
-    const payload = extractCustomerPayload(req);
-    const customer = await loadCustomer(payload);
-    created(res, await createCustomerBooking(customer, parsed.data));
-    return;
+    try {
+      const payload = extractCustomerPayload(req);
+      const customer = await loadCustomer(payload);
+      created(res, await createCustomerBooking(customer, parsed.data));
+      return;
+    } catch (err) {
+      if (!parsed.data.email) throw err;
+      // Stale Bearer + guest proof → fall through to guest checkout below.
+    }
   }
 
   if (!parsed.data.email) {
@@ -243,15 +252,30 @@ router.post('/notice', requireCustomerAuth, async (req: Request, res: Response) 
 
 // Stripe Checkout (TEST MODE only) — dual-mode like POST /bookings:
 //  - GUEST booking (owning customer is type GUEST) → no auth required.
-//  - Authed booking → the Bearer token must match the booking owner
-//    (a present-but-invalid token is a hard 401, never downgraded to guest).
+//  - Authed booking → the Bearer token must match the booking owner.
+//  - Stale/invalid Bearer + valid guest email-proof (email in body) → served
+//    as GUEST via the email-proof bypass in core/checkout.ts, so a stale
+//    session never blocks guest pay. Without guest proof the invalid token
+//    stays a hard 401 UNAUTHORIZED (stable code the frontend already handles
+//    by clearing + retrying as guest). An invalid token is never accepted
+//    as authenticated.
 router.post('/checkout/sessions', async (req: Request, res: Response) => {
   const parsed = createCheckoutSessionSchema.safeParse(req.body);
   if (!parsed.success) {
     fail(res, 400, 'VALIDATION', 'Invalid checkout payload', parsed.error.flatten());
     return;
   }
-  const caller = hasAuthorizationHeader(req) ? extractCustomerPayload(req) : null;
+  let caller: CustomerJwtPayload | null = null;
+  if (hasAuthorizationHeader(req)) {
+    try {
+      caller = extractCustomerPayload(req);
+    } catch (err) {
+      if (!parsed.data.email) throw err;
+      // Stale Bearer + guest proof → downgrade to guest (caller stays null);
+      // assertCheckoutAccess still enforces the email-proof bypass per booking.
+      caller = null;
+    }
+  }
   ok(res, await createCheckoutSession(parsed.data, caller));
 });
 

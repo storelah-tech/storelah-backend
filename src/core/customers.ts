@@ -46,6 +46,38 @@ function serializeCustomer(c: Customer) {
   };
 }
 
+// --- Email normalization --------------------------------------------------
+//
+// Customer.email is the identity key for guest checkout, claim, login and
+// every email-keyed Tenant/Booking read. All writes store trim()+lowercase;
+// all reads match case-insensitively so legacy rows stored before
+// normalization (e.g. a mixed-case duplicate GUEST row) still resolve to the
+// canonical account instead of forking a second one.
+export function normalizeEmail(email: string): string {
+  return email.trim().toLowerCase();
+}
+
+// Case-insensitive lookup — catches legacy rows stored before normalization.
+async function findCustomersByEmailInsensitive(email: string): Promise<Customer[]> {
+  const normalized = normalizeEmail(email);
+  if (!normalized) return [];
+  return prisma.customer.findMany({
+    where: { email: { equals: normalized, mode: 'insensitive' } },
+  });
+}
+
+// Canonical row among case-variant duplicates: the earliest non-GUEST row
+// wins (a real registration always beats an auto-provisioned guest row),
+// otherwise the earliest row. Mirrors the prod merge migration
+// (merge_case_duplicate_customers) which deletes the non-canonical GUEST dups.
+function pickCanonicalCustomer(rows: Customer[]): Customer | null {
+  if (rows.length === 0) return null;
+  const sorted = [...rows].sort(
+    (a, b) => a.createdAt.getTime() - b.createdAt.getTime() || (a.id < b.id ? -1 : 1),
+  );
+  return sorted.find((r) => r.type !== AccountType.GUEST) ?? sorted[0];
+}
+
 export async function loadCustomer(payload: CustomerJwtPayload): Promise<Customer> {
   const customer = await prisma.customer.findUnique({ where: { id: payload.sub } });
   if (!customer) throw new AppError(401, 'UNAUTHORIZED', 'Customer not found');
@@ -55,19 +87,20 @@ export async function loadCustomer(payload: CustomerJwtPayload): Promise<Custome
 // --- Auth ---------------------------------------------------------------
 
 export async function registerCustomer(input: RegisterCustomerInput) {
-  const existing = await prisma.customer.findUnique({ where: { email: input.email } });
-  if (existing) throw new AppError(409, 'CONFLICT', 'An account with this email already exists');
+  const email = normalizeEmail(input.email);
+  const existing = await findCustomersByEmailInsensitive(email);
+  if (existing.length > 0) throw new AppError(409, 'CONFLICT', 'An account with this email already exists');
 
   const passwordHash = await bcrypt.hash(input.password, 10);
   const customer = await prisma.customer.create({
     data: {
-      name: input.name,
-      email: input.email,
-      mobile: input.mobile ?? null,
+      name: input.name.trim(),
+      email,
+      mobile: input.mobile?.trim() || null,
       passwordHash,
       type: input.type,
-      companyName: input.companyName ?? null,
-      uen: input.uen ?? null,
+      companyName: input.companyName?.trim() || null,
+      uen: input.uen?.trim() || null,
     },
   });
 
@@ -75,7 +108,8 @@ export async function registerCustomer(input: RegisterCustomerInput) {
 }
 
 export async function loginCustomer(input: { email: string; password: string }) {
-  const customer = await prisma.customer.findUnique({ where: { email: input.email } });
+  const matches = await findCustomersByEmailInsensitive(input.email);
+  const customer = pickCanonicalCustomer(matches);
   if (!customer || !(await bcrypt.compare(input.password, customer.passwordHash))) {
     throw new AppError(401, 'UNAUTHORIZED', 'Invalid email or password');
   }
@@ -99,14 +133,15 @@ export async function findOrCreateGuestCustomer(input: {
   name?: string;
   mobile?: string;
 }): Promise<Customer> {
-  const existing = await prisma.customer.findUnique({ where: { email: input.email } });
-  if (existing) return existing;
+  const email = normalizeEmail(input.email);
+  const canonical = pickCanonicalCustomer(await findCustomersByEmailInsensitive(email));
+  if (canonical) return canonical;
 
   const passwordHash = await bcrypt.hash(GUEST_DEFAULT_PASSWORD, 10);
   return prisma.customer.create({
     data: {
       name: input.name?.trim() || 'Guest',
-      email: input.email,
+      email,
       mobile: input.mobile?.trim() || null,
       passwordHash,
       type: AccountType.GUEST,
@@ -183,7 +218,7 @@ export async function claimGuestAccount(
   input: ClaimGuestAccountInput,
   ip: string,
 ): Promise<{ token: string; customer: ReturnType<typeof serializeCustomer> }> {
-  const key = `${ip}|${input.email.toLowerCase()}`;
+  const key = `${ip}|${normalizeEmail(input.email)}`;
   assertClaimNotRateLimited(key);
 
   const booking = await prisma.booking.findUnique({
@@ -198,7 +233,7 @@ export async function claimGuestAccount(
   const matched =
     !!booking &&
     !!booking.tenant.email &&
-    booking.tenant.email.toLowerCase() === input.email.toLowerCase() &&
+    normalizeEmail(booking.tenant.email) === normalizeEmail(input.email) &&
     tenantDigits.length >= 6 &&
     tenantDigits === digitsOnly(input.mobile);
 
@@ -207,19 +242,22 @@ export async function claimGuestAccount(
     throw new AppError(401, 'UNAUTHORIZED', CLAIM_MISMATCH_MESSAGE);
   }
 
-  // Exact-match lookup on the lowercased address, per the customers.ts pattern.
-  const customer = await prisma.customer.findUnique({ where: { email: input.email.toLowerCase() } });
-  if (!customer) {
+  // Case-insensitive lookup so a legacy mixed-case duplicate resolves to the
+  // canonical account; any non-GUEST row among the matches means the portal
+  // was already claimed or the account was properly registered.
+  const matches = await findCustomersByEmailInsensitive(input.email);
+  if (matches.length === 0) {
     recordClaimFailure(key);
     throw new AppError(401, 'UNAUTHORIZED', CLAIM_MISMATCH_MESSAGE);
   }
   // Type GUEST is only ever set by findOrCreateGuestCustomer above, so any
   // non-GUEST value reliably means the portal access was already claimed or
   // the account was properly registered.
-  if (customer.type !== AccountType.GUEST) {
+  if (matches.some((c) => c.type !== AccountType.GUEST)) {
     recordClaimFailure(key);
     throw new AppError(409, 'CONFLICT', 'Portal access already set up. Please sign in.');
   }
+  const customer = pickCanonicalCustomer(matches)!;
 
   const passwordHash = await bcrypt.hash(input.password, 10);
   const updated = await prisma.$transaction(async (tx) =>
@@ -250,7 +288,9 @@ export async function claimGuestAccount(
 export interface ClaimStatusInput {
   email: string;
   bookingRef: string;
-  mobile: string;
+  // Optional (additive): when absent the match falls back to bookingRef+email
+  // only. The full triple (with mobile) keeps working exactly as before.
+  mobile?: string;
 }
 
 const CLAIM_STATUS_ATTEMPT_LIMIT = 5;
@@ -283,7 +323,7 @@ export async function getClaimStatus(
   input: ClaimStatusInput,
   ip: string,
 ): Promise<{ setupRequired: boolean }> {
-  const key = `${ip}|${input.email.toLowerCase()}`;
+  const key = `${ip}|${normalizeEmail(input.email)}`;
   assertClaimStatusNotRateLimited(key);
 
   const booking = await prisma.booking.findUnique({
@@ -291,31 +331,38 @@ export async function getClaimStatus(
     include: { tenant: true },
   });
 
-  // Same triple match as claimGuestAccount above (mobile normalized to
-  // digits-only, fewer than 6 digits counts as no-match).
-  const tenantDigits = digitsOnly(booking?.tenant.mobile ?? '');
-  const matched =
+  // Triple match as in claimGuestAccount above (mobile normalized to
+  // digits-only, fewer than 6 digits counts as no-match) — EXCEPT the mobile
+  // leg is skipped when the caller omits it (additive email+bookingRef
+  // fallback; the bookingRef is delivered out-of-band on confirmation and
+  // already scopes the row).
+  const emailMatch =
     !!booking &&
     !!booking.tenant.email &&
-    booking.tenant.email.toLowerCase() === input.email.toLowerCase() &&
-    tenantDigits.length >= 6 &&
-    tenantDigits === digitsOnly(input.mobile);
+    normalizeEmail(booking.tenant.email) === normalizeEmail(input.email);
+  let matched = emailMatch;
+  if (matched && input.mobile) {
+    const tenantDigits = digitsOnly(booking!.tenant.mobile ?? '');
+    matched =
+      tenantDigits.length >= 6 && tenantDigits === digitsOnly(input.mobile);
+  }
 
   if (!matched) {
     recordClaimStatusFailure(key);
     throw new AppError(404, 'NOT_FOUND', CLAIM_MISMATCH_MESSAGE);
   }
 
-  const customer = await prisma.customer.findUnique({ where: { email: input.email.toLowerCase() } });
-  if (!customer) {
+  const matches = await findCustomersByEmailInsensitive(input.email);
+  if (matches.length === 0) {
     recordClaimStatusFailure(key);
     throw new AppError(404, 'NOT_FOUND', CLAIM_MISMATCH_MESSAGE);
   }
 
   // Type GUEST is only ever set by findOrCreateGuestCustomer, so any other
   // value means portal access was already claimed or the account was
-  // properly registered — setup must be skipped in favour of sign-in.
-  return { setupRequired: customer.type === AccountType.GUEST };
+  // properly registered — setup must be skipped in favour of sign-in. Any
+  // non-GUEST row among case-variant duplicates forces setupRequired:false.
+  return { setupRequired: !matches.some((c) => c.type !== AccountType.GUEST) };
 }
 
 // --- Forgot / Reset password --------------------------------------------------
@@ -324,7 +371,9 @@ export async function forgotPassword(input: { email: string }) {
   // Always return the same message to avoid revealing whether the account exists.
   const message = 'If an account with that email exists, a reset token has been generated.';
 
-  const customer = await prisma.customer.findUnique({ where: { email: input.email } });
+  const customer = pickCanonicalCustomer(
+    await findCustomersByEmailInsensitive(input.email),
+  );
   if (!customer) {
     return { message, token: null };
   }
@@ -374,7 +423,9 @@ export async function getCustomerProfile(payload: CustomerJwtPayload) {
 export async function listCustomerBookings(payload: CustomerJwtPayload) {
   const customer = await loadCustomer(payload);
   const tenant = customer.email
-    ? await prisma.tenant.findFirst({ where: { email: customer.email } })
+    ? await prisma.tenant.findFirst({
+        where: { email: { equals: customer.email, mode: 'insensitive' } },
+      })
     : null;
   if (!tenant) return [];
 
@@ -444,7 +495,9 @@ function serializePortalNotice(n: PortalNotice) {
 export async function getCustomerPortal(payload: CustomerJwtPayload) {
   const customer = await loadCustomer(payload);
   const tenant = customer.email
-    ? await prisma.tenant.findFirst({ where: { email: customer.email } })
+    ? await prisma.tenant.findFirst({
+        where: { email: { equals: customer.email, mode: 'insensitive' } },
+      })
     : null;
 
   let unit = null;
@@ -479,7 +532,7 @@ export async function getCustomerPortal(payload: CustomerJwtPayload) {
   > = [];
   if (customer.email) {
     const tenants = await prisma.tenant.findMany({
-      where: { email: customer.email, unitId: { not: null } },
+      where: { email: { equals: customer.email, mode: 'insensitive' }, unitId: { not: null } },
       include: { unit: { include: { size: true, branch: true, floor: true } } },
     });
     const seen = new Set<string>();
@@ -721,7 +774,9 @@ export async function createCustomerBooking(customer: Customer, input: CreateBoo
     }
 
     let tenant = customer.email
-      ? await tx.tenant.findFirst({ where: { email: customer.email } })
+      ? await tx.tenant.findFirst({
+          where: { email: { equals: customer.email, mode: 'insensitive' } },
+        })
       : null;
     // My-Units rule (product decision): a unit surfaces in GET /portal
     // `units[]` ONLY once it is paid for. Tenant→unit linkage is therefore
@@ -934,7 +989,9 @@ export async function submitCustomerRequest(payload: CustomerJwtPayload, input: 
 export async function submitCustomerNotice(payload: CustomerJwtPayload, input: { unitId: string; lastDay: string }) {
   const customer = await loadCustomer(payload);
   const tenant = customer.email
-    ? await prisma.tenant.findFirst({ where: { email: customer.email } })
+    ? await prisma.tenant.findFirst({
+        where: { email: { equals: customer.email, mode: 'insensitive' } },
+      })
     : null;
 
   const belongsToCustomer =

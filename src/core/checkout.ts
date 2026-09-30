@@ -91,8 +91,12 @@ async function loadBookingForCheckout(bookingRef: string) {
  *    no auth required.
  *  - Authed booking (owning PERSONAL/BUSINESS customer) → the Bearer token
  *    must belong to the booking owner, else 401/403.
- * A present-but-invalid token never downgrades to guest — the route layer
- * already rejects it via extractCustomerPayload before reaching here.
+ * A present-but-invalid token never downgrades to guest HERE — the route
+ * layer decides: when the Bearer fails verification but the request carries
+ * valid guest email-proof, the route retries as guest (caller=null) so a
+ * stale session never blocks guest pay; without guest proof the route keeps
+ * the hard 401 UNAUTHORIZED. An invalid token is therefore never accepted
+ * as AUTHENTICATED — at worst it is treated as absent.
  *
  * Narrow email-proof bypass (pay gate ONLY, no PII read): when there is no
  * Bearer caller but the request proves ownership with the booking's own
@@ -111,9 +115,11 @@ export async function assertCheckoutAccess(
   caller: CustomerJwtPayload | null,
   proof?: { email?: string; mobile?: string },
 ): Promise<void> {
+  // Case-insensitive owner lookup so legacy mixed-case Customer/Tenant rows
+  // resolve to the canonical account (see normalizeEmail in core/customers).
   const owner = booking.tenant.email
-    ? await prisma.customer.findUnique({
-        where: { email: booking.tenant.email },
+    ? await prisma.customer.findFirst({
+        where: { email: { equals: booking.tenant.email.trim(), mode: 'insensitive' } },
       })
     : null;
   const isGuestBooking =

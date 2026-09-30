@@ -68,10 +68,18 @@ export function requireCustomerAuth(req: Request, res: Response, next: NextFunct
 }
 
 /**
- * Returns the verified customer payload when a VALID bearer token is present,
- * null when NO Authorization header is supplied. A header that is present but
- * malformed/expired/invalid throws — callers must treat that as a hard 401 so
- * stale sessions are never silently downgraded to guest checkout.
+ * Returns the verified customer payload for a VALID bearer token. Throws
+ * 401 UNAUTHORIZED (stable code string) when NO header is supplied or when
+ * the header is present but malformed/expired/invalid — it never leaks into
+ * the global handler as a 500, and a verified payload is the ONLY way to be
+ * treated as authenticated.
+ *
+ * STALE-TOKEN POLICY (prod fix): dual-mode checkout routes
+ * (POST /customer/bookings, POST /customer/checkout/sessions) catch this
+ * throw, and — only when the request ALSO carries valid guest email-proof —
+ * retry the call as guest (caller=null). Without guest proof the 401 stands.
+ * Stale sessions are therefore never silently upgraded to AUTHED, but they
+ * no longer hard-block a guest payer holding proof.
  */
 export function extractCustomerPayload(req: Request): CustomerJwtPayload {
   const header = req.headers.authorization;

@@ -271,7 +271,10 @@ router.post('/checkout/sessions', async (req: Request, res: Response) => {
       caller = extractCustomerPayload(req);
     } catch (err) {
       if (!parsed.data.email) throw err;
-      // Stale Bearer + guest proof → downgrade to guest (caller stays null);
+      // Stale Bearer + guest proof → downgrade to guest (caller stays null)
+      // so a stale/expired session never blocks guest pay (USER RULE:
+      // PENDING_PAYMENT + email proof needs no login, any Customer type).
+      // Without proof the original 401 UNAUTHORIZED stands (stable code);
       // assertCheckoutAccess still enforces the email-proof bypass per booking.
       caller = null;
     }

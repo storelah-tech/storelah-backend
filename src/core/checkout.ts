@@ -86,6 +86,35 @@ async function loadBookingForCheckout(bookingRef: string) {
 }
 
 /**
+ * Email-proof for the pay gate ONLY (no PII read): the request proves
+ * ownership with the booking's own payer email (case-insensitive, trimmed)
+ * for THIS bookingRef. Safe because (a) bookingRef is unguessable and
+ * already scopes the row, (b) only the payer holding the confirmation email
+ * can present the exact address, and (c) this grants only Stripe-session
+ * creation — never a PII read (portal/bookings/me stay Bearer-gated).
+ * An optional `mobile` strengthens the proof when supplied (digits-only
+ * comparison against the stored tenant mobile; a mismatch fails the proof)
+ * but is NEVER required — absent mobile still allows via the email proof
+ * alone (back-compat with { bookingRef, email } clients).
+ */
+function hasValidEmailProof(
+  booking: BookingWithRefs,
+  proof?: { email?: string; mobile?: string },
+): boolean {
+  const claimed = (proof?.email ?? '').trim().toLowerCase();
+  const tenantEmail = (booking.tenant.email ?? '').trim().toLowerCase();
+  if (!claimed || !tenantEmail || claimed !== tenantEmail) return false;
+  // Optional mobile strengthening: when the caller volunteers a mobile
+  // AND the tenant has a stored number, the digits must match — a
+  // mismatch fails the proof (login remains available). Absent input
+  // mobile, or no stored number to check against, keeps the email proof
+  // sufficient (back-compat).
+  const proofDigits = (proof?.mobile ?? '').replace(/\D/g, '');
+  const tenantDigits = (booking.tenant.mobile ?? '').replace(/\D/g, '');
+  return !(proofDigits && tenantDigits && proofDigits !== tenantDigits);
+}
+
+/**
  * Dual-mode access check, mirroring POST /customer/bookings:
  *  - GUEST booking (owning customer is type GUEST, or no customer row yet) →
  *    no auth required.
@@ -98,23 +127,27 @@ async function loadBookingForCheckout(bookingRef: string) {
  * the hard 401 UNAUTHORIZED. An invalid token is therefore never accepted
  * as AUTHENTICATED — at worst it is treated as absent.
  *
- * Narrow email-proof bypass (pay gate ONLY, no PII read): when there is no
- * Bearer caller but the request proves ownership with the booking's own
- * payer email (case-insensitive, trimmed) for THIS bookingRef, session
- * creation is allowed without a password/login. Safe because (a) bookingRef
- * is unguessable and already scopes the row, (b) only the payer holding the
- * confirmation email can present the exact address, and (c) this grants only
- * Stripe-session creation — never a PII read (portal/bookings/me stay
- * Bearer-gated). An optional `mobile` strengthens the proof when supplied
- * (digits-only comparison against the stored tenant mobile; a mismatch
- * falls through to 401) but is NEVER required — absent mobile still allows
- * via the email proof (back-compat with { bookingRef, email } clients).
+ * USER RULE — guest-pay (SL-2026-1982 shape): booking payment works
+ * regardless of portal login session. Every guest user can pay for a
+ * PENDING_PAYMENT booking with email proof alone: the PENDING check below
+ * is evaluated FIRST, independently of the owning Customer's type (GUEST or
+ * REGISTERED/PERSONAL/BUSINESS), so a portal-created booking never requires
+ * a Bearer token on this path. The legacy bypass after the owner lookup is
+ * preserved so proof for non-PENDING bookings keeps surfacing the stable
+ * 409 status errors (already paid / cancelled) instead of 401.
  */
 export async function assertCheckoutAccess(
   booking: BookingWithRefs,
   caller: CustomerJwtPayload | null,
   proof?: { email?: string; mobile?: string },
 ): Promise<void> {
+  // USER RULE — guest-pay FIRST: a PENDING_PAYMENT booking with valid email
+  // proof never requires a Bearer token, regardless of the owning
+  // Customer's type. Runs before the owner lookup so it never depends on
+  // the Customer row resolving.
+  if (!caller && booking.status === 'PENDING_PAYMENT' && hasValidEmailProof(booking, proof)) {
+    return;
+  }
   // Case-insensitive owner lookup so legacy mixed-case Customer/Tenant rows
   // resolve to the canonical account (see normalizeEmail in core/customers).
   const owner = booking.tenant.email
@@ -125,23 +158,11 @@ export async function assertCheckoutAccess(
   const isGuestBooking =
     !owner || owner.type === AccountType.GUEST;
   if (isGuestBooking) return;
-  if (!caller && proof?.email) {
-    const claimed = proof.email.trim().toLowerCase();
-    const tenantEmail = (booking.tenant.email ?? '').trim().toLowerCase();
-    if (claimed && tenantEmail && claimed === tenantEmail) {
-      // Optional mobile strengthening: when the caller volunteers a mobile
-      // AND the tenant has a stored number, the digits must match — a
-      // mismatch falls through to the 401 below (login remains available).
-      // Absent input mobile, or no stored number to check against, keeps
-      // the email proof sufficient (back-compat).
-      const proofDigits = (proof.mobile ?? '').replace(/\D/g, '');
-      const tenantDigits = (booking.tenant.mobile ?? '').replace(/\D/g, '');
-      if (proofDigits && tenantDigits && proofDigits !== tenantDigits) {
-        // Mobile offered but does not match — do not bypass.
-      } else {
-        return;
-      }
-    }
+  // Legacy bypass (preserved, additive): proof for a non-PENDING booking
+  // still skips the auth requirement so the caller sees the stable 409
+  // status errors below (already paid / cancelled) instead of 401.
+  if (!caller && hasValidEmailProof(booking, proof)) {
+    return;
   }
   if (!caller) {
     throw new AppError(

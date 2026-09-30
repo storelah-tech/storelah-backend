@@ -90,16 +90,14 @@ const noticeSchema = z.object({
 const createCheckoutSessionSchema = z.object({
   bookingRef: z.string().trim().min(1),
   email: z.string().trim().email().optional(),
-  // Optional ownership proof for the pay gate (never required — back-compat
-  // with { bookingRef, email } clients; blank strings count as absent).
+  // Accepted for back-compat but NEVER blocks payment: any value (or none)
+  // passes validation — the pay gate checks email proof alone (USER RULE:
+  // mobile must never deny guest pay). Blank strings count as absent.
   mobile: z
     .string()
     .trim()
     .transform((v) => (v === '' ? undefined : v))
-    .optional()
-    .refine((v) => v === undefined || v.replace(/\D/g, '').length >= 6, {
-      message: 'Mobile must contain at least 6 digits',
-    }),
+    .optional(),
 });
 
 function customerFrom(req: Request) {

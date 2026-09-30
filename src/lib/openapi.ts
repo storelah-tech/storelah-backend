@@ -1569,8 +1569,8 @@ export const openapiSpec = {
           'matches the booking payer email (case-insensitive, trimmed) for that `bookingRef` may create the ',
           'session without login — the unguessable bookingRef plus payer-email possession is the proof, ',
           'regardless of the owning customer type (GUEST or registered). ',
-          'An optional `mobile` strengthens the proof when both sides hold a number (digits-only match; ',
-          'a mismatch falls back to 401) but is never required. Portal/PII routes (`/me`, `/bookings`, ',
+          'An optional `mobile` is accepted for back-compat but never compared and never blocks payment — ',
+          'email proof alone suffices. Portal/PII routes (`/me`, `/bookings`, ',
           '`/portal`, `/requests`, `/notice`) stay Bearer-gated and are unaffected.',
           '',
           'Errors: `400 VALIDATION` when `bookingRef` is missing, `404 NOT_FOUND` for an unknown bookingRef, ',
@@ -4164,7 +4164,7 @@ export const openapiSpec = {
           mobile: {
             type: 'string',
             description:
-              'Optional extra ownership proof (min 6 digits after stripping non-digits). Never required; when supplied and the booking holds a stored number the digits must match.',
+              'Accepted for back-compat but never compared and never blocks payment; email proof alone suffices.',
           },
         },
       },

@@ -1,7 +1,9 @@
 // Guest-pay regression (SL-2026-1982 shape): a portal-created booking owned
 // by a REGISTERED (PERSONAL) customer in PENDING_PAYMENT with a DUE invoice
 // must be payable logged-out with email proof alone — never 401, regardless
-// of Customer type. Wrong/missing email still 401s safely with the stable
+// of Customer type. A supplied `mobile` is accepted but never compared and
+// never blocks (SL-2026-6926: stored +65 0804901431 vs supplied 804901431
+// with matching email must succeed). Wrong/missing email still 401s safely with the stable
 // UNAUTHORIZED code; a stale Bearer never blocks valid proof; authed owner
 // flows are unchanged. The webhook stays the paid truth (no auto-confirm on
 // session create).
@@ -97,7 +99,7 @@ describe('guest-pay for REGISTERED-owner PENDING_PAYMENT bookings (SL-2026-1982 
     await assertNotAutoConfirmed(bookingRef);
   });
 
-  it('matching email + matching mobile also succeeds; mismatched mobile still 401s', async () => {
+  it('matching email succeeds with matching, mismatched, or absent mobile (mobile never blocks)', async () => {
     const email = uniqueEmail();
     const token = await registerPortalOwner(email, '81234567');
     const bookingRef = await createPortalBooking(token);
@@ -110,13 +112,48 @@ describe('guest-pay for REGISTERED-owner PENDING_PAYMENT bookings (SL-2026-1982 
     });
     expect(withMobile.status).not.toBe(401);
 
+    // USER RULE: a digits mismatch must NOT deny guest pay — email proof
+    // alone suffices.
     const badMobile = await api.post('/api/v1/customer/checkout/sessions').send({
       bookingRef,
       email,
       mobile: '89998888',
     });
-    expect(badMobile.status).toBe(401);
-    expect(badMobile.body.error.code).toBe('UNAUTHORIZED');
+    expect(badMobile.status).not.toBe(401);
+    expect(badMobile.body?.error?.code ?? null).not.toBe('UNAUTHORIZED');
+
+    await assertNotAutoConfirmed(bookingRef);
+  });
+
+  it('SL-2026-6926 shape: stored +65 0804901431 vs supplied 804901431 with matching email succeeds (not 401)', async () => {
+    const email = uniqueEmail();
+    const token = await registerPortalOwner(email, '+65 0804901431');
+    const bookingRef = await createPortalBooking(token);
+    await assertSl1982Shape(email, bookingRef);
+
+    // Pin the live-failure shape: stored number carries the +65 prefix while
+    // the guest supplies bare digits — different digit strings, same owner.
+    const dbBooking = await prisma.booking.findUnique({ where: { bookingRef } });
+    await prisma.tenant.update({
+      where: { id: dbBooking!.tenantId },
+      data: { mobile: '+65 0804901431' },
+    });
+
+    const guestPay = await api.post('/api/v1/customer/checkout/sessions').send({
+      bookingRef,
+      email,
+      mobile: '804901431',
+    });
+    expect(guestPay.status).not.toBe(401);
+    expect(guestPay.body?.error?.code ?? null).not.toBe('UNAUTHORIZED');
+
+    // Email alone (no mobile at all) also succeeds against the stored number.
+    const emailOnly = await api.post('/api/v1/customer/checkout/sessions').send({
+      bookingRef,
+      email,
+    });
+    expect(emailOnly.status).not.toBe(401);
+    expect(emailOnly.body?.error?.code ?? null).not.toBe('UNAUTHORIZED');
 
     await assertNotAutoConfirmed(bookingRef);
   });

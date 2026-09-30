@@ -92,26 +92,22 @@ async function loadBookingForCheckout(bookingRef: string) {
  * already scopes the row, (b) only the payer holding the confirmation email
  * can present the exact address, and (c) this grants only Stripe-session
  * creation — never a PII read (portal/bookings/me stay Bearer-gated).
- * An optional `mobile` strengthens the proof when supplied (digits-only
- * comparison against the stored tenant mobile; a mismatch fails the proof)
- * but is NEVER required — absent mobile still allows via the email proof
- * alone (back-compat with { bookingRef, email } clients).
+ *
+ * USER RULE (binding): every guest can pay with email proof alone — `mobile`
+ * is accepted in the body for back-compat but is NEVER compared and NEVER
+ * blocks payment. A digits mismatch (e.g. stored "+65 0804901431" vs
+ * supplied "804901431") or an absent mobile still passes when the email
+ * matches. Wrong/missing email still fails the proof (safe 401/404).
  */
 function hasValidEmailProof(
   booking: BookingWithRefs,
   proof?: { email?: string; mobile?: string },
 ): boolean {
+  void proof?.mobile;
   const claimed = (proof?.email ?? '').trim().toLowerCase();
   const tenantEmail = (booking.tenant.email ?? '').trim().toLowerCase();
   if (!claimed || !tenantEmail || claimed !== tenantEmail) return false;
-  // Optional mobile strengthening: when the caller volunteers a mobile
-  // AND the tenant has a stored number, the digits must match — a
-  // mismatch fails the proof (login remains available). Absent input
-  // mobile, or no stored number to check against, keeps the email proof
-  // sufficient (back-compat).
-  const proofDigits = (proof?.mobile ?? '').replace(/\D/g, '');
-  const tenantDigits = (booking.tenant.mobile ?? '').replace(/\D/g, '');
-  return !(proofDigits && tenantDigits && proofDigits !== tenantDigits);
+  return true;
 }
 
 /**

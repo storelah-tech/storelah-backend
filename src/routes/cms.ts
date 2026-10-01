@@ -1058,9 +1058,10 @@ router.get('/floor-plans', requireAuth, async (req: Request, res: Response) => {
 
 // Facility-level rollup: sums the per-floor LIVE metrics reports into one
 // facility aggregate (geometry sums with the NLA<=UFA clamp + guarded
-// efficiencies, DB-wide unitGroups/totals with the owner-confirmed size
-// mapping). NOTE: registered BEFORE /floor-plans/:floorId so "facility" is
-// never parsed as a floor id. Additive — no existing route changes.
+// efficiencies + summed loop-clipped blockArea, DB-wide unitGroups/totals with
+// the owner-confirmed size mapping). NOTE: registered BEFORE
+// /floor-plans/:floorId so "facility" is never parsed as a floor id.
+// Additive — no existing route changes.
 router.get('/floor-plans/facility/:branchRef/metrics', requireAuth, async (req: Request, res: Response) => {
   ok(res, await getFacilityMetrics(String(req.params.branchRef)));
 });
@@ -1113,6 +1114,8 @@ router.delete('/floor-plans/:floorId/units/:unitId', requireAuth, async (req: Re
 
 // Create a layout-decoration block (lift / stairs / exit / walking area, ...) on
 // the floor's plan — plain name+rect primitives, addressable for edit/delete.
+// Reads return the derived `areaSqft` (w×h, 1 unit = 1 ft) per block; the
+// loop-clipped total feeds `boundaryMetrics.blockAreaSqft`.
 router.post('/floor-plans/:floorId/blocks', requireAuth, async (req: Request, res: Response) => {
   const parsed = floorPlanBlockSchema.safeParse(req.body);
   if (!parsed.success) {
@@ -1145,9 +1148,12 @@ router.delete('/floor-plans/:floorId/blocks/:blockId', requireAuth, async (req: 
 // Polylines in grid-ft units drawn with the editor's Line-item tool. Reads
 // (CMS GET plan + public plan GET) embed `boundaries` plus the derived
 // `boundaryMetrics { gla, ufa, nla, unit, boundaryClosed, facilityAreaSqft,
-// gfaSqft, gfaSource }`; marked-area rule: closed loops AND open >= 3-vertex
-// polylines (chord-closed) feed UFA/NLA, open 2-vertex segments persist
-// honestly and contribute 0 until extended/closed.
+// blockAreaSqft, gfaSqft, gfaSource }` (blocks carry derived `areaSqft` = w×h);
+// marked-area rule: closed loops AND open >= 3-vertex polylines
+// (chord-closed) feed UFA/NLA, open 2-vertex segments persist
+// honestly and contribute 0 until extended/closed. NLA subtracts the
+// loop-clipped blocked area (blocks + solid structure) once per loop, so a
+// block added inside a loop reduces NLA even with UFA headroom.
 
 // List a floor's boundary line items (editor sort order; [] when no plan yet).
 router.get('/floor-plans/:floorId/boundaries', requireAuth, async (req: Request, res: Response) => {
@@ -1517,8 +1523,10 @@ const metricsSnapshotStatusSchema = z.object({
 // volumetric + units + circulation + reachability + validation.
 // UFA/NLA are LINE-ONLY (marked-area, never the whole canvas): geometry.ufa
 // is the marked gross minus blocks/structure, geometry.nlaEnclosed/nlaTotal
-// are placements clipped to the marked loops (capped at UFA, 0 with no marked
-// area), and the authoritative figures ride alongside as `boundaryMetrics`.
+// are placements clipped to the marked loops minus the loop-clipped blocked
+// area (capped at UFA, 0 with no marked area; loop-clipped block area rides
+// in geometry.blockArea), and the authoritative figures ride alongside as
+// `boundaryMetrics` (with blockAreaSqft).
 router.get('/floor-plans/:floorId/metrics', requireAuth, async (req: Request, res: Response) => {
   ok(res, await getFloorMetrics(String(req.params.floorId)));
 });

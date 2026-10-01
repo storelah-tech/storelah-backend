@@ -58,6 +58,14 @@ const claimSchema = z.object({
   password: z.string().trim().min(6),
 });
 
+// Booking body: the invoiced total is ALWAYS recomputed server-side
+// (frontend-parity Due Today — discounted rent prorated by move-in day plus
+// catalog protection/addons; deposit/admin $0, GST 0) and stored on the DUE
+// invoice, which is what POST /customer/checkout/sessions charges
+// (`unit_amount = Math.round(dueToday * 100)`). `totalDueToday` is a hint
+// only (currently accepted without comparison — price guard disabled, see
+// core/customers.ts). The 201 response echoes the monthly-rate `amount`
+// (unchanged) plus the additive `dueToday` + `breakdown`.
 const createBookingSchema = z.object({
   unitCode: z.string().min(1),
   moveInDate: z.string().datetime(),
@@ -87,6 +95,10 @@ const noticeSchema = z.object({
   lastDay: z.string().datetime(),
 });
 
+// Checkout session body is amount-free by design ({ bookingRef, email,
+// mobile } only): the charge equals the booking's DUE invoice (the
+// server-recomputed prorated dueToday), converted to cents. Backend owns the
+// Stripe unit_amount; the booking-app Due Today summary must match it.
 const createCheckoutSessionSchema = z.object({
   bookingRef: z.string().trim().min(1),
   email: z.string().trim().email().optional(),
@@ -257,6 +269,9 @@ router.post('/notice', requireCustomerAuth, async (req: Request, res: Response) 
 //    stays a hard 401 UNAUTHORIZED (stable code the frontend already handles
 //    by clearing + retrying as guest). An invalid token is never accepted
 //    as authenticated.
+// Amount: server-owned — the session charges the booking's DUE invoice
+// (prorated dueToday from POST /bookings) as `unit_amount` cents; the body
+// carries no amount and the webhook stamps amountPaid from Stripe truth.
 router.post('/checkout/sessions', async (req: Request, res: Response) => {
   const parsed = createCheckoutSessionSchema.safeParse(req.body);
   if (!parsed.success) {
@@ -293,6 +308,9 @@ router.get('/checkout/sessions/:id', async (req: Request, res: Response) => {
 
 // Stripe webhook — the raw body is preserved by the express.raw mount in
 // src/app.ts:20 (registered BEFORE express.json); req.body is a Buffer here.
+// checkout.session.completed marks the booking CONFIRMED and the invoiced
+// session's DUE invoice PAID with amountPaid taken from Stripe truth (which
+// equals the prorated dueToday the session was created for).
 router.post('/stripe/webhook', async (req: Request, res: Response) => {
   const rawBody: Buffer = Buffer.isBuffer(req.body)
     ? req.body

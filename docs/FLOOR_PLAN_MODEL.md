@@ -312,7 +312,8 @@ Definitions (same clamps as before, rounded to 1 decimal):
 | ------- | ------- |
 | `facilityAreaSqft` (= `gla`, kept for compatibility) | summed marked-loop area (shoelace, sqft) |
 | `ufa` | marked gross minus `FloorPlanBlock` rects + solid legacy-structure rects (thin wall lines excluded) |
-| `nla` | placed-unit footprints clipped to the marked loops (each placement row counts, so both stack tiers count), clamped ≤ UFA |
+| `nla` | placed-unit footprints clipped to the marked loops (each placement row counts, so both stack tiers count) **minus the loop-clipped blocked area** (blocks + solid legacy-structure rects — the same `blocked` total subtracted for UFA), floored at 0 per loop, clamped ≤ UFA. Adding a block inside a marked loop therefore reduces NLA even with UFA headroom |
+| `blockAreaSqft` | loop-clipped **block** area (sqft, 1dp): SUM over marked loops of rect∩loop per `FloorPlanBlock` (same loop-clipped total as UFA for consistency; solid legacy-structure rects excluded). Per-block raw `w×h` rides on each serialized block as `areaSqft` (derived, never stored — no migration, no stored-vs-geometry drift). Overlapping blocks may double-count (non-overlapping assumption, no dedupe) |
 
 With **no contributing marked line** the report is all-zero with
 `boundaryClosed: false` — the reused "no marked area" flag (true means "≥ 1
@@ -324,7 +325,9 @@ strip state; it never fabricates.
 /floor-plans/:floorId/metrics` reports the SAME marked figures — never the
 whole-canvas rect: `geometry.ufa` is the marked gross minus
 blocks/solid-structure rects, `geometry.nlaEnclosed`/`nlaTotal` are placement
-footprints clipped to the marked loops (capped ≤ UFA), `nlaOutdoor` is 0 (the
+footprints clipped to the marked loops minus the loop-clipped blocked area
+(capped ≤ UFA), `geometry.blockArea` echoes `boundaryMetrics.blockAreaSqft`
+(loop-clipped blocks only), `nlaOutdoor` is 0 (the
 marked-area model has no outdoor split), `common` is the marked remainder
 (UFA − NLA), and efficiency plus the occupancy-sqft/revenue NLA denominators
 follow the same line-only NLA. With no contributing marked line all of these

@@ -178,9 +178,12 @@ export async function assertCheckoutAccess(
 
 // Server-side amount (SGD): the latest open (DUE) invoice for the booking's
 // tenant+unit — which already encodes the server-side due-today recompute
-// (unit rate − validated promo + catalog protection/addons) from booking
-// creation — falling back to the booking amount (unit monthly rate).
-// The client never supplies an amount.
+// from booking creation (frontend-parity prorated first month: discounted
+// rent prorated by move-in day + catalog protection/addons, deposit/admin $0,
+// GST 0) — falling back to the booking amount (unit monthly rate).
+// The client never supplies an amount; Stripe `unit_amount` is
+// Math.round(amountSgd * 100), so the charged cents equal the booking-app Due
+// Today summary to the cent whenever the server quote matches it.
 function chargeableAmountSgd(booking: BookingWithRefs): number {
   const invoiced = booking.tenant.invoices[0];
   return invoiced ? toNum(invoiced.amount) : toNum(booking.amount);

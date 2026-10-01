@@ -25,7 +25,7 @@ export const openapiSpec = {
   openapi: '3.0.3',
   info: {
     title: 'StoreLah Booking API',
-    version: '1.8.1',
+    version: '1.8.2',
     description: [
       'Customer-facing booking API for the StoreLah self-storage business.',
       '',
@@ -195,6 +195,15 @@ export const openapiSpec = {
         'invoice to PAID), so an unpaid (`PENDING_PAYMENT`) booking appears under ' +
         '`data.bookings` only and never in `data.units`. No shape changes — entry shapes, ' +
         'the envelope and every other key are unchanged.',
+
+      'v1.8.2 is ADDITIVE-ONLY over 1.8.1: backend block-area calculation for floor plans — ' +
+        'every `PlanBlock` gains derived `areaSqft` (w×h, 1 grid unit = 1 ft; computed, ' +
+        'never stored), `BoundaryMetrics` gains `blockAreaSqft` (loop-clipped block total, ' +
+        '1dp; solid structure excluded), and the live metrics `geometry` gains `blockArea` ' +
+        '(same total as an AreaMeasure; facility rollup sums it per floor). NLA now ' +
+        'subtracts the loop-clipped blocked area (blocks + solid structure, once per loop) ' +
+        'before the NLA≤UFA clamp, so adding a block inside a marked loop reduces NLA even ' +
+        'with UFA headroom. All pre-existing shapes are unchanged.',
     ].join('\n'),
   },
   servers: [
@@ -711,7 +720,8 @@ export const openapiSpec = {
           '',
           'UFA/NLA are LINE-ONLY (marked-area, never the whole canvas): `geometry.ufa` is the marked ',
           'gross minus blocks/solid-structure rects, `geometry.nlaEnclosed`/`nlaTotal` are placement ',
-          'footprints clipped to the marked loops (capped at UFA), `nlaOutdoor` is 0 and `common` is ',
+          'footprints clipped to the marked loops minus the loop-clipped blocked area (capped at UFA), ',
+          '`geometry.blockArea` is the loop-clipped block total, `nlaOutdoor` is 0 and `common` is ',
           'UFA − NLA — all-zero with `boundaryClosed: false` when no marked line contributes area. The ',
           'authoritative marked figures are also exposed as top-level `boundaryMetrics` (byte-identical ',
           'to the plan-read shape); canvas-tessellated whole-canvas figures survive only as diagnostic ',
@@ -753,7 +763,8 @@ export const openapiSpec = {
         summary: 'Facility-level floor-plan metrics rollup (live)',
         description: [
           'Sums the per-floor LIVE metrics reports (`GET /cms/floor-plans/{floorId}/metrics`) into one ',
-          'facility aggregate: geometry GFA/UFA/NLA sums with the NLA≤UFA clamp, corridorArea (= common = ',
+          'facility aggregate: geometry GFA/UFA/NLA sums with the NLA≤UFA clamp, summed loop-clipped ',
+          '`blockArea` (+ per-floor `blockAreaSqft`), corridorArea (= common = ',
           'UFA−NLA), guarded efficiency ratios + GFA→UFA / UFA→NLA pcts, DB-wide totals (unplaced = no-placement ',
           'units, occupied = OCCUPIED+OVERDUE) and per-size unitGroups (Locker=LOCKER, XS=SMALL, M=MEDIUM, ',
           'L=LARGE, XL=0/0 — no Extra Large UnitSize exists). Floors without a plan contribute zero geometry ',
@@ -1018,9 +1029,10 @@ export const openapiSpec = {
         description: [
           'Lists the facility-boundary line-item polylines on the floor\'s plan in editor sort order ' +
             '([] when the floor has no plan yet). Plan reads also embed `boundaries` plus derived ' +
-            '`boundaryMetrics { gla, ufa, nla, unit, boundaryClosed, facilityAreaSqft, gfaSqft, gfaSource }` ' +
+            '`boundaryMetrics { gla, ufa, nla, unit, boundaryClosed, facilityAreaSqft, blockAreaSqft, gfaSqft, gfaSource }` ' +
             '(marked-area rule: 3+-vertex polylines feed UFA/NLA; lone 2-vertex segments contribute 0, ' +
-            'but endpoint-connected segments that join into a ring feed UFA/NLA as one loop).',
+            'but endpoint-connected segments that join into a ring feed UFA/NLA as one loop; NLA subtracts ' +
+            'the loop-clipped blocked area once per loop).',
           '',
           'Operator CMS endpoints are documented here for reference only; they are served on the CMS host under ',
           '`/api/v1/cms` and require a Bearer JWT issued by `/api/v1/cms/login` (auto-login via `/api/v1/cms/config`).',
@@ -1412,9 +1424,12 @@ export const openapiSpec = {
         summary: 'Create a booking',
         description: [
           'Books a unit and returns the created booking. On success the unit is marked RESERVED and a DUE invoice is ',
-          'raised for the server-recomputed due-today total (unit rate minus ACTIVE promotion-plan matrix discount — exact size × commitment-months cell, integer-rounded — else validated promo-code discount, plus catalog protection/addon prices); ',
+          'raised for the server-recomputed due-today total — frontend parity with the booking-app Due Today summary: ',
+          'discounted rent (ACTIVE promotion-plan matrix exact size × commitment-months cell, integer-rounded, else validated promo-code discount split into recurring vs first-month scope) prorated by move-in day (move-in day inclusive through month-end), plus catalog protection/addon prices; ',
+          'deposit/admin are $0 waived and GST is 0. ',
+          'The 201 response keeps the monthly-rate `amount` and additively echoes the invoiced `dueToday` + `breakdown` (this is what the DUE invoice and the Stripe `unit_amount = Math.round(dueToday * 100)` charge). ',
           'the client `totalDueToday` is a hint only — a hint below server pricing is `400 VALIDATION` ' +
-          'with details `{ expected, base, promoDiscount, protection, addons }` (all numbers) for refresh-and-retry.',
+          'with details `{ expected, base, promoDiscount, firstMonthDiscount, protection, addons, prorated }` (all numbers) for refresh-and-retry (guard currently disabled — any hint passes, server figure invoiced).',
           '',
           'Auth: dual-mode. WITH a bearer token, books for the authenticated customer (invalid token = 401). ',
           'WITHOUT any Bearer Authorization header, performs guest checkout: the body must include `email`, and the customer ',
@@ -1555,7 +1570,8 @@ export const openapiSpec = {
         summary: 'Create a Stripe Checkout Session',
         description: [
           'Creates a Stripe-hosted Checkout Session (TEST MODE only) for an existing booking and returns its id + redirect URL. ',
-          'The amount is computed SERVER-SIDE from the booking invoice/unit rate in SGD — the client never sends an amount. ',
+          'The amount is computed SERVER-SIDE from the booking DUE invoice in SGD — the prorated due-today total from POST /customer/bookings, ',
+          'charged as `unit_amount = Math.round(dueToday * 100)` cents so it matches the booking-app Due Today summary; the client never sends an amount. ',
           'Idempotent per bookingRef: the booking\'s stored open session is reused and concurrent creates are deduped ',
           '(double-click safe; the session id is persisted on the booking). ',
           'Success redirects to `{BOOKING_APP_URL}/checkout/success?session_id={CHECKOUT_SESSION_ID}`; cancel to ',
@@ -1650,7 +1666,7 @@ export const openapiSpec = {
           'Stripe event delivery (TEST MODE only). Verifies the `stripe-signature` header against `STRIPE_WEBHOOK_SECRET` ',
           'using the raw request body — `400 INVALID_SIGNATURE` on mismatch. Handles `checkout.session.completed` by marking ',
           'the booking CONFIRMED and the invoiced session\'s DUE invoice PAID (method `Card`, Stripe session/payment-intent ids, ',
-          'paid-at and amount-paid stamped on both rows); all other event types are acknowledged without ',
+          'paid-at and amount-paid stamped on both rows — amount-paid equals the prorated dueToday the session charged); all other event types are acknowledged without ',
           'writes. Booking lookup prefers the stored session id (metadata ref as fallback). IDEMPOTENT: retried deliveries are safe no-ops once the booking/invoices are already paid, and other DUE invoices are never touched. No auth header — ',
           'the Stripe signature is the credential.',
         ].join('\n'),
@@ -3828,8 +3844,8 @@ export const openapiSpec = {
             minimum: 0,
             description:
               'Client hint for the due-today total. The invoiced figure is recomputed server-side ' +
-              '(unit rate minus validated promo plus catalog protection/addon prices); a hint below ' +
-              'server pricing is rejected with 400 VALIDATION. Omit to invoice server pricing directly.',
+              '(discounted rent prorated by move-in day plus catalog protection/addon prices); a hint below ' +
+              'server pricing is rejected with 400 VALIDATION (guard currently disabled — any hint passes). Omit to invoice server pricing directly.',
           },
           email: {
             type: 'string',
@@ -3867,7 +3883,17 @@ export const openapiSpec = {
             },
           },
           moveInDate: { type: 'string', format: 'date-time' },
-          amount: { type: 'number', description: 'Booking amount (SGD).' },
+          amount: { type: 'number', description: 'Booking amount (SGD) — unit monthly-rate snapshot, NOT the invoiced total.' },
+          dueToday: {
+            type: 'number',
+            description:
+              'Additive: the invoiced due-today total (SGD) — prorated first month + catalog extras. Equals the DUE invoice amount and the Stripe charge (`Math.round(dueToday * 100)` cents).',
+          },
+          breakdown: {
+            type: 'object',
+            description:
+              'Additive: server pricing breakdown — base, discountPct, discPrice, monthlyStorage, promoDiscount, proratedFull, firstMonthDiscount, prorated, protection, addons, remainingDays, totalDays (all numbers).',
+          },
         },
       },
       PortalUnit: {
@@ -4306,6 +4332,7 @@ export const openapiSpec = {
           y: { type: 'integer', description: 'Top-left grid-unit y coordinate.' },
           width: { type: 'integer', description: 'Bounding box width in feet (1 grid unit = 1 ft).' },
           height: { type: 'integer', description: 'Bounding box height in feet (1 grid unit = 1 ft).' },
+          areaSqft: { type: 'integer', description: 'Derived decoration area in sqft (width × height, 1 grid unit = 1 ft) — computed, never stored; the loop-clipped total feeds boundaryMetrics.blockAreaSqft.' },
           color: {
             type: ['string', 'null'],
             description: 'Block fill colour — hex #RGB/#RRGGBB (stored uppercased) or null for the default tone (#E6E0D7).',
@@ -4415,14 +4442,15 @@ export const openapiSpec = {
         type: 'object',
         required: ['gla', 'ufa', 'nla', 'unit', 'boundaryClosed'],
         description:
-          'Line-area UFA/NLA from the marked facility layout. Marked-area rule: every polyline with 3+ vertices and nonzero shoelace area contributes its chord-closed area (closed loops and open 3+-vertex polylines alike); open 2-vertex segments contribute 0 — never fabricated. facilityAreaSqft = marked gross (same value as gla); UFA = marked gross minus block + solid-structure footprints (thin wall lines excluded); NLA = placed-unit footprints inside the marked loops (both stack tiers count), clamped to UFA. All-zero with boundaryClosed: false when no marked line contributes area. Rounded to 1 decimal. gfaSqft mirrors the plan operator-entered GFA (null when unset); gfaSource tags it USER vs CANVAS.',
+          'Line-area UFA/NLA from the marked facility layout. Marked-area rule: every polyline with 3+ vertices and nonzero shoelace area contributes its chord-closed area (closed loops and open 3+-vertex polylines alike); open 2-vertex segments contribute 0 — never fabricated. facilityAreaSqft = marked gross (same value as gla); UFA = marked gross minus block + solid-structure footprints (thin wall lines excluded); NLA = placed-unit footprints inside the marked loops (both stack tiers count) minus the loop-clipped blocked area (blocks + solid structure, once per loop), clamped to UFA; blockAreaSqft = loop-clipped block rects only (solid structure excluded, 1dp). All-zero with boundaryClosed: false when no marked line contributes area. Rounded to 1 decimal. gfaSqft mirrors the plan operator-entered GFA (null when unset); gfaSource tags it USER vs CANVAS.',
         properties: {
           gla: { type: 'number', description: 'Marked gross area (sqft) — same value as facilityAreaSqft, kept for compatibility.' },
           ufa: { type: 'number', description: 'Usable floor area (sqft).' },
-          nla: { type: 'number', description: 'Net lettable area (sqft).' },
+          nla: { type: 'number', description: 'Net lettable area (sqft) — placements minus loop-clipped blocked area, capped by UFA.' },
           unit: { type: 'string', enum: ['sqft'] },
           boundaryClosed: { type: 'boolean', description: 'True when at least one area-contributing marked line exists (closed loop OR open 3+-vertex polyline).' },
           facilityAreaSqft: { type: 'number', description: 'Marked gross facility area (sqft) — same value as gla.' },
+          blockAreaSqft: { type: 'number', description: 'Loop-clipped block area (sqft, 1dp) — SUM over marked loops of rect∩loop per block (solid structure excluded).' },
           gfaSqft: { type: 'number', nullable: true, description: 'Operator-entered plan GFA (sqft); null when unset.' },
           gfaSource: { type: 'string', enum: ['USER', 'CANVAS'], description: 'USER when gfaSqft is set, CANVAS when the metrics report falls back to the canvas rect.' },
         },
@@ -4650,6 +4678,7 @@ export const openapiSpec = {
               nlaTotal: { $ref: openapiSchemaRef('AreaMeasure') },
               common: { $ref: openapiSchemaRef('AreaMeasure') },
               corridorArea: { $ref: openapiSchemaRef('AreaMeasure'), description: 'Additive alias of common (= UFA − NLA, ≥ 0) — Total Corridor Area.' },
+              blockArea: { $ref: openapiSchemaRef('AreaMeasure'), description: 'Additive loop-clipped block area (echoes boundaryMetrics.blockAreaSqft; solid structure excluded).' },
               gfaToUfaEfficiencyPct: { type: 'number', description: 'Additive: GFA → UFA efficiency (%) = UFA/GFA*100, zero-division guarded.' },
               ufaToNlaEfficiencyPct: { type: 'number', description: 'Additive: UFA → NLA efficiency (%) = NLA/UFA*100, zero-division guarded.' },
               efficiency: { type: 'number' },
@@ -4840,6 +4869,7 @@ export const openapiSpec = {
                 gfaSqft: { type: 'number' },
                 ufaSqft: { type: 'number' },
                 nlaSqft: { type: 'number' },
+                blockAreaSqft: { type: 'number', description: 'Additive loop-clipped block area (sqft) for this floor.' },
                 gfaSource: { type: 'string', enum: ['USER', 'CANVAS'] },
                 placedUnits: { type: 'integer' },
                 unplacedUnits: { type: 'integer' },
@@ -4869,6 +4899,7 @@ export const openapiSpec = {
               nlaTotal: { $ref: openapiSchemaRef('AreaMeasure') },
               common: { $ref: openapiSchemaRef('AreaMeasure') },
               corridorArea: { $ref: openapiSchemaRef('AreaMeasure') },
+              blockArea: { $ref: openapiSchemaRef('AreaMeasure'), description: 'Additive facility sum of the per-floor loop-clipped block areas.' },
               efficiency: { type: 'number' },
               loadFactor: { type: 'number' },
               gfaToUfaEfficiencyPct: { type: 'number' },

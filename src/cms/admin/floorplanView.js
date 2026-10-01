@@ -384,7 +384,10 @@ function fpNormalizeBoundaries(plan) {
 // separate 2-vertex sides counts); a lone open 2-vertex segment encloses no
 // area and contributes 0 — never fabricated. UFA = marked
 // gross minus block + solid-structure rects; NLA = placement footprints
-// clipped to the marked loops (both stack tiers count); clamps ≥ 0,
+// clipped to the marked loops minus the loop-clipped blocked area (same
+// blocked total as UFA, once per loop so stacked tiers don't subtract twice),
+// floored at 0 per loop; blockAreaSqft = loop-clipped BLOCK rects only
+// (solid structure excluded); clamps ≥ 0,
 // NLA ≤ UFA, 1dp. No contributing line → all-zero + boundaryClosed: false.
 function fpPolygonArea(points) {
   if (!Array.isArray(points) || points.length < 3) return 0;
@@ -483,18 +486,26 @@ function fpBoundaryMetricsLocal() {
   const gfa = state.fp.gfa;
   const gfaSource = gfa != null ? 'USER' : 'CANVAS';
   if (!loops.length) {
-    return { gla: 0, ufa: 0, nla: 0, unit: 'sqft', boundaryClosed: false, facilityAreaSqft: 0, gfaSqft: gfa, gfaSource };
+    return { gla: 0, ufa: 0, nla: 0, unit: 'sqft', boundaryClosed: false, facilityAreaSqft: 0, blockAreaSqft: 0, gfaSqft: gfa, gfaSource };
   }
   const obstacles = (state.fp.blocks || []).concat(fpStructureRects());
   let gla = 0;
   let ufa = 0;
   let nla = 0;
+  let blockArea = 0;
   for (const loop of loops) {
     const gross = fpPolygonArea(loop);
     gla += gross;
     const blocked = obstacles.reduce((sum, r) => sum + fpRectPolygonArea(r, loop), 0);
     ufa += Math.max(0, gross - blocked);
-    nla += (state.fp.placements || []).reduce((sum, r) => sum + fpRectPolygonArea(r, loop), 0);
+    // NLA subtracts the FULL loop-clipped blocked total once per loop (same
+    // `blocked` as UFA — blocks + solid structure), so stacked locker tiers
+    // don't subtract twice.
+    const placementsInLoop = (state.fp.placements || []).reduce((sum, r) => sum + fpRectPolygonArea(r, loop), 0);
+    nla += Math.max(0, placementsInLoop - blocked);
+    // Loop-clipped BLOCK rects only (solid structure excluded); SUM may
+    // double-count overlapping blocks (non-overlapping assumption, no dedupe).
+    blockArea += (state.fp.blocks || []).reduce((sum, r) => sum + fpRectPolygonArea(r, loop), 0);
   }
   const ufaClamped = Math.max(0, ufa);
   const glaRounded = fpRound1(Math.max(0, gla));
@@ -505,6 +516,7 @@ function fpBoundaryMetricsLocal() {
     unit: 'sqft',
     boundaryClosed: true,
     facilityAreaSqft: glaRounded,
+    blockAreaSqft: fpRound1(Math.max(0, blockArea)),
     gfaSqft: gfa,
     gfaSource,
   };
@@ -520,7 +532,7 @@ function fpRenderBoundaryMetrics() {
   if (!el) return;
   const mm = fpBoundaryMetricsLocal();
   el.textContent = mm.boundaryClosed
-    ? `Marked ${fpFmt1(mm.facilityAreaSqft)} sqft · UFA ${fpFmt1(mm.ufa)} · NLA ${fpFmt1(mm.nla)}`
+    ? `Marked ${fpFmt1(mm.facilityAreaSqft)} sqft · Blocks ${fpFmt1(mm.blockAreaSqft)} · UFA ${fpFmt1(mm.ufa)} · NLA ${fpFmt1(mm.nla)}`
     : 'No marked area — draw a line (3+ vertices, then close the loop) to measure UFA/NLA';
 }
 

@@ -206,6 +206,10 @@ function serializeBlock(b: BlockRow) {
     y: b.y,
     width: b.width,
     height: b.height,
+    // Derived decoration area in sqft (1 grid unit = 1 ft, so w×h) — computed,
+    // never stored (avoids stored-vs-geometry drift); feeds the loop-clipped
+    // blockAreaSqft total in boundaryMetrics.
+    areaSqft: b.width * b.height,
     color: b.color,
     // Authored door edges round-trip per region; blocks are non-leasable so
     // the metrics bridge ignores them (placements carry unit doors).
@@ -255,7 +259,10 @@ function serializeMarker(m: MarkerRow) {
 //     the auto-place obstacle set (fpAutoPlaceAll `taken` minus placements).
 //   - NLA (net lettable area): sum of placed-unit footprints clipped to the
 //     marked loops (each placement row contributes its own rect∩loop area, so
-//     both tiers of a stacked locker pair count).
+//     both tiers of a stacked locker pair count) MINUS the loop-clipped
+//     blocked area (blocks + solid legacy-structure rects — the same `blocked`
+//     total subtracted for UFA), floored at 0 per loop. A block added inside a
+//     marked loop therefore reduces NLA even with UFA headroom.
 //   - `gfaSqft` mirrors the plan's operator-entered GFA (null when unset);
 //     `gfaSource` is 'USER' when set, 'CANVAS' when the metrics report must
 //     fall back to the canvas-derived rect (see floorPlanMetricsService).
@@ -275,6 +282,15 @@ export interface BoundaryMetrics {
   boundaryClosed: boolean;
   /** Marked gross area (sqft) — same value as `gla`, clearer name for new readers. */
   facilityAreaSqft: number;
+  /**
+   * Loop-clipped block area (sqft, 1dp): SUM over marked loops of
+   * rectPolygonArea(blockRect, loop) for every FloorPlanBlock (derived, never
+   * stored). Uses the same loop-clipped total as UFA for consistency; the
+   * per-block raw w×h rides on each serialized block as `areaSqft`. Solid
+   * legacy-structure rects are NOT included (blocks only). Overlapping blocks
+   * may double-count (same non-overlapping assumption as the marked-area rule).
+   */
+  blockAreaSqft: number;
   /** Operator-entered plan GFA (sqft), mirrored from FloorPlan.gfaSqft; null when unset. */
   gfaSqft: number | null;
   /** 'USER' when gfaSqft is set, 'CANVAS' when the metrics report falls back to the canvas rect. */
@@ -435,7 +451,12 @@ const round1 = (v: number): number => Math.round(v * 10) / 10;
  * area (closed loops and open >= 3-vertex polylines alike), plus stitched
  * rings chained from endpoint-connected leftover strokes (so a loop drawn as
  * separate 2-vertex sides counts); a lone open 2-vertex segment contributes 0
- * (a line encloses no area — never fabricated).
+ * (a line encloses no area — never fabricated). Per loop: UFA adds
+ * max(0, gross − blocked) where blocked is the loop-clipped obstacles total
+ * (blocks + solid structure); NLA adds max(0, placementsInLoop − blocked) with
+ * the same blocked total (subtracted once per loop, not per placement row);
+ * blockAreaSqft sums the loop-clipped BLOCK rects only. Final NLA clamps to
+ * ≤ UFA as a safety net.
  */
 export function computeBoundaryMetrics(input: {
   boundaries: Array<{ points: unknown; closed: boolean }>;
@@ -454,29 +475,41 @@ export function computeBoundaryMetrics(input: {
   const gfaSqft = input.gfaSqft ?? null;
   const gfaSource: GfaSource = gfaSqft != null ? 'USER' : 'CANVAS';
   if (!loops.length) {
-    return { gla: 0, ufa: 0, nla: 0, unit: 'sqft', boundaryClosed: false, facilityAreaSqft: 0, gfaSqft, gfaSource };
+    return { gla: 0, ufa: 0, nla: 0, unit: 'sqft', boundaryClosed: false, facilityAreaSqft: 0, blockAreaSqft: 0, gfaSqft, gfaSource };
   }
   const obstacles: FootRect[] = [...input.blocks, ...solidStructureRects(input.structure)];
   let gla = 0;
   let ufa = 0;
   let nla = 0;
+  let blockArea = 0;
   for (const loop of loops) {
     const gross = polygonArea(loop);
     gla += gross;
     const blocked = obstacles.reduce((sum, r) => sum + rectPolygonArea(r, loop), 0);
     ufa += Math.max(0, gross - blocked);
-    nla += input.placements.reduce((sum, r) => sum + rectPolygonArea(r, loop), 0);
+    // NLA subtracts the FULL loop-clipped blocked area (blocks + solid
+    // structure — the same `blocked` total as UFA), once per loop rather than
+    // per placement row, so stacked locker tiers don't subtract twice.
+    const placementsInLoop = input.placements.reduce((sum, r) => sum + rectPolygonArea(r, loop), 0);
+    nla += Math.max(0, placementsInLoop - blocked);
+    // Loop-clipped BLOCK area only (solid structure excluded) — the exposed
+    // blockAreaSqft total. SUM double-counts overlapping blocks (same
+    // non-overlapping assumption as the marked-area rule); no dedupe.
+    blockArea += input.blocks.reduce((sum, r) => sum + rectPolygonArea(r, loop), 0);
   }
   const ufaClamped = Math.max(0, ufa);
   const glaRounded = round1(Math.max(0, gla));
+  const blockAreaRounded = round1(Math.max(0, blockArea));
   return {
     gla: glaRounded,
     ufa: round1(ufaClamped),
-    // NLA is lettable footprint inside the marked loops — it can never exceed UFA.
+    // NLA is lettable footprint inside the marked loops minus loop-clipped
+    // blocked area — it can never exceed UFA.
     nla: round1(Math.min(Math.max(0, nla), ufaClamped)),
     unit: 'sqft',
     boundaryClosed: true,
     facilityAreaSqft: glaRounded,
+    blockAreaSqft: blockAreaRounded,
     gfaSqft,
     gfaSource,
   };

@@ -17,7 +17,10 @@
 //     authoritative source is the plan's marked boundary lines via
 //     computeBoundaryMetrics() (see floorPlans.ts) — geometry.ufa is the marked
 //     gross minus blocks/solid-structure rects, geometry.nlaEnclosed/nlaTotal
-//     are placement footprints clipped to the marked loops (capped ≤ UFA),
+//     are placement footprints clipped to the marked loops minus the
+//     loop-clipped blocked area (same blocked total as UFA, once per loop —
+//     capped ≤ UFA), geometry.blockArea echoes boundaryMetrics.blockAreaSqft
+//     (loop-clipped blocks only), geometry.nlaOutdoor is 0 (the marked-area
 //     geometry.nlaOutdoor is 0 (the marked-area model has no outdoor split),
 //     geometry.common is the marked remainder (UFA − NLA), and efficiency +
 //     the occupancy-sqft/revenue NLA denominators follow the same line-only
@@ -298,6 +301,13 @@ export interface FloorMetricsReport {
     nlaTotal: { q: string; sqft: number };
     /** Marked remainder (UFA − NLA, ≥ 0). */
     common: { q: string; sqft: number };
+    /**
+     * Additive loop-clipped block area (sqft, 1dp, echoes
+     * boundaryMetrics.blockAreaSqft exactly; `q` derived the same way) —
+     * SUM over marked loops of rect∩loop per FloorPlanBlock (derived, never
+     * stored; solid structure excluded; 0 with no contributing marked line).
+     */
+    blockArea: { q: string; sqft: number };
     /** Additive alias of `common` (= UFA − NLA, ≥ 0, 1dp) — Total Corridor Area. */
     corridorArea: { q: string; sqft: number };
     /** Additive: GFA → UFA efficiency (%) = UFA/GFA*100, guarded, 1dp. */
@@ -575,8 +585,9 @@ export async function getFloorMetrics(floorId: string): Promise<FloorMetricsRepo
 
   // LINE-ONLY (marked-area) UFA/NLA — the authoritative facility figures (see
   // computeBoundaryMetrics in floorPlans.ts): marked gross minus blocks/solid
-  // structure rects (UFA), placements clipped to the marked loops capped ≤ UFA
-  // (NLA). All-zero with boundaryClosed false when no marked line contributes
+  // structure rects (UFA), placements clipped to the marked loops minus the
+  // loop-clipped blocked area capped ≤ UFA (NLA), loop-clipped blocks only
+  // (blockArea). All-zero with boundaryClosed false when no marked line
   // area — never the whole-canvas rect. `sqft` echoes the 1dp boundaryMetrics
   // numbers exactly; `q` is derived from them (BigInt would throw via JSON).
   const boundaryMetrics: BoundaryMetrics = computeBoundaryMetrics({
@@ -588,6 +599,7 @@ export async function getFloorMetrics(floorId: string): Promise<FloorMetricsRepo
   });
   const lineUfaQ = BigInt(Math.round(boundaryMetrics.ufa * Number(Q_PER_SQFT)));
   const lineNlaQ = BigInt(Math.round(boundaryMetrics.nla * Number(Q_PER_SQFT)));
+  const lineBlockAreaQ = BigInt(Math.round(boundaryMetrics.blockAreaSqft * Number(Q_PER_SQFT)));
   const lineCommonSqft = Math.round(Math.max(0, boundaryMetrics.ufa - boundaryMetrics.nla) * 10) / 10;
   const lineCommonQ = BigInt(Math.round(lineCommonSqft * Number(Q_PER_SQFT)));
   const lineEfficiency = effGfaSqft > 0 ? boundaryMetrics.nla / effGfaSqft : 0;
@@ -707,7 +719,7 @@ export async function getFloorMetrics(floorId: string): Promise<FloorMetricsRepo
           : []),
         ...(boundaryMetrics.boundaryClosed
           ? [
-              `UFA/NLA are line-only (marked-area, authoritative = boundaryMetrics): geometry.ufa ${boundaryMetrics.ufa} sqft (marked gross ${boundaryMetrics.facilityAreaSqft} minus blocks/structure), geometry.nlaEnclosed/nlaTotal ${boundaryMetrics.nla} sqft (placements clipped to loops, capped at UFA); outdoor split is 0 under the marked-area model. Canvas-tessellated whole-canvas figures were UFA ${m.ufa.sqft} / NLA ${m.nlaTotal.sqft} sqft (diagnostic only, never facility UFA/NLA).`,
+              `UFA/NLA are line-only (marked-area, authoritative = boundaryMetrics): geometry.ufa ${boundaryMetrics.ufa} sqft (marked gross ${boundaryMetrics.facilityAreaSqft} minus blocks/structure), geometry.nlaEnclosed/nlaTotal ${boundaryMetrics.nla} sqft (placements clipped to loops minus loop-clipped blocked area, capped at UFA; loop-clipped block area ${boundaryMetrics.blockAreaSqft} sqft in geometry.blockArea); outdoor split is 0 under the marked-area model. Canvas-tessellated whole-canvas figures were UFA ${m.ufa.sqft} / NLA ${m.nlaTotal.sqft} sqft (diagnostic only, never facility UFA/NLA).`,
             ]
           : [
               `No marked area on this plan (boundaryClosed false) — geometry.ufa/nla* are 0; canvas-tessellated whole-canvas figures were UFA ${m.ufa.sqft} / NLA ${m.nlaTotal.sqft} sqft (diagnostic only, never facility UFA/NLA). Draw a line (3+ vertices, then close the loop) to measure UFA/NLA.`,
@@ -738,6 +750,7 @@ export async function getFloorMetrics(floorId: string): Promise<FloorMetricsRepo
       nlaOutdoor: zeroArea(),
       nlaTotal: { q: lineNlaQ.toString(), sqft: boundaryMetrics.nla },
       common: { q: lineCommonQ.toString(), sqft: lineCommonSqft },
+      blockArea: { q: lineBlockAreaQ.toString(), sqft: boundaryMetrics.blockAreaSqft },
       corridorArea: { q: lineCommonQ.toString(), sqft: corridorSqft },
       gfaToUfaEfficiencyPct,
       ufaToNlaEfficiencyPct,
@@ -871,6 +884,8 @@ export interface FacilityMetricsFloorRow {
   gfaSqft: number;
   ufaSqft: number;
   nlaSqft: number;
+  /** Additive loop-clipped block area (sqft) for this floor (= geometry.blockArea.sqft). */
+  blockAreaSqft: number;
   gfaSource: GfaSource | null;
   placedUnits: number;
   unplacedUnits: number;
@@ -896,6 +911,11 @@ export interface FacilityMetricsReport {
     nlaOutdoor: { q: string; sqft: number };
     nlaTotal: { q: string; sqft: number };
     common: { q: string; sqft: number };
+    /**
+     * Additive facility sum of the per-floor loop-clipped block areas
+     * (geometry.blockArea, sqft, 1dp) — derived, never stored.
+     */
+    blockArea: { q: string; sqft: number };
     /** Additive alias of `common` (= UFA − NLA, ≥ 0, 1dp) — Total Corridor Area. */
     corridorArea: { q: string; sqft: number };
     /** NLA/GFA ratio (display-boundary, 4dp) — guarded, 0 when GFA is 0. */
@@ -954,6 +974,7 @@ export async function getFacilityMetrics(branchRef: string): Promise<FacilityMet
   let gfaSum = 0;
   let ufaSum = 0;
   let nlaSum = 0;
+  let blockAreaSum = 0;
   const gfaSourcesByFloor: Array<{ floorId: string; gfaSource: GfaSource }> = [];
   for (const f of floors) {
     try {
@@ -966,6 +987,7 @@ export async function getFacilityMetrics(branchRef: string): Promise<FacilityMet
         gfaSqft: report.geometry.gfa.sqft,
         ufaSqft: report.geometry.ufa.sqft,
         nlaSqft: report.geometry.nlaTotal.sqft,
+        blockAreaSqft: report.geometry.blockArea.sqft,
         gfaSource: report.geometry.gfaSource,
         placedUnits: report.coverage.placedUnits,
         unplacedUnits: report.coverage.unplacedUnits,
@@ -974,6 +996,7 @@ export async function getFacilityMetrics(branchRef: string): Promise<FacilityMet
       gfaSum += report.geometry.gfa.sqft;
       ufaSum += report.geometry.ufa.sqft;
       nlaSum += report.geometry.nlaTotal.sqft;
+      blockAreaSum += report.geometry.blockArea.sqft;
       gfaSourcesByFloor.push({ floorId: f.id, gfaSource: report.geometry.gfaSource });
     } catch (err) {
       // Floors with no plan (404) contribute zero geometry but stay visible;
@@ -988,6 +1011,7 @@ export async function getFacilityMetrics(branchRef: string): Promise<FacilityMet
           gfaSqft: 0,
           ufaSqft: 0,
           nlaSqft: 0,
+          blockAreaSqft: 0,
           gfaSource: null,
           placedUnits: 0,
           unplacedUnits: 0,
@@ -1003,6 +1027,7 @@ export async function getFacilityMetrics(branchRef: string): Promise<FacilityMet
   const ufa = round1(Math.max(0, ufaSum));
   const nla = round1(Math.min(Math.max(0, nlaSum), ufa));
   const gfa = round1(Math.max(0, gfaSum));
+  const blockArea = round1(Math.max(0, blockAreaSum));
   const corridor = corridorAreaOf(ufa, nla);
   const efficiency = gfa > 0 ? Math.round((nla / gfa) * 10000) / 10000 : 0;
   const loadFactor = nla > 0 ? Math.round((ufa / nla) * 10000) / 10000 : 1;
@@ -1049,6 +1074,7 @@ export async function getFacilityMetrics(branchRef: string): Promise<FacilityMet
       nlaTotal: { q: toQ(nla), sqft: nla },
       common: { q: toQ(corridor), sqft: corridor },
       corridorArea: { q: toQ(corridor), sqft: corridor },
+      blockArea: { q: toQ(blockArea), sqft: blockArea },
       efficiency,
       loadFactor,
       gfaToUfaEfficiencyPct: gfaToUfaEfficiencyPctOf(ufa, gfa),

@@ -5,6 +5,7 @@ import { prisma } from '../lib/prisma';
 import { toNum } from '../lib/format';
 import { AppError } from '../lib/http';
 import { toCanonicalSizeCategory } from './promotionPlans';
+import { resolvePromoDueTodayScope } from './promotions';
 import { CustomerJwtPayload, signCustomerToken } from '../middleware/auth';
 
 export interface RegisterCustomerInput {
@@ -600,54 +601,186 @@ export async function getCustomerPortal(payload: CustomerJwtPayload) {
 // --- Booking pricing (server-side recompute) ----------------------------------
 //
 // The client's `totalDueToday` is a HINT ONLY — the invoiced figure is derived
-// from server truth: unit.monthlyRate − plan/promo discount + catalog
-// protection price + catalog addon prices. A hint that undercuts the server
-// figure is a tampered underpayment and is rejected with 400; a hint at/above
-// it is ignored (the server figure is invoiced verbatim).
+// from server truth and replicates the booking frontend's Due Today formula
+// (booking-app `computePricing`) to the cent so the Stripe `unit_amount`
+// (`Math.round(dueToday * 100)` over the DUE invoice) charges exactly what the
+// price summary showed:
+//
+//   discPrice      = Math.round(base * (1 - pct/100))            // pct = plan
+//     matrix exact-cell discount, else legacy PERCENTAGE promo value
+//   monthlyStorage = max(0, discPrice - recurringFixedAmt)        // recurring
+//     (RECURRING-scope) legacy FLAT promo only
+//   proratedFull   = Math.round(monthlyStorage * remainingDays / totalDays)
+//     // date-based: move-in day inclusive through month-end in the move-in
+//     // calendar month; no usable date → monthlyStorage * fallback factor
+//   prorated       = clamp(Math.round(proratedFull - firstMonthAmt), 0, rent)
+//     // firstMonthAmt = FIRST_MONTH / ONE_TIME / DUE_TODAY-scope legacy promo
+//   dueToday       = Math.round(prorated + protection + addons)
+//
+// Deposit / admin fee are S$0 (waived) and GST is 0 — they contribute nothing
+// on either side. Protection tiers resolve by catalog id slug OR
+// case-insensitive name (unknown/inactive tier = 0 — the client cannot invent
+// a cheap tier); the catalog price wins over the client `cost` hint. Addons
+// resolve by catalog id/name/slug when matched (catalog price wins); unmatched
+// names fall back to the client price (they only ever ADD ≥ 0, so they cannot
+// undercut the rent floor) with floor(qty). movingService has no priced fee
+// schedule — it contributes 0 by design. Money intermediates go through
+// `toNum` (2dp); the integer steps use Math.round exactly like the frontend.
 //
 // Promo precedence: the ACTIVE promotion-plan DISCOUNT MATRIX wins first — an
 // exact (sizeCategory from unit.size, commitmentMonths from durationMonths)
-// cell discounts the rent to Math.round(base * (1 - pct/100)) (integer
-// rounding parity with the booking frontend's Math.round, so a
-// plan-discounted client hint converges instead of 400ing). Across ACTIVE
-// plans / accessTypes sharing the key the largest discountPct wins. Only when
-// NO exact cell (or no positive pct) exists does the legacy promo-code path
-// below run — its validation mirrors validatePromotion() in
-// core/promotions.ts (active + date window + minMonths + identical discount
-// math) so the booking-time discount can never exceed what the public
-// validate endpoint would grant. Plan and legacy discounts never stack.
-// Protection tiers resolve by catalog id slug OR case-insensitive name
-// (unknown/inactive tier = 0 — the client cannot invent a cheap tier).
-// Addons resolve by catalog id/name/slug when matched (catalog price wins);
-// unmatched names fall back to the client price (they only ever ADD ≥ 0, so
-// they cannot undercut the rent floor). movingService has no priced fee
-// schedule — it contributes 0 by design.
+// cell discounts the rent (integer-rounded discounted rent, largest pct across
+// ACTIVE plans / accessTypes sharing the key). Only when NO exact cell (or no
+// positive pct) exists does the legacy promo-code path below run — its
+// validation mirrors validatePromotion() in core/promotions.ts (active + date
+// window + minMonths), and its scope is classified by
+// resolvePromoDueTodayScope() (RECURRING vs first-month buckets, sourced from
+// the promo row falling back to the backing plan's appliesTo). Plan and legacy
+// discounts never stack.
 //
-// DELIBERATE DIVERGENCE (product decision pending — do NOT "fix" by adding
-// GST/deposit/proration here): the booking-app client computes Due Today as
-// rent ± promos/extras PLUS S$100 refundable deposit PLUS 7/31 first-month
-// proration PLUS 1%/9% GST (see booking-app checkout math), while this server
-// figure books rent-only: max(0, base − promoDiscount + protection + addons).
-// Consequences are intentional and one-sided: a client hint ABOVE the server
-// figure (the normal deposit+GST case) passes and is still invoiced at the
-// SERVER figure; a hint BELOW server − 0.01 400s with an enriched breakdown so
-// the frontend can refresh-and-retry without guessing. Do not add GST, deposit
-// or proration to this formula without an explicit product decision — that
-// changes what every invoice + Stripe session charges. (The plan-matrix
-// discount above IS an explicit product decision — coordinated with the
-// booking frontend lane, which keeps sending plan-discounted totals.)
+// A hint that undercuts the server figure is a tampered underpayment and
+// SHOULD be rejected with 400 (guard below, currently disabled — see
+// TEMP-TEST note); a hint at/above it is ignored (the server figure is
+// invoiced verbatim).
+//
+// Proration calendar basis: the move-in day in Asia/Singapore (see
+// parseMoveInCalendarDay — Zulu instants convert to their SGT wall date so a
+// `toISOString()` payload prorates exactly like the SGT browser summary).
+// totalDays is the calendar month length, remainingDays counts the move-in
+// day itself.
+
+// Fallback proration factor when moveInDate is unusable. The frontend applies
+// BILLING.proration in the same no-date branch; its constant value is not
+// visible from this repo, so the server falls back to a full month (1). If
+// the frontend constant ever differs, mid-month parity for dateless bookings
+// drifts by exactly that factor — moveInDate is required on this route, so
+// the branch is defensive-only. (Uncertainty noted in the change report.)
+export const PRORATION_FALLBACK_FACTOR = 1;
+
+export interface DueTodayQuote {
+  total: number;
+  base: number;
+  // Recurring reduction vs base (plan pct and/or recurring flat), 2dp.
+  promoDiscount: number;
+  // Post-proration first-month reduction (first-month-scope legacy promo).
+  firstMonthDiscount: number;
+  protection: number;
+  addons: number;
+  // --- frontend-parity intermediates (additive) ---
+  discountPct: number;
+  discPrice: number;
+  monthlyStorage: number;
+  proratedFull: number;
+  prorated: number;
+  remainingDays: number;
+  totalDays: number;
+}
+
+function parseMoveInCalendarDay(value: string): { year: number; month: number; day: number } | null {
+  // Singapore-local calendar day (Asia/Singapore — the product operates
+  // solely in SGT: SGD billing, +65 mobiles). The route schema only accepts
+  // timezone-aware datetimes (zod datetime()), which in practice arrive as
+  // Zulu `toISOString()` instants — e.g. SGT Oct-15 midnight travels as
+  // 2026-10-14T16:00:00.000Z. Reading the YYYY-MM-DD prefix (or server-local
+  // / UTC getters) would land on the 14th and prorate 18/31 while the
+  // booking-app summary computed 17/31 from the SGT-local day. Intl with an
+  // explicit Asia/Singapore zone interprets every input the way an SGT
+  // browser does, independent of server TZ: Zulu/offset instants convert to
+  // their SGT wall date, and a bare wall time (no designator) is already SGT.
+  const bareWall = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/.exec(value ?? '');
+  const hasZone = /([Zz]|[+-]\d{2}:?\d{2})$/.test((value ?? '').trim());
+  if (bareWall && !hasZone) {
+    const year = Number(bareWall[1]);
+    const month = Number(bareWall[2]);
+    const day = Number(bareWall[3]);
+    if (month >= 1 && month <= 12 && day >= 1 && day <= new Date(Date.UTC(year, month, 0)).getUTCDate()) {
+      return { year, month, day };
+    }
+    return null;
+  }
+  const instant = new Date(value);
+  if (Number.isNaN(instant.getTime())) return null;
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Singapore',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(instant);
+  const get = (type: string) => parts.find((p) => p.type === type)?.value;
+  const year = Number(get('year'));
+  const month = Number(get('month'));
+  const day = Number(get('day'));
+  if (!Number.isInteger(year) || month < 1 || month > 12 || day < 1 || day > 31) return null;
+  if (day > new Date(Date.UTC(year, month, 0)).getUTCDate()) return null;
+  return { year, month, day };
+}
+
+// Pure frontend-parity quote: no DB, no catalog — unit-testable and reused by
+// computeServerDueToday below after it resolves pct / fixed amounts / extras.
+export function quoteDueToday(args: {
+  base: number;
+  discountPct?: number;
+  recurringFixedAmt?: number;
+  firstMonthAmt?: number;
+  protection?: number;
+  addons?: number;
+  moveInDate?: string;
+}): DueTodayQuote {
+  const base = toNum(args.base);
+  const pct = Math.min(100, Math.max(0, args.discountPct ?? 0));
+  const recurringFixed = Math.max(0, toNum(args.recurringFixedAmt ?? 0));
+  const firstMonth = Math.max(0, toNum(args.firstMonthAmt ?? 0));
+  const protection = Math.max(0, toNum(args.protection ?? 0));
+  const addons = Math.max(0, toNum(args.addons ?? 0));
+
+  const discPrice = Math.round(base * (1 - pct / 100));
+  const monthlyStorage = toNum(Math.max(0, discPrice - recurringFixed));
+
+  const cal = args.moveInDate ? parseMoveInCalendarDay(args.moveInDate) : null;
+  let totalDays = 0;
+  let remainingDays = 0;
+  let proratedFull: number;
+  if (cal) {
+    totalDays = new Date(Date.UTC(cal.year, cal.month, 0)).getUTCDate();
+    remainingDays = totalDays - cal.day + 1; // move-in day inclusive
+    proratedFull = Math.round((monthlyStorage * remainingDays) / totalDays);
+  } else {
+    proratedFull = Math.round(monthlyStorage * PRORATION_FALLBACK_FACTOR);
+  }
+  // "Clamped to rent": the first-month discount can neither push below zero
+  // nor inflate above the full monthly rent.
+  const prorated = Math.min(monthlyStorage, Math.max(0, Math.round(proratedFull - firstMonth)));
+  const total = Math.round(prorated + protection + addons);
+
+  return {
+    total: toNum(total),
+    base: toNum(base),
+    promoDiscount: toNum(Math.max(0, base - monthlyStorage)),
+    firstMonthDiscount: toNum(firstMonth),
+    protection: toNum(protection),
+    addons: toNum(addons),
+    discountPct: pct,
+    discPrice,
+    monthlyStorage,
+    proratedFull,
+    prorated,
+    remainingDays,
+    totalDays,
+  };
+}
 async function computeServerDueToday(
   tx: Prisma.TransactionClient,
   unit: { monthlyRate: Prisma.Decimal | number; size?: { code: string; name: string } | null },
   input: CreateBookingInput,
-): Promise<{ total: number; base: number; promoDiscount: number; protection: number; addons: number }> {
+): Promise<DueTodayQuote> {
   const base = toNum(unit.monthlyRate);
-
-  let promoDiscount = 0;
-  let planApplied = false;
 
   // ACTIVE promotion-plan matrix FIRST: exact
   // (sizeCategory, commitmentMonths) wins over the legacy promo-code path.
+  // The matrix pct is recurring by construction (it discounts the monthly
+  // rent), feeding the frontend's discPrice step.
+  let discountPct = 0;
+  let planApplied = false;
   const sizeCategory = toCanonicalSizeCategory(unit.size?.code ?? unit.size?.name ?? '');
   if (sizeCategory && Number.isFinite(input.durationMonths)) {
     const plans = await tx.promotionPlan.findMany({
@@ -667,19 +800,25 @@ async function computeServerDueToday(
       }
     }
     if (bestPct != null && bestPct > 0) {
-      // Frontend parity: the DISCOUNTED RENT is integer-rounded
-      // (Math.round), not the discount amount.
-      const discounted = Math.round(base * (1 - bestPct / 100));
-      promoDiscount = toNum(Math.max(0, base - discounted));
+      discountPct = bestPct;
       planApplied = true;
     }
   }
 
+  // Legacy promo-code path (never stacks with the matrix): scope-split to
+  // match the frontend — RECURRING promos reduce the monthly rent before
+  // proration, FIRST_MONTH / ONE_TIME / DUE_TODAY promos reduce the prorated
+  // first month after proration. A PERCENTAGE promo defines the rate
+  // (discPrice step) when recurring; when first-month-scoped it is valued on
+  // the base with the same math as validatePromotion() and applied
+  // post-proration instead (never both — no double count).
+  let recurringFixedAmt = 0;
+  let firstMonthAmt = 0;
   if (!planApplied) {
     const code = input.promoCode?.trim();
     if (code) {
       const now = new Date();
-      const promo = await tx.promotion.findUnique({ where: { code } });
+      const promo = await tx.promotion.findUnique({ where: { code }, include: { plan: true } });
       const usable =
         !!promo &&
         promo.active &&
@@ -688,10 +827,23 @@ async function computeServerDueToday(
         (promo.minMonths == null || input.durationMonths >= promo.minMonths);
       if (usable) {
         const value = toNum(promo!.discountValue);
-        promoDiscount =
-          promo!.discountType === 'PERCENTAGE'
-            ? toNum((base * value) / 100)
-            : toNum(Math.min(value, base));
+        const scope = resolvePromoDueTodayScope({
+          applyTo: promo!.applyTo,
+          benefitType: promo!.benefitType,
+          plan: promo!.plan ? { appliesTo: promo!.plan.appliesTo } : null,
+        });
+        const recurring = scope === 'RECURRING';
+        if (promo!.discountType === 'PERCENTAGE') {
+          if (recurring) {
+            discountPct = Math.min(100, Math.max(0, value));
+          } else {
+            firstMonthAmt = toNum((base * value) / 100);
+          }
+        } else if (recurring) {
+          recurringFixedAmt = value;
+        } else {
+          firstMonthAmt = value;
+        }
       }
     }
   }
@@ -729,13 +881,15 @@ async function computeServerDueToday(
     }
   }
 
-  return {
-    total: toNum(Math.max(0, base - promoDiscount + protection + addons)),
-    base: toNum(base),
-    promoDiscount: toNum(promoDiscount),
-    protection: toNum(protection),
-    addons: toNum(addons),
-  };
+  return quoteDueToday({
+    base,
+    discountPct,
+    recurringFixedAmt,
+    firstMonthAmt,
+    protection,
+    addons,
+    moveInDate: input.moveInDate,
+  });
 }
 
 // --- Booking creation ----------------------------------------------------
@@ -855,16 +1009,22 @@ export async function createCustomerBooking(customer: Customer, input: CreateBoo
 
     await tx.unit.update({ where: { id: unit.id }, data: { status: 'RESERVED' } });
 
-    // Server-side amount: the invoice is the recomputed due-today figure, NOT
-    // the client hint verbatim. The hint is advisory and one-sided: omitted →
-    // no check; at/above the server figure → accepted but the SERVER figure is
-    // still invoiced (never the client hint); below it (beyond 1-cent float
-    // tolerance) → 400 with an enriched breakdown so the frontend can
-    // refresh-and-retry without guessing.
+    // Server-side amount: the invoice is the recomputed due-today figure
+    // (prorated first month + catalog protection/addons, frontend parity —
+    // see computeServerDueToday), NOT the client hint verbatim. The hint is
+    // advisory and one-sided: omitted → no check; at/above the server figure
+    // → accepted but the SERVER figure is still invoiced (never the client
+    // hint); below it (beyond 1-cent float tolerance) → 400 with an enriched
+    // breakdown so the frontend can refresh-and-retry without guessing.
     const quote = await computeServerDueToday(tx, unit, input);
     const dueToday = quote.total;
     // TEMP-TEST: price guard disabled for Stripe E2E — restore before launch.
     // Any client totalDueToday hint passes; invoicing below still uses server dueToday.
+    // The server formula now replicates the frontend Due Today rounding
+    // (integer discPrice / prorated steps), but the guard stays OFF until the
+    // open uncertainties close: the BILLING.proration no-date fallback value,
+    // first-month-scope PERCENTAGE amount basis, and protection/supplies
+    // catalog alignment are all assumed, not verified against quote.ts.
     // --- RESTORE (uncomment) ---
     // if (input.totalDueToday !== undefined && input.totalDueToday < dueToday - 0.01) {
     //   throw new AppError(
@@ -875,8 +1035,10 @@ export async function createCustomerBooking(customer: Customer, input: CreateBoo
     //       expected: dueToday,
     //       base: quote.base,
     //       promoDiscount: quote.promoDiscount,
+    //       firstMonthDiscount: quote.firstMonthDiscount,
     //       protection: quote.protection,
     //       addons: quote.addons,
+    //       prorated: quote.prorated,
     //     },
     //   );
     // }
@@ -898,6 +1060,25 @@ export async function createCustomerBooking(customer: Customer, input: CreateBoo
       unit: { code: unit.unitCode, sqft: unit.sqft, rate: toNum(unit.monthlyRate) },
       moveInDate,
       amount: toNum(booking.amount),
+      // --- appended (additive): the invoiced due-today total (prorated first
+      // month + catalog extras — this is what the DUE invoice and the Stripe
+      // unit_amount charge) plus its breakdown. `amount` above is unchanged
+      // (the unit monthly rate snapshot on the booking row).
+      dueToday,
+      breakdown: {
+        base: quote.base,
+        discountPct: quote.discountPct,
+        discPrice: quote.discPrice,
+        monthlyStorage: quote.monthlyStorage,
+        promoDiscount: quote.promoDiscount,
+        proratedFull: quote.proratedFull,
+        firstMonthDiscount: quote.firstMonthDiscount,
+        prorated: quote.prorated,
+        protection: quote.protection,
+        addons: quote.addons,
+        remainingDays: quote.remainingDays,
+        totalDays: quote.totalDays,
+      },
     };
   });
 }

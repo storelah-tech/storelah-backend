@@ -184,6 +184,26 @@ function resolvePromoScope(p: PromoTypeSource): string {
   return normalizeDurationScope(p.plan?.appliesTo ?? (p as { applyTo?: string | null }).applyTo ?? null);
 }
 
+// Booking due-today scope split (shared with core/customers.ts so the
+// server-side due-today recompute routes a promo-code discount to the same
+// bucket the booking frontend uses):
+//   RECURRING → reduces the monthly rent BEFORE proration (the frontend's
+//     promoDiscountAmt — pct promos via the discounted-rent step, flat promos
+//     via the fixed-amount step);
+//   FIRST_MONTH / ONE_TIME / DUE_TODAY → reduces the prorated first month
+//     AFTER proration (the frontend's firstMonthDiscountAmt).
+// The token set mirrors normalizeDurationScope above; this export just makes
+// the classification reusable without duplicating the regexes.
+export type PromoDueTodayScope = 'RECURRING' | 'FIRST_MONTH' | 'ONE_TIME' | 'DUE_TODAY';
+
+export function resolvePromoDueTodayScope(p: {
+  applyTo?: string | null;
+  benefitType?: Promotion['benefitType'] | null;
+  plan?: { appliesTo: string | null } | null;
+}): PromoDueTodayScope {
+  return normalizeDurationScope(p.plan?.appliesTo ?? p.applyTo ?? null) as PromoDueTodayScope;
+}
+
 // Defaults used when no promo row can be resolved (unknown / inactive /
 // out-of-window / below-minMonths / malformed body). Shape stays stable so
 // the frontend can always read the additive fields.

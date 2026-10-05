@@ -33,7 +33,7 @@ export interface UpdateTenantInput {
   autoDebit?: boolean;
 }
 
-function serializeTenant(t: TenantWithUnit) {
+function serializeTenant(t: TenantWithUnit, latestVerification: TenantLatestVerification | null = null) {
   return {
     id: t.id,
     name: t.name,
@@ -50,7 +50,132 @@ function serializeTenant(t: TenantWithUnit) {
     nextPayment: t.nextPayment,
     status: t.status,
     autoDebit: t.autoDebit,
+    // Latest mock ID-verification for this tenant (null when none).
+    // Resolved defensively — never throws when tenantId/bookingRef links are
+    // absent (see latestVerificationsByTenant below).
+    latestVerification,
   };
+}
+
+// ---------- latest mock ID-verification per tenant ----------
+//
+// Verification rows carry only loose links (tenantId / bookingRef are plain
+// optional Strings with no FK; customerId is an optional Customer FK), so the
+// lookup is defensive and multi-leg, newest-wins:
+//   1. tenantId === tenant.id (snapshot taken when the mock was recorded
+//      against a resolvable booking),
+//   2. bookingRef ∈ the tenant's Booking rows (guest mocks keyed by ref),
+//   3. customerId ∈ Customers sharing the tenant's email (case-insensitive;
+//      guest mocks recorded with email-proof).
+// Any leg may be absent (no bookings, no email, no customers) — the result is
+// then null, never an error. Provider `status` (VERIFIED/FAILED) is echoed
+// as-is; `reviewStatus` is the CMS staff-validation flag (PENDING_VALIDATION
+// until an operator VALIDATEs/REJECTs the row).
+export interface TenantLatestVerification {
+  id: string;
+  status: string;
+  reviewStatus: string;
+  idType: string;
+  verifiedAt: Date;
+  bookingRef: string;
+}
+
+function toTenantLatestVerification(v: {
+  id: string;
+  status: string;
+  reviewStatus: string | null;
+  idType: string;
+  verifiedAt: Date;
+  bookingRef: string;
+}): TenantLatestVerification {
+  return {
+    id: v.id,
+    status: v.status,
+    reviewStatus: v.reviewStatus ?? 'PENDING_VALIDATION',
+    idType: v.idType,
+    verifiedAt: v.verifiedAt,
+    bookingRef: v.bookingRef,
+  };
+}
+
+export async function latestVerificationsByTenant(
+  tenants: { id: string; email: string | null }[],
+): Promise<Map<string, TenantLatestVerification | null>> {
+  const out = new Map<string, TenantLatestVerification | null>(tenants.map((t) => [t.id, null]));
+  if (!tenants.length) return out;
+  const ids = tenants.map((t) => t.id);
+
+  // Leg 2 keys: bookingRefs of this tenant batch's Booking rows.
+  const bookings = await prisma.booking.findMany({
+    where: { tenantId: { in: ids } },
+    select: { tenantId: true, bookingRef: true },
+  });
+  const refsByTenant = new Map<string, Set<string>>();
+  for (const b of bookings) {
+    let set = refsByTenant.get(b.tenantId);
+    if (!set) {
+      set = new Set();
+      refsByTenant.set(b.tenantId, set);
+    }
+    set.add(b.bookingRef);
+  }
+  const allRefs = [...refsByTenant.values()].flatMap((s) => [...s]);
+
+  // Leg 3 keys: Customer ids sharing each tenant's email (stored emails are
+  // normalized lowercase — see normalizeEmail in core/customers.ts).
+  const emailToTenantIds = new Map<string, string[]>();
+  for (const t of tenants) {
+    const norm = t.email?.trim().toLowerCase();
+    if (!norm) continue;
+    const list = emailToTenantIds.get(norm);
+    if (list) list.push(t.id);
+    else emailToTenantIds.set(norm, [t.id]);
+  }
+  const customerIdsByTenant = new Map<string, Set<string>>();
+  if (emailToTenantIds.size) {
+    const customers = await prisma.customer.findMany({
+      where: { email: { in: [...emailToTenantIds.keys()] } },
+      select: { id: true, email: true },
+    });
+    for (const c of customers) {
+      const norm = c.email.trim().toLowerCase();
+      for (const tid of emailToTenantIds.get(norm) ?? []) {
+        let set = customerIdsByTenant.get(tid);
+        if (!set) {
+          set = new Set();
+          customerIdsByTenant.set(tid, set);
+        }
+        set.add(c.id);
+      }
+    }
+  }
+  const allCustomerIds = [...customerIdsByTenant.values()].flatMap((s) => [...s]);
+
+  if (!ids.length && !allRefs.length && !allCustomerIds.length) return out;
+  // Newest-first globally so the first candidate per tenant is its latest.
+  const rows = await prisma.verification.findMany({
+    where: {
+      OR: [
+        { tenantId: { in: ids } },
+        ...(allRefs.length ? [{ bookingRef: { in: allRefs } }] : []),
+        ...(allCustomerIds.length ? [{ customerId: { in: allCustomerIds } }] : []),
+      ],
+    },
+    orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+    select: { id: true, status: true, reviewStatus: true, idType: true, verifiedAt: true, bookingRef: true, tenantId: true, customerId: true },
+  });
+  for (const t of tenants) {
+    const refs = refsByTenant.get(t.id);
+    const cids = customerIdsByTenant.get(t.id);
+    const hit = rows.find(
+      (v) =>
+        (v.tenantId != null && v.tenantId === t.id) ||
+        (refs != null && refs.has(v.bookingRef)) ||
+        (cids != null && v.customerId != null && cids.has(v.customerId)),
+    );
+    if (hit) out.set(t.id, toTenantLatestVerification(hit));
+  }
+  return out;
 }
 
 function isOccupiedStatus(status: string) {
@@ -98,7 +223,8 @@ export async function createTenant(input: CreateTenantInput) {
     },
     include: { unit: { include: { size: true } } },
   });
-  return serializeTenant(tenant);
+  const latest = (await latestVerificationsByTenant([{ id: tenant.id, email: tenant.email }])).get(tenant.id) ?? null;
+  return serializeTenant(tenant, latest);
 }
 
 export async function updateTenant(id: string, input: UpdateTenantInput) {
@@ -159,7 +285,8 @@ export async function updateTenant(id: string, input: UpdateTenantInput) {
     });
   });
 
-  return serializeTenant(updated!);
+  const latest = (await latestVerificationsByTenant([{ id, email: updated!.email }])).get(id) ?? null;
+  return serializeTenant(updated!, latest);
 }
 
 export async function deactivateTenant(id: string) {
@@ -187,6 +314,10 @@ export async function listTenants(opts?: { from?: Date; to?: Date }) {
     orderBy: { name: 'asc' },
   });
 
+  const latestByTenant = await latestVerificationsByTenant(
+    tenants.map((t) => ({ id: t.id, email: t.email })),
+  );
+
   const rows = tenants.map((t) => ({
     id: t.id,
     name: t.name,
@@ -206,6 +337,9 @@ export async function listTenants(opts?: { from?: Date; to?: Date }) {
     nextPayment: t.nextPayment,
     status: t.status,
     autoDebit: t.autoDebit,
+    // Latest mock ID-verification (null when none) — see
+    // latestVerificationsByTenant for the defensive resolution.
+    latestVerification: latestByTenant.get(t.id) ?? null,
   }));
 
   return rows;

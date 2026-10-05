@@ -28,6 +28,7 @@ import {
   deleteFloor,
 } from '../core/floors';
 import { listTenants, createTenant, updateTenant, deactivateTenant, listMoveOuts, transitionMoveOut } from '../core/tenants';
+import { listVerificationsForCms, setVerificationReview } from '../core/verifications';
 import { listLeads, getLeadById, getLeadStats, getWeeklyAnalytics, createLead, updateLead, deleteLead } from '../core/leads';
 import {
   listConversations,
@@ -564,6 +565,50 @@ router.put('/tenants/:id', requireAuth, async (req: Request, res: Response) => {
 
 router.delete('/tenants/:id', requireAuth, async (req: Request, res: Response) => {
   ok(res, await deactivateTenant(String(req.params.id)));
+});
+
+// --- Mock ID-verification review queue (staff-validation layer) ---
+// Rows are written by POST /customer/verifications/mock (provider status
+// VERIFIED/FAILED, always reviewStatus PENDING_VALIDATION on write); these
+// two routes are the ONLY staff surface: list (newest-first, optional
+// bookingRef/reviewStatus filters + take/skip paging) and the Validate/Reject
+// transition (PENDING_VALIDATION → VALIDATED|REJECTED only, else 409).
+// Provider status is never rewritten here.
+const verificationListQuerySchema = z.object({
+  bookingRef: z.string().trim().min(1).optional(),
+  reviewStatus: z.enum(['PENDING_VALIDATION', 'VALIDATED', 'REJECTED']).optional(),
+  take: z.coerce.number().int().min(1).max(200).default(50),
+  skip: z.coerce.number().int().min(0).default(0),
+});
+
+const verificationReviewSchema = z.object({
+  reviewStatus: z.enum(['VALIDATED', 'REJECTED']),
+});
+
+router.get('/verifications', requireAuth, async (req: Request, res: Response) => {
+  const parsed = verificationListQuerySchema.safeParse(req.query);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid verifications query', parsed.error.flatten());
+    return;
+  }
+  const { rows, count } = await listVerificationsForCms(parsed.data);
+  ok(res, rows, { count });
+});
+
+router.patch('/verifications/:id', requireAuth, async (req: Request, res: Response) => {
+  const parsed = verificationReviewSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid verification review (expected { reviewStatus: VALIDATED | REJECTED })', parsed.error.flatten());
+    return;
+  }
+  const actor = (req as any).user;
+  ok(
+    res,
+    await setVerificationReview(String(req.params.id), {
+      reviewStatus: parsed.data.reviewStatus,
+      reviewedBy: actor?.name ?? actor?.email,
+    }),
+  );
 });
 
 router.get('/leads', requireAuth, async (req: Request, res: Response) => {

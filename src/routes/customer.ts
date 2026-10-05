@@ -30,6 +30,10 @@ import {
   createCheckoutSession,
   getCheckoutSessionStatus,
 } from '../core/checkout';
+import {
+  listVerificationsByBookingRef,
+  recordMockVerification,
+} from '../core/verifications';
 
 const router = Router();
 
@@ -258,6 +262,69 @@ router.post('/notice', requireCustomerAuth, async (req: Request, res: Response) 
     return;
   }
   ok(res, await submitCustomerNotice(customerFrom(req), parsed.data));
+});
+
+// Mock ID verification (Jumio-style camera mock, booking Confirmation step).
+// Confirmation-only, visible to all users: dual-mode like POST /bookings —
+// WITH a valid Bearer token the row links to the authenticated customer;
+// WITHOUT (or with a stale/invalid Bearer but guest email-proof in the body)
+// the row is stored as guest, with an email-ownership check when the booking
+// has a tenant email and the body supplies one. result=fail still returns 201
+// with status FAILED (never an error code). No image binaries — flags only.
+const mockVerificationSchema = z.object({
+  bookingRef: z.string().trim().min(1),
+  email: z.string().trim().email().optional(),
+  method: z.literal('mock-camera'),
+  idType: z.enum(['passport', 'nric-fin', 'drivers-licence', 'residence-permit']),
+  result: z.enum(['pass', 'fail']),
+  capturedAt: z.string().min(1),
+  selfiePresent: z.boolean().optional(),
+});
+
+router.post('/verifications/mock', async (req: Request, res: Response) => {
+  const parsed = mockVerificationSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid verification payload', parsed.error.flatten());
+    return;
+  }
+
+  let caller: CustomerJwtPayload | null = null;
+  if (hasAuthorizationHeader(req)) {
+    try {
+      caller = extractCustomerPayload(req);
+    } catch (err) {
+      if (!parsed.data.email) throw err;
+      // Stale Bearer + guest proof → guest (caller stays null), mirroring
+      // POST /bookings. Without proof the 401 UNAUTHORIZED stands.
+      caller = null;
+    }
+  }
+
+  const bookingRef = parsed.data.bookingRef.trim();
+  created(res, await recordMockVerification(parsed.data, caller), { bookingRef });
+});
+
+const listVerificationsSchema = z.object({
+  bookingRef: z.string().trim().min(1),
+});
+
+// Newest-first array for a bookingRef; empty array (never 404) when none.
+// The unguessable bookingRef is the proof — no login required — but a
+// present Bearer token must still verify (invalid → 401, stable code).
+router.get('/verifications', async (req: Request, res: Response) => {
+  const parsed = listVerificationsSchema.safeParse(req.query);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'A bookingRef query parameter is required', parsed.error.flatten());
+    return;
+  }
+  // A present Bearer token must still verify (invalid → 401, stable code);
+  // the listing itself is keyed by the unguessable bookingRef alone.
+  if (hasAuthorizationHeader(req)) {
+    extractCustomerPayload(req);
+  }
+  const bookingRef = parsed.data.bookingRef.trim();
+  const rows = await listVerificationsByBookingRef(bookingRef);
+  ok(res, rows, { bookingRef, count: rows.length });
 });
 
 // Stripe Checkout (TEST MODE only) — dual-mode like POST /bookings:

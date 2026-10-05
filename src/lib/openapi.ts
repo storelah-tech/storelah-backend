@@ -25,7 +25,7 @@ export const openapiSpec = {
   openapi: '3.0.3',
   info: {
     title: 'StoreLah Booking API',
-    version: '1.8.2',
+    version: '1.8.4',
     description: [
       'Customer-facing booking API for the StoreLah self-storage business.',
       '',
@@ -204,6 +204,31 @@ export const openapiSpec = {
         'subtracts the loop-clipped blocked area (blocks + solid structure, once per loop) ' +
         'before the NLA≤UFA clamp, so adding a block inside a marked loop reduces NLA even ' +
         'with UFA headroom. All pre-existing shapes are unchanged.',
+
+      'v1.8.3 is ADDITIVE-ONLY over 1.8.2: persisted mock ID verification for the booking ' +
+        'Confirmation step (Jumio-style camera mock, no provider SDK, no image binaries) — ' +
+        '`POST /customer/verifications/mock` records `{ bookingRef, email?, method: "mock-camera", ' +
+        'idType (passport | nric-fin | drivers-licence | residence-permit), result (pass | fail), ' +
+        'capturedAt, selfiePresent? }` (201 `{ id, status VERIFIED|FAILED, result, idType, ' +
+        'bookingRef, capturedAt, verifiedAt, provider: "mock" }` + `meta: { bookingRef }`; ' +
+        '`result: "fail"` is still 201 with `FAILED`, never an error; 400 on bad enums, ' +
+        'missing bookingRef, or unparsable/>5min-future capturedAt) and ' +
+        '`GET /customer/verifications?bookingRef=` lists them newest-first ' +
+        '(`{ data, meta: { bookingRef, count } }`, empty array when none). Dual-mode auth ' +
+        'like POST /bookings (valid Bearer links the row, otherwise guest with optional ' +
+        'email match; GET needs no login). `booking.requireIDVerification` stays ' +
+        'display-only. All pre-existing shapes are unchanged.',
+
+      'v1.8.4 is ADDITIVE-ONLY over 1.8.3: operator CMS staff-validation layer for mock ' +
+        'ID verifications — every mock row carries `reviewStatus` (`PENDING_VALIDATION` on ' +
+        'write, backfilled for pre-existing rows) plus `reviewedAt`/`reviewedBy`, served on ' +
+        'the CMS host as `GET /cms/verifications` (Bearer JWT; optional `?bookingRef=`, ' +
+        '`?reviewStatus=`, `?take=`, `?skip=`; newest-first, `meta: { count }`) and ' +
+        '`PATCH /cms/verifications/{id}` (`{ reviewStatus: VALIDATED | REJECTED }`; ' +
+        'PENDING-only transitions, 404 unknown id, 409 already reviewed). Tenant rows ' +
+        'gain `latestVerification` (`{ id, status, reviewStatus, idType, verifiedAt, ' +
+        'bookingRef }`, null when none). Provider `status` (VERIFIED/FAILED) is never ' +
+        'rewritten by staff and the customer POST/GET contract is unchanged.',
     ].join('\n'),
   },
   servers: [
@@ -1560,6 +1585,182 @@ export const openapiSpec = {
           '400': openapiErrorResponse('Invalid notice payload.'),
           '401': openapiErrorResponse('Missing/invalid bearer token.'),
           '404': openapiErrorResponse('Unit not found for this customer.'),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+    },
+    '/customer/verifications/mock': {
+      post: {
+        tags: ['Customer'],
+        summary: 'Record a mock ID-verification result',
+        description: [
+          'Persists a Jumio-style camera-mock verification for the booking Confirmation step (201 with ',
+          '`status` `VERIFIED` for `result: "pass"`, `FAILED` for `result: "fail"` — a fail is still 201, ',
+          'never an error code). Confirmation-only, visible to all users: no image binaries, result flags only.',
+          '',
+          'Auth: dual-mode like POST /customer/bookings. WITH a valid Bearer token the row links to the ',
+          'authenticated customer; WITHOUT (or with a stale/invalid Bearer plus guest email-proof) it is ',
+          'stored as guest — when the booking has a tenant email and the body supplies one, they must match ',
+          '(401 otherwise). `capturedAt` must be a parseable ISO datetime no more than 5 minutes in the future.',
+          '',
+          '`booking.requireIDVerification` stays display-only: nothing gates move-in on the stored status.',
+        ].join('\n'),
+        operationId: 'recordMockVerification',
+        security: [{ bearerAuth: [] }, []],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: { $ref: openapiSchemaRef('MockVerificationRequest') },
+            },
+          },
+        },
+        responses: {
+          '201': openapiCreatedResponse({
+            $ref: openapiSchemaRef('MockVerification'),
+          }),
+          '400': openapiErrorResponse(
+            'Invalid verification payload (bad result/idType enum, missing bookingRef, unparsable capturedAt or >5min future skew).',
+          ),
+          '401': openapiErrorResponse(
+            'Bearer token was supplied but is invalid/expired without guest email-proof, or the supplied email does not match the booking payer email.',
+          ),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+    },
+    '/customer/verifications': {
+      get: {
+        tags: ['Customer'],
+        summary: 'List mock ID verifications for a booking',
+        description: [
+          'All persisted mock verifications for `bookingRef`, newest first. Empty array (never 404) when ',
+          'none. The unguessable bookingRef is the proof — no login required — but a present Bearer token ',
+          'must still verify (invalid → 401).',
+        ].join('\n'),
+        operationId: 'listVerifications',
+        security: [{ bearerAuth: [] }, []],
+        parameters: [
+          {
+            name: 'bookingRef',
+            in: 'query',
+            required: true,
+            description: 'Booking reference from POST /customer/bookings, e.g. SL-2026-0912.',
+            schema: { type: 'string', minLength: 1 },
+          },
+        ],
+        responses: {
+          '200': openapiResponse({
+            type: 'array',
+            items: { $ref: openapiSchemaRef('MockVerification') },
+          }),
+          '400': openapiErrorResponse('Missing bookingRef query parameter.'),
+          '401': openapiErrorResponse(
+            'Bearer token was supplied but is invalid/expired.',
+          ),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+    },
+    // --- Operator CMS: mock ID-verification review queue (v1.8.4, additive) ---
+    // Staff-validation layer over the mock rows: provider status
+    // (VERIFIED/FAILED) is echoed as-is and never rewritten; reviewStatus
+    // (PENDING_VALIDATION → VALIDATED | REJECTED) is the operator verdict.
+    // Served on the CMS host under `/api/v1/cms` with a Bearer JWT.
+    '/cms/verifications': {
+      get: {
+        tags: ['Operator CMS'],
+        summary: 'List mock ID verifications for staff review',
+        description: [
+          'Mock verification rows newest-first with their staff-validation flag. Optional ',
+          '`?bookingRef=` narrows to one booking, `?reviewStatus=` (PENDING_VALIDATION | ',
+          'VALIDATED | REJECTED) narrows to one review state, `?take=` (1..200, default 50) ',
+          'and `?skip=` page. `meta.count` is the total matching rows (not the page size).',
+          '',
+          'Operator CMS endpoints are documented here for reference only; they are served on the CMS host under ',
+          '`/api/v1/cms` and require a Bearer JWT issued by `/api/v1/cms/login` (auto-login via `/api/v1/cms/config`).',
+        ].join('\n'),
+        operationId: 'listCmsVerifications',
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          {
+            name: 'bookingRef',
+            in: 'query',
+            required: false,
+            description: 'Booking reference to narrow the queue to one booking.',
+            schema: { type: 'string', minLength: 1 },
+          },
+          {
+            name: 'reviewStatus',
+            in: 'query',
+            required: false,
+            description: 'Review-state filter.',
+            schema: { $ref: openapiSchemaRef('VerificationReviewStatus') },
+          },
+          {
+            name: 'take',
+            in: 'query',
+            required: false,
+            description: 'Page size (1..200, default 50).',
+            schema: { type: 'integer', minimum: 1, maximum: 200 },
+          },
+          {
+            name: 'skip',
+            in: 'query',
+            required: false,
+            description: 'Rows to skip (default 0).',
+            schema: { type: 'integer', minimum: 0 },
+          },
+        ],
+        responses: {
+          '200': openapiResponse({
+            type: 'array',
+            items: { $ref: openapiSchemaRef('CmsVerification') },
+          }),
+          '400': openapiErrorResponse('Invalid verifications query (bad reviewStatus/take/skip).'),
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+    },
+    '/cms/verifications/{id}': {
+      patch: {
+        tags: ['Operator CMS'],
+        summary: 'Validate or reject a mock ID verification',
+        description: [
+          'Records the operator verdict on a mock row: `{ reviewStatus: VALIDATED | REJECTED }` ',
+          'stamps `reviewedAt` plus the acting operator (`reviewedBy`). Only rows still ',
+          '`PENDING_VALIDATION` can transition — any other edge (including a second review) ',
+          'is `409 CONFLICT`. The provider `status` (VERIFIED/FAILED) is never rewritten here.',
+          '',
+          'Operator CMS endpoints are documented here for reference only; they are served on the CMS host under ',
+          '`/api/v1/cms` and require a Bearer JWT issued by `/api/v1/cms/login` (auto-login via `/api/v1/cms/config`).',
+        ].join('\n'),
+        operationId: 'reviewCmsVerification',
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          {
+            name: 'id',
+            in: 'path',
+            required: true,
+            description: 'Verification row id (cuid).',
+            schema: { type: 'string' },
+          },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: { $ref: openapiSchemaRef('VerificationReviewInput') },
+            },
+          },
+        },
+        responses: {
+          '200': openapiResponse({ $ref: openapiSchemaRef('CmsVerification') }),
+          '400': openapiErrorResponse('Invalid review payload (reviewStatus must be VALIDATED or REJECTED).'),
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '404': openapiErrorResponse('Verification not found.'),
+          '409': openapiErrorResponse('Verification is already reviewed (only PENDING_VALIDATION rows transition).'),
           '500': openapiErrorResponse('Unexpected server error'),
         },
       },
@@ -4138,6 +4339,160 @@ export const openapiSpec = {
             type: 'string',
             format: 'date-time',
             description: 'When the notice was persisted. Additive since 1.1.0.',
+          },
+        },
+      },
+      MockVerificationRequest: {
+        type: 'object',
+        required: ['bookingRef', 'method', 'idType', 'result', 'capturedAt'],
+        properties: {
+          bookingRef: {
+            type: 'string',
+            minLength: 1,
+            description:
+              'Booking reference from POST /customer/bookings, e.g. SL-2026-0912.',
+          },
+          email: {
+            type: 'string',
+            format: 'email',
+            description:
+              'Guest email-proof. Optional — when the booking has a tenant email and one is supplied, it must match (case-insensitive).',
+          },
+          method: {
+            type: 'string',
+            enum: ['mock-camera'],
+            description: 'Capture method. Only the mock camera exists (no provider SDK).',
+          },
+          idType: {
+            type: 'string',
+            enum: ['passport', 'nric-fin', 'drivers-licence', 'residence-permit'],
+            description: 'Presented ID document type.',
+          },
+          result: {
+            type: 'string',
+            enum: ['pass', 'fail'],
+            description: 'Mock capture result. fail still returns 201 with status FAILED.',
+          },
+          capturedAt: {
+            type: 'string',
+            format: 'date-time',
+            description:
+              'ISO-8601 datetime of capture. Must parse and be no more than 5 minutes in the future.',
+          },
+          selfiePresent: {
+            type: 'boolean',
+            description: 'Whether a selfie frame was captured alongside the ID. Flags only, never binary.',
+          },
+        },
+      },
+      MockVerification: {
+        type: 'object',
+        required: ['id', 'status', 'result', 'idType', 'bookingRef', 'capturedAt', 'verifiedAt', 'provider'],
+        properties: {
+          id: {
+            type: 'string',
+            description: 'Persisted verification row id (cuid).',
+          },
+          status: {
+            type: 'string',
+            enum: ['VERIFIED', 'FAILED'],
+            description: 'Deterministic from result: pass → VERIFIED, fail → FAILED.',
+          },
+          result: {
+            type: 'string',
+            enum: ['pass', 'fail'],
+          },
+          idType: {
+            type: 'string',
+            description: 'Echoes the presented ID document type.',
+          },
+          bookingRef: {
+            type: 'string',
+            description: 'Booking reference the verification was recorded against.',
+          },
+          capturedAt: {
+            type: 'string',
+            format: 'date-time',
+            description: 'Client-supplied capture time, echoed as ISO datetime.',
+          },
+          verifiedAt: {
+            type: 'string',
+            format: 'date-time',
+            description: 'Server time the row was persisted.',
+          },
+          provider: {
+            type: 'string',
+            enum: ['mock'],
+          },
+        },
+      },
+      VerificationReviewStatus: {
+        type: 'string',
+        enum: ['PENDING_VALIDATION', 'VALIDATED', 'REJECTED'],
+        description:
+          'CMS staff-validation flag on a mock verification row. PENDING_VALIDATION until an operator reviews it (customer POST/GET surfaces never write it).',
+      },
+      VerificationReviewInput: {
+        type: 'object',
+        required: ['reviewStatus'],
+        description: 'Operator verdict on a mock row (PENDING_VALIDATION → VALIDATED | REJECTED only).',
+        properties: {
+          reviewStatus: {
+            type: 'string',
+            enum: ['VALIDATED', 'REJECTED'],
+          },
+        },
+      },
+      CmsVerification: {
+        type: 'object',
+        required: ['id', 'status', 'result', 'idType', 'bookingRef', 'capturedAt', 'verifiedAt', 'provider', 'reviewStatus', 'reviewedAt', 'reviewedBy'],
+        description:
+          'Mock verification row as seen by CMS staff: provider result (status/result, never rewritten by staff) plus the staff-validation flag.',
+        properties: {
+          id: {
+            type: 'string',
+            description: 'Persisted verification row id (cuid).',
+          },
+          status: {
+            type: 'string',
+            enum: ['VERIFIED', 'FAILED'],
+            description: 'Provider mock result: pass → VERIFIED, fail → FAILED.',
+          },
+          result: {
+            type: 'string',
+            enum: ['pass', 'fail'],
+          },
+          idType: {
+            type: 'string',
+            description: 'Presented ID document type.',
+          },
+          bookingRef: {
+            type: 'string',
+            description: 'Booking reference the verification was recorded against.',
+          },
+          capturedAt: {
+            type: 'string',
+            format: 'date-time',
+            description: 'Client-supplied capture time, echoed as ISO datetime.',
+          },
+          verifiedAt: {
+            type: 'string',
+            format: 'date-time',
+            description: 'Server time the row was persisted.',
+          },
+          provider: {
+            type: 'string',
+            enum: ['mock'],
+          },
+          reviewStatus: { $ref: openapiSchemaRef('VerificationReviewStatus') },
+          reviewedAt: {
+            type: ['string', 'null'],
+            format: 'date-time',
+            description: 'Server time the operator verdict was recorded (null while pending).',
+          },
+          reviewedBy: {
+            type: ['string', 'null'],
+            description: 'Acting operator label (null while pending).',
           },
         },
       },

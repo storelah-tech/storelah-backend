@@ -136,6 +136,9 @@ model Customer {
   resetTokenExpiry DateTime?
   createdAt        DateTime    @default(now())
   updatedAt        DateTime    @updatedAt
+  // Back-relation for Verification.customer (additive, Prisma-level only —
+  // no column on Customer; Verification.customerId holds the FK).
+  verifications    Verification[]
 }
 
 model Branch {
@@ -250,6 +253,8 @@ model FloorPlan {
   blocks     FloorPlanBlock[]
   boundaries FloorPlanBoundary[]
   markers    FloorPlanMarker[]
+
+  @@index([status])
 }
 
 // Operator-authored layout-decoration rectangles on a plan canvas — e.g. lift,
@@ -1367,4 +1372,42 @@ model Permission {
 
   @@unique([adminUserId, permission])
   @@index([adminUserId])
+}
+
+// Mock ID-verification record (Jumio-style camera mock in the booking
+// frontend, Confirmation step). Confirmation-only, guest-visible: rows are
+// keyed by bookingRef (plain String, NOT an FK to Booking — refs may be
+// minted by the booking flow before any Booking row exists and must never
+// block the write). customerId is an optional FK to Customer (single-sided
+// relation: no back-relation array on Customer, so that model is untouched).
+// tenantId is a plain optional String (loose snapshot of the booking tenant
+// when resolvable, never an FK). No image binaries — result flags only
+// (method/idType/result/status strings + optional payload JSON).
+// Staff-validation layer: provider `status` (VERIFIED/FAILED) is the mock
+// result and is never rewritten by staff; `reviewStatus`
+// (PENDING_VALIDATION | VALIDATED | REJECTED + reviewedAt/reviewedBy) is the
+// CMS operator's verdict on that mock row (see src/core/verifications.ts).
+// booking.requireIDVerification stays display-only: nothing gates on status.
+model Verification {
+  id         String    @id @default(cuid())
+  customerId String?
+  customer   Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  tenantId   String?
+  bookingRef String
+  method     String    @default("mock-camera")
+  idType     String
+  result     String
+  status     String
+  capturedAt DateTime?
+  verifiedAt DateTime  @default(now())
+  payload    Json?
+  createdAt  DateTime  @default(now())
+  // CMS staff-validation layer (additive — provider status untouched).
+  reviewStatus String    @default("PENDING_VALIDATION")
+  reviewedAt   DateTime?
+  reviewedBy   String?
+
+  @@index([bookingRef])
+  @@index([customerId])
+  @@index([reviewStatus])
 }

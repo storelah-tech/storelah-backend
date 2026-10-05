@@ -9,7 +9,7 @@ import { TENANT_STATUS_TONE, TENANT_STATUS_LABEL, fmtMoney } from './constants.j
 import { $, $$, escapeHtml, showBanner } from './dom.js';
 import { createDateFilter, withDateQuery, isRangeActive, rangeLabel, rangeEmptyText } from './dateFilter.js';
 import { confirmDialog } from './confirmDialog.js';
-import { ApiError, request, get, describeError } from './api.js';
+import { ApiError, request, get, patch, describeError } from './api.js';
 import { state, isAllFacilities } from './state.js';
 
 // Post-mutation full-refresh hook — the entry hands its refreshAll() down here
@@ -19,8 +19,10 @@ export function setRefreshAll(fn) {
   refreshAll = fn;
 }
 
-// GET /tenants rows are flat: { id, name, type, segment, unit, size, sqft, rate, psf, since, nextPayment, status, ... }.
+// GET /tenants rows are flat: { id, name, type, segment, unit, size, sqft, rate, psf, since, nextPayment, status, ...,
+// latestVerification { id, status, reviewStatus, idType, verifiedAt, bookingRef } | null }.
 function normalizeTenant(t) {
+  const lv = t.latestVerification || null;
   return {
     id: t.id,
     name: t.name,
@@ -39,10 +41,39 @@ function normalizeTenant(t) {
     nextPayment: t.nextPayment,
     status: String(t.status || 'ACTIVE'),
     autoDebit: !!t.autoDebit,
+    // Latest mock ID-verification (null when none). reviewStatus defaults to
+    // PENDING_VALIDATION for every mock row until staff VALIDATEs/REJECTs it.
+    latestVerification: lv
+      ? {
+        id: lv.id || null,
+        status: String(lv.status || ''),
+        reviewStatus: String(lv.reviewStatus || 'PENDING_VALIDATION'),
+        idType: lv.idType || null,
+        verifiedAt: lv.verifiedAt || null,
+        bookingRef: lv.bookingRef || null,
+      }
+      : null,
   };
 }
 
 // ---------- tenants view (sidebar, mirrors Units) ----------
+// Mock ID-verification pills for a tenant row: provider result (VERIFIED /
+// FAILED, as recorded by the mock) plus the staff-validation flag. Every
+// mock row reads PENDING_VALIDATION until an operator VALIDATEs/REJECTs it,
+// so staff always sees the "Pending validation" pill on unreviewed rows.
+function verificationPills(lv) {
+  if (!lv) return '';
+  const vtone = lv.status === 'VERIFIED' ? 'occ' : lv.status === 'FAILED' ? 'over' : 'neutral';
+  const vlabel = lv.status === 'VERIFIED' ? 'Verified' : lv.status === 'FAILED' ? 'Failed' : lv.status || '—';
+  const tip = ['Mock ID check', lv.idType, lv.bookingRef].filter(Boolean).join(' · ');
+  let html = `<span class="badge ${vtone}" title="${escapeHtml(tip)}">${escapeHtml(vlabel)}</span>`;
+  const rs = String(lv.reviewStatus || 'PENDING_VALIDATION');
+  if (rs === 'PENDING_VALIDATION') html += ' <span class="badge amber">Pending validation</span>';
+  else if (rs === 'VALIDATED') html += ' <span class="badge occ">Validated</span>';
+  else if (rs === 'REJECTED') html += ' <span class="badge over">Rejected</span>';
+  return html;
+}
+
 function renderTenantRow(t) {
   const size = t.size ? escapeHtml(t.size) + (t.sqft ? ` · ${t.sqft} sqft` : '') : '—';
   const since = t.since ? new Date(t.since).toLocaleString('en-SG', { month: 'short', year: 'numeric' }) : '—';
@@ -52,13 +83,14 @@ function renderTenantRow(t) {
   const tone = TENANT_STATUS_TONE[t.status] || 'neutral';
   const label = TENANT_STATUS_LABEL[t.status] || t.status;
   const typeLbl = t.type === 'BUSINESS' ? 'Business' : 'Personal';
+  const verif = verificationPills(t.latestVerification);
   return `<tr data-tid="${escapeHtml(t.id)}">
     <td><div class="t-name">${escapeHtml(t.name)}</div></td>
     <td><div class="t-type">${typeLbl}${t.segment ? ' · ' + escapeHtml(t.segment) : ''}</div></td>
     <td><strong>${escapeHtml(t.unit || '—')}</strong></td>
     <td>${size}</td>
     <td><strong>${rate}</strong><div class="t-type">${psf}</div></td>
-    <td><span class="badge ${tone}">${label}</span></td>
+    <td><span class="badge ${tone}">${label}</span>${verif ? `<div style="margin-top:4px;display:flex;gap:4px;flex-wrap:wrap;">${verif}</div>` : ''}</td>
     <td>${next}</td>
     <td class="unit-actions">
       <button class="act-btn" data-act="view" data-tid="${escapeHtml(t.id)}">View</button>
@@ -77,7 +109,14 @@ function applyTenantFilter(rows) {
     if (!isAllFacilities() && t.branchCode !== state.branchCode) return false;
     if (st && t.status !== st) return false;
     if (!q) return true;
-    const hay = [t.name, t.segment, t.unit, t.size, t.status, TENANT_STATUS_LABEL[t.status], t.branchName]
+    const lv = t.latestVerification;
+    const hay = [t.name, t.segment, t.unit, t.size, t.status, TENANT_STATUS_LABEL[t.status], t.branchName,
+      lv ? lv.status : null, lv ? lv.reviewStatus : null, lv ? lv.idType : null, lv ? lv.bookingRef : null,
+      // Staff search words: "pending" finds every unreviewed mock row.
+      lv ? 'verification id check' : null,
+      lv && String(lv.reviewStatus || 'PENDING_VALIDATION') === 'PENDING_VALIDATION' ? 'pending validation' : null,
+      lv && String(lv.reviewStatus || '') === 'VALIDATED' ? 'validated' : null,
+      lv && String(lv.reviewStatus || '') === 'REJECTED' ? 'rejected' : null]
       .filter(Boolean).join(' ').toLowerCase();
     return hay.includes(q);
   });
@@ -239,6 +278,8 @@ export async function openCreateTenant() {
   currentEditTenantId = null;
   $('#tenantModalTitle').textContent = 'Add Tenant';
   $('#tenantModalHint').hidden = true;
+  const verifSec = $('#tenantVerifSection');
+  if (verifSec) verifSec.hidden = true;
   $('#tenantForm').reset();
   $('#tf-type').value = 'PERSONAL';
   $('#tf-status').value = 'ACTIVE';
@@ -275,18 +316,109 @@ export async function openEditTenant(id) {
   $('#tf-moveInDate').value = toDateInputValue(t.since);
   $('#tenantFormSubmit').textContent = 'Save Changes';
   clearTenantFieldErrors();
+  renderTenantVerifSection(t, null);
   try {
     await populateTenantUnitSelect(t.unit || null);
   } catch (err) {
     showTenantFormAlert(describeError(err));
   }
   $('#tenantModal').hidden = false;
+  // Best-effort enrichment: the full CMS row adds capturedAt + reviewer
+  // labels. Guarded on currentEditTenantId so a slow fetch never paints a
+  // stale tenant's data into a reopened modal.
+  enrichTenantVerifDetail(t).then((detail) => {
+    if (detail && currentEditTenantId === id) renderTenantVerifSection(t, detail);
+  });
 }
 
 export function closeTenantModal() {
   $('#tenantModal').hidden = true;
   currentEditTenantId = null;
   clearTenantFieldErrors();
+}
+
+// ---------- tenant identity-verification section (View/Edit modal) ----------
+// Shows the row's latestVerification (idType, provider status, verified time,
+// review flag) with Validate/Reject buttons that PATCH /verifications/:id.
+// The modal stays open and form inputs are untouched — only this section and
+// the table row refresh, so there is no reload loss.
+function fmtVerifDate(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '—';
+  return d.toLocaleString('en-SG', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+function clearTenantVerifError() {
+  const el = $('#te-verif');
+  if (el) el.textContent = '';
+}
+
+function renderTenantVerifSection(t, detail) {
+  const sec = $('#tenantVerifSection');
+  const body = $('#tenantVerifBody');
+  const actions = $('#tenantVerifActions');
+  if (!sec || !body) return;
+  const lv = t.latestVerification;
+  clearTenantVerifError();
+  if (!lv) {
+    sec.hidden = true;
+    body.innerHTML = '';
+    return;
+  }
+  sec.hidden = false;
+  const rs = String(lv.reviewStatus || 'PENDING_VALIDATION');
+  const vtone = lv.status === 'VERIFIED' ? 'occ' : lv.status === 'FAILED' ? 'over' : 'neutral';
+  const vlabel = lv.status === 'VERIFIED' ? 'Verified' : lv.status === 'FAILED' ? 'Failed' : (lv.status || '—');
+  const reviewLabel = rs === 'PENDING_VALIDATION' ? 'Pending validation' : rs === 'VALIDATED' ? 'Validated' : 'Rejected';
+  const reviewTone = rs === 'PENDING_VALIDATION' ? 'amber' : rs === 'VALIDATED' ? 'occ' : 'over';
+  const captured = detail && detail.capturedAt ? fmtVerifDate(detail.capturedAt) : null;
+  const reviewedBy = (detail && detail.reviewedBy) || null;
+  const reviewedAt = detail && detail.reviewedAt ? fmtVerifDate(detail.reviewedAt) : null;
+  body.innerHTML =
+    `<div><span class="badge ${vtone}">${escapeHtml(vlabel)}</span> <span class="badge ${reviewTone}">${escapeHtml(reviewLabel)}</span></div>` +
+    `<div>ID type: <strong>${escapeHtml(lv.idType || '—')}</strong>${lv.bookingRef ? ` · Booking <strong>${escapeHtml(lv.bookingRef)}</strong>` : ''}</div>` +
+    `<div>Verified: ${escapeHtml(fmtVerifDate(lv.verifiedAt))}${captured ? ` · Captured: ${escapeHtml(captured)}` : ''}</div>` +
+    (reviewedBy || reviewedAt ? `<div>Reviewed by ${escapeHtml(reviewedBy || '—')}${reviewedAt ? ` · ${escapeHtml(reviewedAt)}` : ''}</div>` : '');
+  if (actions) actions.style.display = rs === 'PENDING_VALIDATION' ? '' : 'none';
+  const okBtn = $('#tenantVerifValidate');
+  const noBtn = $('#tenantVerifReject');
+  if (okBtn) okBtn.onclick = () => reviewTenantVerification(t.id, 'VALIDATED');
+  if (noBtn) noBtn.onclick = () => reviewTenantVerification(t.id, 'REJECTED');
+}
+
+// Enrich the row's latestVerification with the full CMS row (capturedAt,
+// reviewedBy/At) for the modal. Best-effort: failures keep the row data.
+async function enrichTenantVerifDetail(t) {
+  const lv = t.latestVerification;
+  if (!lv || !lv.id || !lv.bookingRef) return null;
+  try {
+    const rows = await get(`/verifications?bookingRef=${encodeURIComponent(lv.bookingRef)}&take=50`);
+    return (rows || []).find((r) => r.id === lv.id) || null;
+  } catch (e) {
+    return null;
+  }
+}
+
+async function reviewTenantVerification(tenantId, reviewStatus) {
+  const t = state.tenants.find((x) => x.id === tenantId);
+  const lv = t && t.latestVerification;
+  if (!lv || !lv.id) return;
+  try {
+    const updated = await patch(`/verifications/${encodeURIComponent(lv.id)}`, { reviewStatus });
+    t.latestVerification = {
+      ...lv,
+      status: updated.status || lv.status,
+      reviewStatus: updated.reviewStatus || reviewStatus,
+    };
+    renderTenantVerifSection(t, updated);
+    bindTenantsView();
+    showBanner(`Verification ${reviewStatus === 'VALIDATED' ? 'validated' : 'rejected'} for ${t.name}`, true);
+  } catch (err) {
+    const el = $('#te-verif');
+    if (el) el.textContent = describeError(err);
+    else showBanner('Verification review: ' + describeError(err));
+  }
 }
 
 export async function submitTenantForm(e) {

@@ -31,6 +31,7 @@ import { AppError } from '../lib/http';
 import type { CustomerJwtPayload } from '../middleware/auth';
 import { markLeadWonForBooking } from './leads';
 import { linkTenantForPaidBooking } from './customers';
+import { sendBookingConfirmationForBooking } from './emails';
 
 let stripeClient: Stripe | null = null;
 
@@ -425,6 +426,12 @@ export async function applyCheckoutCompleted(
     return { bookingRef: booking.bookingRef, applied: false };
   }
 
+  // Fresh-payment evidence for the confirmation email below: only the
+  // delivery that actually flips the DUE invoice (updateMany is conditional
+  // on status DUE, so concurrent/retried deliveries flip zero rows) counts
+  // as "paid now". A PENDING_PAYMENT booking with no DUE invoice left still
+  // counts — it just turned CONFIRMED with nothing to flip.
+  let invoiceFlipped = false;
   await prisma.$transaction(async (tx) => {
     // Preserve first-payment stamps on retried deliveries: only fill columns
     // that are still null, but always refresh the session linkage.
@@ -446,7 +453,7 @@ export async function applyCheckoutCompleted(
     if (target) {
       // Conditional on status DUE + row id so concurrent/retried deliveries
       // only ever flip this one invoice once.
-      await tx.invoice.updateMany({
+      const flipped = await tx.invoice.updateMany({
         where: { id: target.id, status: 'DUE' },
         data: {
           status: 'PAID',
@@ -457,6 +464,7 @@ export async function applyCheckoutCompleted(
           amountPaid: amountPaid ?? toNum(target.amount),
         },
       });
+      invoiceFlipped = flipped.count > 0;
     }
     // Payment-won attribution INSIDE the same transaction: matching leads flip
     // to WON atomically with the booking/invoice writes. Best-effort — a
@@ -480,6 +488,26 @@ export async function applyCheckoutCompleted(
       console.log(`[checkout] bookingRef=${booking!.bookingRef} linked additional unit tenant ${link.tenantId}`);
     }
   });
+
+  // Booking + payment confirmation email (AWS SES) — FIRST payment only.
+  // Retried deliveries either early-return above (`applied: false`) or flip
+  // zero invoices, so they never resend. Best-effort: the send helper never
+  // throws (it logs + returns `{ sent: false }` when unconfigured/failing),
+  // and this call is additionally guarded so email can never fail the
+  // webhook — the payment stays applied regardless.
+  if (invoiceFlipped || (booking.status === 'PENDING_PAYMENT' && !target)) {
+    try {
+      await sendBookingConfirmationForBooking(booking.id, {
+        stripeSessionId: sessionId,
+        paymentIntentId,
+      });
+    } catch (err) {
+      console.error(
+        `[checkout] bookingRef=${booking.bookingRef} confirmation email failed: ` +
+          (err instanceof Error ? err.message : String(err)),
+      );
+    }
+  }
 
   return { bookingRef: booking.bookingRef, applied: true };
 }

@@ -38,6 +38,7 @@
     "dotenv": "^16.4.7",
     "express": "^5.1.0",
     "jsonwebtoken": "^9.0.2",
+    "pdf-lib": "^1.17.1",
     "serverless-http": "^4.0.0",
     "stripe": "^22.6.0",
     "swagger-ui-dist": "^5.20",

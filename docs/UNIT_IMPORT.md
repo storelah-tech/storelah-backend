@@ -69,3 +69,8 @@ code,branch,level,size,sqft,rate,status,hasAC,hasPillar,name
 - New codes come from the canonical 4-digit codegen (`src/core/units.ts`):
   next free code above the global MAX, starting at 1001, soft-deleted codes
   never reused.
+- **`climateControl` removed.** `hasAC` is the source of truth: `POST|PUT
+  /units` reject a `climateControl` key with `400 VALIDATION` (use
+  `hasAC: true/false` instead), and an import CSV carrying a
+  `climateControl` (or `climate_control` / `climate control`) column is
+  rejected the same way — switch the column to `hasAC` (`yes`/`no`).

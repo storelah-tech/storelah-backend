@@ -53,6 +53,7 @@ const coreMap = {
   analytics: 'command',
   customers: 'customers',
   facilities: 'facilities',
+  extras: 'extras',
   promotions: 'promotions',
   billing: 'billing',
   settings: 'settings',
@@ -65,11 +66,11 @@ const sideNav = {
   customers: [['Tenants', 'customers', 'customer-tenants'], ['Bookings', 'customers', 'customer-bookings'],
     ['Move-ins', 'customers', 'customer-moveins'], ['Quotes', 'customers', 'customer-quotes'],
     ['Move-outs', 'customers', 'customer-moveouts']],
-  facilities: [['Unit map', 'facilities', 'facility-map'], ['Units', 'facilities', 'facility-units'],
-    ['Floors', 'facilities', 'facility-floors'], ['Floor Plan Designer', 'facilities', 'facility-floorplans'], ['Maintenance', 'facilities', 'facility-maintenance'],
+  facilities: [['Units Information', 'facilities', 'facility-map'], ['Units', 'facilities', 'facility-units'],
+    ['Floor Plan Designer', 'facilities', 'facility-floorplans'], ['Maintenance', 'facilities', 'facility-maintenance'],
     ['Assets & vendors', 'facilities', 'facility-assets'], ['Incidents', 'facilities', 'facility-incidents'],
-    ['Access control', 'facilities', 'facility-access'], ['Inspections', 'facilities', 'facility-inspections'],
-    ['Protection plans & addons', 'facilities', 'facility-extras']],
+    ['Access control', 'facilities', 'facility-access'], ['Inspections', 'facilities', 'facility-inspections']],
+  extras: [['Protection plans', 'extras', 'extras-plans'], ['Addons', 'extras', 'extras-addons']],
   promotions: [['Dashboard', 'promotions', 'promo-overview'], ['Discount plan builder', 'promotions', 'promo-discount-matrix'], ['Free months', 'promotions', 'promo-free-months'], ['Promo code builder', 'promotions', 'promo-code-builder'], ['Promotions library', 'promotions', 'promo-library'], ['History', 'promotions', 'promo-history'], ['Safeguards', 'promotions', 'promo-safeguards'], ['Performance', 'promotions', 'promo-performance']],
   billing: [['Overview', 'billing', 'bill-overview'], ['Invoices', 'billing', 'bill-invoices'],
     ['Arrears', 'billing', 'bill-arrears']],
@@ -159,6 +160,7 @@ function openPage(id) {
   else if (id === 'promotions') { bootPromotions(); bindPromotionsOverview(); }
   else if (id === 'billing') bindBilling();
   else if (id === 'settings') bindSettings();
+  else if (id === 'site-content') bindSiteContent();
   else if (id === 'facilities') {
     syncFacilityDashboard();
     updateFacilityBadge().catch(() => {});
@@ -166,9 +168,17 @@ function openPage(id) {
     const firstTab = document.querySelector('[data-tabs="facility"] button');
     if (firstTab) firstTab.click();
   }
+  else if (id === 'extras') {
+    const firstTab = document.querySelector('[data-tabs="extras"] button');
+    if (firstTab) firstTab.click();
+  }
 }
 
 function openPanel(page, panel) {
+  // Floors module is hidden from the menu (floors are detected from units) —
+  // stale callers (search, bookmarks) land on Units Information instead. The
+  // panel markup + /floors API + floorsView stay intact.
+  if (page === 'facilities' && panel === 'facility-floors') panel = 'facility-map';
   openPage(page);
   setTimeout(() => {
     const tab = document.querySelector('[data-tab="' + panel + '"],[data-settings-tab="' + panel + '"]');
@@ -196,15 +206,15 @@ function openCoreDefault(core) {
 // ====================== LEAD DATA BINDINGS ======================
 const stageLabel = {
   NEW_ENQUIRY: 'New', CONTACTED: 'Contacted', VIEWING_BOOKED: 'Qualified',
-  PROPOSAL_SENT: 'Quoted', WON: 'Won', LOST: 'Lost',
+  PROPOSAL_SENT: 'Quoted', PENDING_PAYMENT: 'Pending Payment', WON: 'Won', LOST: 'Lost',
 };
 const stageKanbanLabel = {
   NEW_ENQUIRY: 'New Enquiry', CONTACTED: 'Contacted', VIEWING_BOOKED: 'Viewing Booked',
-  PROPOSAL_SENT: 'Proposal Sent', WON: 'Won', LOST: 'Lost',
+  PROPOSAL_SENT: 'Proposal Sent', PENDING_PAYMENT: 'Pending Payment', WON: 'Won', LOST: 'Lost',
 };
 
 function leadHeatHtml(stage, rate) {
-  const heat = stage === 'WON' || stage === 'PROPOSAL_SENT' ? 5 :
+  const heat = stage === 'WON' || stage === 'PROPOSAL_SENT' || stage === 'PENDING_PAYMENT' ? 5 :
     stage === 'VIEWING_BOOKED' ? 4 : stage === 'CONTACTED' ? 3 : stage === 'NEW_ENQUIRY' ? 2 : 1;
   let html = '<div class="heat">';
   for (let i = 0; i < 5; i++) html += '<i' + (i < heat ? ' class="on"' : '') + '></i>';
@@ -213,6 +223,14 @@ function leadHeatHtml(stage, rate) {
 
 function fmtDay(d) {
   return d ? new Date(d).toLocaleDateString('en-SG', { day: '2-digit', month: 'short' }) : '—';
+}
+
+// Pipeline card datetime: day + month + time (cards only — the drawer keeps fmtDay).
+function fmtDayTime(d) {
+  if (!d) return '—';
+  const dt = new Date(d);
+  return dt.toLocaleDateString('en-SG', { day: '2-digit', month: 'short' }) + ' ' +
+    dt.toLocaleTimeString('en-SG', { hour: '2-digit', minute: '2-digit' });
 }
 
 // Flatten grouped leads to a flat array
@@ -471,7 +489,10 @@ async function bindLeadTable() {
         l.unitCode ? 'Unit ' + l.unitCode : null,
         l.moveInDate ? 'Move-in ' + fmtDay(l.moveInDate) : null,
       ].filter(Boolean).join(' · ');
-      return '<tr data-lead-id="' + escapeHtml(l.id) + '" tabindex="0"><td><input class="check" type="checkbox"></td><td><div class="contact"><div class="avatar">' + initial + '</div><div><b>' + escapeHtml(l.name) + '</b><small>' + (l.type === 'BUSINESS' ? 'Business' : 'Personal') + (l.segment ? ' · ' + escapeHtml(l.segment) : '') + '</small></div></div></td>' +
+      const sameEmail = Array.isArray(l.sameEmailEnquiries) ? l.sameEmailEnquiries : [];
+      const mergeTip = sameEmail.length ? sameEmail.map((g) => (g.name || '') + ' · ' + (stageLabel[g.stage] || g.stage) + ' · ' + fmtDay(g.createdAt)).join('\n') : '';
+      const mergeBadge = sameEmail.length ? ' <span class="pill blue" title="' + escapeHtml(mergeTip) + '">+' + sameEmail.length + ' same email</span>' : '';
+      return '<tr data-lead-id="' + escapeHtml(l.id) + '" tabindex="0"><td><input class="check" type="checkbox"></td><td><div class="contact"><div class="avatar">' + initial + '</div><div><b>' + escapeHtml(l.name) + '</b>' + mergeBadge + '<small>' + (l.type === 'BUSINESS' ? 'Business' : 'Personal') + (l.segment ? ' · ' + escapeHtml(l.segment) : '') + '</small></div></div></td>' +
         '<td><span class="pill ' + (l.stage === 'NEW_ENQUIRY' ? 'red' : l.stage === 'WON' ? 'green' : l.stage === 'LOST' ? '' : 'amber') + '">' + heat + '</span></td>' +
         '<td>' + leadHeatHtml(l.stage, l.monthlyRate) + '</td>' +
         '<td' + (intentTip ? ' title="' + escapeHtml(intentTip) + '"' : '') + '>' + escapeHtml(l.size || '—') + (l.branchCode ? ' · ' + escapeHtml(l.branchCode) : '') + (l.unitCode ? ' · ' + escapeHtml(l.unitCode) : '') + '</td>' +
@@ -1854,9 +1875,11 @@ async function bindSettings() {
   bindFeesSection().catch((e) => showBanner('Fees: ' + describeError(e)));
   bindBusinessRulesSection().catch((e) => showBanner('Business rules: ' + describeError(e)));
   bindUsersSection().catch((e) => showBanner('Users: ' + describeError(e)));
-  // Booking extras catalog moved to Facilities Management (#facility-extras).
+  // Booking extras catalog lives under Protection & Addons (#extras).
   // Drop any legacy mount under Settings so the page stays clean.
   document.querySelector('#settings #extrasSection')?.remove();
+  document.querySelector('#settings #extrasPlansCard')?.remove();
+  document.querySelector('#settings #extrasAddonsCard')?.remove();
 }
 
 async function saveSettings() {
@@ -1883,6 +1906,100 @@ async function saveSettings() {
     toast('Save failed: ' + msg);
     if (btn) { btn.disabled = false; btn.textContent = 'Save changes'; }
   }
+}
+
+// ====================== SITE CONTENT (landing-page CMS, minimal v1) ======================
+// Ticker = one-per-line textarea; hero/testimonials = JSON textareas with
+// validation + preview counts. Saves PUT { value } per key (Bearer JWT via
+// api.js, same requireAuth pattern as units). No full-page reload; 400
+// validation surfaces in the banner + toast.
+function siteContentBanner(msg, isOk) {
+  const banner = $('#siteContentBanner');
+  if (banner) {
+    if (!msg) banner.hidden = true;
+    else { banner.textContent = msg; banner.hidden = false; }
+  }
+  if (msg) showBanner(msg, isOk);
+}
+
+function siteContentCounts(ticker, hero, testimonials) {
+  const tc = $('#tickerCount');
+  if (tc) tc.textContent = (ticker?.length || 0) + ' items · saved to the public API on save';
+  const hc = $('#heroCount');
+  if (hc) hc.textContent = (hero?.length || 0) + ' slides · fields: id, tag, label, headline, sub, cta, img';
+  const nc = $('#testimonialsCount');
+  if (nc) nc.textContent = (testimonials?.length || 0) + ' testimonials · fields: name, context, quote, stars, img';
+}
+
+async function bindSiteContent() {
+  siteContentBanner(null);
+  try {
+    const rows = await get('/site-content');
+    const byKey = {};
+    (rows || []).forEach((r) => { byKey[r.key] = r.value; });
+    const ticker = byKey.tickerItems || [];
+    const hero = byKey.heroSlides || [];
+    const testimonials = byKey.testimonials || [];
+    const tickerEl = $('#tickerTextarea');
+    if (tickerEl) tickerEl.value = (ticker || []).join('\n');
+    const heroEl = $('#heroTextarea');
+    if (heroEl) heroEl.value = JSON.stringify(hero || [], null, 2);
+    const tEl = $('#testimonialsTextarea');
+    if (tEl) tEl.value = JSON.stringify(testimonials || [], null, 2);
+    siteContentCounts(ticker, hero, testimonials);
+  } catch (e) {
+    siteContentBanner('Site content failed to load: ' + describeError(e));
+  }
+}
+
+async function saveTicker() {
+  siteContentBanner(null);
+  const raw = $('#tickerTextarea')?.value || '';
+  const value = raw.split('\n').map((s) => s.trim()).filter((s) => s.length > 0);
+  try {
+    await put('/site-content/tickerItems', { value });
+    siteContentCounts(value, JSON.parse($('#heroTextarea')?.value || '[]'), JSON.parse($('#testimonialsTextarea')?.value || '[]'));
+    toast('Ticker saved (' + value.length + ' items)');
+  } catch (e) {
+    siteContentBanner('Ticker save failed: ' + describeError(e));
+    toast('Ticker save failed: ' + describeError(e));
+  }
+}
+
+async function saveJsonKey(key, textareaId, label) {
+  siteContentBanner(null);
+  const raw = $(textareaId)?.value || '';
+  let value;
+  try {
+    value = JSON.parse(raw);
+  } catch (e) {
+    siteContentBanner(label + ' is not valid JSON: ' + (e && e.message ? e.message : e));
+    toast(label + ': invalid JSON');
+    return;
+  }
+  if (!Array.isArray(value)) {
+    siteContentBanner(label + ' must be a JSON array.');
+    toast(label + ': must be an array');
+    return;
+  }
+  try {
+    await put('/site-content/' + key, { value });
+    await bindSiteContent();
+    toast(label + ' saved (' + value.length + ' items)');
+  } catch (e) {
+    siteContentBanner(label + ' save failed: ' + describeError(e));
+    toast(label + ' save failed: ' + describeError(e));
+  }
+}
+
+let siteContentWired = false;
+function wireSiteContent() {
+  if (siteContentWired) return;
+  siteContentWired = true;
+  $('#tickerSaveBtn')?.addEventListener('click', () => saveTicker().catch(() => {}));
+  $('#heroSaveBtn')?.addEventListener('click', () => saveJsonKey('heroSlides', '#heroTextarea', 'Hero slides').catch(() => {}));
+  $('#testimonialsSaveBtn')?.addEventListener('click', () => saveJsonKey('testimonials', '#testimonialsTextarea', 'Testimonials').catch(() => {}));
+  $('#siteContentReloadBtn')?.addEventListener('click', () => bindSiteContent().catch(() => {}));
 }
 
 async function bindPromotionsOverview() {
@@ -3551,7 +3668,21 @@ function wireEvents() {
         bindAccess();
       }
       else if (panel === 'facility-inspections') bindInspections();
-      else if (panel === 'facility-extras') bindExtrasSection().catch((err) => showBanner('Extras: ' + describeError(err)));
+    });
+  });
+  // Protection & Addons tabs (data-tabs="extras") — mirrors the billing/promo
+  // pattern: one page, two sub-panels, lazy bind on every tab switch.
+  document.querySelectorAll('[data-tabs="extras"] [data-tab]').forEach((b) => {
+    b.addEventListener('click', function () {
+      document.querySelectorAll('[data-tabs="extras"] [data-tab]').forEach((x) => x.classList.remove('active'));
+      this.classList.add('active');
+      document.querySelectorAll('#extras .module-panel').forEach((p) => {
+        p.classList.toggle('active', p.id === this.dataset.tab);
+      });
+      const panel = this.dataset.tab;
+      activateSide('extras', panel);
+      // Lazy load (both tables bind together; the inactive panel stays mounted).
+      bindExtrasSection().catch((err) => showBanner('Extras: ' + describeError(err)));
     });
   });
   // Customer tabs (data-tabs="customer")
@@ -3864,6 +3995,8 @@ function wireEvents() {
   wireSettingsExt();
   // Booking extras catalog (protection plans + addons).
   wireExtras();
+  // Landing-page site content (ticker / hero / testimonials).
+  wireSiteContent();
   // P1 item 3: unit-map read-path filters (Size + Near lift).
   $('#mapSizeFilter')?.addEventListener('change', (e) => { state.mapSize = e.target.value; fetchUnitMap().catch(() => {}); });
   $('#mapNearLiftFilter')?.addEventListener('change', (e) => { state.mapNearLift = !!e.target.checked; fetchUnitMap().catch(() => {}); });
@@ -4020,7 +4153,7 @@ function bindLeads(data) {
     inner.className = 'k-col';
     inner.innerHTML = '<div class="k-col-hdr"><div class="k-col-title">' + (stageKanbanLabel[col.stage] ?? col.stage) + '</div><div class="k-count">' + col.count + '</div></div>' +
       (col.leads || []).map((l) =>
-        '<div class="k-card"><div class="k-name">' + escapeHtml(l.name) + '</div><div class="k-meta"><span class="k-tag ' + (tagMap[l.type] || '') + '">' + (l.type === 'PERSONAL' ? 'Personal' : 'Business') + '</span>' + (l.size || '') + (l.branchCode ? ' · ' + escapeHtml(l.branchCode) : '') + '</div></div>'
+        '<div class="k-card"><div class="k-name">' + escapeHtml(l.name) + '</div><div class="k-meta"><span class="k-tag ' + (tagMap[l.type] || '') + '">' + (l.type === 'PERSONAL' ? 'Personal' : 'Business') + '</span>' + (l.size || '') + (l.branchCode ? ' · ' + escapeHtml(l.branchCode) : '') + '</div><div class="k-meta"><small>' + fmtDayTime(l.createdAt) + '</small></div></div>'
       ).join('');
     clone.appendChild(inner);
   });
@@ -4060,16 +4193,18 @@ async function boot() {
     await Promise.all([loadRefs(), refreshAll()]);
     // Navigate to initial page from hash
     const hash = location.hash ? location.hash.slice(1) : 'command';
-    if (['command', 'portfolio', 'leads', 'pipeline', 'inbox', 'calendar', 'analytics', 'automation', 'customers', 'facilities', 'promotions', 'billing', 'settings'].includes(hash)) {
+    if (['command', 'portfolio', 'leads', 'pipeline', 'inbox', 'calendar', 'analytics', 'automation', 'customers', 'facilities', 'extras', 'promotions', 'billing', 'settings', 'site-content'].includes(hash)) {
       if (hash === 'command') openPage('command');
       else if (hash === 'portfolio') openPage('portfolio');
       else if (hash === 'analytics') openPage('analytics');
       else if (['leads', 'pipeline', 'inbox', 'calendar', 'automation'].includes(hash)) openCoreDefault('leads');
       else if (hash === 'customers') openCoreDefault('customers');
       else if (hash === 'facilities') openCoreDefault('facilities');
+      else if (hash === 'extras') openCoreDefault('extras');
       else if (hash === 'promotions') openCoreDefault('promotions');
       else if (hash === 'billing') openCoreDefault('billing');
       else if (hash === 'settings') openCoreDefault('settings');
+      else if (hash === 'site-content') openPage('site-content');
     } else {
       openPage('command');
     }

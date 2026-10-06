@@ -38,7 +38,7 @@ let fpDraftLine = null;
 // is a future dead tool, so it warns instead of silently lingering. Audit is
 // console-only and never blocks the editor.
 const FP_TOOLBAR_GROUPS = [
-  { id: 'units', label: 'Units', tools: ['fpPaletteReopen', 'fpAutoPlace', 'fpRotateGhost', 'fpLockSqft'] },
+  { id: 'units', label: 'Units', tools: ['fpPaletteReopen', 'fpAutoPlace', 'fpAutoDoors', 'fpUndoBtn', 'fpRotateGhost', 'fpLockSqft'] },
   // Studio ribbon: the Select/Add-Unit/Draw-Wall/Add-Block segmented control.
   // fpBoundaryTool (line tool) + fpAddBlock (block form) are the Draw/Block
   // segments — no duplicate buttons, one handler each.
@@ -237,6 +237,7 @@ async function fpStackMovedOn(pl, hit, orig) {
     pl.width = hit.width;
     pl.height = hit.height;
     pl.stackTier = 1;
+    fpPushUndo({ kind: 'placement', unitId: pl.unitId, prev: null }); // undo = DELETE the stacked upper tier
     fpToast(`Stacked ${pl.unitCode} (upper) over ${hit.unitCode} (lower)`, true);
     fpRender();
     notifyMetricsFloorChanged();
@@ -299,6 +300,8 @@ function fpNormalizeUnit(u) {
     sizeName: u.size && u.size.name,
     sqft: u.sqft,
     status: String(u.status || '').toUpperCase(),
+    hasAC: u.hasAC === true,
+    hasPillar: u.hasPillar === true,
   };
 }
 
@@ -312,6 +315,8 @@ function fpNormalizePlacements(plan) {
     sizeName: p.unit.size.name,
     sqft: p.unit.sqft,
     status: String(p.unit.status || '').toUpperCase(),
+    hasAC: p.unit.hasAC === true,
+    hasPillar: p.unit.hasPillar === true,
     x: p.x,
     y: p.y,
     width: p.width,
@@ -500,9 +505,15 @@ function fpBoundaryMetricsLocal() {
     ufa += Math.max(0, gross - blocked);
     // NLA subtracts the FULL loop-clipped blocked total once per loop (same
     // `blocked` as UFA — blocks + solid structure), so stacked locker tiers
-    // don't subtract twice.
+    // don't subtract twice. Pillars subtract additionally (NLA only):
+    // loop-clipped hasPillar-unit footprints (Pillar blocks already ride in
+    // `blocked` via state.fp.blocks) — mirrors the `pillarRects` input to
+    // computeBoundaryMetrics in src/core/floorPlans.ts.
     const placementsInLoop = (state.fp.placements || []).reduce((sum, r) => sum + fpRectPolygonArea(r, loop), 0);
-    nla += Math.max(0, placementsInLoop - blocked);
+    const pillarBlocked = (state.fp.placements || [])
+      .filter((r) => r.hasPillar === true)
+      .reduce((sum, r) => sum + fpRectPolygonArea(r, loop), 0);
+    nla += Math.max(0, placementsInLoop - blocked - pillarBlocked);
     // Loop-clipped BLOCK rects only (solid structure excluded); SUM may
     // double-count overlapping blocks (non-overlapping assumption, no dedupe).
     blockArea += (state.fp.blocks || []).reduce((sum, r) => sum + fpRectPolygonArea(r, loop), 0);
@@ -783,6 +794,7 @@ async function fpFetch() {
     state.fp.selectedMarker = null;
     state.fp.armedMarker = null;
     state.fp.scale = 1;
+    fpClearUndo(); // floor (re)load invalidates inverse ops from the previous floor
     // A (re)load resets the live-typed canvas size back to server state, and
     // shrink-fits any placements/blocks the server may hold beyond a (possibly
     // just-saved, smaller) canvas so nothing renders off-grid.
@@ -817,21 +829,33 @@ function fpRenderPalette() {
   const list = $('#fpPalette');
   const sub = $('#fpPaletteSub');
   if (!list) return;
+  // Designer palette AC filter (All / AC / Non-AC): client-side narrowing of
+  // the unplaced list; mirrors ?hasAC= on GET /units and /units/map.
+  const visible = (state.fp.unplaced || []).filter((u) => {
+    if (fpAcFilter === 'ac') return u.hasAC === true;
+    if (fpAcFilter === 'nonac') return u.hasAC !== true;
+    return true;
+  });
+  const acSel = $('#fpAcFilter');
+  if (acSel && acSel.value !== fpAcFilter) acSel.value = fpAcFilter;
   if (sub) {
     const total = state.fp.placements.length + state.fp.unplaced.length;
+    const acNote = fpAcFilter === 'ac' ? ' · AC only' : fpAcFilter === 'nonac' ? ' · Non-AC only' : '';
     sub.textContent = state.fp.unplaced.length
-      ? `${state.fp.unplaced.length} unplaced of ${total} · drag onto the canvas`
+      ? `${visible.length} of ${state.fp.unplaced.length} unplaced${acNote} · drag onto the canvas`
       : total
         ? 'All units on this floor are placed — click a unit to move/resize/remove'
         : 'No units on this floor yet.';
   }
   list.innerHTML = state.fp.unplaced.length
-    ? state.fp.unplaced
+    ? (visible.length
+      ? visible
         .map((u) => {
           const fp = unitFootprint(u);
           return `<div class="fp-unit-chip" data-unit-id="${escapeHtml(u.id)}" title="${escapeHtml(u.unitCode)} · ${u.sqft} sqft — drag onto the canvas">${escapeHtml(u.unitCode)}<div class="t-type">${escapeHtml(u.sizeName)} · ${u.sqft} sqft · ${fp.w}×${fp.h} ft</div></div>`;
         })
         .join('')
+      : '<div class="fp-hint">No unplaced units match this AC filter.</div>')
     : '<div class="fp-hint">No unplaced units on this floor.</div>';
 }
 
@@ -850,6 +874,197 @@ function fpSetPaletteCollapsed(collapsed) {
 
 function fpPaletteCollapsed() {
   return document.querySelector('#facility-floorplans .fp-layout')?.classList.contains('collapsed') === true;
+}
+
+// Palette auto-collapse policy: the unplaced-units palette collapses ONLY on
+// an explicit toggle (fpPaletteToggle / fpPaletteReopen) or a successful
+// palette drop (place, stack-drop, auto-place-all). Selecting, moving,
+// resizing or removing a PLACED unit must never collapse it — those paths
+// deliberately never call fpSetPaletteCollapsed. Drop-success sites collapse
+// via fpCollapsePaletteAfterDrop() so the audit stays greppable.
+function fpCollapsePaletteAfterDrop() {
+  fpSetPaletteCollapsed(true);
+}
+
+// ---------- undo stack (drawn objects: lines/blocks/markers + placements) ----------
+// LIFO inverse ops (cap 50, cleared on floor switch/reload). Undo replays via
+// the existing DELETE/PUT APIs (never raw state surgery): a null `prev`
+// means "this write created the row" → undo DELETEs it; otherwise the stored
+// snapshot is PUT back. Remove already works through the same endpoints.
+const fpUndoStack = [];
+function fpPushUndo(entry) {
+  if (!entry || !entry.kind) return;
+  fpUndoStack.push(entry);
+  if (fpUndoStack.length > 50) fpUndoStack.shift();
+}
+function fpClearUndo() {
+  fpUndoStack.length = 0;
+}
+function fpUndoDepth() {
+  return fpUndoStack.length;
+}
+async function fpUndo() {
+  const entry = fpUndoStack.pop();
+  if (!entry) {
+    fpToast('Nothing to undo.', false);
+    return;
+  }
+  const floorId = encodeURIComponent(state.fp.floorId);
+  try {
+    if (entry.kind === 'placement') {
+      const url = `/floor-plans/${floorId}/units/${encodeURIComponent(entry.unitId)}`;
+      if (entry.prev) await fpMutate(url, { method: 'PUT', body: JSON.stringify(entry.prev) });
+      else await fpMutate(url, { method: 'DELETE' });
+    } else if (entry.kind === 'block') {
+      const url = `/floor-plans/${floorId}/blocks/${encodeURIComponent(entry.blockId)}`;
+      if (entry.prev) await fpMutate(url, { method: 'PUT', body: JSON.stringify(entry.prev) });
+      else await fpMutate(url, { method: 'DELETE' });
+    } else if (entry.kind === 'marker') {
+      const url = `/floor-plans/${floorId}/markers/${encodeURIComponent(entry.markerId)}`;
+      if (entry.prev && entry.deleted) await fpMutate(`/floor-plans/${floorId}/markers`, { method: 'POST', body: JSON.stringify(entry.prev) });
+      else if (entry.prev) await fpMutate(url, { method: 'PUT', body: JSON.stringify(entry.prev) });
+      else await fpMutate(url, { method: 'DELETE' });
+    } else if (entry.kind === 'boundary') {
+      const url = `/floor-plans/${floorId}/boundaries/${encodeURIComponent(entry.boundaryId)}`;
+      if (entry.prev && entry.deleted) await fpMutate(`/floor-plans/${floorId}/boundaries`, { method: 'POST', body: JSON.stringify(entry.prev) });
+      else if (entry.prev) await fpMutate(url, { method: 'PUT', body: JSON.stringify(entry.prev) });
+      else await fpMutate(url, { method: 'DELETE' });
+    } else {
+      fpToast('Nothing to undo.', false);
+      return;
+    }
+    fpToast('Undone.', true);
+    await fpFetch();
+  } catch (err) {
+    fpToast('Undo: ' + describeError(err), false);
+    await fpFetch();
+  }
+}
+
+// ---------- occupied edit lock (live plans) ----------
+// Mirrors assertPlacementEditable() in src/core/floorPlans.ts: when the plan
+// is ACTIVE, OCCUPIED/OVERDUE placements are uneditable (no drag/resize/
+// rename/delete). Callers show the "Occupied — uneditable when live" tooltip
+// and toast instead of attempting the write (the server still 409s).
+function fpIsOccupiedLocked(pl) {
+  if (!pl) return false;
+  const live = state.fp.plan && String(state.fp.plan.status || '').toUpperCase() === 'ACTIVE';
+  if (!live) return false;
+  const st = String(pl.status || '').toUpperCase();
+  return st === 'OCCUPIED' || st === 'OVERDUE';
+}
+function fpLockedTooltip(pl) {
+  return `${pl.unitCode} · ${pl.status} — Occupied — uneditable when live`;
+}
+function fpGuardLocked(pl) {
+  if (fpIsOccupiedLocked(pl)) {
+    fpToast(`${pl.unitCode}: Occupied — uneditable when live.`, false);
+    return true;
+  }
+  return false;
+}
+
+// ---------- unit-tile status colour (no grey unknown fallback) ----------
+// Every unit tile renders a STATUS colour even when the size is unknown:
+// unknown sizes already fall back to the LOCKER footprint (sizeFootprint),
+// and unknown/blank statuses fall back to AVAILABLE green here — never the
+// old grey `#9C948D` catch-all. MAINTENANCE/INACTIVE keep their own tones
+// (those are real status colours, not fallbacks).
+const FP_STATUS_COLORS = {
+  OCCUPIED: '#0B4F5E',
+  AVAILABLE: '#5A7A60',
+  RESERVED: '#D4860A',
+  OVERDUE: '#C0392B',
+  MAINTENANCE: '#9C948D',
+  INACTIVE: '#9C948D',
+  BLOCKED: '#8a8478',
+};
+function fpStatusColor(status) {
+  return FP_STATUS_COLORS[String(status || '').toUpperCase()] || FP_STATUS_COLORS.AVAILABLE;
+}
+
+// ---------- corridor → door inference (auto-doors mirror) ----------
+// Mirrors inferDoorEdges()/isCorridorLikeBlock() in src/core/floorPlans.ts:
+// any placement edge adjacent (within 1 grid unit) to a block named
+// Corridor/Aisle (case-insensitive) or derived circulation (walkway/passage/
+// lobby/entrance/exit) gets that door edge. Manual N/S/E/W toggles always win
+// — fpAutoDoors() only authors unauthored placements.
+const FP_CORRIDOR_LIKE_RE = /(corridor|aisle|walkway|passage|lobby|entrance|exit)/i;
+function fpIsCorridorLike(name) {
+  return FP_CORRIDOR_LIKE_RE.test(String(name || '').trim());
+}
+function fpInferDoorEdges(rect, blocks) {
+  const corridors = (blocks || []).filter((b) => fpIsCorridorLike(b && b.name));
+  if (!corridors.length) return [];
+  const spansOverlap = (a0, a1, b0, b1, tol) => a0 - tol < b1 && b0 - tol < a1;
+  const north = rect.y;
+  const south = rect.y + rect.height;
+  const west = rect.x;
+  const east = rect.x + rect.width;
+  const adjacent = (edge) =>
+    corridors.some((b) => {
+      const bN = b.y;
+      const bS = b.y + b.height;
+      const bW = b.x;
+      const bE = b.x + b.width;
+      if (edge === 'N') return Math.abs(north - bS) <= 1 && spansOverlap(west, east, bW, bE, 1);
+      if (edge === 'S') return Math.abs(south - bN) <= 1 && spansOverlap(west, east, bW, bE, 1);
+      if (edge === 'W') return Math.abs(west - bE) <= 1 && spansOverlap(north, south, bN, bS, 1);
+      return Math.abs(east - bW) <= 1 && spansOverlap(north, south, bN, bS, 1);
+    });
+  return ['N', 'S', 'E', 'W'].filter(adjacent);
+}
+
+// Auto-doors: infer corridor-adjacent edges for every unauthored placement
+// and persist via the existing placement PUT (doorEdges). Authored placements
+// (manual N/S/E/W toggles) are never overwritten; occupied-locked placements
+// are skipped (the server would 409).
+async function fpAutoDoors() {
+  if (!state.fp.floorId) return;
+  const authored = (state.fp.placements || []).filter((p) => Array.isArray(p.doorEdges) && p.doorEdges.length);
+  let applied = 0;
+  let skippedAuthored = authored.length;
+  let skippedLocked = 0;
+  let noCorridor = 0;
+  for (const pl of state.fp.placements || []) {
+    if (Array.isArray(pl.doorEdges) && pl.doorEdges.length) continue;
+    if (fpIsOccupiedLocked(pl)) {
+      skippedLocked += 1;
+      continue;
+    }
+    const inferred = fpInferDoorEdges(pl, state.fp.blocks || []);
+    if (!inferred.length) {
+      noCorridor += 1;
+      continue;
+    }
+    try {
+      const res = await fpMutate(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/units/${encodeURIComponent(pl.unitId)}`, {
+        method: 'PUT',
+        body: JSON.stringify({ x: pl.x, y: pl.y, width: pl.width, height: pl.height, stackTier: pl.stackTier || 0, doorEdges: inferred }),
+      });
+      pl.doorEdges = res && res.data ? res.data.doorEdges : inferred;
+      fpPushUndo({ kind: 'placement', unitId: pl.unitId, prev: { x: pl.x, y: pl.y, width: pl.width, height: pl.height, stackTier: pl.stackTier || 0, doorEdges: null } });
+      applied += 1;
+    } catch (err) {
+      fpToast(`Auto-doors ${pl.unitCode}: ${describeError(err)}`, false);
+    }
+  }
+  fpRender();
+  notifyMetricsFloorChanged();
+  const bits = [`${applied} unit${applied === 1 ? '' : 's'} auto-doored`];
+  if (skippedAuthored) bits.push(`${skippedAuthored} manual kept`);
+  if (skippedLocked) bits.push(`${skippedLocked} occupied locked`);
+  if (noCorridor) bits.push(`${noCorridor} no corridor adjacent`);
+  fpToast(`Auto-doors: ${bits.join(' · ')}.`, applied > 0);
+}
+
+// Designer palette AC filter (All / AC / Non-AC): client-side narrowing of
+// the unplaced-units palette; mirrors ?hasAC= on GET /units and /units/map.
+let fpAcFilter = '';
+function fpSetAcFilter(v) {
+  fpAcFilter = v === 'ac' ? 'ac' : v === 'nonac' ? 'nonac' : '';
+  fpRenderPalette();
+  fpRender();
 }
 
 function fpRenderStructure(canvas, u, structure) {
@@ -1020,7 +1235,7 @@ function fpRenderCanvas() {
     el.appendChild(rs);
     canvas.appendChild(el);
   }
-  const statusDot = { OCCUPIED: '#0B4F5E', AVAILABLE: '#5A7A60', RESERVED: '#D4860A', OVERDUE: '#C0392B', MAINTENANCE: '#9C948D', INACTIVE: '#9C948D', BLOCKED: '#8a8478' };
+  const statusDot = null; // retired: tile colours come from fpStatusColor() (no grey unknown fallback)
   // Stacked pairs (same rect, tiers 0 + 1) render as ONE block split by a
   // middle divider line: upper unit code above, lower code below.
   for (const group of fpGroupByRect(state.fp.placements)) {
@@ -1037,14 +1252,16 @@ function fpRenderCanvas() {
       el.style.top = r.y * u + 'px';
       el.style.width = r.width * u + 'px';
       el.style.height = r.height * u + 'px';
-      el.title = `Stacked pair — upper ${upper.unitCode} (${upper.status}) / lower ${lower.unitCode} (${lower.status}) · doors auto (stacked pairs stay AUTO)`;
+      el.title = (fpIsOccupiedLocked(lower) || fpIsOccupiedLocked(upper))
+        ? `Stacked pair — upper ${upper.unitCode} (${upper.status}) / lower ${lower.unitCode} (${lower.status}) — Occupied — uneditable when live`
+        : `Stacked pair — upper ${upper.unitCode} (${upper.status}) / lower ${lower.unitCode} (${lower.status}) · doors auto (stacked pairs stay AUTO)`;
       el.innerHTML =
-        `<div class="fp-status" style="background:${statusDot[lower.status] || '#9C948D'};"></div>` +
+        `<div class="fp-status" style="background:${fpStatusColor(lower.status)};"></div>` +
         `<div class="fp-code fp-stack-upper">${escapeHtml(upper.unitCode)}</div>` +
         `<div class="fp-stack-divider"></div>` +
         `<div class="fp-code fp-stack-lower">${escapeHtml(lower.unitCode)}</div>` +
         fpDoorMarkersHTML({ doorEdges: null }, u) +
-        `<div class="fp-resize" title="Drag to resize"></div>`;
+        ((fpIsOccupiedLocked(lower) || fpIsOccupiedLocked(upper)) ? '' : `<div class="fp-resize" title="Drag to resize"></div>`);
       canvas.appendChild(el);
       continue;
     }
@@ -1057,12 +1274,13 @@ function fpRenderCanvas() {
     el.style.top = pl.y * u + 'px';
     el.style.width = pl.width * u + 'px';
     el.style.height = pl.height * u + 'px';
+    if (fpIsOccupiedLocked(pl)) el.title = fpLockedTooltip(pl);
     el.innerHTML =
-      `<div class="fp-status" style="background:${statusDot[pl.status] || '#9C948D'};"></div>` +
+      `<div class="fp-status" style="background:${fpStatusColor(pl.status)};"></div>` +
       `<div class="fp-code">${escapeHtml(pl.unitCode)}</div>` +
       (pl.height * u > 34 ? `<div class="fp-size">${escapeHtml(pl.sizeName)}</div>` : '') +
       fpDoorMarkersHTML(pl, u) +
-      `<div class="fp-resize" title="Drag to resize"></div>`;
+      (fpIsOccupiedLocked(pl) ? '' : `<div class="fp-resize" title="Drag to resize"></div>`);
     canvas.appendChild(el);
   }
   // Line-tool affordance: crosshair while draw mode is armed (mode-gated —
@@ -1179,6 +1397,15 @@ function fpRenderSelInfo() {
     info.innerHTML = '';
     return;
   }
+  // Occupied edit lock: a live (ACTIVE) plan's OCCUPIED/OVERDUE placements
+  // render no drag/resize/rename/delete handles — descriptor + tooltip only.
+  if (fpIsOccupiedLocked(pl)) {
+    const lockMate = fpStackMate(pl);
+    const who = lockMate ? `⧉ Stacked pair · ${escapeHtml(pl.unitCode)} / ${escapeHtml(lockMate.unitCode)}` : escapeHtml(pl.unitCode);
+    info.innerHTML =
+      `<span class="t-type" title="Occupied — uneditable when live">${who} · ${pl.x},${pl.y} · ${pl.width}×${pl.height} ft · ${pl.sqft} sqft · Occupied — uneditable when live</span>`;
+    return;
+  }
   const lockNote = state.fp.lockSqft ? ' · 🔒 sqft' : '';
   const mate = fpStackMate(pl);
   if (mate) {
@@ -1219,12 +1446,14 @@ function fpRenderSelInfo() {
 // Stacked pairs share one rect and keep AUTO (their server-side door union is
 // already all edges), so toggles are singles-only.
 async function fpSaveDoors(pl, edges) {
+  const doorsPrev = Array.isArray(pl.doorEdges) ? pl.doorEdges.slice() : null;
   try {
     const res = await fpMutate(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/units/${encodeURIComponent(pl.unitId)}`, {
       method: 'PUT',
       body: JSON.stringify({ x: pl.x, y: pl.y, width: pl.width, height: pl.height, stackTier: pl.stackTier || 0, doorEdges: edges }),
     });
     pl.doorEdges = res && res.data ? res.data.doorEdges : edges;
+    fpPushUndo({ kind: 'placement', unitId: pl.unitId, prev: { x: pl.x, y: pl.y, width: pl.width, height: pl.height, stackTier: pl.stackTier || 0, doorEdges: doorsPrev } });
     fpRenderSelInfo();
     fpRenderCanvas();
     notifyMetricsFloorChanged();
@@ -1240,6 +1469,7 @@ async function fpSaveDoors(pl, edges) {
 async function fpToggleDoor(edge) {
   const pl = state.fp.placements.find((p) => p.unitId === state.fp.selected);
   if (!pl || fpStackMate(pl)) return;
+  if (fpGuardLocked(pl)) return; // live occupied placement: doors frozen
   const authored = Array.isArray(pl.doorEdges) ? pl.doorEdges.slice() : null;
   let next;
   if (!authored) {
@@ -1259,6 +1489,7 @@ async function fpToggleDoor(edge) {
 async function fpResetDoors() {
   const pl = state.fp.placements.find((p) => p.unitId === state.fp.selected);
   if (!pl || fpStackMate(pl)) return;
+  if (fpGuardLocked(pl)) return; // live occupied placement: doors frozen
   await fpSaveDoors(pl, null);
 }
 
@@ -1314,7 +1545,9 @@ async function fpStackSelected() {
       width: pl.width,
       height: pl.height,
       stackTier: 1,
+      hasPillar: cand.hasPillar === true,
     });
+    fpPushUndo({ kind: 'placement', unitId: cand.id, prev: null }); // undo = DELETE the stacked upper tier
     fpToast(`Stacked ${cand.unitCode} (upper) over ${pl.unitCode} (lower)`, true);
     fpRender();
     notifyMetricsFloorChanged();
@@ -1339,10 +1572,12 @@ async function fpUnstackSelected() {
     danger: true,
   });
   if (!unstackOk) return;
+  const upperPrev = { x: upper.x, y: upper.y, width: upper.width, height: upper.height, stackTier: 1, doorEdges: upper.doorEdges || null };
   try {
     await fpMutate(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/units/${encodeURIComponent(upper.unitId)}`, {
       method: 'DELETE',
     });
+    fpPushUndo({ kind: 'placement', unitId: upper.unitId, prev: upperPrev }); // undo = re-PUT the upper tier
     fpToast(`${upper.unitCode} unstacked — ${lower.unitCode} is now a single.`, true);
     await fpFetch();
   } catch (err) {
@@ -1478,6 +1713,7 @@ async function fpPersistLine(x1, y1, x2, y2) {
     if (!state.fp.plan) {
       state.fp.plan = { width: state.fp.canvasDefaults.width, height: state.fp.canvasDefaults.height };
     }
+    fpPushUndo({ kind: 'boundary', boundaryId: b.id, prev: null }); // undo = DELETE the drawn line
     state.fp.boundaries.push({ id: b.id, label: b.label, kind: b.kind, points: fpBoundaryPoints(b.points), closed: !!b.closed, sortOrder: b.sortOrder || 0 });
     state.fp.selectedBoundary = b.id;
     state.fp.selected = null;
@@ -1527,11 +1763,14 @@ function fpBoundaryHitAt(clientX, clientY) {
 }
 
 async function fpPersist(pl, verb) {
+  const undoPrev = pl._undoPrev || null;
+  pl._undoPrev = null;
   try {
     await fpMutate(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/units/${encodeURIComponent(pl.unitId)}`, {
       method: 'PUT',
       body: JSON.stringify({ x: pl.x, y: pl.y, width: pl.width, height: pl.height, stackTier: pl.stackTier || 0 }),
     });
+    if (undoPrev) fpPushUndo({ kind: 'placement', unitId: pl.unitId, prev: { ...undoPrev, doorEdges: pl.doorEdges || null } });
     fpToast(`${verb} ${pl.unitCode} → ${pl.x},${pl.y} · ${pl.width}×${pl.height} ft`, true);
     notifyMetricsFloorChanged();
   } catch (err) {
@@ -1544,12 +1783,19 @@ async function fpPersist(pl, verb) {
 // upper tier onto the same rect — the server's partner rule requires the
 // tier-0 placement to be present when the tier-1 write lands.
 async function fpPersistPair(lower, upper, verb) {
+  const undoPrevs = new Map([lower, upper].map((p) => [p.unitId, p._undoPrev || null]));
+  lower._undoPrev = null;
+  upper._undoPrev = null;
   try {
     for (const p of [lower, upper]) {
       await fpMutate(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/units/${encodeURIComponent(p.unitId)}`, {
         method: 'PUT',
         body: JSON.stringify({ x: p.x, y: p.y, width: p.width, height: p.height, stackTier: p.stackTier || 0 }),
       });
+    }
+    for (const p of [lower, upper]) {
+      const prev = undoPrevs.get(p.unitId);
+      if (prev) fpPushUndo({ kind: 'placement', unitId: p.unitId, prev: { ...prev, doorEdges: p.doorEdges || null } });
     }
     fpToast(`${verb} stack ${upper.unitCode}/${lower.unitCode} → ${lower.x},${lower.y} · ${lower.width}×${lower.height} ft`, true);
     notifyMetricsFloorChanged();
@@ -1630,7 +1876,7 @@ async function fpPlaceUnit(unit, footprint, gx, gy) {
       });
       fpToast(`Stacked ${unit.unitCode} (upper) over ${exact.unitCode} (lower)`, true);
       fpRender();
-      fpSetPaletteCollapsed(true);
+      fpCollapsePaletteAfterDrop(); // successful palette drop — the only auto-collapse besides the explicit toggle
       notifyMetricsFloorChanged();
     } catch (err) {
       fpToast(`Stack ${unit.unitCode}: ${describeError(err)}`, false);
@@ -1657,15 +1903,17 @@ async function fpPlaceUnit(unit, footprint, gx, gy) {
       sizeName: unit.sizeName,
       sqft: unit.sqft,
       status: unit.status,
+      hasPillar: unit.hasPillar === true,
       x,
       y,
       width: footprint.w,
       height: footprint.h,
       stackTier: 0,
     });
+    fpPushUndo({ kind: 'placement', unitId: unit.id, prev: null }); // undo = DELETE the dropped placement
     fpToast(`Placed ${unit.unitCode} → ${x},${y} · ${footprint.w}×${footprint.h} ft`, true);
     fpRender();
-    fpSetPaletteCollapsed(true);
+    fpCollapsePaletteAfterDrop(); // successful palette drop — the only auto-collapse besides the explicit toggle
     notifyMetricsFloorChanged();
   } catch (err) {
     fpToast(`Place ${unit.unitCode}: ${describeError(err)}`, false);
@@ -1707,6 +1955,7 @@ function fpStartMove(e, el) {
   const uid = el.dataset.unitId;
   const pl = state.fp.placements.find((p) => p.unitId === uid);
   if (!pl) return;
+  if (fpGuardLocked(pl)) return; // live occupied placement: no drag
   if (e.target.classList.contains('fp-resize')) {
     fpStartResize(e, pl);
     return;
@@ -1719,6 +1968,7 @@ function fpStartMove(e, el) {
   const offsetX = e.clientX - startRect.left;
   const offsetY = e.clientY - startRect.top;
   state.fp.selected = uid;
+  pl._undoPrev = { x: pl.x, y: pl.y, width: pl.width, height: pl.height, stackTier: pl.stackTier || 0 };
   // A unit interaction supersedes any block/marker selection — otherwise the
   // info strip would keep showing the stale block while the operator is acting
   // on the unit (fpRenderSelInfo gives a selected block priority over a unit).
@@ -1811,6 +2061,7 @@ function fpSnapToSqft(w0, h0, sqft, cw, ch, ox, oy) {
 function fpStartResize(e, pl) {
   e.preventDefault();
   e.stopPropagation();
+  if (fpGuardLocked(pl)) return; // live occupied placement: no resize
   if (state.fp.selected !== pl.unitId) {
     state.fp.selected = pl.unitId;
     state.fp.selectedBlock = null;
@@ -1826,6 +2077,7 @@ function fpStartResize(e, pl) {
   const origY = pl.y;
   const origW = pl.width;
   const origH = pl.height;
+  pl._undoPrev = { x: origX, y: origY, width: origW, height: origH, stackTier: pl.stackTier || 0 };
   const { w: cw, h: ch } = fpCanvasDims();
   // A stacked pair resizes as one block (same-rect invariant) — the snap uses
   // the ground tier's sqft and every pointer move writes both tiers.
@@ -1879,6 +2131,7 @@ function fpStartResize(e, pl) {
 async function fpRotatePlacement() {
   const pl = state.fp.placements.find((p) => p.unitId === state.fp.selected);
   if (!pl) return;
+  if (fpGuardLocked(pl)) return; // live occupied placement: no rotate
   const mate = fpStackMate(pl);
   const pair = mate ? [pl, mate].slice().sort((a, b) => (a.stackTier || 0) - (b.stackTier || 0)) : [pl];
   const pairIds = pair.map((p) => p.unitId);
@@ -1906,6 +2159,9 @@ async function fpRotatePlacement() {
     return;
   }
   fpRender();
+  for (const p of pair) {
+    p._undoPrev = { x: prev.find((o) => o.p === p).x, y: prev.find((o) => o.p === p).y, width: prev.find((o) => o.p === p).w, height: prev.find((o) => o.p === p).h, stackTier: p.stackTier || 0 };
+  }
   if (!mate) await fpPersist(pl, 'Rotated');
   else await fpPersistPair(pair[0], pair[1], 'Rotated');
 }
@@ -2250,6 +2506,7 @@ async function fpAutoPlaceAll() {
           sizeName: unit.sizeName,
           sqft: unit.sqft,
           status: unit.status,
+          hasPillar: unit.hasPillar === true,
           x: spot.x,
           y: spot.y,
           width: geom.w,
@@ -2266,7 +2523,7 @@ async function fpAutoPlaceAll() {
     if (btn) btn.disabled = false;
   }
   fpRender();
-  if (placed.length) fpSetPaletteCollapsed(true);
+  if (placed.length) fpCollapsePaletteAfterDrop(); // successful palette drop — the only auto-collapse besides the explicit toggle
   notifyMetricsFloorChanged();
   if (!placed.length) {
     fpToast(
@@ -2309,6 +2566,7 @@ async function fpAddBlock() {
       state.fp.plan = { width: state.fp.canvasDefaults.width, height: state.fp.canvasDefaults.height };
     }
     state.fp.blocks.push({ id: b.id, name: b.name, x: b.x, y: b.y, width: b.width, height: b.height, color: b.color || null });
+    fpPushUndo({ kind: 'block', blockId: b.id, prev: null }); // undo = DELETE the drawn block
     state.fp.selectedBlock = b.id;
     state.fp.selected = null;
     state.fp.blockColor = null;
@@ -2323,11 +2581,14 @@ async function fpAddBlock() {
 }
 
 async function fpPersistBlock(blk, verb) {
+  const undoPrev = blk._undoPrev || null;
+  blk._undoPrev = null;
   try {
     await fpMutate(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/blocks/${encodeURIComponent(blk.id)}`, {
       method: 'PUT',
       body: JSON.stringify({ name: blk.name, x: blk.x, y: blk.y, width: blk.width, height: blk.height, color: blk.color || null }),
     });
+    if (undoPrev) fpPushUndo({ kind: 'block', blockId: blk.id, prev: undoPrev });
     fpToast(`${verb} block "${blk.name}" → ${blk.x},${blk.y} · ${blk.width}×${blk.height}`, true);
     notifyMetricsFloorChanged();
   } catch (err) {
@@ -2354,6 +2615,7 @@ function fpBlockStartMove(e, el) {
   state.fp.selected = null;
   state.fp.selectedMarker = null;
   state.fp.selectedBoundary = null;
+  blk._undoPrev = { name: blk.name, x: blk.x, y: blk.y, width: blk.width, height: blk.height, color: blk.color || null, doorEdges: blk.doorEdges || null };
   fpRenderCanvas();
   fpRenderSelInfo();
   const { w: cw, h: ch } = fpCanvasDims();
@@ -2419,6 +2681,7 @@ async function fpRenameBlock() {
   }
   if (name === blk.name) return;
   const prev = blk.name;
+  fpPushUndo({ kind: 'block', blockId: blk.id, prev: { name: blk.name, x: blk.x, y: blk.y, width: blk.width, height: blk.height, color: blk.color || null, doorEdges: blk.doorEdges || null } });
   blk.name = name;
   try {
     await fpMutate(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/blocks/${encodeURIComponent(blk.id)}`, {
@@ -2445,10 +2708,12 @@ async function fpRemoveBlock() {
     danger: true,
   });
   if (!blockOk) return;
+  const removedBlock = { name: blk.name, x: blk.x, y: blk.y, width: blk.width, height: blk.height, color: blk.color || null, doorEdges: blk.doorEdges || null };
   try {
     await fpMutate(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/blocks/${encodeURIComponent(blk.id)}`, {
       method: 'DELETE',
     });
+    fpPushUndo({ kind: 'block', blockId: blk.id, prev: removedBlock }); // undo = re-PUT the removed block
     fpToast(`Block "${blk.name}" removed.`, true);
     await fpFetch();
   } catch (err) {
@@ -2469,10 +2734,12 @@ async function fpRemoveBoundary() {
     danger: true,
   });
   if (!removeOk) return;
+  const removedLine = { label: bnd.label || 'Boundary', kind: bnd.kind || 'BOUNDARY', points: fpBoundaryPoints(bnd.points), closed: !!bnd.closed, sortOrder: bnd.sortOrder || 0 };
   try {
     await fpMutate(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/boundaries/${encodeURIComponent(bnd.id)}`, {
       method: 'DELETE',
     });
+    fpPushUndo({ kind: 'boundary', boundaryId: bnd.id, prev: removedLine, deleted: true }); // undo = re-POST the line
     fpToast(`Line "${bnd.label || 'Line'}" removed.`, true);
     await fpFetch();
   } catch (err) {
@@ -2487,6 +2754,7 @@ async function fpRemoveBoundary() {
 async function fpCloseBoundary() {
   const bnd = (state.fp.boundaries || []).find((b) => b.id === state.fp.selectedBoundary);
   if (!bnd || bnd.closed) return;
+  fpPushUndo({ kind: 'boundary', boundaryId: bnd.id, prev: { closed: false } }); // undo = re-open the loop
   try {
     const res = await fpMutate(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/boundaries/${encodeURIComponent(bnd.id)}`, {
       method: 'PUT',
@@ -2597,6 +2865,7 @@ async function fpPlaceMarker(kind, gx, gy) {
     if (!state.fp.plan) {
       state.fp.plan = { width: state.fp.canvasDefaults.width, height: state.fp.canvasDefaults.height };
     }
+    fpPushUndo({ kind: 'marker', markerId: b.id, prev: null }); // undo = DELETE the placed marker
     state.fp.markers.push({ id: b.id, kind: b.kind, label: b.label || null, x: b.x, y: b.y });
     state.fp.selectedMarker = b.id;
     state.fp.selected = null;
@@ -2615,11 +2884,14 @@ async function fpPlaceMarker(kind, gx, gy) {
 }
 
 async function fpPersistMarker(m, verb) {
+  const undoPrev = m._undoPrev || null;
+  m._undoPrev = null;
   try {
     await fpMutate(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/markers/${encodeURIComponent(m.id)}`, {
       method: 'PUT',
       body: JSON.stringify({ x: m.x, y: m.y }),
     });
+    if (undoPrev) fpPushUndo({ kind: 'marker', markerId: m.id, prev: undoPrev });
     fpToast(`${verb} ${fpMarkerLabel(m)} → ${m.x},${m.y} ft`, true);
   } catch (err) {
     fpToast(`${verb} marker: ${describeError(err)}`, false);
@@ -2639,6 +2911,7 @@ function fpMarkerStartMove(e, el) {
   state.fp.selected = null;
   state.fp.selectedBlock = null;
   state.fp.selectedBoundary = null;
+  m._undoPrev = { kind: m.kind, label: m.label || null, x: m.x, y: m.y };
   fpRenderCanvas();
   fpRenderSelInfo();
   const { w: cw, h: ch } = fpCanvasDims();
@@ -2672,6 +2945,7 @@ async function fpRenameMarker() {
   const next = raw || null;
   if (next === m.label) return;
   const prev = m.label;
+  fpPushUndo({ kind: 'marker', markerId: m.id, prev: { label: prev } });
   m.label = next;
   try {
     const res = await fpMutate(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/markers/${encodeURIComponent(m.id)}`, {
@@ -2701,10 +2975,13 @@ async function fpRemoveMarker() {
     danger: true,
   });
   if (!removeOk) return;
+  const removedMarker = { kind: m.kind, label: m.label || null, x: m.x, y: m.y };
   try {
     await fpMutate(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/markers/${encodeURIComponent(m.id)}`, {
       method: 'DELETE',
     });
+    fpPushUndo({ kind: 'marker', markerId: m.id, prev: removedMarker, deleted: true }); // undo = re-POST the marker
+
     fpToast(`${fpMarkerLabel(m)} marker removed.`, true);
     await fpFetch();
   } catch (err) {
@@ -2897,6 +3174,7 @@ async function fpDeletePlan() {
 async function fpRemovePlacement() {
   const pl = state.fp.placements.find((p) => p.unitId === state.fp.selected);
   if (!pl) return;
+  if (fpGuardLocked(pl)) return; // live occupied placement: no delete
   const plOk = await confirmDialog({
     title: `Remove ${pl.unitCode} from the floor plan?`,
     message: 'The unit itself is unaffected.',
@@ -2904,10 +3182,12 @@ async function fpRemovePlacement() {
     danger: true,
   });
   if (!plOk) return;
+  const removedPrev = { x: pl.x, y: pl.y, width: pl.width, height: pl.height, stackTier: pl.stackTier || 0, doorEdges: pl.doorEdges || null };
   try {
     await fpMutate(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/units/${encodeURIComponent(pl.unitId)}`, {
       method: 'DELETE',
     });
+    fpPushUndo({ kind: 'placement', unitId: pl.unitId, prev: removedPrev }); // undo = re-PUT the removed placement
     fpToast(`${pl.unitCode} removed from the floor plan.`, true);
     await fpFetch();
   } catch (err) {
@@ -3020,7 +3300,7 @@ function fpViewRender() {
     el.appendChild(name);
     canvas.appendChild(el);
   }
-  const statusDot = { OCCUPIED: '#0B4F5E', AVAILABLE: '#5A7A60', RESERVED: '#D4860A', OVERDUE: '#C0392B', MAINTENANCE: '#9C948D', INACTIVE: '#9C948D', BLOCKED: '#8a8478' };
+  const statusDot = null; // retired: tile colours come from fpStatusColor() (no grey unknown fallback)
   // Read-only mirror of the editor canvas: stacked pairs (same rect, tiers
   // 0 + 1) render as ONE block split by a middle divider line so booking-side
   // consumers see the stack identically (upper code above, lower code below).
@@ -3037,9 +3317,11 @@ function fpViewRender() {
       el.style.top = r.y * u + 'px';
       el.style.width = r.width * u + 'px';
       el.style.height = r.height * u + 'px';
-      el.title = `Stacked pair — upper ${upper.unitCode} (${upper.status}) / lower ${lower.unitCode} (${lower.status}) · doors auto (stacked pairs stay AUTO)`;
+      el.title = (fpIsOccupiedLocked(lower) || fpIsOccupiedLocked(upper))
+        ? `Stacked pair — upper ${upper.unitCode} (${upper.status}) / lower ${lower.unitCode} (${lower.status}) — Occupied — uneditable when live`
+        : `Stacked pair — upper ${upper.unitCode} (${upper.status}) / lower ${lower.unitCode} (${lower.status}) · doors auto (stacked pairs stay AUTO)`;
       el.innerHTML =
-        `<div class="fp-status" style="background:${statusDot[lower.status] || '#9C948D'};"></div>` +
+        `<div class="fp-status" style="background:${fpStatusColor(lower.status)};"></div>` +
         `<div class="fp-code fp-stack-upper">${escapeHtml(upper.unitCode)}</div>` +
         `<div class="fp-stack-divider"></div>` +
         `<div class="fp-code fp-stack-lower">${escapeHtml(lower.unitCode)}</div>` +
@@ -3055,12 +3337,13 @@ function fpViewRender() {
     el.style.top = pl.y * u + 'px';
     el.style.width = pl.width * u + 'px';
     el.style.height = pl.height * u + 'px';
+    if (fpIsOccupiedLocked(pl)) el.title = fpLockedTooltip(pl);
     el.innerHTML =
-      `<div class="fp-status" style="background:${statusDot[pl.status] || '#9C948D'};"></div>` +
+      `<div class="fp-status" style="background:${fpStatusColor(pl.status)};"></div>` +
       `<div class="fp-code">${escapeHtml(pl.unitCode)}</div>` +
       (pl.height * u > 34 ? `<div class="fp-size">${escapeHtml(pl.sizeName)}</div>` : '') +
       fpDoorMarkersHTML(pl, u) +
-      `<div class="fp-resize" title="Drag to resize"></div>`;
+      (fpIsOccupiedLocked(pl) ? '' : `<div class="fp-resize" title="Drag to resize"></div>`);
     canvas.appendChild(el);
   }
   // Safety/facility point icons, static in the read-only preview.
@@ -3350,6 +3633,29 @@ export function fpInitEvents() {
   });
   const fpAutoBtn = $('#fpAutoPlace');
   if (fpAutoBtn) fpAutoBtn.addEventListener('click', fpAutoPlaceAll);
+  // Auto-doors: corridor→door inference persisted via the existing placement
+  // PUT (manual N/S/E/W toggles untouched). Registered in FP_TOOLBAR_GROUPS.
+  const fpDoorsBtn = $('#fpAutoDoors');
+  if (fpDoorsBtn) fpDoorsBtn.addEventListener('click', () => fpAutoDoors().catch(() => {}));
+  // Undo: replays the last draw/move/delete inverse op via DELETE/PUT.
+  const fpUndoBtn = $('#fpUndoBtn');
+  if (fpUndoBtn) fpUndoBtn.addEventListener('click', () => fpUndo().catch(() => {}));
+  document.addEventListener('keydown', (e) => {
+    // Ctrl/Cmd+Z undoes the last designer draw/move/delete (not while typing
+    // in an input, and not when the block-name field owns Enter/Escape).
+    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && String(e.key).toLowerCase() === 'z') {
+      const t = e.target;
+      const typing = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable);
+      if (typing) return;
+      if (!document.querySelector('#facility-floorplans.active-view, #facility-floorplans')) return;
+      const designerVisible = document.querySelector('#facility-floorplans');
+      if (!designerVisible || designerVisible.offsetParent === null) return;
+      e.preventDefault();
+      fpUndo().catch(() => {});
+    }
+  });
+  // Designer palette AC filter (All / AC / Non-AC).
+  $('#fpAcFilter')?.addEventListener('change', (e) => fpSetAcFilter(e.target.value));
   $('#fpBlockAdd').addEventListener('click', fpAddBlock);
   $('#fpBlockCancel').addEventListener('click', () => {
     fpToggleBlockForm(false);

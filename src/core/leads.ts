@@ -3,13 +3,14 @@ import { toNum } from '../lib/format';
 import { AppError } from '../lib/http';
 import { AccountType, LeadSource, LeadStage, Prisma } from '@prisma/client';
 
-const COLUMNS: LeadStage[] = ['NEW_ENQUIRY', 'CONTACTED', 'VIEWING_BOOKED', 'PROPOSAL_SENT', 'WON', 'LOST'];
+const COLUMNS: LeadStage[] = ['NEW_ENQUIRY', 'CONTACTED', 'VIEWING_BOOKED', 'PROPOSAL_SENT', 'PENDING_PAYMENT', 'WON', 'LOST'];
 
 const STAGE_LABEL: Record<string, string> = {
   NEW_ENQUIRY: 'New',
   CONTACTED: 'Contacted',
   VIEWING_BOOKED: 'Qualified',
   PROPOSAL_SENT: 'Quoted',
+  PENDING_PAYMENT: 'Pending Payment',
   WON: 'Booked',
   LOST: 'Lost',
 };
@@ -641,12 +642,35 @@ export async function listLeads(opts?: { from?: Date; to?: Date }) {
     orderBy: { createdAt: 'desc' },
   });
 
+  // Same-email merge view (additive, read-only): every serialized lead carries
+  // `sameEmailEnquiries` — the other enquiries sharing its lowercased email —
+  // so the inbox/database can render multiple enquiries under one row. No
+  // rows are merged or deleted; the column arrays below are unchanged.
+  const serialized = leads.map((l) => serializeLead(l));
+  const byEmail = new Map<string, typeof serialized>();
+  for (const row of serialized) {
+    const email = String((row as { email?: string | null }).email ?? '').trim().toLowerCase();
+    if (!email) continue;
+    const group = byEmail.get(email);
+    if (group) group.push(row);
+    else byEmail.set(email, [row]);
+  }
+  const withMerge = serialized.map((row) => {
+    const email = String((row as { email?: string | null }).email ?? '').trim().toLowerCase();
+    const group = (email && byEmail.get(email)) || [];
+    const others = group
+      .filter((g) => g.id !== row.id)
+      .map((g) => ({ id: g.id, name: g.name, stage: g.stage, createdAt: g.createdAt }));
+    return { ...row, sameEmailEnquiries: others };
+  });
+  const byId = new Map(withMerge.map((r) => [r.id, r]));
+
   return COLUMNS.map((stage) => ({
     stage,
     count: leads.filter((l) => l.stage === stage).length,
     leads: leads
       .filter((l) => l.stage === stage)
-      .map((l) => serializeLead(l)),
+      .map((l) => byId.get(l.id) ?? serializeLead(l)),
   }));
 }
 

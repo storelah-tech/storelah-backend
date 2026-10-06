@@ -4,8 +4,9 @@
 // latest Notice row (GET /move-outs); explicit complete/cancel via
 // PATCH /move-outs/:tenantId — nothing auto-flips tenant status.
 
-import { $, escapeHtml, showBanner } from './dom.js';
-import { get, patch, describeError } from './api.js';
+import { $, $$, escapeHtml, showBanner } from './dom.js';
+import { ApiError, get, post, describeError } from './api.js';
+import { state } from './state.js';
 import { confirmDialog } from './confirmDialog.js';
 
 const fmtMoney = (n) => n == null ? '—' : '$' + Number(n).toLocaleString('en-SG', { maximumFractionDigits: 2 });
@@ -118,4 +119,167 @@ export function wireOpsQueues() {
     if (!btn) return;
     transitionMoveOut(btn.dataset.moId, btn.dataset.moAct).catch(() => {});
   });
+  $('#addQuoteBtn')?.addEventListener('click', () => { openQuoteModal().catch((e) => showBanner('Quotes: ' + describeError(e))); });
+  $('#quoteModalClose')?.addEventListener('click', closeQuoteModal);
+  $('#quoteFormCancel')?.addEventListener('click', closeQuoteModal);
+  $('#quoteForm')?.addEventListener('submit', submitQuoteForm);
+}
+
+// ---------- new quotation (POST /quotes) ----------
+
+// zod fieldErrors keys → quote form element keys.
+const QUOTE_FIELD_ID = {
+  leadId: 'lead', name: 'name', type: 'type', preferredBranchId: 'branch',
+  mobile: 'mobile', email: 'email', preferredSize: 'size', monthlyRate: 'rate',
+  moveInDate: 'moveIn', durationMonths: 'duration', unitCode: 'unit', note: 'note',
+};
+
+function clearQuoteFieldErrors() {
+  $$('#quoteModal .field-err').forEach((el) => { el.textContent = ''; });
+  $$('#quoteModal .field input.err, #quoteModal .field select.err').forEach((el) => el.classList.remove('err'));
+  const a = $('#quoteModalAlert');
+  if (a) a.hidden = true;
+}
+
+function showQuoteFormAlert(msg) {
+  const a = $('#quoteModalAlert');
+  if (!a) return;
+  a.textContent = msg;
+  a.hidden = false;
+}
+
+function renderQuoteFieldErrors(err) {
+  if (!(err instanceof ApiError) || !err.details || !err.details.fieldErrors) return false;
+  let mapped = false;
+  for (const [field, msgs] of Object.entries(err.details.fieldErrors)) {
+    if (!msgs || !msgs.length) continue;
+    const key = QUOTE_FIELD_ID[field];
+    if (!key) continue;
+    const errEl = $('#qe-' + key);
+    if (errEl) errEl.textContent = msgs.join('; ');
+    const input = $('#qf-' + key);
+    if (input) input.classList.add('err');
+    mapped = true;
+  }
+  return mapped;
+}
+
+function quoteBranchOptions() {
+  return '<option value="">— No facility —</option>' + (state.branches || [])
+    .map((b) => `<option value="${escapeHtml(b.id)}">${escapeHtml(b.code)} · ${escapeHtml(b.name)}</option>`)
+    .join('');
+}
+
+async function ensureQuoteBranches() {
+  if ((state.branches || []).length) return;
+  try {
+    state.branches = (await get('/branches')) || [];
+  } catch {
+    // Branch dropdown stays "No facility" — submit still works (field optional).
+  }
+}
+
+async function loadQuoteLeadOptions() {
+  const sel = $('#qf-lead');
+  if (!sel) return;
+  sel.innerHTML = '<option value="">— New lead (enter name below) —</option>';
+  try {
+    const leads = (await get('/leads')) || [];
+    const rows = Array.isArray(leads) ? leads : (leads.rows || []);
+    sel.innerHTML += rows.slice(0, 200).map((l) =>
+      `<option value="${escapeHtml(l.id)}">${escapeHtml(l.name || l.id)}${l.stage ? ' · ' + escapeHtml(l.stage) : ''}</option>`,
+    ).join('');
+  } catch {
+    // Lead select stays new-lead-only — name input covers creation.
+  }
+}
+
+export async function openQuoteModal() {
+  await ensureQuoteBranches();
+  const branchSel = $('#qf-branch');
+  if (branchSel) branchSel.innerHTML = quoteBranchOptions();
+  await loadQuoteLeadOptions();
+  const form = $('#quoteForm');
+  if (form) form.reset();
+  clearQuoteFieldErrors();
+  const modal = $('#quoteModal');
+  if (modal) modal.hidden = false;
+}
+
+export function closeQuoteModal() {
+  const modal = $('#quoteModal');
+  if (modal) modal.hidden = true;
+  clearQuoteFieldErrors();
+}
+
+function quoteFieldError(key, msg) {
+  const errEl = $('#qe-' + key);
+  if (errEl) errEl.textContent = msg;
+  const input = $('#qf-' + key);
+  if (input) input.classList.add('err');
+}
+
+export async function submitQuoteForm(e) {
+  e.preventDefault();
+  clearQuoteFieldErrors();
+  const leadId = $('#qf-lead')?.value || '';
+  const name = $('#qf-name')?.value.trim() || '';
+  // Client-side mirror of the createQuoteSchema superRefine (cms.ts):
+  // either leadId (existing-lead mode) or name (new-lead mode) is required.
+  if (!leadId && !name) {
+    quoteFieldError('lead', 'Pick a lead or enter a name');
+    quoteFieldError('name', 'Name is required when no lead is selected');
+    return;
+  }
+  const email = $('#qf-email')?.value.trim() || '';
+  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    quoteFieldError('email', 'Enter a valid email');
+    return;
+  }
+  const rateRaw = $('#qf-rate')?.value.trim() || '';
+  const rate = rateRaw === '' ? undefined : Number(rateRaw);
+  if (rate !== undefined && !(rate >= 0)) {
+    quoteFieldError('rate', 'Rate must be 0 or more');
+    return;
+  }
+  const durRaw = $('#qf-duration')?.value.trim() || '';
+  const durationMonths = durRaw === '' ? undefined : Number(durRaw);
+  if (durationMonths !== undefined && (!Number.isInteger(durationMonths) || durationMonths < 1)) {
+    quoteFieldError('duration', 'Duration must be a whole month ≥ 1');
+    return;
+  }
+  const moveInRaw = $('#qf-moveIn')?.value || '';
+  if (moveInRaw && Number.isNaN(Date.parse(moveInRaw))) {
+    quoteFieldError('moveIn', 'Move-in date must be a valid date');
+    return;
+  }
+  const body = {};
+  if (leadId) body.leadId = leadId;
+  if (name) body.name = name;
+  const type = $('#qf-type')?.value || '';
+  if (type) body.type = type;
+  const mobile = $('#qf-mobile')?.value.trim() || '';
+  if (mobile) body.mobile = mobile;
+  if (email) body.email = email;
+  const branchId = $('#qf-branch')?.value || '';
+  if (branchId) body.preferredBranchId = branchId;
+  const size = $('#qf-size')?.value.trim() || '';
+  if (size) body.preferredSize = size;
+  if (rate !== undefined) body.monthlyRate = rate;
+  if (moveInRaw) body.moveInDate = moveInRaw;
+  if (durationMonths !== undefined) body.durationMonths = durationMonths;
+  const unitCode = $('#qf-unit')?.value.trim() || '';
+  if (unitCode) body.unitCode = unitCode;
+  const note = $('#qf-note')?.value.trim() || '';
+  if (note) body.note = note;
+  try {
+    await post('/quotes', body);
+    closeQuoteModal();
+    showBanner('Quotation created', true);
+    await bindQuotes();
+  } catch (err) {
+    // Surface server errors honestly: 400 VALIDATION (incl. per-field map),
+    // 404 unknown lead/branch/unit, 409 CONFLICT|DUPLICATE, 401 auth.
+    if (!renderQuoteFieldErrors(err)) showQuoteFormAlert(describeError(err));
+  }
 }

@@ -9,9 +9,11 @@
 // Conversion is already modelled: PROPOSAL_SENT → WON (+ Booking), loss via
 // LOST + lossReason/lossValue. Stage transitions reuse PATCH /leads/:id, so
 // this module is a read-model over existing rows.
+import { Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { toNum } from '../lib/format';
 import { AppError } from '../lib/http';
+import { createLead } from './leads';
 
 const QUOTE_STAGE = 'PROPOSAL_SENT' as const;
 const MAX_OPTIONS = 25;
@@ -135,4 +137,185 @@ export async function getQuote(id: string, opts?: { branchId?: string; size?: st
     inventoryOptions({ branchId, size }),
   ]);
   return { quote: serializeQuote(lead, matchingAvailable), options };
+}
+
+export interface CreateQuotationInput {
+  // Transition path: quote an existing lead by id (any supplied fields below
+  // are applied as overrides on the same write).
+  leadId?: string;
+  // Create path: required when leadId is omitted (a new PROPOSAL_SENT lead).
+  name?: string;
+  type?: 'PERSONAL' | 'BUSINESS';
+  segment?: string | null;
+  source?: 'WEBSITE' | 'WHATSAPP' | 'REFERRAL' | 'GOOGLE';
+  preferredSize?: string | null;
+  preferredBranchId?: string | null;
+  monthlyRate?: number | null;
+  note?: string | null;
+  email?: string | null;
+  mobile?: string | null;
+  owner?: string | null;
+  nextActionAt?: Date | null;
+  unitCode?: string | null;
+  moveInDate?: Date | null;
+  durationMonths?: number | null;
+  companyName?: string | null;
+  uen?: string | null;
+  consentPdpa?: boolean | null;
+  consentMarketing?: boolean | null;
+  protectionTier?: string | null;
+  protectionCost?: number | null;
+  addons?: { id?: string; name: string; qty: number; price: number }[] | null;
+  promoCode?: string | null;
+  promoDiscountAmt?: number | null;
+  movingService?: boolean | null;
+  totalDueToday?: number | null;
+}
+
+// Terminal stages are forward-only (see markLeadWonForBooking in leads.ts):
+// a quotation is never resurrected from WON/LOST.
+const TERMINAL_STAGES = ['WON', 'LOST'] as const;
+
+async function assertQuotationRefs(input: Pick<CreateQuotationInput, 'preferredBranchId' | 'preferredSize' | 'unitCode'>) {
+  if (input.preferredBranchId) {
+    const branch = await prisma.branch.findUnique({ where: { id: input.preferredBranchId } });
+    if (!branch) throw new AppError(400, 'VALIDATION', 'Unknown preferredBranchId');
+  }
+  if (input.preferredSize) {
+    const size = await prisma.unitSize.findUnique({ where: { code: input.preferredSize } });
+    if (!size) throw new AppError(400, 'VALIDATION', `Unknown preferredSize: ${input.preferredSize}`);
+  }
+  if (input.unitCode) {
+    const unit = await prisma.unit.findFirst({ where: { unitCode: input.unitCode, deletedAt: null } });
+    if (!unit) throw new AppError(404, 'NOT_FOUND', `Unit ${input.unitCode} not found`);
+    if (unit.status !== 'AVAILABLE') {
+      throw new AppError(409, 'CONFLICT', `Unit ${input.unitCode} is ${unit.status}, not AVAILABLE`, {
+        unitCode: input.unitCode,
+        status: unit.status,
+      });
+    }
+  }
+}
+
+// Create path duplicate guard: an OPEN quotation (PROPOSAL_SENT) already on
+// file for the same contact + facility is the same quotation — resubmitting is
+// a 409, not a second row. Contacts without email/mobile skip the guard.
+async function assertNoOpenQuotation(input: Pick<CreateQuotationInput, 'email' | 'mobile' | 'preferredBranchId'>) {
+  const email = input.email?.trim() ? input.email.trim() : null;
+  const mobile = input.mobile?.trim() ? input.mobile.trim() : null;
+  if (!email && !mobile) return;
+  const contactOr = [];
+  if (email) contactOr.push({ email: { equals: email, mode: 'insensitive' as const } });
+  if (mobile) contactOr.push({ mobile: { equals: mobile } });
+  const existing = await prisma.lead.findFirst({
+    where: {
+      stage: QUOTE_STAGE,
+      preferredBranchId: { equals: input.preferredBranchId?.trim() ? input.preferredBranchId.trim() : null },
+      OR: contactOr,
+    },
+    select: { id: true },
+    orderBy: { createdAt: 'desc' },
+  });
+  if (existing) {
+    throw new AppError(409, 'DUPLICATE', 'An open quotation already exists for this contact at this facility', {
+      existingLeadId: existing.id,
+    });
+  }
+}
+
+// Create a quotation (CMS operator action). Two shapes, one outcome — a
+// PROPOSAL_SENT lead returned with its live unit options (same payload as
+// GET /quotes/:id):
+//   - { leadId } transitions an existing lead to PROPOSAL_SENT (409 when the
+//     lead is already quoted or in a terminal WON/LOST stage);
+//   - otherwise a new PROPOSAL_SENT lead is created (409 on an open duplicate).
+export async function createQuotation(input: CreateQuotationInput) {
+  if (input.leadId) {
+    const lead = await prisma.lead.findUnique({ where: { id: input.leadId } });
+    if (!lead) throw new AppError(404, 'NOT_FOUND', `Lead ${input.leadId} not found`);
+    if (lead.stage === QUOTE_STAGE) {
+      throw new AppError(409, 'CONFLICT', `Lead ${input.leadId} is already quoted`, { leadId: lead.id });
+    }
+    if ((TERMINAL_STAGES as readonly string[]).includes(lead.stage)) {
+      throw new AppError(409, 'CONFLICT', `Lead ${input.leadId} is ${lead.stage} and cannot be quoted`, {
+        leadId: lead.id,
+        stage: lead.stage,
+      });
+    }
+    await assertQuotationRefs(input);
+    const { leadId: _leadId, ...overrides } = input;
+    await prisma.lead.update({
+      where: { id: lead.id },
+      data: {
+        stage: QUOTE_STAGE,
+        ...(overrides.name !== undefined ? { name: overrides.name.trim() } : {}),
+        ...(overrides.type !== undefined ? { type: overrides.type } : {}),
+        ...(overrides.segment !== undefined ? { segment: overrides.segment } : {}),
+        ...(overrides.source !== undefined ? { source: overrides.source } : {}),
+        ...(overrides.preferredSize !== undefined ? { preferredSize: overrides.preferredSize } : {}),
+        ...(overrides.preferredBranchId !== undefined ? { preferredBranchId: overrides.preferredBranchId } : {}),
+        ...(overrides.monthlyRate !== undefined ? { monthlyRate: overrides.monthlyRate } : {}),
+        ...(overrides.note !== undefined ? { note: overrides.note } : {}),
+        ...(overrides.email !== undefined ? { email: overrides.email } : {}),
+        ...(overrides.mobile !== undefined ? { mobile: overrides.mobile } : {}),
+        ...(overrides.owner !== undefined ? { owner: overrides.owner } : {}),
+        ...(overrides.nextActionAt !== undefined ? { nextActionAt: overrides.nextActionAt } : {}),
+        ...(overrides.unitCode !== undefined ? { unitCode: overrides.unitCode } : {}),
+        ...(overrides.moveInDate !== undefined ? { moveInDate: overrides.moveInDate } : {}),
+        ...(overrides.durationMonths !== undefined ? { durationMonths: overrides.durationMonths } : {}),
+        ...(overrides.companyName !== undefined ? { companyName: overrides.companyName } : {}),
+        ...(overrides.uen !== undefined ? { uen: overrides.uen } : {}),
+        ...(overrides.consentPdpa !== undefined ? { consentPdpa: overrides.consentPdpa } : {}),
+        ...(overrides.consentMarketing !== undefined ? { consentMarketing: overrides.consentMarketing } : {}),
+        ...(overrides.protectionTier !== undefined ? { protectionTier: overrides.protectionTier } : {}),
+        ...(overrides.protectionCost !== undefined ? { protectionCost: overrides.protectionCost } : {}),
+        ...(overrides.addons !== undefined
+          ? { addons: overrides.addons === null ? Prisma.DbNull : (overrides.addons as Prisma.InputJsonValue) }
+          : {}),
+        ...(overrides.promoCode !== undefined ? { promoCode: overrides.promoCode } : {}),
+        ...(overrides.promoDiscountAmt !== undefined ? { promoDiscountAmt: overrides.promoDiscountAmt } : {}),
+        ...(overrides.movingService !== undefined ? { movingService: overrides.movingService } : {}),
+        ...(overrides.totalDueToday !== undefined ? { totalDueToday: overrides.totalDueToday } : {}),
+      },
+    });
+    return getQuote(lead.id);
+  }
+
+  if (!input.name?.trim()) {
+    throw new AppError(400, 'VALIDATION', 'Either leadId or name is required');
+  }
+  await assertQuotationRefs(input);
+  await assertNoOpenQuotation(input);
+  const createdLead = await createLead({
+    name: input.name.trim(),
+    type: input.type ?? 'PERSONAL',
+    segment: input.segment ?? null,
+    stage: QUOTE_STAGE,
+    source: input.source ?? 'WEBSITE',
+    preferredSize: input.preferredSize ?? null,
+    preferredBranchId: input.preferredBranchId ?? null,
+    monthlyRate: input.monthlyRate ?? null,
+    note: input.note ?? null,
+    email: input.email ?? null,
+    mobile: input.mobile ?? null,
+    owner: input.owner ?? null,
+    nextActionAt: input.nextActionAt ?? null,
+    unitCode: input.unitCode ?? null,
+    moveInDate: input.moveInDate ?? null,
+    durationMonths: input.durationMonths ?? null,
+    companyName: input.companyName ?? null,
+    uen: input.uen ?? null,
+    consentPdpa: input.consentPdpa ?? null,
+    consentMarketing: input.consentMarketing ?? null,
+    protectionTier: input.protectionTier ?? null,
+    protectionCost: input.protectionCost ?? null,
+    addons: input.addons ?? null,
+    promoCode: input.promoCode ?? null,
+    promoDiscountAmt: input.promoDiscountAmt ?? null,
+    movingService: input.movingService ?? null,
+    totalDueToday: input.totalDueToday ?? null,
+  });
+  // createdLead is the serializeLead shape; re-read through getQuote so the
+  // create response carries the same { quote, options } payload as GET /quotes/:id.
+  return getQuote(createdLead.id);
 }

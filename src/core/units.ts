@@ -334,6 +334,9 @@ export interface UnitMapQuery {
   // P1 item 3: map filters — size code (e.g. SMALL) and near-lift proximity.
   size?: string;
   nearLift?: boolean;
+  // Designer palette filter (mirrors ?hasAC= on the units list): true = AC
+  // only, false = non-AC only, undefined = all.
+  hasAC?: boolean;
 }
 
 // Foot-distance threshold for the near-lift filter: a unit counts as near a
@@ -352,6 +355,9 @@ export async function getUnitMap(branchCode: string, level: number, opts?: UnitM
   const units = await prisma.unit.findMany({
     where: {
       deletedAt: null,
+      // Admin map hides INACTIVE units (same as the floor-plan editor canvas —
+      // out-of-service units must not render on maps); lists keep them.
+      status: { not: 'INACTIVE' },
       branch: { code: branchCode },
       floor: {
         level,
@@ -360,6 +366,7 @@ export async function getUnitMap(branchCode: string, level: number, opts?: UnitM
         ...(isPublic ? { isActive: true } : {}),
       },
       ...(opts?.size ? { size: { code: opts.size } } : {}),
+      ...(opts?.hasAC != null ? { hasAC: opts.hasAC } : {}),
     },
     include: { size: true, tenant: true },
     orderBy: { unitCode: 'asc' },
@@ -449,6 +456,7 @@ export async function getUnitMap(branchCode: string, level: number, opts?: UnitM
     filters: {
       size: opts?.size ?? null,
       nearLift: opts?.nearLift ?? false,
+      hasAC: opts?.hasAC ?? null,
     },
     units: visible.map((u) => ({
       id: u.unitCode,
@@ -732,6 +740,18 @@ export async function importUnits(csvText: string): Promise<UnitImportReport> {
     return { rows: [], meta: { total: 0, created: 0, skipped: 0, errors: 0 } };
   }
   const idx = (name: string): number => headers.findIndex((h) => h.toLowerCase() === name.toLowerCase());
+  // climateControl was removed (hasAC is the source of truth): a CSV carrying
+  // the legacy column is rejected outright so operators switch to hasAC.
+  const legacyIdx = headers.findIndex((h) =>
+    ['climatecontrol', 'climate_control', 'climate control'].includes(h.toLowerCase()),
+  );
+  if (legacyIdx >= 0) {
+    const msg = 'climateControl column is removed — use hasAC (yes/no) instead';
+    return {
+      rows: records.map((_, i) => fail(i + 2, msg)),
+      meta: { total: records.length, created: 0, skipped: 0, errors: records.length },
+    };
+  }
   for (const required of ['branch', 'size', 'sqft', 'rate']) {
     if (idx(required) < 0) {
       const msg = `Missing required column "${required}" (expected: ${UNIT_IMPORT_HEADERS.join(', ')})`;

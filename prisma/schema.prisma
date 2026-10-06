@@ -70,6 +70,7 @@ enum LeadStage {
   CONTACTED
   VIEWING_BOOKED
   PROPOSAL_SENT
+  PENDING_PAYMENT
   WON
   LOST
 }
@@ -1333,6 +1334,9 @@ model ProtectionPlan {
   // the repo has no upload/S3 pattern; CMS sets/updates it as text).
   // NULL = no image; public reads always emit the key (string | null).
   imageUrl  String?
+  // Slashed-price display: nullable original price shown struck-through next
+  // to `price` (NULL = no strike-through). Display only — checkout charges `price`.
+  wasPrice  Decimal? @db.Decimal(10, 2)
   sortOrder Int      @default(0) // ascending display order (1..n)
   active    Boolean  @default(true) // false = hidden from public reads, kept for history
   createdAt DateTime @default(now())
@@ -1350,6 +1354,12 @@ model Addon {
   // the repo has no upload/S3 pattern; CMS sets/updates it as text).
   // NULL = no image; public reads always emit the key (string | null).
   imageUrl  String?
+  // Per-addon blurb shown at checkout (NULL = no description). ProtectionPlan
+  // keeps its `coverage` field; Addon uses this `description` instead.
+  description String?
+  // Slashed-price display: nullable original price shown struck-through next
+  // to `price` (NULL = no strike-through). Display only — checkout charges `price`.
+  wasPrice  Decimal? @db.Decimal(10, 2)
   sortOrder Int      @default(0) // ascending display order (1..n)
   active    Boolean  @default(true) // false = hidden from public reads, kept for history
   createdAt DateTime @default(now())
@@ -1372,6 +1382,18 @@ model Permission {
 
   @@unique([adminUserId, permission])
   @@index([adminUserId])
+}
+
+// Landing-page CMS content (minimal v1: tickerItems | heroSlides | testimonials).
+// Schemaless key/value store over JSON arrays: reads merge stored rows over
+// the code defaults in src/core/siteContent.ts so a fresh DB behaves like the
+// landing static copy. Writes validate against the allowlist + per-key shapes.
+model SiteContent {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  value     Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 // Mock ID-verification record (Jumio-style camera mock in the booking

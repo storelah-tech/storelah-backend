@@ -65,7 +65,7 @@ import { toNum } from '../lib/format';
 import { AppError } from '../lib/http';
 import type { PlanStatus, Prisma } from '@prisma/client';
 import { MARKET_PSF } from './market';
-import { computeBoundaryMetrics, doorEdgesToArray, type BoundaryMetrics, type GfaSource } from './floorPlans';
+import { computeBoundaryMetrics, doorEdgesToArray, pillarRectsOf, type BoundaryMetrics, type GfaSource } from './floorPlans';
 import {
   computeFloorMetrics,
   computeOccupancy,
@@ -596,6 +596,9 @@ export async function getFloorMetrics(floorId: string): Promise<FloorMetricsRepo
     structure: (plan as { structure?: unknown }).structure ?? null,
     placements: placed.map((p) => ({ x: p.x, y: p.y, width: p.width, height: p.height })),
     gfaSqft: userGfa,
+    // Pillars subtract from NLA only (hasPillar-unit footprints; Pillar
+    // blocks already ride in `blocks` — see pillarRectsOf).
+    pillarRects: pillarRectsOf(placed.map((p) => ({ x: p.x, y: p.y, width: p.width, height: p.height, unit: { hasPillar: p.unit.hasPillar } }))),
   });
   const lineUfaQ = BigInt(Math.round(boundaryMetrics.ufa * Number(Q_PER_SQFT)));
   const lineNlaQ = BigInt(Math.round(boundaryMetrics.nla * Number(Q_PER_SQFT)));

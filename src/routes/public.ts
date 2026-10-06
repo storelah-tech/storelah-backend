@@ -8,6 +8,7 @@ import { listActivePublicPromotionPlans } from '../core/promotionPlans';
 import { getPublicFloorPlan } from '../core/floorPlans';
 import { listProtectionPlans, listAddons } from '../core/extras';
 import { getPublicSettings } from '../core/settings';
+import { getSiteContentWithMeta } from '../core/siteContent';
 import { createPublicLead } from '../core/leads';
 
 const router = Router();
@@ -124,9 +125,11 @@ router.post('/promotions/validate', async (req: Request, res: Response) => {
 // GET /promotions + POST /promotions/validate are untouched above.
 // PUBLIC booking-extras catalog for the booking frontend (unauthenticated).
 // Additive: active rows only, sortOrder ascending, envelope { data, meta }.
-// ProtectionPlan: { id, name, price (monthly recurring), coverage, imageUrl
-// (HTTPS string | null), sortOrder, active } — Addon: { id, name, price
-// (one-off), unit, imageUrl (HTTPS string | null), sortOrder, active }.
+// ProtectionPlan: { id, name, price (monthly recurring), wasPrice (struck
+// original | null), coverage, imageUrl (HTTPS string | null), sortOrder,
+// active } — Addon: { id, name, price (one-off), wasPrice (| null),
+// description (| null), unit, imageUrl (HTTPS string | null), sortOrder,
+// active }. wasPrice is display-only (checkout charges price).
 // `id` is the stable frontend slug so the app can fall back to its baked-in
 // copy when a row is missing. No auth, no PII.
 router.get('/protection-plans', async (_req: Request, res: Response) => {
@@ -152,6 +155,15 @@ router.get('/promotion-plans', async (_req: Request, res: Response) => {
 // untouched.
 router.get('/settings', async (_req: Request, res: Response) => {
   ok(res, await getPublicSettings());
+});
+
+// PUBLIC landing site content for the landing page (unauthenticated).
+// Returns { tickerItems, heroSlides, testimonials } merged over code
+// defaults so a fresh DB matches the landing static copy. Envelope
+// { data, meta: { updatedAt } }. No auth, no PII.
+router.get('/site-content', async (_req: Request, res: Response) => {
+  const { values, updatedAt } = await getSiteContentWithMeta();
+  ok(res, values, { updatedAt });
 });
 
 // PUBLIC lead capture for the booking frontend "Your details" step —

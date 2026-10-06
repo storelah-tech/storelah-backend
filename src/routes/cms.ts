@@ -42,8 +42,9 @@ import { getActionItems } from '../core/actionCenter';
 import { listBookings, listInvoices } from '../core/finance';
 import { listBranches, getMoveIns, getPortfolio } from '../core/branches';
 import { getSettings, upsertSettings } from '../core/settings';
+import { listSiteContent, getSiteContentByKey, upsertSiteContent } from '../core/siteContent';
 import { adjustRate, getNetPsf } from '../core/rates';
-import { listQuotes, getQuote } from '../core/quotes';
+import { listQuotes, getQuote, createQuotation } from '../core/quotes';
 import { listFees, createFee, updateFee, deleteFee, resolveFee } from '../core/fees';
 import { listBusinessRules, upsertBusinessRules } from '../core/businessRules';
 import {
@@ -204,9 +205,9 @@ const createUnitSchema = z.object({
   sqft: z.number().positive(),
   monthlyRate: z.number().nonnegative(),
   status: z.enum(['AVAILABLE', 'RESERVED', 'MAINTENANCE', 'INACTIVE', 'BLOCKED']).optional(),
-  // climateControl is legacy: accepted and stored for backwards compat, and
-  // mapped onto hasAC when hasAC is omitted (see src/core/units.ts).
-  climateControl: z.string().optional(),
+  // climateControl was removed: hasAC is the source of truth. The key is
+  // rejected explicitly in the POST/PUT handlers below (400 + deprecation
+  // note) instead of being silently stripped.
   hasAC: z.boolean().optional(),
   hasPillar: z.boolean().optional(),
   name: z.string().trim().max(80).optional(),
@@ -218,11 +219,19 @@ const updateUnitSchema = z.object({
   status: z
     .enum(['OCCUPIED', 'AVAILABLE', 'RESERVED', 'OVERDUE', 'MAINTENANCE', 'INACTIVE', 'BLOCKED'])
     .optional(),
-  climateControl: z.string().nullable().optional(),
   hasAC: z.boolean().optional(),
   hasPillar: z.boolean().optional(),
   name: z.string().trim().max(80).nullable().optional(),
 });
+
+// climateControl removal guard: POST/PUT /units reject the legacy key with a
+// deprecation note pointing at hasAC (hasAC is the source of truth).
+function rejectClimateControl(body: unknown): string | null {
+  if (body && typeof body === 'object' && ('climateControl' in body || 'climate_control' in body)) {
+    return 'climateControl is removed — use hasAC (true/false) instead';
+  }
+  return null;
+}
 
 // ?hasAC= filter: accepts true/false/1/0/yes/no (case-insensitive); garbage → 400.
 const yesNoQueryField = z.preprocess((v) => {
@@ -430,7 +439,18 @@ router.get('/units/map', requireAuth, async (req: Request, res: Response) => {
   // P1 item 3: map filters — ?size=SMALL and ?nearLift=1.
   const size = typeof req.query.size === 'string' && req.query.size.trim() ? req.query.size.trim() : undefined;
   const nearLift = req.query.nearLift === '1' || req.query.nearLift === 'true';
-  ok(res, await getUnitMap(branch, level, { size, nearLift }));
+  // Designer palette filter — mirrors ?hasAC= on the units list (same yes/no
+  // grammar); garbage → 400.
+  let hasAC: boolean | undefined;
+  if (req.query.hasAC !== undefined && req.query.hasAC !== null && String(req.query.hasAC).trim() !== '') {
+    const parsedAC = yesNoQueryField.safeParse(req.query.hasAC);
+    if (!parsedAC.success || parsedAC.data === undefined) {
+      fail(res, 400, 'VALIDATION', 'Invalid hasAC filter (expected true/false/yes/no/1/0)', req.query.hasAC);
+      return;
+    }
+    hasAC = parsedAC.data;
+  }
+  ok(res, await getUnitMap(branch, level, { size, nearLift, hasAC }));
 });
 
 router.get('/units', requireAuth, async (req: Request, res: Response) => {
@@ -464,6 +484,11 @@ router.get('/units/activity', requireAuth, async (req: Request, res: Response) =
 });
 
 router.post('/units', requireAuth, async (req: Request, res: Response) => {
+  const legacy = rejectClimateControl(req.body);
+  if (legacy) {
+    fail(res, 400, 'VALIDATION', legacy);
+    return;
+  }
   const parsed = createUnitSchema.safeParse(req.body);
   if (!parsed.success) {
     fail(res, 400, 'VALIDATION', 'Invalid unit payload', parsed.error.flatten());
@@ -473,6 +498,11 @@ router.post('/units', requireAuth, async (req: Request, res: Response) => {
 });
 
 router.put('/units/:code', requireAuth, async (req: Request, res: Response) => {
+  const legacy = rejectClimateControl(req.body);
+  if (legacy) {
+    fail(res, 400, 'VALIDATION', legacy);
+    return;
+  }
   const parsed = updateUnitSchema.safeParse(req.body);
   if (!parsed.success) {
     fail(res, 400, 'VALIDATION', 'Invalid unit payload', parsed.error.flatten());
@@ -639,7 +669,7 @@ const leadPayloadSchema = z.object({
   name: z.string().trim().min(1).max(120),
   type: z.enum(['PERSONAL', 'BUSINESS']).optional(),
   segment: z.string().trim().max(80).nullable().optional(),
-  stage: z.enum(['NEW_ENQUIRY', 'CONTACTED', 'VIEWING_BOOKED', 'PROPOSAL_SENT', 'WON', 'LOST']).optional(),
+  stage: z.enum(['NEW_ENQUIRY', 'CONTACTED', 'VIEWING_BOOKED', 'PROPOSAL_SENT', 'PENDING_PAYMENT', 'WON', 'LOST']).optional(),
   source: z.enum(['WEBSITE', 'WHATSAPP', 'REFERRAL', 'GOOGLE']).optional(),
   preferredSize: z.string().trim().max(40).nullable().optional(),
   preferredBranchId: z.string().min(1).nullable().optional(),
@@ -851,6 +881,79 @@ router.get('/quotes', requireAuth, async (_req: Request, res: Response) => {
   ok(res, rows, meta);
 });
 
+// Create a quotation: either transition an existing lead ({ leadId } →
+// PROPOSAL_SENT, optional overrides applied) or create a new PROPOSAL_SENT
+// lead. Returns the { quote, options } detail payload. 201 (created).
+const createQuoteSchema = z
+  .object({
+    leadId: z.string().min(1).optional(),
+    name: z.string().trim().min(1).max(120).optional(),
+    type: z.enum(['PERSONAL', 'BUSINESS']).optional(),
+    segment: z.string().trim().max(80).nullable().optional(),
+    source: z.enum(['WEBSITE', 'WHATSAPP', 'REFERRAL', 'GOOGLE']).optional(),
+    preferredSize: z.string().trim().max(40).nullable().optional(),
+    preferredBranchId: z.string().min(1).nullable().optional(),
+    monthlyRate: z.number().nonnegative().nullable().optional(),
+    note: z.string().max(2000).nullable().optional(),
+    email: z.string().email().nullable().optional(),
+    mobile: z.string().trim().max(40).nullable().optional(),
+    owner: z.string().trim().max(80).nullable().optional(),
+    nextActionAt: z.string().datetime().nullable().optional(),
+    unitCode: z.string().trim().max(40).nullable().optional(),
+    moveInDate: z
+      .string()
+      .trim()
+      .max(40)
+      .nullable()
+      .optional()
+      .refine((v) => v == null || !Number.isNaN(Date.parse(v)), { message: 'moveInDate must be a parseable date string' }),
+    durationMonths: z.number().int().positive().nullable().optional(),
+    companyName: z.string().trim().max(120).nullable().optional(),
+    uen: z.string().trim().max(40).nullable().optional(),
+    consentPdpa: z.boolean().nullable().optional(),
+    consentMarketing: z.boolean().nullable().optional(),
+    protectionTier: z.string().trim().max(80).nullable().optional(),
+    protectionCost: z.number().nonnegative().nullable().optional(),
+    addons: z
+      .array(
+        z.object({
+          id: z.string().trim().max(80).optional(),
+          name: z.string().trim().min(1).max(120),
+          qty: z.number().int().positive(),
+          price: z.number().nonnegative(),
+        }),
+      )
+      .max(20)
+      .nullable()
+      .optional(),
+    promoCode: z.string().trim().max(40).nullable().optional(),
+    promoDiscountAmt: z.number().nonnegative().nullable().optional(),
+    movingService: z.boolean().nullable().optional(),
+    totalDueToday: z.number().nonnegative().nullable().optional(),
+  })
+  .superRefine((v, ctx) => {
+    if (!v.leadId && !v.name) {
+      ctx.addIssue({ code: 'custom', message: 'Either leadId or name is required' });
+    }
+  });
+
+router.post('/quotes', requireAuth, async (req: Request, res: Response) => {
+  const parsed = createQuoteSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid quotation payload', parsed.error.flatten());
+    return;
+  }
+  const { nextActionAt, moveInDate, ...rest } = parsed.data;
+  created(
+    res,
+    await createQuotation({
+      ...rest,
+      nextActionAt: nextActionAt === undefined ? undefined : nextActionAt ? new Date(nextActionAt) : null,
+      moveInDate: moveInDate === undefined ? undefined : moveInDate ? new Date(moveInDate) : null,
+    }),
+  );
+});
+
 router.get('/quotes/:id', requireAuth, async (req: Request, res: Response) => {
   const branchId = typeof req.query.branchId === 'string' ? req.query.branchId : undefined;
   const size = typeof req.query.size === 'string' ? req.query.size : undefined;
@@ -958,6 +1061,32 @@ router.put('/settings', requireAuth, async (req: Request, res: Response) => {
     return;
   }
   ok(res, await upsertSettings(parsed.data));
+});
+
+// --- Site content (landing-page CMS, minimal v1) ---
+// Keys: tickerItems | heroSlides | testimonials. List + single reads merge
+// stored rows over code defaults (fresh DB == landing static copy); PUT
+// validates the value shape in core (arrays only, max 50, per-item caps).
+// Bearer JWT via requireAuth on all three (CMS manage path).
+router.get('/site-content', requireAuth, async (_req: Request, res: Response) => {
+  ok(res, await listSiteContent());
+});
+
+router.get('/site-content/:key', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await getSiteContentByKey(String(req.params.key)));
+});
+
+const siteContentPutSchema = z.object({
+  value: z.array(z.unknown()).max(50),
+});
+
+router.put('/site-content/:key', requireAuth, async (req: Request, res: Response) => {
+  const parsed = siteContentPutSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Site-content payload must be { value: array } (max 50 items)', parsed.error.flatten());
+    return;
+  }
+  ok(res, await upsertSiteContent(String(req.params.key), parsed.data.value));
 });
 
 // --- Promotions ---
@@ -2453,6 +2582,9 @@ const protectionPlanPayloadSchema = z.object({
     .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, 'id must be a URL-safe slug (e.g. "essential")'),
   name: z.string().trim().min(1).max(120),
   price: z.number().nonnegative(),
+  // Slashed-price display: nullable original price shown struck-through next
+  // to `price` (null clears). Display only — checkout charges `price`.
+  wasPrice: z.number().nonnegative().nullable().optional(),
   coverage: z.string().trim().max(500).nullable().optional(),
   imageUrl: imageUrlField,
   sortOrder: z.number().int().min(0).max(100000).optional(),
@@ -2470,6 +2602,11 @@ const addonPayloadSchema = z.object({
     .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, 'id must be a URL-safe slug (e.g. "medium-box")'),
   name: z.string().trim().min(1).max(120),
   price: z.number().nonnegative(),
+  // Slashed-price display (same semantics as protection plans).
+  wasPrice: z.number().nonnegative().nullable().optional(),
+  // Per-addon blurb shown at checkout (null clears). ProtectionPlan keeps
+  // `coverage`; Addon uses this `description` instead.
+  description: z.string().trim().max(500).nullable().optional(),
   unit: z.string().trim().max(40).nullable().optional(),
   imageUrl: imageUrlField,
   sortOrder: z.number().int().min(0).max(100000).optional(),

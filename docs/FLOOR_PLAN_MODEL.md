@@ -312,7 +312,7 @@ Definitions (same clamps as before, rounded to 1 decimal):
 | ------- | ------- |
 | `facilityAreaSqft` (= `gla`, kept for compatibility) | summed marked-loop area (shoelace, sqft) |
 | `ufa` | marked gross minus `FloorPlanBlock` rects + solid legacy-structure rects (thin wall lines excluded) |
-| `nla` | placed-unit footprints clipped to the marked loops (each placement row counts, so both stack tiers count) **minus the loop-clipped blocked area** (blocks + solid legacy-structure rects — the same `blocked` total subtracted for UFA), floored at 0 per loop, clamped ≤ UFA. Adding a block inside a marked loop therefore reduces NLA even with UFA headroom |
+| `nla` | placed-unit footprints clipped to the marked loops (each placement row counts, so both stack tiers count) **minus the loop-clipped blocked area** (blocks + solid legacy-structure rects — the same `blocked` total subtracted for UFA) **minus pillar footprints** (placements whose unit has `hasPillar`, plus Pillar-named block rects passed via the additive `pillarRects` input to `computeBoundaryMetrics` — treated exactly like blocked area, NLA only; UFA untouched), floored at 0 per loop, clamped ≤ UFA. Adding a block inside a marked loop therefore reduces NLA even with UFA headroom |
 | `blockAreaSqft` | loop-clipped **block** area (sqft, 1dp): SUM over marked loops of rect∩loop per `FloorPlanBlock` (same loop-clipped total as UFA for consistency; solid legacy-structure rects excluded). Per-block raw `w×h` rides on each serialized block as `areaSqft` (derived, never stored — no migration, no stored-vs-geometry drift). Overlapping blocks may double-count (non-overlapping assumption, no dedupe) |
 
 With **no contributing marked line** the report is all-zero with

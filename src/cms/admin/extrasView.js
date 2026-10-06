@@ -1,8 +1,8 @@
 // StoreLah CMS admin UI — Booking extras catalog (protection plans + addons).
 // CMS-editable catalog for the booking flow: GET/POST/PATCH/DELETE
-// /protection-plans + /addons. Self-mounting: the section is built dynamically
-// inside the Facilities Management panel #facility-extras (no dashboard.html
-// restructure needed beyond the panel host), reusing
+// /protection-plans + /addons. Self-mounting: one card per sub-panel inside
+// the Protection & Addons page (#extras-plans + #extras-addons, subtabs owned
+// by admin.js following the billing/promo pattern), reusing
 // the frozen v8 theme classes (.tbl-card, .data-tbl, .tb-btn, .act-btn, .sw,
 // .modal-overlay/.modal-win) plus the shared confirmDialog.
 //
@@ -15,34 +15,51 @@ import { confirmDialog } from './confirmDialog.js';
 
 const fmtMoney = (n) => '$' + Number(n || 0).toLocaleString('en-SG', { maximumFractionDigits: 2 });
 
+// Slashed-price display: struck original next to the charged price (display only).
+function struckPriceHtml(price, wasPrice) {
+  if (wasPrice == null || !(Number(wasPrice) > Number(price))) return `<b>${fmtMoney(price)}</b>`;
+  return `<b>${fmtMoney(price)}</b> <s class="t-type">${fmtMoney(wasPrice)}</s>`;
+}
+
 // ---------- section mount (new DOM only — never touches existing markup) ----------
 
 function ensureSection() {
-  // Facilities Management host panel (declared in admin dashboard.html).
-  const host = $('#facility-extras');
-  if (!host) return $('#extrasSection');
-  let el = $('#extrasSection');
-  if (el && el.parentElement === host) return el;
-  // Stale mount (e.g. legacy Settings location) — drop it so Settings stays
-  // clean and there is exactly one extras section under Facilities.
-  if (el) el.remove();
-  el = document.createElement('div');
-  el.className = 'tbl-card';
-  el.id = 'extrasSection';
-  el.style.marginTop = '16px';
-  el.innerHTML =
-    '<div class="sec-hdr"><div><div class="sec-title">Protection plans &amp; addons</div>' +
-    '<div class="sec-sub">Booking checkout catalog · deactivation preferred over delete — bookings snapshot catalog values</div></div>' +
-    '<div style="display:flex;gap:7px;"><button class="tb-btn primary" id="xp-plan-add">+ Add plan</button>' +
-    '<button class="tb-btn primary" id="xp-addon-add">+ Add addon</button></div></div>' +
-    '<div class="t-type" style="margin:6px 2px;text-transform:uppercase;">Protection plans · monthly recurring</div>' +
-    '<table class="data-tbl"><thead><tr><th>Plan</th><th>Price / mo</th><th>Coverage</th><th>Order</th><th>Active</th><th></th></tr></thead>' +
-    '<tbody id="xpPlansBody"></tbody></table>' +
-    '<div class="t-type" style="margin:12px 2px 6px;text-transform:uppercase;">Packing-supply addons · one-off</div>' +
-    '<table class="data-tbl"><thead><tr><th>Addon</th><th>Price</th><th>Unit</th><th>Order</th><th>Active</th><th></th></tr></thead>' +
-    '<tbody id="xpAddonsBody"></tbody></table>';
-  host.appendChild(el);
-  return el;
+  // Protection & Addons host panels (declared in admin dashboard.html).
+  const plansHost = $('#extras-plans');
+  const addonsHost = $('#extras-addons');
+  if (!plansHost || !addonsHost) return null;
+  // Stale mounts (e.g. legacy Facilities #facility-extras or Settings
+  // location) — drop them so there is exactly one catalog under #extras.
+  document.querySelectorAll('#facility-extras #extrasSection, #settings #extrasSection').forEach((el) => el.remove());
+  let plansEl = $('#extrasPlansCard');
+  if (!plansEl || plansEl.parentElement !== plansHost) {
+    if (plansEl) plansEl.remove();
+    plansEl = document.createElement('div');
+    plansEl.className = 'tbl-card';
+    plansEl.id = 'extrasPlansCard';
+    plansEl.innerHTML =
+      '<div class="sec-hdr"><div><div class="sec-title">Protection plans</div>' +
+      '<div class="sec-sub">Monthly recurring · deactivation preferred over delete — bookings snapshot catalog values</div></div>' +
+      '<div style="display:flex;gap:7px;"><button class="tb-btn primary" id="xp-plan-add">+ Add plan</button></div></div>' +
+      '<table class="data-tbl"><thead><tr><th>Plan</th><th>Price / mo</th><th>Coverage</th><th>Order</th><th>Active</th><th></th></tr></thead>' +
+      '<tbody id="xpPlansBody"></tbody></table>';
+    plansHost.appendChild(plansEl);
+  }
+  let addonsEl = $('#extrasAddonsCard');
+  if (!addonsEl || addonsEl.parentElement !== addonsHost) {
+    if (addonsEl) addonsEl.remove();
+    addonsEl = document.createElement('div');
+    addonsEl.className = 'tbl-card';
+    addonsEl.id = 'extrasAddonsCard';
+    addonsEl.innerHTML =
+      '<div class="sec-hdr"><div><div class="sec-title">Packing-supply addons</div>' +
+      '<div class="sec-sub">One-off · deactivation preferred over delete — bookings snapshot catalog values</div></div>' +
+      '<div style="display:flex;gap:7px;"><button class="tb-btn primary" id="xp-addon-add">+ Add addon</button></div></div>' +
+      '<table class="data-tbl"><thead><tr><th>Addon</th><th>Price</th><th>Unit</th><th>Order</th><th>Active</th><th></th></tr></thead>' +
+      '<tbody id="xpAddonsBody"></tbody></table>';
+    addonsHost.appendChild(addonsEl);
+  }
+  return plansEl;
 }
 
 // ---------- lists ----------
@@ -56,7 +73,7 @@ function thumb(url) {
 function planRow(p) {
   return (
     `<tr><td><b>${thumb(p.imageUrl)}${escapeHtml(p.name)}</b><div class="t-type">${escapeHtml(p.id)}</div></td>` +
-    `<td><b>${fmtMoney(p.price)}</b><div class="t-type">/ month</div></td>` +
+    `<td>${struckPriceHtml(p.price, p.wasPrice)}<div class="t-type">/ month</div></td>` +
     `<td>${p.coverage ? escapeHtml(p.coverage) : '<span class="t-type">—</span>'}</td>` +
     `<td>${escapeHtml(String(p.sortOrder))}</td>` +
     `<td><span class="sw${p.active ? ' on' : ''}" data-xp-toggle="plan" data-xp-id="${escapeHtml(p.id)}" role="switch" tabindex="0"><i></i></span></td>` +
@@ -69,8 +86,8 @@ function planRow(p) {
 function addonRow(a) {
   return (
     `<tr><td><b>${thumb(a.imageUrl)}${escapeHtml(a.name)}</b><div class="t-type">${escapeHtml(a.id)}</div></td>` +
-    `<td><b>${fmtMoney(a.price)}</b><div class="t-type">one-off</div></td>` +
-    `<td>${a.unit ? escapeHtml(a.unit) : '<span class="t-type">—</span>'}</td>` +
+    `<td>${struckPriceHtml(a.price, a.wasPrice)}<div class="t-type">one-off</div></td>` +
+    `<td>${a.description ? escapeHtml(a.description) : '<span class="t-type">—</span>'}${a.unit ? `<div class="t-type">${escapeHtml(a.unit)}</div>` : ''}</td>` +
     `<td>${escapeHtml(String(a.sortOrder))}</td>` +
     `<td><span class="sw${a.active ? ' on' : ''}" data-xp-toggle="addon" data-xp-id="${escapeHtml(a.id)}" role="switch" tabindex="0"><i></i></span></td>` +
     `<td class="unit-actions"><button class="act-btn" data-xp-edit="addon" data-xp-id="${escapeHtml(a.id)}">Edit</button> ` +
@@ -130,8 +147,10 @@ function openExtraModal(kind, row) {
       '<div class="field"><label for="xp-id">ID (slug)</label><input id="xp-id" maxlength="80"><div class="field-err" id="xp-e-id"></div></div>' +
       '<div class="field"><label for="xp-name">Name</label><input id="xp-name" maxlength="120"><div class="field-err" id="xp-e-name"></div></div>' +
       '<div class="field"><label for="xp-price">Price (SGD)</label><input id="xp-price" type="number" min="0" step="0.01"><div class="field-err" id="xp-e-price"></div></div>' +
+      '<div class="field"><label for="xp-was">Was price (SGD, optional strike-through)</label><input id="xp-was" type="number" min="0" step="0.01"><div class="field-err" id="xp-e-was"></div></div>' +
       '<div class="field"><label for="xp-sort">Sort order</label><input id="xp-sort" type="number" min="0" step="1"><div class="field-err" id="xp-e-sort"></div></div>' +
       '<div class="field full"><label for="xp-extra" id="xp-extra-label">Coverage</label><input id="xp-extra" maxlength="500"><div class="field-err" id="xp-e-extra"></div></div>' +
+      '<div class="field full" id="xp-desc-wrap"><label for="xp-desc">Description (addons only)</label><input id="xp-desc" maxlength="500"><div class="field-err" id="xp-e-desc"></div></div>' +
       '<div class="field full"><label for="xp-image">Image URL (https, optional)</label><input id="xp-image" maxlength="2048" placeholder="https://…"><div class="field-err" id="xp-e-image"></div></div>' +
       '</div></form>' +
       '<div class="modal-foot"><button class="tb-btn ghost" id="xpModalCancel" type="button">Cancel</button>' +
@@ -148,8 +167,10 @@ function openExtraModal(kind, row) {
   ov.dataset.editId = editing ? row.id : '';
   $('#xpModalTitle').textContent = (editing ? 'Edit ' : 'Add ') + (isPlan ? 'protection plan' : 'addon');
   $('#xpModalHint').textContent = isPlan
-    ? 'Price is monthly recurring. Deactivation hides the tier from checkout; bookings keep their snapshot.'
-    : 'Price is one-off. Deactivation hides the addon from checkout; bookings keep their snapshot.';
+    ? 'Price is monthly recurring. Was-price shows struck-through next to it (display only). Deactivation hides the tier from checkout; bookings keep their snapshot.'
+    : 'Price is one-off. Was-price shows struck-through next to it (display only). Deactivation hides the addon from checkout; bookings keep their snapshot.';
+  const descWrap = $('#xp-desc-wrap');
+  if (descWrap) descWrap.style.display = isPlan ? 'none' : '';
   $('#xp-extra-label').textContent = isPlan ? 'Coverage (optional)' : 'Unit (optional — e.g. box, each)';
   const idInput = $('#xp-id');
   idInput.value = editing ? row.id : '';
@@ -158,6 +179,8 @@ function openExtraModal(kind, row) {
   $('#xp-price').value = editing ? String(row.price ?? '') : '';
   $('#xp-sort').value = editing ? String(row.sortOrder ?? 0) : '';
   $('#xp-extra').value = editing ? (isPlan ? (row.coverage || '') : (row.unit || '')) : '';
+  $('#xp-desc').value = editing && !isPlan ? (row.description || '') : '';
+  $('#xp-was').value = editing && row.wasPrice != null ? String(row.wasPrice) : '';
   $('#xp-image').value = editing ? (row.imageUrl || '') : '';
   const alert = $('#xpModalAlert');
   alert.hidden = true;
@@ -186,6 +209,8 @@ async function submitExtraModal() {
   const priceRaw = $('#xp-price')?.value.trim() || '';
   const sortRaw = $('#xp-sort')?.value.trim() || '';
   const extra = $('#xp-extra')?.value.trim() || '';
+  const desc = $('#xp-desc')?.value.trim() || '';
+  const wasRaw = $('#xp-was')?.value.trim() || '';
   const imageUrl = $('#xp-image')?.value.trim() || '';
   if (imageUrl && !/^https:\/\//i.test(imageUrl)) {
     modalFail('Image URL must start with https:// (or leave it empty for no image).');
@@ -204,19 +229,30 @@ async function submitExtraModal() {
     modalFail('Price must be 0 or greater.');
     return;
   }
+  let wasPrice = null;
+  if (wasRaw !== '') {
+    wasPrice = Number(wasRaw);
+    if (!Number.isFinite(wasPrice) || wasPrice < 0) {
+      modalFail('Was price must be 0 or greater (or empty for no strike-through).');
+      return;
+    }
+  }
   const path = isPlan ? '/protection-plans' : '/addons';
   try {
     if (editId) {
-      const body = { name, price };
+      const body = { name, price, wasPrice };
       if (sortRaw !== '') body.sortOrder = Math.max(0, Math.floor(Number(sortRaw)));
       body[isPlan ? 'coverage' : 'unit'] = extra || null;
+      if (!isPlan) body.description = desc || null;
       body.imageUrl = imageUrl || null;
       await patch(`${path}/${encodeURIComponent(editId)}`, body);
       showBanner(`${isPlan ? 'Plan' : 'Addon'} ${editId} saved`, true);
     } else {
       const body = { id, name, price };
+      if (wasPrice != null) body.wasPrice = wasPrice;
       if (sortRaw !== '') body.sortOrder = Math.max(0, Math.floor(Number(sortRaw)));
       if (extra) body[isPlan ? 'coverage' : 'unit'] = extra;
+      if (!isPlan && desc) body.description = desc;
       if (imageUrl) body.imageUrl = imageUrl;
       await post(path, body);
       showBanner(`${isPlan ? 'Plan' : 'Addon'} ${id} created`, true);

@@ -24,11 +24,12 @@
 // (log + `{ sent: false, reason: 'test-env' }`) so hermetic e2e suites never
 // touch SES. All other envs send when configured.
 
-import { SESClient, SendEmailCommand } from '@aws-sdk/client-ses';
+import { SESClient, SendRawEmailCommand } from '@aws-sdk/client-ses';
 import Stripe from 'stripe';
 import { prisma } from '../lib/prisma';
 import { toNum } from '../lib/format';
 import { getSetting } from './settings';
+import { buildReceiptPdfBytes, deriveReceiptNumber, receiptFilename } from './receiptPdf';
 
 // StoreLah application theme tokens (booking-app palette): terra #BD6B50,
 // dark #9E5139, light #F8ECE6, olive #5D6B55, olive-light #EEF0E8, cream
@@ -85,6 +86,16 @@ export interface BookingConfirmationData {
   receiptUrl: string | null;
   portalUrl: string;
   supportContact: string;
+  // StoreLah PDF receipt (server-generated attachment — primary payment proof).
+  // `receiptNumber` is derived deterministically from booking ref + invoice
+  // (see deriveReceiptNumber in core/receiptPdf.ts). `receiptAttached` tells
+  // the renderer whether the PDF is actually attached on this send: true →
+  // attachment-primary layout; false → the Stripe `receiptUrl` (when present)
+  // renders as a tiny fallback text link so payment proof is never dropped.
+  // Both optional so existing builders keep compiling; the send path always
+  // sets `receiptAttached` explicitly from the attachment bytes.
+  receiptNumber?: string | null;
+  receiptAttached?: boolean;
 }
 
 export interface BuiltBookingEmail {
@@ -158,23 +169,37 @@ export function buildBookingConfirmationEmail(d: BookingConfirmationData): Built
     method: escapeHtml(methodLine),
     paidAt: escapeHtml(formatDateTime(d.paidAt)),
     invoiceNo: escapeHtml(d.invoiceNo ?? '—'),
+    receiptNumber: escapeHtml(d.receiptNumber?.trim() || deriveReceiptNumber(d.bookingRef, d.invoiceNo ?? null)),
     portalUrl: escapeHtml(d.portalUrl),
     support: escapeHtml(d.supportContact),
     receiptUrl: d.receiptUrl ? escapeHtml(d.receiptUrl) : null,
   };
+  // Our PDF is the primary receipt. The Stripe hosted receipt_url survives
+  // ONLY as a tiny fallback text link when the PDF could not be attached —
+  // payment proof is never dropped entirely.
+  const attached = d.receiptAttached ?? true;
 
-  const receiptRow = e.receiptUrl
+  const receiptRow = attached
     ? `<tr>
         <td style="padding:8px 0;font-family:Arial,Helvetica,sans-serif;font-size:14px;color:${C.muted};">Receipt</td>
-        <td align="right" style="padding:8px 0;font-family:Arial,Helvetica,sans-serif;font-size:14px;"><a href="${e.receiptUrl}" style="color:${C.terraDark};text-decoration:underline;">View Stripe receipt</a></td>
+        <td align="right" style="padding:8px 0;font-family:Arial,Helvetica,sans-serif;font-size:14px;color:${C.charcoal};">Attached PDF (${e.receiptNumber})</td>
       </tr>`
-    : '';
+    : e.receiptUrl
+      ? `<tr>
+        <td style="padding:8px 0;font-family:Arial,Helvetica,sans-serif;font-size:14px;color:${C.muted};">Receipt</td>
+        <td align="right" style="padding:8px 0;font-family:Arial,Helvetica,sans-serif;font-size:12px;"><a href="${e.receiptUrl}" style="color:${C.terraDark};text-decoration:underline;">View Stripe receipt</a></td>
+      </tr>`
+      : '';
 
-  const receiptButton = e.receiptUrl
-    ? `<tr><td align="center" style="padding:0 32px 8px 32px;">
-        <a href="${e.receiptUrl}" style="display:inline-block;background-color:${C.olive};color:${C.white};font-family:Arial,Helvetica,sans-serif;font-size:14px;font-weight:bold;text-decoration:none;padding:12px 28px;border-radius:8px;">View receipt</a>
-      </td></tr>`
-    : '';
+  const attachNote = attached
+    ? `<tr><td style="padding:12px 32px 0 32px;font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:22px;color:${C.green};">&#10003;&nbsp; Your receipt is attached (PDF) — look for the attachment on this email.</td></tr>`
+    : e.receiptUrl
+      ? `<tr><td style="padding:12px 32px 0 32px;font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:20px;color:${C.muted};">Your PDF receipt could not be attached — use the Stripe receipt link in the payment box above.</td></tr>`
+      : '';
+
+  const ctaBlock = `<tr><td align="center" style="padding:20px 32px 8px 32px;">
+        <a href="${e.portalUrl}" style="display:inline-block;background-color:${C.terra};color:${C.white};font-family:Arial,Helvetica,sans-serif;font-size:15px;font-weight:bold;text-decoration:none;padding:13px 32px;border-radius:8px;">Go to my portal</a>
+      </td></tr>`;
 
   const html = `<!DOCTYPE html>
 <html lang="en">
@@ -275,10 +300,8 @@ export function buildBookingConfirmationEmail(d: BookingConfirmationData): Built
             3. On your move-in date, head to ${e.branch}${e.branchAddress ? ` (${e.branchAddress})` : ''} with a photo ID and your own padlock.
           </td>
         </tr>
-        <tr><td align="center" style="padding:20px 32px 0 32px;">
-          <a href="${e.portalUrl}" style="display:inline-block;background-color:${C.terra};color:${C.white};font-family:Arial,Helvetica,sans-serif;font-size:15px;font-weight:bold;text-decoration:none;padding:13px 32px;border-radius:8px;">Go to my portal</a>
-        </td></tr>
-        ${receiptButton}
+        ${ctaBlock}
+        ${attachNote}
         <tr>
           <td style="padding:20px 32px 0 32px;font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:22px;color:${C.muted};">
             Questions? Reply to this email or contact us at ${e.support} — quote your booking reference ${e.ref} so we can help faster.
@@ -295,6 +318,11 @@ export function buildBookingConfirmationEmail(d: BookingConfirmationData): Built
 </body>
 </html>`;
 
+  const receiptTextLine = attached
+    ? `  Receipt     : attached PDF (${d.receiptNumber?.trim() || deriveReceiptNumber(d.bookingRef, d.invoiceNo ?? null)})`
+    : d.receiptUrl
+      ? `  Receipt     : ${d.receiptUrl} (PDF unavailable)`
+      : null;
   const textLines = [
     `StoreLah — Payment confirmed`,
     ``,
@@ -316,11 +344,14 @@ export function buildBookingConfirmationEmail(d: BookingConfirmationData): Built
     `  Method      : ${methodLine}`,
     `  Paid on     : ${formatDateTime(d.paidAt)}`,
     `  Invoice     : ${d.invoiceNo ?? '—'}`,
-    ...(d.receiptUrl ? [`  Receipt     : ${d.receiptUrl}`] : []),
+    ...(receiptTextLine ? [receiptTextLine] : []),
     ``,
     `NEXT STEPS`,
     `  1. Save your booking reference ${d.bookingRef} — you will need it on move-in day.`,
     `  2. Manage your booking, invoices and move-out notices in the customer portal: ${d.portalUrl}`,
+    ...(attached
+      ? [`  Your receipt is attached (PDF) — look for the attachment on this email.`]
+      : []),
     `  3. On your move-in date, head to ${d.branchName} with a photo ID and your own padlock.`,
     ``,
     `Questions? Contact us at ${d.supportContact} and quote booking ${d.bookingRef}.`,
@@ -431,6 +462,7 @@ export async function loadBookingConfirmationData(
   // Unit display name falls back to the immutable unitCode (see
   // docs/UNIT_CODE_AND_NAME.md).
   const rawName = booking.unit.name?.trim();
+  const invoiceNo = fallbackInvoice?.invoiceNo ?? null;
   return {
     toEmail,
     customerName: booking.tenant.name?.trim() ? booking.tenant.name : null,
@@ -446,10 +478,16 @@ export async function loadBookingConfirmationData(
     paymentMethod: fallbackInvoice?.method?.trim() ? fallbackInvoice.method! : 'Card',
     cardLast4: enrichment.cardLast4,
     paidAt: invoicePaidAt,
-    invoiceNo: fallbackInvoice?.invoiceNo ?? null,
+    invoiceNo,
     receiptUrl: enrichment.receiptUrl,
     portalUrl: portalUrl(),
     supportContact,
+    // Deterministic receipt number from our own rows (see receiptPdf.ts).
+    // `receiptAttached` is decided by the send path from the actual
+    // attachment bytes; default true here so standalone renders preview
+    // the attachment-primary layout.
+    receiptNumber: deriveReceiptNumber(booking.bookingRef, invoiceNo, fallbackInvoice?.id ?? null),
+    receiptAttached: true,
   };
 }
 
@@ -458,13 +496,98 @@ export interface SendResult {
   reason?: string;
 }
 
+export interface BookingEmailAttachment {
+  filename: string;
+  bytes: Buffer;
+}
+
+function encodeHeader(value: string): string {
+  if (/^[\x20-\x7E]*$/.test(value)) return value;
+  return `=?UTF-8?B?${Buffer.from(value, 'utf8').toString('base64')}?=`;
+}
+
+function chunkBase64(b64: string): string {
+  const out: string[] = [];
+  for (let i = 0; i < b64.length; i += 76) out.push(b64.slice(i, i + 76));
+  return out.join('\r\n');
+}
+
+function randomBoundary(prefix: string): string {
+  const hex = Math.random().toString(16).slice(2) + Date.now().toString(16);
+  return `${prefix}-${hex}`;
+}
+
 /**
- * Renders + sends the confirmation email. NEVER throws — every failure mode
- * (unconfigured, test env, no recipient, SES error) is logged and
+ * Hand-built MIME multipart/mixed message (plain-text + HTML + optional PDF
+ * attachment). No extra dependency — base64 parts keep the raw message
+ * 7-bit safe for SendRawEmail. Pure function, safe to unit-test.
+ */
+export function buildRawMimeMessage(args: {
+  fromName: string;
+  fromEmail: string;
+  to: string;
+  built: BuiltBookingEmail;
+  attachment: BookingEmailAttachment | null;
+}): Buffer {
+  const mixedBoundary = randomBoundary('storelah-mixed');
+  const altBoundary = randomBoundary('storelah-alt');
+  const lines: string[] = [
+    `From: "${args.fromName.replace(/"/g, "'")}" <${args.fromEmail}>`,
+    `To: ${args.to}`,
+    `Subject: ${encodeHeader(args.built.subject)}`,
+    'MIME-Version: 1.0',
+    `Content-Type: multipart/mixed; boundary="${mixedBoundary}"`,
+    '',
+    `--${mixedBoundary}`,
+    `Content-Type: multipart/alternative; boundary="${altBoundary}"`,
+    '',
+    `--${altBoundary}`,
+    'Content-Type: text/plain; charset=utf-8',
+    'Content-Transfer-Encoding: base64',
+    'Content-Disposition: inline',
+    '',
+    chunkBase64(Buffer.from(args.built.text, 'utf8').toString('base64')),
+    '',
+    `--${altBoundary}`,
+    'Content-Type: text/html; charset=utf-8',
+    'Content-Transfer-Encoding: base64',
+    'Content-Disposition: inline',
+    '',
+    chunkBase64(Buffer.from(args.built.html, 'utf8').toString('base64')),
+    '',
+    `--${altBoundary}--`,
+  ];
+  if (args.attachment) {
+    const safeName = args.attachment.filename.replace(/"/g, '');
+    lines.push(
+      '',
+      `--${mixedBoundary}`,
+      `Content-Type: application/pdf; name="${safeName}"`,
+      'Content-Transfer-Encoding: base64',
+      `Content-Disposition: attachment; filename="${safeName}"`,
+      '',
+      chunkBase64(args.attachment.bytes.toString('base64')),
+    );
+  }
+  lines.push('', `--${mixedBoundary}--`, '');
+  return Buffer.from(lines.join('\r\n'), 'utf8');
+}
+
+/**
+ * Renders + sends the confirmation email with the StoreLah PDF receipt
+ * attached (SendRawEmail, multipart/mixed). NEVER throws — every failure
+ * mode (unconfigured, test env, no recipient, SES error) is logged and
  * returned as `{ sent: false }` so the payment path always succeeds.
+ *
+ * Attachment fallback: when `opts.pdfBytes` is absent/empty the email sends
+ * without it (renderer shows the tiny Stripe fallback link instead). When
+ * MIME assembly with the attachment fails, the send is retried once WITHOUT
+ * the attachment + a log line — the customer still gets the confirmation
+ * and (when available) the Stripe fallback proof.
  */
 export async function sendBookingConfirmationEmail(
   data: BookingConfirmationData,
+  opts?: { pdfBytes?: Buffer | null; pdfFilename?: string | null },
 ): Promise<SendResult> {
   if (process.env.NODE_ENV === 'test') {
     console.log(
@@ -486,25 +609,46 @@ export async function sendBookingConfirmationEmail(
   }
   try {
     const from = fromSender();
-    const built = buildBookingConfirmationEmail(data);
+    // The rendered layout always matches what is actually attached:
+    // bytes present → attachment-primary; absent → Stripe fallback link.
+    const pdfBytes = opts?.pdfBytes && opts.pdfBytes.length > 0 ? opts.pdfBytes : null;
+    const attachment: BookingEmailAttachment | null = pdfBytes
+      ? { filename: opts?.pdfFilename?.trim() || receiptFilename(data.bookingRef), bytes: pdfBytes }
+      : null;
+    let built = buildBookingConfirmationEmail({ ...data, receiptAttached: Boolean(attachment) });
+    let raw: Buffer;
+    try {
+      raw = buildRawMimeMessage({
+        fromName: from.name,
+        fromEmail: from.email,
+        to: data.toEmail,
+        built,
+        attachment,
+      });
+    } catch (mimeErr) {
+      const message = mimeErr instanceof Error ? mimeErr.message : String(mimeErr);
+      console.log(
+        `[email] booking confirmation attachment build failed bookingRef=${data.bookingRef} (${message}) — sending without attachment`,
+      );
+      built = buildBookingConfirmationEmail({ ...data, receiptAttached: false });
+      raw = buildRawMimeMessage({
+        fromName: from.name,
+        fromEmail: from.email,
+        to: data.toEmail,
+        built,
+        attachment: null,
+      });
+    }
     // Default credential chain: Lambda execution role in prod, explicit
     // AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY env vars for local dev.
+    // NOTE (owner): SendRawEmail needs ses:SendRawEmail on the sender
+    // identity/role — the previous SendEmail path needed ses:SendEmail.
     const ses = new SESClient({ region: sesRegion() });
-    await ses.send(
-      new SendEmailCommand({
-        Source: `"${from.name}" <${from.email}>`,
-        Destination: { ToAddresses: [data.toEmail] },
-        Message: {
-          Subject: { Data: built.subject, Charset: 'UTF-8' },
-          Body: {
-            Html: { Data: built.html, Charset: 'UTF-8' },
-            Text: { Data: built.text, Charset: 'UTF-8' },
-          },
-        },
-      }),
-    );
+    await ses.send(new SendRawEmailCommand({ RawMessage: { Data: raw } }));
     // Log carries the booking ref + outcome only — never the recipient PII.
-    console.log(`[email] booking confirmation sent bookingRef=${data.bookingRef}`);
+    console.log(
+      `[email] booking confirmation sent bookingRef=${data.bookingRef}${attachment ? ' (receipt attached)' : ' (no attachment)'}`,
+    );
     return { sent: true };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -514,8 +658,11 @@ export async function sendBookingConfirmationEmail(
 }
 
 /**
- * Loads + sends the confirmation for a paid booking. Best-effort wrapper for
- * the webhook path — never throws.
+ * Loads + generates the receipt PDF + sends the confirmation for a paid
+ * booking. Best-effort wrapper for the webhook path — never throws. The PDF
+ * is generated in-memory per send (never stored in the DB); when generation
+ * fails the email still sends WITHOUT the attachment (Stripe fallback link
+ * preserved) plus a log line.
  */
 export async function sendBookingConfirmationForBooking(
   bookingId: string,
@@ -524,7 +671,20 @@ export async function sendBookingConfirmationForBooking(
   try {
     const data = await loadBookingConfirmationData(bookingId, opts);
     if (!data) return { sent: false, reason: 'no-recipient' };
-    return await sendBookingConfirmationEmail(data);
+    let pdfBytes: Buffer | null = null;
+    try {
+      pdfBytes = await buildReceiptPdfBytes(data);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(
+        `[email] receipt PDF generation failed bookingRef=${data.bookingRef} (${message}) — sending without attachment`,
+      );
+      pdfBytes = null;
+    }
+    return await sendBookingConfirmationEmail(
+      data,
+      pdfBytes ? { pdfBytes, pdfFilename: receiptFilename(data.bookingRef) } : undefined,
+    );
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error(`[email] booking confirmation load/send failed bookingId=${bookingId}: ${message}`);

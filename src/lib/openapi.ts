@@ -121,8 +121,8 @@ export const openapiSpec = {
         'All pre-existing shapes are unchanged.',
       '',
       'v1.6.0 is ADDITIVE-ONLY over 1.5.5: CMS-editable booking-extras catalog — ' +
-        'protection tiers (`ProtectionPlan`: id slug, name, price monthly recurring, coverage, ' +
-        'imageUrl, sortOrder, active) and packing-supply addons (`Addon`: id slug, name, price one-off, ' +
+        'protection tiers (`ProtectionPlan`: id slug, name, price monthly recurring, wasPrice struck-price, coverage, ' +
+        'imageUrl, sortOrder, active) and packing-supply addons (`Addon`: id slug, name, price one-off, wasPrice struck-price, description, ' +
         'unit, imageUrl, sortOrder, active) with unauthenticated `GET /public/protection-plans` + ' +
         '`GET /public/addons` (active only, sortOrder ascending, `{ data, meta: { count } }`) ' +
         'and operator CMS CRUD `GET|POST /cms/protection-plans`, ' +
@@ -151,7 +151,9 @@ export const openapiSpec = {
         'the same line-only NLA; canvas-tessellated whole-canvas figures survive only as ' +
         'diagnostic numbers inside `basis_notes` (exteriorWall/derivedCirculation/droppedSlivers/' +
         'balanced stay canvas diagnostics). GFA/occupancy-count/revenue-money/unit_mix/volumetric ' +
-        'shapes are unchanged.',
+        'shapes are unchanged. Pillars subtract from NLA only (hasPillar-unit footprints plus ' +
+        'Pillar-named blocks, treated like blocked area via the additive `pillarRects` input to ' +
+        'computeBoundaryMetrics; UFA untouched).',
       '',
       'v1.6.3 is ADDITIVE-ONLY over 1.6.2: unauthenticated lead capture for the booking ',
       '"Your details" step — `POST /public/leads` creates a Lead with stage `NEW_ENQUIRY` ',
@@ -195,6 +197,16 @@ export const openapiSpec = {
         'invoice to PAID), so an unpaid (`PENDING_PAYMENT`) booking appears under ' +
         '`data.bookings` only and never in `data.units`. No shape changes — entry shapes, ' +
         'the envelope and every other key are unchanged.',
+      '',
+      'Batch additions (all ADDITIVE-ONLY, no shape removals): `LeadStage` gains ' +
+        '`PENDING_PAYMENT` (pipeline kanban column between Quoted and Booked; bookings untouched); ' +
+        '`GET /cms/units/map` gains `?hasAC=` (same yes/no grammar as the units list) and the admin ' +
+        'map hides INACTIVE units (lists keep them); `POST|PUT /cms/units` reject `climateControl` ' +
+        'with 400 (hasAC is the source of truth; reads still echo the stored value) and the CSV ' +
+        'import rejects a `climateControl` column the same way; live (ACTIVE) plans lock ' +
+        'OCCUPIED/OVERDUE placements against edit/delete with 409; corridor-adjacent placement ' +
+        'edges are inferable via `inferDoorEdges` (Auto-doors persists through the existing ' +
+        'placement PUT); NLA subtracts pillar footprints (see the v1.6.2 note).',
 
       'v1.8.2 is ADDITIVE-ONLY over 1.8.1: backend block-area calculation for floor plans — ' +
         'every `PlanBlock` gains derived `areaSqft` (w×h, 1 grid unit = 1 ft; computed, ' +
@@ -3017,13 +3029,54 @@ export const openapiSpec = {
         summary: 'Quotes queue (PROPOSAL_SENT + live inventory)',
         description: [
           'Read-model over PROPOSAL_SENT leads: each quote carries its live AVAILABLE-unit match ',
-          'count. No quote table exists by design; stage moves reuse PATCH /leads.',
+          'count. No quote table exists by design; creation uses POST /quotes, other stage moves reuse PATCH /leads.',
         ].join('\n'),
         operationId: 'listQuotes',
         security: [{ bearerAuth: [] }],
         responses: {
           '200': openapiResponse({ type: 'array', items: { $ref: openapiSchemaRef('Quote') } }),
           '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+      post: {
+        tags: ['Operator CMS'],
+        summary: 'Create a quotation (new or from an existing lead)',
+        description: [
+          'Creates a quotation as a PROPOSAL_SENT lead with live AVAILABLE-unit options. ',
+          'Either pass leadId to quote an existing lead (optional overrides applied, 409 when already ',
+          'quoted or WON/LOST) or pass lead fields (name required) to create a new quoted lead ',
+          '(409 on an open duplicate for the same contact + facility). No quote table exists by design.',
+        ].join('\n'),
+        operationId: 'createQuote',
+        security: [{ bearerAuth: [] }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  leadId: { type: 'string' },
+                  name: { type: 'string' },
+                  preferredBranchId: { type: 'string' },
+                  preferredSize: { type: 'string' },
+                  monthlyRate: { type: 'number' },
+                  email: { type: 'string' },
+                  mobile: { type: 'string' },
+                  owner: { type: 'string' },
+                  unitCode: { type: 'string' },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          '201': openapiResponse({ $ref: openapiSchemaRef('QuoteDetail') }),
+          '400': openapiErrorResponse('Invalid quotation payload.'),
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '404': openapiErrorResponse('Lead, branch, or unit not found.'),
+          '409': openapiErrorResponse('Already quoted, terminal lead, duplicate, or unit unavailable.'),
           '500': openapiErrorResponse('Unexpected server error'),
         },
       },
@@ -3505,7 +3558,7 @@ export const openapiSpec = {
           climateControl: {
             type: ['string', 'null'],
             description:
-              'Legacy free-text climate note (e.g. "Ambient climate"); prefer hasAC.',
+              'REMOVED write surface: POST/PUT /units reject climateControl with 400 (use hasAC). Reads still echo the stored legacy value.',
           },
           hasAC: { type: 'boolean', description: 'True when the unit is air-conditioned.' },
           hasPillar: { type: 'boolean', description: 'True when the unit contains a structural pillar.' },
@@ -3715,13 +3768,14 @@ export const openapiSpec = {
       // --- Booking-extras catalog (v1.6.0, additive) ---
       ProtectionPlan: {
         type: 'object',
-        required: ['id', 'name', 'price', 'coverage', 'imageUrl', 'sortOrder', 'active'],
+        required: ['id', 'name', 'price', 'wasPrice', 'coverage', 'imageUrl', 'sortOrder', 'active'],
         description:
           'A CMS-editable protection tier (monthly recurring price). `id` is the stable frontend slug.',
         properties: {
           id: { type: 'string', description: 'Stable slug, e.g. essential / standard / enhanced / premium.' },
           name: { type: 'string', description: 'Display name, e.g. Essential.' },
           price: { type: 'number', description: 'Monthly recurring price (SGD).' },
+          wasPrice: { type: ['number', 'null'], description: 'Slashed-price display: original price shown struck-through next to price (null = no strike-through). Display only — checkout charges price.' },
           coverage: { type: ['string', 'null'], description: 'Short coverage description shown at checkout.' },
           imageUrl: { type: ['string', 'null'], description: 'Checkout artwork: validated HTTPS URL string, null = no image.' },
           sortOrder: { type: 'integer', description: 'Ascending display order.' },
@@ -3736,6 +3790,7 @@ export const openapiSpec = {
           id: { type: 'string', description: 'URL-safe slug: lowercase letters, numbers, hyphens.' },
           name: { type: 'string' },
           price: { type: 'number', minimum: 0 },
+          wasPrice: { type: ['number', 'null'], minimum: 0 },
           coverage: { type: ['string', 'null'] },
           imageUrl: { type: ['string', 'null'], description: 'HTTPS URL string (max 2048 chars); null/empty clears the image.' },
           sortOrder: { type: 'integer', minimum: 0 },
@@ -3744,13 +3799,15 @@ export const openapiSpec = {
       },
       Addon: {
         type: 'object',
-        required: ['id', 'name', 'price', 'unit', 'imageUrl', 'sortOrder', 'active'],
+        required: ['id', 'name', 'price', 'wasPrice', 'description', 'unit', 'imageUrl', 'sortOrder', 'active'],
         description:
           'A CMS-editable packing-supply addon (one-off price). `id` is the stable frontend slug.',
         properties: {
           id: { type: 'string', description: 'Stable slug, e.g. medium-box / disc-padlock.' },
           name: { type: 'string', description: 'Display name, e.g. Medium Box.' },
           price: { type: 'number', description: 'One-off price (SGD).' },
+          wasPrice: { type: ['number', 'null'], description: 'Slashed-price display: original price shown struck-through next to price (null = no strike-through). Display only — checkout charges price.' },
+          description: { type: ['string', 'null'], description: 'Per-addon blurb shown at checkout (null = none). ProtectionPlan keeps coverage instead.' },
           unit: { type: ['string', 'null'], description: 'Sale unit shown at checkout, e.g. box / each.' },
           imageUrl: { type: ['string', 'null'], description: 'Checkout artwork: validated HTTPS URL string, null = no image.' },
           sortOrder: { type: 'integer', description: 'Ascending display order.' },
@@ -3765,6 +3822,8 @@ export const openapiSpec = {
           id: { type: 'string', description: 'URL-safe slug: lowercase letters, numbers, hyphens.' },
           name: { type: 'string' },
           price: { type: 'number', minimum: 0 },
+          wasPrice: { type: ['number', 'null'], minimum: 0 },
+          description: { type: ['string', 'null'] },
           unit: { type: ['string', 'null'] },
           imageUrl: { type: ['string', 'null'], description: 'HTTPS URL string (max 2048 chars); null/empty clears the image.' },
           sortOrder: { type: 'integer', minimum: 0 },
@@ -3841,7 +3900,7 @@ export const openapiSpec = {
           branchName: { type: 'string' },
           preferredBranchId: { type: ['string', 'null'], description: 'Resolved branch id (null when no branch).' },
           note: { type: ['string', 'null'], description: 'Message head (pre-v2 rows may also carry legacy `key: value` lines).' },
-          stage: { type: 'string', enum: ['NEW_ENQUIRY', 'CONTACTED', 'VIEWING_BOOKED', 'PROPOSAL_SENT', 'WON', 'LOST'] },
+          stage: { type: 'string', enum: ['NEW_ENQUIRY', 'CONTACTED', 'VIEWING_BOOKED', 'PROPOSAL_SENT', 'PENDING_PAYMENT', 'WON', 'LOST'] },
           source: { type: 'string', enum: ['WEBSITE', 'WHATSAPP', 'REFERRAL', 'GOOGLE'] },
           monthlyRate: { type: ['number', 'null'] },
           email: { type: ['string', 'null'] },
@@ -4126,7 +4185,7 @@ export const openapiSpec = {
           climateControl: {
             type: ['string', 'null'],
             description:
-              'Legacy free-text climate note (e.g. "Ambient climate"); prefer hasAC.',
+              'REMOVED write surface: POST/PUT /units reject climateControl with 400 (use hasAC). Reads still echo the stored legacy value.',
           },
           hasAC: { type: 'boolean', description: 'True when the unit is air-conditioned.' },
           hasPillar: { type: 'boolean', description: 'True when the unit contains a structural pillar.' },

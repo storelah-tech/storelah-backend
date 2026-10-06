@@ -122,6 +122,8 @@ type PlacementUnit = {
   name: string | null;
   sqft: number;
   status: string;
+  hasAC?: boolean | null;
+  hasPillar?: boolean | null;
   size: { code: string; name: string };
 };
 
@@ -135,6 +137,10 @@ function serializeUnitSummary(u: PlacementUnit) {
     name: u.name ?? u.unitCode,
     sqft: u.sqft,
     status: u.status,
+    // Additive: AC flag for the designer's palette filter; pillar flag for
+    // the editor's local NLA mirror.
+    hasAC: u.hasAC ?? false,
+    hasPillar: u.hasPillar ?? false,
     size: { code: u.size.code, name: u.size.name },
   };
 }
@@ -443,6 +449,27 @@ export function solidStructureRects(structure: unknown): FootRect[] {
 
 const round1 = (v: number): number => Math.round(v * 10) / 10;
 
+/** True for Pillar-named decoration blocks (case-insensitive). Such blocks
+ * are ordinary FloorPlanBlocks — callers passing the full block list already
+ * subtract them from NLA via `blocked`; exported for editor/metrics symmetry. */
+export function isPillarBlockName(name: string | null | undefined): boolean {
+  return /pillar/i.test(String(name ?? ''));
+}
+
+/**
+ * NLA-only pillar rects for computeBoundaryMetrics: the footprints of
+ * placements whose unit has hasPillar set. Pillar-named blocks are
+ * deliberately EXCLUDED here — they ride in `blocks` and are already
+ * subtracted via `blocked` (including them again would double-count).
+ */
+export function pillarRectsOf(
+  placements: Array<FootRect & { unit?: { hasPillar?: boolean | null } | null }>,
+): FootRect[] {
+  return placements
+    .filter((p) => p?.unit?.hasPillar === true)
+    .map((p) => ({ x: p.x, y: p.y, width: p.width, height: p.height }));
+}
+
 /**
  * Boundary metrics for one plan. Inputs are plain rects/polylines so the
  * editor can reuse this definition client-side (see fpBoundaryMetricsLocal in
@@ -453,10 +480,18 @@ const round1 = (v: number): number => Math.round(v * 10) / 10;
  * separate 2-vertex sides counts); a lone open 2-vertex segment contributes 0
  * (a line encloses no area — never fabricated). Per loop: UFA adds
  * max(0, gross − blocked) where blocked is the loop-clipped obstacles total
- * (blocks + solid structure); NLA adds max(0, placementsInLoop − blocked) with
- * the same blocked total (subtracted once per loop, not per placement row);
- * blockAreaSqft sums the loop-clipped BLOCK rects only. Final NLA clamps to
- * ≤ UFA as a safety net.
+ * (blocks + solid structure); NLA adds max(0, placementsInLoop − blocked −
+ * pillarBlocked) with the same blocked total (subtracted once per loop, not
+ * per placement row); blockAreaSqft sums the loop-clipped BLOCK rects only.
+ * Final NLA clamps to ≤ UFA as a safety net.
+ *
+ * PILLARS (additive): `pillarRects` are extra NLA-only blocked rects — the
+ * footprints of placements whose unit hasPillar is true, plus any
+ * Pillar-named block rects not already carried in `blocks`. Blocks named
+ * Pillar are ordinary FloorPlanBlocks, so callers that pass the full block
+ * list already subtract them via `blocked`; `pillarRects` covers the
+ * hasPillar-unit footprints (treated exactly like blocked area, NLA only —
+ * UFA is untouched). Omit it and the report is byte-identical to before.
  */
 export function computeBoundaryMetrics(input: {
   boundaries: Array<{ points: unknown; closed: boolean }>;
@@ -464,6 +499,7 @@ export function computeBoundaryMetrics(input: {
   structure: unknown;
   placements: FootRect[];
   gfaSqft?: number | null;
+  pillarRects?: FootRect[];
 }): BoundaryMetrics {
   const validated = input.boundaries
     .map((b) => boundaryPointsOf(b.points))
@@ -478,6 +514,7 @@ export function computeBoundaryMetrics(input: {
     return { gla: 0, ufa: 0, nla: 0, unit: 'sqft', boundaryClosed: false, facilityAreaSqft: 0, blockAreaSqft: 0, gfaSqft, gfaSource };
   }
   const obstacles: FootRect[] = [...input.blocks, ...solidStructureRects(input.structure)];
+  const pillarRects: FootRect[] = input.pillarRects ?? [];
   let gla = 0;
   let ufa = 0;
   let nla = 0;
@@ -490,8 +527,11 @@ export function computeBoundaryMetrics(input: {
     // NLA subtracts the FULL loop-clipped blocked area (blocks + solid
     // structure — the same `blocked` total as UFA), once per loop rather than
     // per placement row, so stacked locker tiers don't subtract twice.
+    // Pillars subtract additionally (NLA only): loop-clipped hasPillar-unit
+    // footprints + Pillar-named block rects passed via `pillarRects`.
     const placementsInLoop = input.placements.reduce((sum, r) => sum + rectPolygonArea(r, loop), 0);
-    nla += Math.max(0, placementsInLoop - blocked);
+    const pillarBlocked = pillarRects.reduce((sum, r) => sum + rectPolygonArea(r, loop), 0);
+    nla += Math.max(0, placementsInLoop - blocked - pillarBlocked);
     // Loop-clipped BLOCK area only (solid structure excluded) — the exposed
     // blockAreaSqft total. SUM double-counts overlapping blocks (same
     // non-overlapping assumption as the marked-area rule); no dedupe.
@@ -552,6 +592,9 @@ function serializePlan(p: PlanPayload) {
       structure: p.structure,
       placements: p.placements,
       gfaSqft: p.gfaSqft ?? null,
+      // Pillars subtract from NLA only (hasPillar-unit footprints; Pillar
+      // blocks already ride in `blocks` — see pillarRectsOf).
+      pillarRects: pillarRectsOf(p.placements),
     }),
   };
 }
@@ -639,6 +682,89 @@ export function doorEdgesToArray(stored: string | null | undefined): DoorEdge[] 
     .map((s) => s.trim())
     .filter((s) => s === 'N' || s === 'S' || s === 'E' || s === 'W') as DoorEdge[];
   return parts.length > 0 ? parts : null;
+}
+
+// ---------- corridor → door inference (auto-doors) ----------
+//
+// Rule: for a unit placement rect, any compass edge adjacent (within 1 grid
+// unit) to a corridor-like block gets a door on that edge. Corridor-like =
+// a block whose name mentions Corridor/Aisle (case-insensitive) or resolves
+// to derived circulation (walkway / passage / lobby / entrance / exit names).
+// Manual N/S/E/W toggles are untouched — authored doorEdges always win; this
+// only proposes edges for unauthored placements (the Auto-doors toolbar
+// button persists the proposal via the existing placement PUT).
+const CORRIDOR_LIKE_RE = /(corridor|aisle|walkway|passage|lobby|entrance|exit)/i;
+
+export function isCorridorLikeBlock(name: string | null | undefined): boolean {
+  if (!name) return false;
+  return CORRIDOR_LIKE_RE.test(name.trim());
+}
+
+function intervalsOverlapWithTolerance(a0: number, a1: number, b0: number, b1: number, tolerance: number): boolean {
+  return a0 - tolerance < b1 && b0 - tolerance < a1;
+}
+
+/**
+ * Infer door compass edges for a placement rect from corridor adjacency.
+ * Returns the subset of ['N','S','E','W'] (compass order) whose edge sits
+ * within 1 grid unit of a corridor-like block with overlapping span; [] when
+ * no corridor edge is adjacent (caller keeps the placement unauthored).
+ * Pure — the editor mirrors it client-side (see fpInferDoorEdges).
+ */
+export function inferDoorEdges(
+  rect: { x: number; y: number; width: number; height: number },
+  blocks: Array<{ name: string; x: number; y: number; width: number; height: number }>,
+): DoorEdge[] {
+  const corridors = (blocks ?? []).filter((b) => isCorridorLikeBlock(b?.name));
+  if (!corridors.length) return [];
+  const edges: DoorEdge[] = [];
+  const north = rect.y;
+  const south = rect.y + rect.height;
+  const west = rect.x;
+  const east = rect.x + rect.width;
+  const adjacent = (edge: DoorEdge): boolean =>
+    corridors.some((b) => {
+      const bNorth = b.y;
+      const bSouth = b.y + b.height;
+      const bWest = b.x;
+      const bEast = b.x + b.width;
+      switch (edge) {
+        case 'N':
+          return Math.abs(north - bSouth) <= 1 && intervalsOverlapWithTolerance(west, east, bWest, bEast, 1);
+        case 'S':
+          return Math.abs(south - bNorth) <= 1 && intervalsOverlapWithTolerance(west, east, bWest, bEast, 1);
+        case 'W':
+          return Math.abs(west - bEast) <= 1 && intervalsOverlapWithTolerance(north, south, bNorth, bSouth, 1);
+        case 'E':
+          return Math.abs(east - bWest) <= 1 && intervalsOverlapWithTolerance(north, south, bNorth, bSouth, 1);
+      }
+    });
+  for (const edge of DOOR_EDGE_ORDER) {
+    if (adjacent(edge)) edges.push(edge);
+  }
+  return edges;
+}
+
+// ---------- occupied edit lock (live plans) ----------
+//
+// When a plan is ACTIVE (published/live), placements whose unit is OCCUPIED
+// or OVERDUE are uneditable: drag/resize/rename/delete writes are rejected
+// with 409. Blocks, boundaries and markers carry no unit linkage (pure
+// decoration geometry), so the lock applies to placements only — decorating a
+// live plan stays editable and demotes back to DRAFT via markDraft.
+// DRAFT plans are always fully editable.
+export async function assertPlacementEditable(floorId: string, unitId: string, action: string): Promise<void> {
+  const plan = await prisma.floorPlan.findUnique({ where: { floorId }, select: { status: true } });
+  if (!plan || plan.status !== 'ACTIVE') return;
+  const unit = await prisma.unit.findUnique({ where: { id: unitId }, select: { status: true, unitCode: true } });
+  if (!unit) return;
+  if (unit.status === 'OCCUPIED' || unit.status === 'OVERDUE') {
+    throw new AppError(
+      409,
+      'CONFLICT',
+      `Unit ${unit.unitCode} is ${unit.status} and the plan is live (ACTIVE) — Occupied, uneditable when live. Unpublish to draft before ${action}.`,
+    );
+  }
 }
 
 // ---------- API ----------
@@ -937,6 +1063,9 @@ export async function setUnitPlacement(floorId: string, unitId: string, geom: Pl
   if (unit.floorId !== floorId) {
     throw new AppError(400, 'VALIDATION', `Unit ${unit.unitCode} does not belong to floor ${floorId}`);
   }
+  // Occupied edit lock: a live (ACTIVE) plan's OCCUPIED/OVERDUE placements
+  // reject drag/resize/door-toggle writes with 409.
+  await assertPlacementEditable(floorId, unitId, 'editing this placement');
 
   const existing = await prisma.unitPlacement.findUnique({ where: { unitId } });
   const tier = geom.stackTier === undefined ? (existing?.stackTier ?? 0) : checkStackTier(geom.stackTier);
@@ -1133,6 +1262,9 @@ export async function removeUnitPlacement(floorId: string, unitId: string) {
   if (!placement || placement.floorPlanId !== plan.id) {
     throw new AppError(404, 'NOT_FOUND', `Unit ${unitId} has no placement on the floor ${floorId} plan`);
   }
+  // Occupied edit lock: removing an OCCUPIED/OVERDUE placement from a live
+  // (ACTIVE) plan is rejected with 409.
+  await assertPlacementEditable(floorId, unitId, 'removing this placement');
   await prisma.unitPlacement.delete({ where: { unitId } });
   if (placement.stackTier === 0) {
     await demoteOrphanedUppers(plan.id, { x: placement.x, y: placement.y, width: placement.width, height: placement.height });

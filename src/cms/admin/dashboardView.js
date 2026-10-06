@@ -97,8 +97,13 @@ function renderUnitMap(map) {
   const title = $('#unitMapTitle');
   const legend = $('#mapLegend');
   const grid = $('#unitGrid');
+  if (map && Array.isArray(map.units)) {
+    // INACTIVE units stay in lists but never render on the map (mirrors the
+    // server-side admin-map filter in getUnitMap).
+    map.units = map.units.filter((u) => String(u.status || '').toUpperCase() !== 'INACTIVE');
+  }
   const b = branchByCode(state.branchCode);
-  if (title) title.textContent = `Unit Map — ${b ? b.name : state.branchCode} · Level ${state.level}`;
+  if (title) title.textContent = `Units Information — ${b ? b.name : state.branchCode} · Level ${state.level}`;
   if (legend && map && map.legend) {
     const L = map.legend;
     const items = [
@@ -217,7 +222,7 @@ export async function fetchUnitMap() {
     const grid = $('#unitGrid');
     if (grid) { grid.classList.remove('map-grouped'); grid.innerHTML = '<div class="t-type" style="padding:18px 4px;">No active floors for this facility — reactivate one in Floors.</div>'; }
     const title = $('#unitMapTitle');
-    if (title) { const b = branchByCode(state.branchCode); title.textContent = `Unit Map — ${b ? b.name : state.branchCode}`; }
+    if (title) { const b = branchByCode(state.branchCode); title.textContent = `Units Information — ${b ? b.name : state.branchCode}`; }
     return;
   }
   // P1 item 3: Near-lift + Size filters ride the map read path.
@@ -249,7 +254,7 @@ export function syncFacilityDashboard() {
   const title = $('#unitMapTitle');
   if (isAllFacilities()) {
     if (tabs) tabs.style.display = 'none';
-    if (title) title.textContent = 'Unit Map — All Facilities';
+    if (title) title.textContent = 'Units Information — All Facilities';
     // Placeholder is flat text, not size columns — drop the grouped class so
     // the 4/2-col grid doesn't apply; renderUnitMap re-adds it per fetch.
     if (grid) { grid.classList.remove('map-grouped'); grid.innerHTML = '<div class="t-type" style="padding:18px 4px;">Select a facility above to view its floor map.</div>'; }

@@ -135,6 +135,45 @@ export function del(p) {
   return request(p, { method: 'DELETE' }).then((b) => b.data);
 }
 
+// Binary file download (PDF quotations). Same auth gate + envelope-free:
+// fetches with the Bearer token, throws ApiError on HTTP failure, otherwise
+// triggers a browser download of the blob. Additive — JSON paths untouched.
+export async function downloadFile(path, filename) {
+  if (!token) {
+    try {
+      await authSettled;
+    } catch (e) {
+      throw new ApiError(0, 'AUTH', 'Not authenticated — login failed. Reload to retry.');
+    }
+    if (!token) {
+      throw new ApiError(0, 'AUTH', 'Not authenticated — no token. Reload to retry.');
+    }
+  }
+  let res;
+  try {
+    res = await fetch(`${API}${path}`, { headers: { Authorization: `Bearer ${token}` } });
+  } catch (e) {
+    throw new ApiError(0, 'NETWORK', 'Network error — is the backend up?');
+  }
+  if (!res.ok) {
+    let message = `Request failed (${res.status})`;
+    try {
+      const body = await res.json();
+      if (body && body.error && body.error.message) message = body.error.message;
+    } catch (e) { /* non-JSON error body */ }
+    throw new ApiError(res.status, 'HTTP', message);
+  }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename || 'download';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
+
 // Shape any thrown error into a user-facing message. Lives beside ApiError
 // because it pattern-matches on that class first, then falls back generically.
 export function describeError(err) {

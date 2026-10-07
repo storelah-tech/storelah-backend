@@ -1,4 +1,4 @@
-import { Router, Request, Response } from 'express';
+import { Router, Request, Response, json as jsonBody } from 'express';
 import bcrypt from 'bcryptjs';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma';
@@ -44,7 +44,7 @@ import { listBranches, getMoveIns, getPortfolio } from '../core/branches';
 import { getSettings, upsertSettings } from '../core/settings';
 import { listSiteContent, getSiteContentByKey, upsertSiteContent } from '../core/siteContent';
 import { adjustRate, getNetPsf } from '../core/rates';
-import { listQuotes, getQuote, createQuotation } from '../core/quotes';
+import { listQuotes, getQuote, createQuotation, listQuotableLeads, getQuotationPdf } from '../core/quotes';
 import { listFees, createFee, updateFee, deleteFee, resolveFee } from '../core/fees';
 import { listBusinessRules, upsertBusinessRules } from '../core/businessRules';
 import {
@@ -183,6 +183,15 @@ import {
   updateAddon,
   deleteAddon,
 } from '../core/extras';
+import {
+  listContentItems,
+  getContentItem,
+  createContentItem,
+  updateContentItem,
+  deleteContentItem,
+  setContentItemImage,
+  removeContentItemImage,
+} from '../core/content';
 
 const router = Router();
 
@@ -944,14 +953,36 @@ router.post('/quotes', requireAuth, async (req: Request, res: Response) => {
     return;
   }
   const { nextActionAt, moveInDate, ...rest } = parsed.data;
+  const user = (req as any).user as { name?: string; email?: string } | undefined;
   created(
     res,
-    await createQuotation({
-      ...rest,
-      nextActionAt: nextActionAt === undefined ? undefined : nextActionAt ? new Date(nextActionAt) : null,
-      moveInDate: moveInDate === undefined ? undefined : moveInDate ? new Date(moveInDate) : null,
-    }),
+    await createQuotation(
+      {
+        ...rest,
+        nextActionAt: nextActionAt === undefined ? undefined : nextActionAt ? new Date(nextActionAt) : null,
+        moveInDate: moveInDate === undefined ? undefined : moveInDate ? new Date(moveInDate) : null,
+      },
+      { createdBy: user?.name || user?.email || null },
+    ),
   );
+});
+
+// Quotable leads for the quotation "Existing lead" picker (stage != WON;
+// already-quoted PROPOSAL_SENT + terminal LOST excluded). NOTE: registered
+// BEFORE GET /quotes/:id so "quotable-leads" is never parsed as a lead id.
+router.get('/quotes/quotable-leads', requireAuth, async (_req: Request, res: Response) => {
+  const { rows, meta } = await listQuotableLeads();
+  ok(res, rows, meta);
+});
+
+// Exact saved quotation PDF bytes for a quoted lead (latest issuance;
+// re-quotes supersede). File download — not an envelope.
+router.get('/quotes/:id/pdf', requireAuth, async (req: Request, res: Response) => {
+  const { bytes, filename, quoteNo } = await getQuotationPdf(String(req.params.id));
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `attachment; filename="${filename.replace(/"/g, '')}"`);
+  res.setHeader('X-Quote-No', quoteNo);
+  res.send(bytes);
 });
 
 router.get('/quotes/:id', requireAuth, async (req: Request, res: Response) => {
@@ -2669,6 +2700,123 @@ router.patch('/addons/:id', requireAuth, async (req: Request, res: Response) => 
 
 router.delete('/addons/:id', requireAuth, async (req: Request, res: Response) => {
   ok(res, await deleteAddon(String(req.params.id)));
+});
+
+// --- Landing content management (mini-WordPress for images + texts) ---
+// One row per landing slot keyed by operator slug `key` (immutable after
+// create — PUT rejects type/key changes; delete + recreate to retype).
+// Bearer JWT via requireAuth on all routes. Image upload is a JSON body
+// { filename, contentType, dataBase64 } (no multipart dep) with a raised
+// 12 MB JSON limit scoped to that route only; the global express.json()
+// limit is untouched. Direct server-side PUT: S3 when CONTENT_S3_BUCKET is
+// set, local /uploads fallback otherwise (see src/lib/contentStorage.ts).
+const contentTypeEnum = z.enum(['HERO_IMAGE', 'TESTIMONIAL', 'TEXT', 'IMAGE']);
+
+const contentPayloadSchema = z.object({
+  key: z
+    .string()
+    .trim()
+    .min(1)
+    .max(80)
+    .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, 'key must be a URL-safe slug (e.g. "hero-banner-1")'),
+  type: contentTypeEnum,
+  title: z.string().trim().max(200).nullable().optional(),
+  body: z.string().trim().max(5000).nullable().optional(),
+  author: z.string().trim().max(120).nullable().optional(),
+  role: z.string().trim().max(200).nullable().optional(),
+  alt: z.string().trim().max(200).nullable().optional(),
+  imageUrl: imageUrlField,
+  sortOrder: z.number().int().min(0).max(100000).optional(),
+  published: z.boolean().optional(),
+});
+
+const contentUpdateSchema = contentPayloadSchema.partial().omit({ key: true });
+
+const contentListQuerySchema = z.object({
+  type: contentTypeEnum.optional(),
+  published: z
+    .preprocess((v) => {
+      if (v === undefined || v === null || v === '') return undefined;
+      const s = String(v).trim().toLowerCase();
+      if (['1', 'true', 'yes'].includes(s)) return true;
+      if (['0', 'false', 'no'].includes(s)) return false;
+      return v;
+    }, z.boolean().optional())
+    .optional(),
+});
+
+router.get('/content', requireAuth, async (req: Request, res: Response) => {
+  const parsed = contentListQuerySchema.safeParse(req.query);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid content query (type, published)', parsed.error.flatten());
+    return;
+  }
+  const rows = await listContentItems({ type: parsed.data.type, published: parsed.data.published });
+  ok(res, rows, { count: rows.length });
+});
+
+router.post('/content', requireAuth, async (req: Request, res: Response) => {
+  const parsed = contentPayloadSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid content payload', parsed.error.flatten());
+    return;
+  }
+  created(res, await createContentItem(parsed.data));
+});
+
+router.get('/content/:key', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await getContentItem(String(req.params.key)));
+});
+
+router.put('/content/:key', requireAuth, async (req: Request, res: Response) => {
+  const parsed = contentUpdateSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid content payload', parsed.error.flatten());
+    return;
+  }
+  ok(res, await updateContentItem(String(req.params.key), parsed.data));
+});
+
+router.delete('/content/:key', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await deleteContentItem(String(req.params.key)));
+});
+
+const contentImageSchema = z.object({
+  filename: z.string().trim().min(1).max(255),
+  contentType: z.string().trim().min(1).max(100),
+  dataBase64: z.string().min(1).max(16_000_000),
+});
+
+// NOTE: registered BEFORE DELETE /content/:key/image's sibling GET detail —
+// no conflict (POST vs GET), but keep image routes together after the CRUD
+// block for readability.
+router.post(
+  '/content/:key/image',
+  requireAuth,
+  jsonBody({ limit: '12mb' }),
+  async (req: Request, res: Response) => {
+    const parsed = contentImageSchema.safeParse(req.body);
+    if (!parsed.success) {
+      fail(res, 400, 'VALIDATION', 'Image payload must be { filename, contentType, dataBase64 }', parsed.error.flatten());
+      return;
+    }
+    let data: Buffer;
+    try {
+      data = Buffer.from(parsed.data.dataBase64, 'base64');
+    } catch {
+      fail(res, 400, 'VALIDATION', 'dataBase64 is not valid base64');
+      return;
+    }
+    if (data.length === 0) {
+      fail(res, 400, 'VALIDATION', 'dataBase64 decodes to an empty file');
+      return;
+    }
+    ok(res, await setContentItemImage(String(req.params.key), parsed.data.filename, parsed.data.contentType, data));
+  },
+);
+
+router.delete('/content/:key/image', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await removeContentItemImage(String(req.params.key)));
 });
 
 export default router;

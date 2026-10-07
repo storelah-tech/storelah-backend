@@ -112,8 +112,21 @@ function serializeUnit(u: UnitWithRelations) {
     size: u.size,
     branch: u.branch,
     floor: u.floor,
-    tenant: u.tenant,
+    // Occupant visibility rule: a current tenant is surfaced ONLY for
+    // genuinely occupied units (OCCUPIED / OVERDUE). An AVAILABLE unit is free
+    // by definition and a RESERVED row is a legacy unpaid hold — neither
+    // carries a tenant-link contract (new bookings never produce RESERVED —
+    // see createCustomerBooking), so a dangling Tenant.unitId row on any
+    // other status is hidden here instead of implying a current occupant. The
+    // link itself is healed at booking time (customers.ts) / released on
+    // move-out (tenants.ts); rows are always preserved.
+    tenant: hasCurrentOccupant(u.status) ? u.tenant : null,
   };
+}
+
+// True only for statuses that imply a real occupant on the unit.
+function hasCurrentOccupant(status: UnitStatus): boolean {
+  return status === 'OCCUPIED' || status === 'OVERDUE';
 }
 
 export async function listUnits(query: UnitListQuery = {}) {
@@ -170,6 +183,12 @@ export interface PublicUnitsQuery {
 }
 
 const BROWSEABLE_STATUSES: UnitStatus[] = ['AVAILABLE', 'RESERVED'];
+// NOTE (reserve-on-unpaid removal): new bookings never produce RESERVED — the
+// unit stays AVAILABLE while unpaid and flips straight to OCCUPIED on verified
+// payment. RESERVED stays in this list (and in PublicUnitsQuery.status) for
+// backwards compat so pre-change rows keep surfacing until an operator
+// re-states them; a future cleanup can narrow this to AVAILABLE-only once no
+// RESERVED rows remain.
 
 // Customer-facing unit listing: only browseable statuses, no tenant/PII anywhere.
 // Floors gated by isActive: units on an inactive floor are never sent to the
@@ -475,8 +494,11 @@ export async function getUnitMap(branchCode: string, level: number, opts?: UnitM
       status: u.status.toLowerCase(),
       hasAC: u.hasAC,
       hasPillar: u.hasPillar,
-      // Public view must never expose tenant names / PII.
-      ...(isPublic ? {} : { tenant: u.tenant?.name ?? null }),
+      // Public view must never expose tenant names / PII. The admin map shows
+      // the occupant name only for genuinely occupied units (same rule as the
+      // list/detail serializers — a free or legacy-held unit never implies an
+      // occupant).
+      ...(isPublic ? {} : { tenant: hasCurrentOccupant(u.status) ? (u.tenant?.name ?? null) : null }),
     })),
   };
 }
@@ -564,7 +586,7 @@ export async function getUnitDetail(code: string) {
     climateControl: unit.climateControl,
     hasAC: unit.hasAC,
     hasPillar: unit.hasPillar,
-    tenant: unit.tenant
+    tenant: hasCurrentOccupant(unit.status) && unit.tenant
       ? {
           name: unit.tenant.name,
           type: unit.tenant.type,

@@ -5,8 +5,8 @@
 // target; the entry registers refreshAll()/loadRefs() via the setters below
 // because views must never import the entry module.
 
-import { STATUS_TONE, STATUS_LABEL, fmtMoney } from './constants.js';
-import { $, $$, escapeHtml, showBanner } from './dom.js';
+import { STATUS_TONE, STATUS_LABEL, fmtMoney, fmtDay, fmtDateTime, BOOKING_TONE, INVOICE_TONE, HIST_STAGE_TONE, HIST_STAGE_LABEL, HISTORY_EMPTY_TEXT } from './constants.js';
+import { $, $$, escapeHtml, timeAgo, showBanner } from './dom.js';
 import { confirmDialog } from './confirmDialog.js';
 import { ApiError, request, get, describeError } from './api.js';
 import { state, ensureActiveLevel, isAllFacilities } from './state.js';
@@ -196,6 +196,7 @@ function bluntRow(code) {
 
 // ---------- detail panel ----------
 export async function showUnitDetail(code) {
+  initUnitTabs();
   try {
     const d = await get(`/units/${encodeURIComponent(code)}`);
     const u = normalizeUnit(d);
@@ -215,8 +216,13 @@ export async function showUnitDetail(code) {
       const el = $(sel);
       if (el) el.textContent = v ?? '—';
     };
-    setVal('#udTenant', u.tenant && u.tenant.name ? u.tenant.name : '—');
-    setVal('#udTenantSub', u.tenant ? `${(u.tenant.type || '').toLowerCase()}${u.tenant.segment ? ' · ' + u.tenant.segment : ''}`.trim() : 'No current tenant');
+    // Free-unit rule (UI backstop to the API suppression in core/units.ts): an
+    // AVAILABLE unit never renders a linked occupant — even when a dangling
+    // unit.tenant payload is present. OCCUPIED/OVERDUE units keep showing
+    // their current tenant unchanged.
+    const isFree = u.status === 'AVAILABLE';
+    setVal('#udTenant', isFree ? 'No current tenant' : (u.tenant && u.tenant.name ? u.tenant.name : '—'));
+    setVal('#udTenantSub', isFree ? 'Free — no current occupant' : (u.tenant ? `${(u.tenant.type || '').toLowerCase()}${u.tenant.segment ? ' · ' + u.tenant.segment : ''}`.trim() : 'No current tenant'));
     setVal('#udRate', u.rate != null ? fmtMoney(u.rate) : '—');
     setVal('#udRateSub', u.psf != null ? '$' + Number(u.psf).toFixed(2) + '/sq ft' : '—');
     setVal('#udStatus', STATUS_LABEL[u.status] || u.status);
@@ -236,9 +242,384 @@ export async function showUnitDetail(code) {
     currentEditCode = u.code;
     state.selectedCode = u.code;
     setUnitsBanner('');
+    // Enriched tab panels (tenant-history timeline, bookings, invoices,
+    // activity) load best-effort from the existing read endpoints; the header
+    // card + ops above already painted, so a slow/failed fetch never blanks
+    // the detail. Sequence-guarded so rapid unit-hopping keeps the last unit.
+    paintUdLoading(u.code);
+    enrichUnitDetail(u.code, u);
   } catch (err) {
     showBanner('Detail: ' + describeError(err));
   }
+}
+
+// ---------- unit-detail tabs (Overview / Tenant history / Bookings / Invoices / Activity) ----------
+// Tablist keyboard follows the ARIA tabs pattern: Left/Right/Home/End move +
+// activate, Escape returns focus to the panel. Panels keep their existing IDs
+// so every prior data binding keeps working.
+const UD_TABS = ['overview', 'history', 'bookings', 'invoices', 'activity'];
+
+export function activateUdTab(name, opts = {}) {
+  if (!UD_TABS.includes(name)) return;
+  $$('.ud-tab[data-ud-tab]').forEach((tab) => {
+    const on = tab.dataset.udTab === name;
+    tab.classList.toggle('active', on);
+    tab.setAttribute('aria-selected', on ? 'true' : 'false');
+    tab.tabIndex = on ? 0 : -1;
+    const panel = document.getElementById('udPanel-' + tab.dataset.udTab);
+    if (panel) {
+      panel.classList.toggle('active', on);
+      if (on) panel.removeAttribute('hidden');
+      else panel.setAttribute('hidden', '');
+    }
+    if (on && opts.focus) tab.focus();
+  });
+}
+
+function initUnitTabs() {
+  if (document.body.dataset.udTabs === '1') return;
+  document.body.dataset.udTabs = '1';
+  const list = $('.ud-tabs[role="tablist"]');
+  if (list) {
+    list.addEventListener('click', (e) => {
+      const tab = e.target.closest('.ud-tab[data-ud-tab]');
+      if (tab) activateUdTab(tab.dataset.udTab);
+    });
+    list.addEventListener('keydown', (e) => {
+      const tab = e.target.closest('.ud-tab[data-ud-tab]');
+      if (!tab) return;
+      const i = UD_TABS.indexOf(tab.dataset.udTab);
+      let next = null;
+      if (e.key === 'ArrowRight') next = UD_TABS[(i + 1) % UD_TABS.length];
+      else if (e.key === 'ArrowLeft') next = UD_TABS[(i - 1 + UD_TABS.length) % UD_TABS.length];
+      else if (e.key === 'Home') next = UD_TABS[0];
+      else if (e.key === 'End') next = UD_TABS[UD_TABS.length - 1];
+      else return;
+      e.preventDefault();
+      activateUdTab(next, { focus: true });
+    });
+  }
+  $('#udHistFilter')?.addEventListener('change', (e) => {
+    udEnrich.histFilter = e.target.value || '';
+    if (udEnrich.code) renderUdHistory();
+  });
+}
+
+// "📋 History" toolbar button: jumps to the tenant-history tab (keeps the
+// operator in context instead of opening anything new).
+export function gotoUnitHistory() {
+  const code = getSelectedUnitCode();
+  if (!code) {
+    showBanner('Select a unit first.');
+    return;
+  }
+  initUnitTabs();
+  activateUdTab('history', { focus: true });
+  $('#unitDetail')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+// ---------- enriched panels (best-effort reads, never fatal) ----------
+const udEnrich = {
+  code: null,
+  seq: 0,
+  histFilter: '',
+  unit: null,
+  tenants: [],
+  bookings: [],
+  moveins: [],
+  activity: [],
+};
+
+function setUdState(sel, msg, isErr) {
+  const el = $(sel);
+  if (!el) return;
+  if (!msg) {
+    el.hidden = true;
+    el.textContent = '';
+    el.classList.remove('err');
+    return;
+  }
+  el.hidden = false;
+  el.textContent = '';
+  el.classList.toggle('err', !!isErr);
+  el.textContent = msg;
+}
+
+function paintUdLoading(code) {
+  udEnrich.code = code;
+  setUdState('#udHistState', 'Loading history…', false);
+  setUdState('#udBookingsState', 'Loading bookings…', false);
+  setUdState('#udInvoicesState', 'Loading invoices…', false);
+  setUdState('#udActivityState', 'Loading activity…', false);
+  const tl = $('#udTenantTimeline');
+  if (tl) {
+    tl.innerHTML = '';
+    tl.setAttribute('aria-busy', 'true');
+  }
+  const empty = $('#tenantHistoryEmpty');
+  if (empty) empty.hidden = true;
+  for (const sel of ['#udBookings', '#udInvoices', '#udUnitActivity']) {
+    const el = $(sel);
+    if (el) el.innerHTML = '';
+  }
+  const count = $('#udHistCount');
+  if (count) count.hidden = true;
+}
+
+function rowUnitCode(r) {
+  return r.unitCode || r.unit || r.code || null;
+}
+
+function tenantContact(t) {
+  return [t.email, t.mobile].filter(Boolean).join(' · ');
+}
+
+function histTone(stage) {
+  return HIST_STAGE_TONE[stage] || BOOKING_TONE[stage] || INVOICE_TONE[stage] || 'neutral';
+}
+
+function histLabel(stage) {
+  return HIST_STAGE_LABEL[stage] || STATUS_LABEL[stage] || (stage ? String(stage).replace(/_/g, ' ') : '—');
+}
+
+// Stay-stage filter (history tab select): DUE covers DUE_SOON rows and ACTIVE
+// covers CONFIRMED bookings, so operators find stays without learning the raw
+// enum split between tenants / bookings / move-ins.
+function histStageMatch(stage, f) {
+  if (!f) return true;
+  if (stage === f) return true;
+  if (f === 'DUE' && stage === 'DUE_SOON') return true;
+  if (f === 'ACTIVE' && (stage === 'CONFIRMED' || stage === 'PAID')) return true;
+  return false;
+}
+
+// Merge the current occupant + every linked booking/move-in for the unit into
+// one newest-first timeline. All customer strings are escaped at render.
+// Free-unit rule: an AVAILABLE unit has no current occupant, so occupant rows
+// render as past stays (never "Current stay" / "Current occupant"); genuine
+// past records (bookings / move-ins) render unchanged, and a unit with no
+// records at all falls through to the "No prior tenants" empty state.
+function buildUnitHistory(code, u, tenants, bookings, moveins) {
+  const items = [];
+  const isFree = String((u && u.status) || '').toUpperCase() === 'AVAILABLE';
+  const occupant = (tenants || []).find((t) => t.unit === code && t.status !== 'INACTIVE')
+    || ((tenants || []).find((t) => t.unit === code) || null);
+  if (occupant) {
+    items.push({
+      kind: 'stay',
+      kindLabel: isFree ? 'Past stay' : 'Current stay',
+      current: !isFree,
+      name: occupant.name,
+      contact: tenantContact(occupant),
+      stage: occupant.status || 'ACTIVE',
+      moveIn: occupant.since || null,
+      moveOut: null,
+      ref: null,
+      invoice: null,
+      paid: null,
+      due: null,
+      at: occupant.since || null,
+    });
+  } else if (u.tenant && u.tenant.name && !isFree) {
+    items.push({
+      kind: 'stay',
+      kindLabel: 'Current stay',
+      current: true,
+      name: u.tenant.name,
+      contact: [u.tenant.email, u.tenant.mobile].filter(Boolean).join(' · '),
+      stage: 'ACTIVE',
+      moveIn: null,
+      moveOut: null,
+      ref: null,
+      invoice: null,
+      paid: null,
+      due: null,
+      at: null,
+    });
+  }
+  const pushBookingRow = (r, kind, kindLabel) => {
+    if (rowUnitCode(r) !== code) return;
+    // Skip the occupant's own current-stay duplicate when the names match and
+    // there is no booking ref to link (keeps the timeline to real records).
+    items.push({
+      kind,
+      kindLabel,
+      name: r.tenant || r.name || '—',
+      contact: [r.tenantType, r.tenantEmail, r.tenantMobile].filter(Boolean).join(' · '),
+      stage: r.status || (r.invoiceStatus === 'OVERDUE' ? 'OVERDUE' : 'ACTIVE'),
+      moveIn: r.moveInDate || null,
+      moveOut: r.moveOutDate || r.endDate || null,
+      ref: r.ref || null,
+      invoice: r.invoiceStatus || null,
+      paid: r.paidAmount,
+      due: r.amountDue,
+      amount: r.amount,
+      at: r.moveInDate || r.createdAt || null,
+    });
+  };
+  (bookings || []).forEach((r) => pushBookingRow(r, 'booking', 'Booking'));
+  (moveins || []).forEach((r) => {
+    // A move-in whose ref already appears as a booking enriches that booking's
+    // dates instead of doubling the timeline — but only when the ref matches
+    // exactly; otherwise it renders as its own move-in card.
+    const dup = r.ref && items.some((it) => it.kind === 'booking' && it.ref === r.ref);
+    if (dup) return;
+    pushBookingRow(r, 'move-in', 'Move-in');
+  });
+  items.sort((a, b) => {
+    const ta = a.at ? new Date(a.at).getTime() : -1;
+    const tb = b.at ? new Date(b.at).getTime() : -1;
+    return tb - ta;
+  });
+  return items;
+}
+
+function renderUdHistory() {
+  const tl = $('#udTenantTimeline');
+  const empty = $('#tenantHistoryEmpty');
+  const sub = $('#udHistSub');
+  const count = $('#udHistCount');
+  if (!tl) return;
+  tl.removeAttribute('aria-busy');
+  const f = udEnrich.histFilter || '';
+  const all = buildUnitHistory(udEnrich.code, udEnrich.unit || {}, udEnrich.tenants, udEnrich.bookings, udEnrich.moveins);
+  const rows = all.filter((it) => histStageMatch(it.stage, f));
+  if (count) {
+    count.hidden = all.length === 0;
+    count.textContent = String(all.length);
+  }
+  if (sub) sub.textContent = all.length ? `${all.length} stay${all.length === 1 ? '' : 's'} · newest first${f ? ' · ' + histLabel(f) : ''}` : 'Newest first';
+  if (!rows.length) {
+    tl.innerHTML = '';
+    if (empty) {
+      empty.hidden = false;
+      empty.textContent = all.length
+        ? 'No stays match this stage — clear the filter to see the full history.'
+        : HISTORY_EMPTY_TEXT + ' — stays for this unit will appear here newest-first.';
+    }
+    return;
+  }
+  if (empty) empty.hidden = true;
+  tl.innerHTML = rows.map((it) => {
+    const tone = histTone(it.stage);
+    const refs = [
+      it.ref ? `<span class="ud-ref">${escapeHtml(it.kindLabel)} <b>${escapeHtml(it.ref)}</b></span>` : '',
+      it.invoice ? `<span class="badge ${INVOICE_TONE[it.invoice] || 'res'}">${escapeHtml(it.invoice)}</span>` : '',
+      it.paid != null || it.due != null
+        ? `<span class="ud-ref">${fmtMoney(it.paid || 0)} paid${it.due ? ' · ' + fmtMoney(it.due) + ' due' : ''}</span>`
+        : '',
+    ].filter(Boolean).join('');
+    const dates = [
+      it.moveIn ? `<span>Moved in <b>${escapeHtml(fmtDay(it.moveIn))}</b></span>` : '',
+      it.moveOut ? `<span>Moved out <b>${escapeHtml(fmtDay(it.moveOut))}</b></span>` : '',
+      it.kind === 'stay' && !it.moveOut ? (it.current ? '<span>Current occupant</span>' : '<span>Past stay</span>') : '',
+    ].filter(Boolean).join('');
+    return `<li class="ud-titem tone-${tone}"><div class="ud-tcard">` +
+      `<div class="ud-tcard-top"><b>${escapeHtml(it.name)}</b><span class="badge ${tone}">${escapeHtml(histLabel(it.stage))}</span></div>` +
+      (it.contact ? `<div class="ud-tcard-contact">${escapeHtml(it.contact)}</div>` : '') +
+      (dates ? `<div class="ud-tcard-meta">${dates}</div>` : '') +
+      (refs ? `<div class="ud-tcard-refs">${refs}</div>` : '') +
+      `</div></li>`;
+  }).join('');
+}
+
+function bookingCardHtml(r) {
+  const tone = BOOKING_TONE[r.status] || 'res';
+  const inv = r.invoiceStatus ? `<span class="badge ${INVOICE_TONE[r.invoiceStatus] || 'res'}">${escapeHtml(r.invoiceStatus)}</span>` : '';
+  const pay = `${fmtMoney(r.paidAmount || 0)} paid${r.amountDue ? ' · ' + fmtMoney(r.amountDue) + ' due' : ''}${r.method ? ' · ' + escapeHtml(r.method) : ''}`;
+  return `<div class="alert-item"><div class="alert-body">` +
+    `<div class="alert-title">${escapeHtml(r.ref || 'Booking')} · ${escapeHtml(r.tenant || '—')}</div>` +
+    `<div class="alert-desc">${escapeHtml(fmtDay(r.moveInDate))} · ${escapeHtml(r.duration || '')} · ${fmtMoney(r.amount || 0)}${r.tenantEmail ? ' · ' + escapeHtml(r.tenantEmail) : ''}</div>` +
+    `<div class="alert-desc">${escapeHtml(pay)}</div>` +
+    `</div><div style="display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end;"><span class="badge ${tone}">${escapeHtml(String(r.status || '').replace(/_/g, ' '))}</span>${inv}</div></div>`;
+}
+
+function renderUdBookings() {
+  const el = $('#udBookings');
+  if (!el) return;
+  const rows = (udEnrich.bookings || []).filter((r) => rowUnitCode(r) === udEnrich.code);
+  const sub = $('#udBookingsSub');
+  if (sub) sub.textContent = rows.length ? `${rows.length} booking${rows.length === 1 ? '' : 's'} linked to this unit` : 'Linked reservations for this unit';
+  el.innerHTML = rows.length
+    ? rows.map(bookingCardHtml).join('')
+    : '<div class="ud-history-empty">No bookings for this unit yet.</div>';
+}
+
+function renderUdInvoices() {
+  const el = $('#udInvoices');
+  if (!el) return;
+  const rows = (udEnrich.bookings || [])
+    .filter((r) => rowUnitCode(r) === udEnrich.code && (r.invoiceStatus || r.amountDue || r.paidAmount));
+  const sub = $('#udInvoicesSub');
+  if (sub) sub.textContent = rows.length ? `${rows.length} invoice${rows.length === 1 ? '' : 's'} · from recorded bookings` : 'Derived from recorded bookings';
+  el.innerHTML = rows.length
+    ? rows.map((r) => {
+      const tone = INVOICE_TONE[r.invoiceStatus] || 'res';
+      return `<div class="alert-item"><div class="alert-body">` +
+        `<div class="alert-title">${escapeHtml(r.ref || 'Invoice')} · ${escapeHtml(r.tenant || '—')}</div>` +
+        `<div class="alert-desc">${fmtMoney(r.paidAmount || 0)} paid${r.amountDue ? ' · ' + fmtMoney(r.amountDue) + ' due' : ''}${r.method ? ' · ' + escapeHtml(r.method) : ''}</div>` +
+        `</div><span class="badge ${tone}">${escapeHtml(r.invoiceStatus || 'DUE')}</span></div>`;
+    }).join('')
+    : '<div class="ud-history-empty">No invoices for this unit yet.</div>';
+}
+
+function renderUdActivity() {
+  const el = $('#udUnitActivity');
+  if (!el) return;
+  const rows = (udEnrich.activity || []).filter((a) => (a.unitCode || (a.unit && a.unit.code)) === udEnrich.code);
+  el.innerHTML = rows.length
+    ? rows.map((a) => `<div class="alert-item"><div class="alert-body"><div class="alert-title">${escapeHtml(a.message || a.type || 'Event')}</div>` +
+      `<div class="alert-desc">${escapeHtml(fmtDateTime(a.at))} · ${escapeHtml(timeAgo(a.at))}</div></div></div>`).join('')
+    : '<div class="ud-history-empty">No recent activity for this unit.</div>';
+}
+
+async function enrichUnitDetail(code, u) {
+  const seq = ++udEnrich.seq;
+  udEnrich.unit = u;
+  const settled = await Promise.allSettled([
+    get('/tenants'),
+    get('/bookings'),
+    get('/move-ins'),
+    get('/units/activity?limit=100'),
+  ]);
+  if (seq !== udEnrich.seq || udEnrich.code !== code) return; // stale: a newer unit won
+  const [tenants, bookings, moveins, activity] = settled;
+  const failures = [];
+  udEnrich.tenants = tenants.status === 'fulfilled' ? tenants.value || [] : (failures.push('tenants'), []);
+  udEnrich.bookings = bookings.status === 'fulfilled' ? bookings.value || [] : (failures.push('bookings'), []);
+  udEnrich.moveins = moveins.status === 'fulfilled' ? moveins.value || [] : (failures.push('move-ins'), []);
+  udEnrich.activity = activity.status === 'fulfilled' ? activity.value || [] : (failures.push('activity'), []);
+  if (failures.length === 4) {
+    setUdState('#udHistState', 'Couldn’t load history — check your connection and retry.', true);
+    const tl = $('#udTenantTimeline');
+    if (tl) {
+      tl.innerHTML = `<li class="ud-titem tone-neutral"><div class="ud-tcard"><div class="ud-tcard-top"><b>History unavailable</b></div>` +
+        `<div class="ud-tcard-contact">The tenants, bookings, move-ins and activity reads all failed.</div>` +
+        `<div class="ud-tcard-refs"><button class="act-btn" data-act="ud-retry" type="button">Retry</button></div></div></li>`;
+      tl.querySelector('[data-act="ud-retry"]')?.addEventListener('click', () => {
+        if (udEnrich.code) { paintUdLoading(udEnrich.code); enrichUnitDetail(udEnrich.code, udEnrich.unit || {}); }
+      });
+    }
+    setUdState('#udBookingsState', '', false);
+    setUdState('#udInvoicesState', '', false);
+    setUdState('#udActivityState', '', false);
+    renderUdBookings();
+    renderUdInvoices();
+    renderUdActivity();
+    return;
+  }
+  if (failures.length) {
+    setUdState('#udHistState', `History is partial — ${failures.join(', ')} unavailable.`, true);
+  } else {
+    setUdState('#udHistState', '', false);
+  }
+  setUdState('#udBookingsState', '', false);
+  setUdState('#udInvoicesState', '', false);
+  setUdState('#udActivityState', '', false);
+  renderUdHistory();
+  renderUdBookings();
+  renderUdInvoices();
+  renderUdActivity();
 }
 
 // P1 item 3: unit-drawer facility-ops sections (read from the in-tree P0

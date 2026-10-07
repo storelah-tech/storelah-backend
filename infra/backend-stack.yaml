@@ -128,6 +128,18 @@ Resources:
         # SES send-as-verified-sender only (least privilege — scoped to the
         # verified sender identity in SesRegion; tighten to the exact identity
         # ARN once the sender ARN is known — do NOT broaden beyond SES).
+        # NOTE (2026-10-07): the sender identity tech@storelah.sg carries a
+        # DEFAULT configuration set (my-first-configuration-set), so every
+        # SendEmail/SendRawEmail call ALSO requires an allow on that
+        # configuration-set ARN or SES denies with
+        # "not authorized to perform ses:SendRawEmail on configuration-set".
+        # The second statement below covers it. LIVE DRIFT WARNING: the live
+        # function currently runs as role storelah-backend-exec (NOT this
+        # template's storelah-backend-execution-role — different role, managed
+        # out-of-band via CLI). The same config-set statement was attached live
+        # as inline policy ses-allow-config-set on storelah-backend-exec. Do NOT
+        # rename either role; reconcile names before ever letting this stack own
+        # the live function role.
         - PolicyName: ses-send-as-verified-sender
           PolicyDocument:
             Version: "2012-10-17"
@@ -140,6 +152,15 @@ Resources:
                   - "arn:aws:ses:${Region}:${AWS::AccountId}:identity/${Sender}"
                   - Region: !Ref SesRegion
                     Sender: !Ref SesFromEmail
+              - Sid: SesAllowDefaultConfigSet
+                Effect: Allow
+                Action:
+                  - ses:SendEmail
+                  - ses:SendRawEmail
+                Resource: !Sub
+                  - "arn:aws:ses:${Region}:${AWS::AccountId}:configuration-set/${ConfigSet}"
+                  - Region: !Ref SesRegion
+                    ConfigSet: my-first-configuration-set
 
   # --- Lambda function --------------------------------------------------------
   BackendFunction:

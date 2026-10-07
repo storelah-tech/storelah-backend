@@ -37,6 +37,11 @@ describe('move-in edge cases', () => {
     expect(second.status).toBe(409);
     expect(second.body.error.code).toBe('CONFLICT');
 
+    // The unpaid first booking holds via its PENDING_PAYMENT row — the unit
+    // itself stays AVAILABLE (no reserve-on-unpaid).
+    const unitAfter = await prisma.unit.findUnique({ where: { unitCode: PIN.rentableUnit } });
+    expect(unitAfter!.status).toBe('AVAILABLE');
+
     // Exactly one booking exists for the unit — no partial second write.
     const count = await prisma.booking.count({
       where: { unit: { unitCode: PIN.rentableUnit } },
@@ -174,12 +179,13 @@ describe('move-in edge cases', () => {
     expect(res.status).toBe(201);
     expect(res.body.data.unit.code).toBe(PIN.rentableUnit);
 
-    // Dangling row preserved, link released; unit flipped to RESERVED as usual.
+    // Dangling row preserved, link released; unit stays AVAILABLE (unpaid
+    // bookings never reserve — verified payment is the only occupancy flip).
     const released = await prisma.tenant.findUnique({ where: { id: stale.id } });
     expect(released).not.toBeNull();
     expect(released!.unitId).toBeNull();
     const unit = await prisma.unit.findUnique({ where: { unitCode: PIN.rentableUnit } });
-    expect(unit!.status).toBe('RESERVED');
+    expect(unit!.status).toBe('AVAILABLE');
   });
 
   it('RESERVED unit with a foreign tenant link still rejects → 409 CONFLICT', async () => {

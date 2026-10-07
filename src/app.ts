@@ -9,6 +9,7 @@ import { swaggerDocsRouter, serveSwaggerDocs } from './routes/swagger';
 import { errorHandler } from './lib/http';
 import { AppError } from './lib/http';
 import { resolveHostKind } from './lib/host';
+import { contentStorageStatus } from './lib/contentStorage';
 
 const app = express();
 
@@ -20,6 +21,19 @@ app.use(cors());
 app.use('/api/v1/customer/stripe/webhook', express.raw({ type: 'application/json' }));
 app.use(express.json());
 app.use(cookieParser());
+
+// Local-fallback content images (landing CMS). When CONTENT_S3_BUCKET is
+// unset, uploads land on disk and their imageUrl is /uploads/content/<file> —
+// served here on every host (public landing + CMS preview) BEFORE the CMS
+// host gate below. S3 mode never touches this mount (imageUrl points at the
+// bucket's public base). Boot-time binding: a CONTENT_LOCAL_DIR change needs
+// a restart to re-point this mount.
+{
+  const cs = contentStorageStatus();
+  if (cs.mode === 'local') {
+    app.use('/uploads/content', express.static(cs.localDir, { maxAge: '1d' }));
+  }
+}
 
 app.get('/health', (_req, res) => {
   res.json({ ok: true, service: 'storelah-cms', time: new Date().toISOString() });

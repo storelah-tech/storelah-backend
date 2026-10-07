@@ -16,6 +16,9 @@
 // Payment-state mapping (no new states invented — schema already fits):
 //   - Booking.status PENDING_PAYMENT → CONFIRMED on payment.
 //   - Invoice.status DUE → PAID on payment (method recorded as 'Card').
+//   - Unit.status AVAILABLE (or legacy RESERVED) → OCCUPIED on verified
+//     payment, in the same transaction. Unpaid / cancelled bookings never
+//     move the unit — it stays AVAILABLE while the invoice is DUE.
 //   - Tenant linkage: the paid unit gains a Tenant row (email + unitId) via
 //     linkTenantForPaidBooking, so GET /portal `units[]` (My Units = every
 //     paid unit, no primary/secondary) surfaces it. Unpaid bookings stay under
@@ -24,7 +27,7 @@
 // session is a no-op (webhook retries). A CANCELLED booking is never resurrected.
 
 import Stripe from 'stripe';
-import { AccountType } from '@prisma/client';
+import { AccountType, type Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { toNum } from '../lib/format';
 import { AppError } from '../lib/http';
@@ -333,6 +336,24 @@ export async function getCheckoutSessionStatus(sessionId: string): Promise<{
 }
 
 /**
+ * Verified-payment occupancy flip (shared by the fresh-payment path and the
+ * idempotent-replay heal): the paid unit moves AVAILABLE → OCCUPIED in the
+ * same transaction as the booking/invoice stamps. Legacy RESERVED rows
+ * (pre-change unpaid holds — new bookings never produce RESERVED) move to
+ * OCCUPIED for the same reason: a paid unit is occupied. Conditional on the
+ * pre-payment statuses and scoped to this unit row only, so replays are safe
+ * no-ops and an operator-set state applied after payment (MAINTENANCE /
+ * BLOCKED / INACTIVE) is never overwritten. CANCELLED bookings early-return
+ * before this is ever reached, so unpaid/cancelled units never flip.
+ */
+async function occupyUnitOnPayment(tx: Prisma.TransactionClient, unitId: string): Promise<void> {
+  await tx.unit.updateMany({
+    where: { id: unitId, status: { in: ['AVAILABLE', 'RESERVED'] } },
+    data: { status: 'OCCUPIED' },
+  });
+}
+
+/**
  * Marks booking + invoice paid for a completed Checkout Session. IDEMPOTENT:
  * current state is read first and conditional writes (status filters) make
  * retried deliveries safe no-ops. Scoped to the invoiced session: only the
@@ -363,7 +384,7 @@ export async function applyCheckoutCompleted(
           tenant: {
             include: { invoices: true },
           },
-          unit: { select: { unitCode: true, branchId: true } },
+          unit: { select: { id: true, unitCode: true, branchId: true, status: true } },
         },
       })
     : null;
@@ -374,7 +395,7 @@ export async function applyCheckoutCompleted(
         tenant: {
           include: { invoices: true },
         },
-        unit: { select: { unitCode: true, branchId: true } },
+        unit: { select: { id: true, unitCode: true, branchId: true, status: true } },
       },
     });
   }
@@ -411,7 +432,8 @@ export async function applyCheckoutCompleted(
   // PENDING_PAYMENT → this delivery (or an earlier one) already applied.
   // Still heal leads created after the first delivery (e.g. a late enquiry
   // for the same contact) — best-effort, never fails the webhook. Also heal
-  // the My-Units tenant linkage in case the first delivery predated it.
+  // the My-Units tenant linkage in case the first delivery predated it, and
+  // the unit occupancy flip in case the first delivery predated it.
   if (!target && (booking.status === 'CONFIRMED' || booking.status === 'ACTIVE')) {
     try {
       await markLeadWonForBooking(prisma, leadMatch);
@@ -419,9 +441,12 @@ export async function applyCheckoutCompleted(
       // Best-effort attribution only — the payment itself already applied.
     }
     try {
-      await prisma.$transaction((tx) => linkTenantForPaidBooking(tx, { bookingId: booking!.id }));
+      await prisma.$transaction(async (tx) => {
+        await linkTenantForPaidBooking(tx, { bookingId: booking!.id });
+        await occupyUnitOnPayment(tx, booking!.unitId);
+      });
     } catch {
-      // Best-effort linkage heal only — the payment itself already applied.
+      // Best-effort linkage/occupancy heal only — the payment itself already applied.
     }
     return { bookingRef: booking.bookingRef, applied: false };
   }
@@ -487,6 +512,10 @@ export async function applyCheckoutCompleted(
     if (link.created) {
       console.log(`[checkout] bookingRef=${booking!.bookingRef} linked additional unit tenant ${link.tenantId}`);
     }
+    // Verified payment occupies the unit INSIDE the same transaction (see
+    // occupyUnitOnPayment): the unit stayed AVAILABLE through the whole
+    // unpaid window, so only the delivery that confirms payment moves it.
+    await occupyUnitOnPayment(tx, booking!.unitId);
   });
 
   // Booking + payment confirmation email (AWS SES) — FIRST payment only.

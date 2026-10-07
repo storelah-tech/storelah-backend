@@ -9,6 +9,8 @@ import { getPublicFloorPlan } from '../core/floorPlans';
 import { listProtectionPlans, listAddons } from '../core/extras';
 import { getPublicSettings } from '../core/settings';
 import { getSiteContentWithMeta } from '../core/siteContent';
+import { listPublishedContent, getPublishedContent } from '../core/content';
+import { readLocalImage } from '../lib/contentStorage';
 import { createPublicLead } from '../core/leads';
 
 const router = Router();
@@ -164,6 +166,48 @@ router.get('/settings', async (_req: Request, res: Response) => {
 router.get('/site-content', async (_req: Request, res: Response) => {
   const { values, updatedAt } = await getSiteContentWithMeta();
   ok(res, values, { updatedAt });
+});
+
+// PUBLIC landing content (mini-WordPress read surface for the landing site).
+// Unauthenticated by design — published rows only, no PII (rows carry no
+// contact fields). The landing site consumes this at BUILD time and bakes
+// the snapshot into its static pages (see docs/CONTENT_MANAGEMENT.md).
+// NOTE: registered BEFORE /content/:key so "content" list reads stay exact.
+router.get('/content', async (req: Request, res: Response) => {
+  const type = typeof req.query.type === 'string' && req.query.type.trim() ? req.query.type.trim() : undefined;
+  if (type !== undefined && !['HERO_IMAGE', 'TESTIMONIAL', 'TEXT', 'IMAGE'].includes(type)) {
+    fail(res, 400, 'VALIDATION', 'Invalid content type (expected HERO_IMAGE | TESTIMONIAL | TEXT | IMAGE)');
+    return;
+  }
+  const rows = await listPublishedContent(type ? { type: type as 'HERO_IMAGE' | 'TESTIMONIAL' | 'TEXT' | 'IMAGE' } : {});
+  ok(res, rows, { count: rows.length });
+});
+
+router.get('/content/:key', async (req: Request, res: Response) => {
+  ok(res, await getPublishedContent(String(req.params.key)));
+});
+
+// PUBLIC image bytes for a published item (local-fallback mode streams the
+// file; S3 mode 302-redirects to the stored public URL; unpublished or
+// imageless items 404 — drafts never leak through this surface).
+router.get('/content/:key/image', async (req: Request, res: Response) => {
+  const item = await getPublishedContent(String(req.params.key));
+  if (!item.imageKey && !item.imageUrl) {
+    fail(res, 404, 'NOT_FOUND', `Content item "${String(req.params.key)}" has no image`);
+    return;
+  }
+  const local = await readLocalImage(item.imageKey);
+  if (local) {
+    res.setHeader('Content-Type', local.contentType);
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    res.send(local.bytes);
+    return;
+  }
+  if (item.imageUrl) {
+    res.redirect(302, item.imageUrl);
+    return;
+  }
+  fail(res, 404, 'NOT_FOUND', `Image for "${String(req.params.key)}" is not available`);
 });
 
 // PUBLIC lead capture for the booking frontend "Your details" step —

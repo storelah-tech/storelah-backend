@@ -71,7 +71,8 @@ describe('move-in happy path (authenticated)', () => {
     expect(bookingRef).toMatch(/^SL-/);
 
     // 4. DB asserts: Booking (unique ref) + Tenant email linkage + DUE
-    //    invoice + unit flipped to RESERVED.
+    //    invoice + unit STAYS AVAILABLE while unpaid (no reserve-on-unpaid —
+    //    the hold is the PENDING_PAYMENT booking row, not the unit status).
     const dbBooking = await prisma.booking.findUnique({
       where: { bookingRef },
       include: { tenant: true, unit: true },
@@ -89,7 +90,7 @@ describe('move-in happy path (authenticated)', () => {
     expect(Number(invoices[0].amount)).toBeGreaterThan(0);
 
     const unit = await prisma.unit.findUnique({ where: { unitCode: PIN.rentableUnit } });
-    expect(unit!.status).toBe('RESERVED');
+    expect(unit!.status).toBe('AVAILABLE');
 
     // 5. Portal + bookings show the rented unit.
     const portal = await api.get('/api/v1/customer/portal').set('Authorization', `Bearer ${token}`);

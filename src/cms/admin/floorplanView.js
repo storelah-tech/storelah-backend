@@ -964,20 +964,19 @@ function fpGuardLocked(pl) {
   return false;
 }
 
-// ---------- unit-tile status colour (no grey unknown fallback) ----------
-// Every unit tile renders a STATUS colour even when the size is unknown:
-// unknown sizes already fall back to the LOCKER footprint (sizeFootprint),
-// and unknown/blank statuses fall back to AVAILABLE green here — never the
-// old grey `#9C948D` catch-all. MAINTENANCE/INACTIVE keep their own tones
-// (those are real status colours, not fallbacks).
+// ---------- unit-tile status colour (floor-plan palette) ----------
+// Status dots use the booking floor-plan edge tones so the editor matches
+// the live plan: AVAILABLE #2E6B46, RESERVED #F57F17, OCCUPIED/OVERDUE/
+// MAINTENANCE/INACTIVE/BLOCKED collapse to unavailable #332B24.
+// Unknown/blank statuses fall back to AVAILABLE green — never grey.
 const FP_STATUS_COLORS = {
-  OCCUPIED: '#0B4F5E',
-  AVAILABLE: '#5A7A60',
-  RESERVED: '#D4860A',
-  OVERDUE: '#C0392B',
-  MAINTENANCE: '#9C948D',
-  INACTIVE: '#9C948D',
-  BLOCKED: '#8a8478',
+  OCCUPIED: '#332B24',
+  AVAILABLE: '#2E6B46',
+  RESERVED: '#F57F17',
+  OVERDUE: '#332B24',
+  MAINTENANCE: '#332B24',
+  INACTIVE: '#332B24',
+  BLOCKED: '#332B24',
 };
 function fpStatusColor(status) {
   return FP_STATUS_COLORS[String(status || '').toUpperCase()] || FP_STATUS_COLORS.AVAILABLE;

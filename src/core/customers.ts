@@ -938,9 +938,14 @@ export async function createCustomerBooking(customer: Customer, input: CreateBoo
     // the Stripe checkout.session.completed webhook) — never here. A freshly
     // created tenant row starts with unitId NULL (identity for the booking +
     // invoice FKs only) and an unpaid booking is visible under `bookings[]`
-    // alone. The unit hold in the unpaid window is still enforced below via
-    // the PENDING_PAYMENT booking guard (tenant rows cannot be the hold
-    // signal anymore since they only link post-payment).
+    // alone.
+    //
+    // Unpaid-window hold (status-independent): booking creation NEVER flips
+    // the unit status — the unit stays AVAILABLE while unpaid and only moves
+    // to OCCUPIED on verified payment (see applyCheckoutCompleted). The hold
+    // in the unpaid window is enforced by the PENDING_PAYMENT booking guard
+    // below (tenant rows cannot be the hold signal anymore since they only
+    // link post-payment).
     const currentTenantId = tenant?.id ?? null;
     if (unit.status === 'AVAILABLE') {
       // Hold check (agrees with the public list, which is Unit.status-sourced):
@@ -958,24 +963,27 @@ export async function createCustomerBooking(customer: Customer, input: CreateBoo
         await tx.tenant.update({ where: { id: unitTenant.id }, data: { unitId: null } });
       }
     } else {
-      // Unit is marketed as held (RESERVED or otherwise non-AVAILABLE).
-      // Double-booking guard, uniform for new and returning customers:
-      //  - a tenant row linking this unit (a PAID hold) owned by someone else,
-      //  - a PENDING_PAYMENT booking on this unit (an UNPAID hold) owned by
-      //    someone else,
-      //  either 409s. The customer's OWN hold/booking always proceeds (same-
-      //  customer re-books were already allowed before deferred linkage).
+      // Unit is marketed as held (legacy RESERVED — new bookings never produce
+      // it, but old rows still exist). Double-booking guard for the tenant
+      // link, uniform for new and returning customers: a tenant row linking
+      // this unit (a PAID hold) owned by someone else 409s. The customer's OWN
+      // hold always proceeds.
       const unitTenant = await tx.tenant.findFirst({ where: { unitId: unit.id } });
       if (unitTenant && unitTenant.id !== currentTenantId) {
         throw new AppError(409, 'CONFLICT', `Unit ${input.unitCode} is already booked`);
       }
-      const pendingHold = await tx.booking.findFirst({
-        where: { unitId: unit.id, status: 'PENDING_PAYMENT' },
-        select: { tenantId: true },
-      });
-      if (pendingHold && pendingHold.tenantId !== currentTenantId) {
-        throw new AppError(409, 'CONFLICT', `Unit ${input.unitCode} is already booked`);
-      }
+    }
+    // Unpaid-hold guard (runs on EVERY status — this is the double-book
+    // protection now that creation no longer flips the unit to RESERVED): a
+    // PENDING_PAYMENT booking on this unit owned by someone else 409s. The
+    // customer's OWN pending booking always proceeds (same-customer re-books
+    // were already allowed before deferred linkage).
+    const pendingHold = await tx.booking.findFirst({
+      where: { unitId: unit.id, status: 'PENDING_PAYMENT' },
+      select: { tenantId: true },
+    });
+    if (pendingHold && pendingHold.tenantId !== currentTenantId) {
+      throw new AppError(409, 'CONFLICT', `Unit ${input.unitCode} is already booked`);
     }
     if (!tenant) {
       tenant = await tx.tenant.create({
@@ -1007,7 +1015,10 @@ export async function createCustomerBooking(customer: Customer, input: CreateBoo
       },
     });
 
-    await tx.unit.update({ where: { id: unit.id }, data: { status: 'RESERVED' } });
+    // The unit status is deliberately left untouched here: an unpaid booking
+    // (PENDING_PAYMENT + DUE invoice) never reserves the unit — it stays
+    // AVAILABLE until verified payment flips it to OCCUPIED (see
+    // applyCheckoutCompleted in core/checkout.ts).
 
     // Server-side amount: the invoice is the recomputed due-today figure
     // (prorated first month + catalog protection/addons, frontend parity —

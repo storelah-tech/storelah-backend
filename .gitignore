@@ -3,3 +3,6 @@ dist/
 .env
 .DS_Store
 *.log
+# Local-fallback landing-content uploads (see docs/CONTENT_MANAGEMENT.md).
+# Never commit user-uploaded images; S3 is the source of truth in deploy envs.
+uploads/

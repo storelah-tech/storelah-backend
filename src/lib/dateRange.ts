@@ -6,7 +6,7 @@ import { AppError } from './http';
 // TABLE INVENTORY — one line per data table + its filter date field:
 // leads #leadRows → Lead.createdAt; units table → Unit.createdAt;
 // tenants table → Tenant.createdAt; bookings table → Booking.createdAt;
-// move-ins table → Booking.moveInDate (overrides the today-only default when set);
+// move-ins table → Booking.moveInDate (unfiltered = all move-ins; from/to narrows);
 // invoices table → Invoice.dueDate; arrears table → Invoice.dueDate (OVERDUE subset);
 // appointments lists (Today + week) → Appointment.startAt;
 // promotions library → Promotion.createdAt + PromotionPlan.effectiveFrom (combined client-side);

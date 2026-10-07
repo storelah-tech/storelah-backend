@@ -12,11 +12,11 @@ import {
 } from './dashboardView.js';
 import {
   setRefreshAll as tenantsSetRefreshAll, bindTenantsView, refreshTenantsView,
-  openCreateTenant, openEditTenant, closeTenantModal, submitTenantForm, deactivateTenant,
+  openCreateTenant, openEditTenant, openTenantHistory, closeTenantHistory, closeTenantModal, submitTenantForm, deactivateTenant,
 } from './tenantsView.js';
 import {
   setRefreshAll as unitsSetRefreshAll, setRefsLoader as unitsSetRefsLoader,
-  fetchUnitsPage, showUnitDetail, getSelectedUnitCode, onUnitSizeChange,
+  fetchUnitsPage, showUnitDetail, getSelectedUnitCode, gotoUnitHistory, onUnitSizeChange,
   populateFloorSelect, populateUnitLevelFilter, openCreateForm, openEditForm, closeUnitModal,
   submitUnitForm, deleteUnit, importUnitsFile, openRateForm, closeRateModal, submitRateForm,
 } from './unitsView.js';
@@ -24,6 +24,7 @@ import { bindPortfolio, wirePortfolio } from './portfolioView.js';
 import { bindQuotes, bindMoveouts, wireOpsQueues } from './opsQueuesView.js';
 import { bindFeesSection, bindBusinessRulesSection, bindUsersSection, wireSettingsExt } from './settingsExtView.js';
 import { bindExtrasSection, wireExtras } from './extrasView.js';
+import { bindContentSection, wireContent } from './contentView.js';
 import {
   setRefreshAll as leadDrawerSetRefreshAll, setLeadDrawerActions, openLeadDrawer, wireLeadDrawer,
 } from './leadsDetailDrawer.js';
@@ -54,6 +55,7 @@ const coreMap = {
   customers: 'customers',
   facilities: 'facilities',
   extras: 'extras',
+  content: 'content',
   promotions: 'promotions',
   billing: 'billing',
   settings: 'settings',
@@ -71,6 +73,7 @@ const sideNav = {
     ['Assets & vendors', 'facilities', 'facility-assets'], ['Incidents', 'facilities', 'facility-incidents'],
     ['Access control', 'facilities', 'facility-access'], ['Inspections', 'facilities', 'facility-inspections']],
   extras: [['Protection plans', 'extras', 'extras-plans'], ['Addons', 'extras', 'extras-addons']],
+  content: [['All content', 'content', 'content-list']],
   promotions: [['Dashboard', 'promotions', 'promo-overview'], ['Discount plan builder', 'promotions', 'promo-discount-matrix'], ['Free months', 'promotions', 'promo-free-months'], ['Promo code builder', 'promotions', 'promo-code-builder'], ['Promotions library', 'promotions', 'promo-library'], ['History', 'promotions', 'promo-history'], ['Safeguards', 'promotions', 'promo-safeguards'], ['Performance', 'promotions', 'promo-performance']],
   billing: [['Overview', 'billing', 'bill-overview'], ['Invoices', 'billing', 'bill-invoices'],
     ['Arrears', 'billing', 'bill-arrears']],
@@ -160,7 +163,6 @@ function openPage(id) {
   else if (id === 'promotions') { bootPromotions(); bindPromotionsOverview(); }
   else if (id === 'billing') bindBilling();
   else if (id === 'settings') bindSettings();
-  else if (id === 'site-content') bindSiteContent();
   else if (id === 'facilities') {
     syncFacilityDashboard();
     updateFacilityBadge().catch(() => {});
@@ -170,6 +172,10 @@ function openPage(id) {
   }
   else if (id === 'extras') {
     const firstTab = document.querySelector('[data-tabs="extras"] button');
+    if (firstTab) firstTab.click();
+  }
+  else if (id === 'content') {
+    const firstTab = document.querySelector('[data-tabs="content"] button');
     if (firstTab) firstTab.click();
   }
 }
@@ -1908,100 +1914,6 @@ async function saveSettings() {
   }
 }
 
-// ====================== SITE CONTENT (landing-page CMS, minimal v1) ======================
-// Ticker = one-per-line textarea; hero/testimonials = JSON textareas with
-// validation + preview counts. Saves PUT { value } per key (Bearer JWT via
-// api.js, same requireAuth pattern as units). No full-page reload; 400
-// validation surfaces in the banner + toast.
-function siteContentBanner(msg, isOk) {
-  const banner = $('#siteContentBanner');
-  if (banner) {
-    if (!msg) banner.hidden = true;
-    else { banner.textContent = msg; banner.hidden = false; }
-  }
-  if (msg) showBanner(msg, isOk);
-}
-
-function siteContentCounts(ticker, hero, testimonials) {
-  const tc = $('#tickerCount');
-  if (tc) tc.textContent = (ticker?.length || 0) + ' items · saved to the public API on save';
-  const hc = $('#heroCount');
-  if (hc) hc.textContent = (hero?.length || 0) + ' slides · fields: id, tag, label, headline, sub, cta, img';
-  const nc = $('#testimonialsCount');
-  if (nc) nc.textContent = (testimonials?.length || 0) + ' testimonials · fields: name, context, quote, stars, img';
-}
-
-async function bindSiteContent() {
-  siteContentBanner(null);
-  try {
-    const rows = await get('/site-content');
-    const byKey = {};
-    (rows || []).forEach((r) => { byKey[r.key] = r.value; });
-    const ticker = byKey.tickerItems || [];
-    const hero = byKey.heroSlides || [];
-    const testimonials = byKey.testimonials || [];
-    const tickerEl = $('#tickerTextarea');
-    if (tickerEl) tickerEl.value = (ticker || []).join('\n');
-    const heroEl = $('#heroTextarea');
-    if (heroEl) heroEl.value = JSON.stringify(hero || [], null, 2);
-    const tEl = $('#testimonialsTextarea');
-    if (tEl) tEl.value = JSON.stringify(testimonials || [], null, 2);
-    siteContentCounts(ticker, hero, testimonials);
-  } catch (e) {
-    siteContentBanner('Site content failed to load: ' + describeError(e));
-  }
-}
-
-async function saveTicker() {
-  siteContentBanner(null);
-  const raw = $('#tickerTextarea')?.value || '';
-  const value = raw.split('\n').map((s) => s.trim()).filter((s) => s.length > 0);
-  try {
-    await put('/site-content/tickerItems', { value });
-    siteContentCounts(value, JSON.parse($('#heroTextarea')?.value || '[]'), JSON.parse($('#testimonialsTextarea')?.value || '[]'));
-    toast('Ticker saved (' + value.length + ' items)');
-  } catch (e) {
-    siteContentBanner('Ticker save failed: ' + describeError(e));
-    toast('Ticker save failed: ' + describeError(e));
-  }
-}
-
-async function saveJsonKey(key, textareaId, label) {
-  siteContentBanner(null);
-  const raw = $(textareaId)?.value || '';
-  let value;
-  try {
-    value = JSON.parse(raw);
-  } catch (e) {
-    siteContentBanner(label + ' is not valid JSON: ' + (e && e.message ? e.message : e));
-    toast(label + ': invalid JSON');
-    return;
-  }
-  if (!Array.isArray(value)) {
-    siteContentBanner(label + ' must be a JSON array.');
-    toast(label + ': must be an array');
-    return;
-  }
-  try {
-    await put('/site-content/' + key, { value });
-    await bindSiteContent();
-    toast(label + ' saved (' + value.length + ' items)');
-  } catch (e) {
-    siteContentBanner(label + ' save failed: ' + describeError(e));
-    toast(label + ' save failed: ' + describeError(e));
-  }
-}
-
-let siteContentWired = false;
-function wireSiteContent() {
-  if (siteContentWired) return;
-  siteContentWired = true;
-  $('#tickerSaveBtn')?.addEventListener('click', () => saveTicker().catch(() => {}));
-  $('#heroSaveBtn')?.addEventListener('click', () => saveJsonKey('heroSlides', '#heroTextarea', 'Hero slides').catch(() => {}));
-  $('#testimonialsSaveBtn')?.addEventListener('click', () => saveJsonKey('testimonials', '#testimonialsTextarea', 'Testimonials').catch(() => {}));
-  $('#siteContentReloadBtn')?.addEventListener('click', () => bindSiteContent().catch(() => {}));
-}
-
 async function bindPromotionsOverview() {
   try {
     ensurePromoLibraryDateFilter();
@@ -3685,6 +3597,19 @@ function wireEvents() {
       bindExtrasSection().catch((err) => showBanner('Extras: ' + describeError(err)));
     });
   });
+  // Content Management tabs (data-tabs="content") — single panel, lazy bind
+  // on every tab switch (mirrors the extras pattern).
+  document.querySelectorAll('[data-tabs="content"] [data-tab]').forEach((b) => {
+    b.addEventListener('click', function () {
+      document.querySelectorAll('[data-tabs="content"] [data-tab]').forEach((x) => x.classList.remove('active'));
+      this.classList.add('active');
+      document.querySelectorAll('#content .module-panel').forEach((p) => {
+        p.classList.toggle('active', p.id === this.dataset.tab);
+      });
+      activateSide('content', this.dataset.tab);
+      bindContentSection().catch((err) => showBanner('Content: ' + describeError(err)));
+    });
+  });
   // Customer tabs (data-tabs="customer")
   document.querySelectorAll('[data-tabs="customer"] [data-tab]').forEach((b) => {
     b.addEventListener('click', function () {
@@ -3954,6 +3879,7 @@ function wireEvents() {
   $('#rateFormCancel')?.addEventListener('click', closeRateModal);
   $('#rateForm')?.addEventListener('submit', submitRateForm);
   $('#editUnitBtn')?.addEventListener('click', () => { const code = getSelectedUnitCode(); if (code) openEditForm(code); else showBanner('Select a unit first.'); });
+  $('#viewHistoryBtn')?.addEventListener('click', gotoUnitHistory);
   $('#adjustRateBtn')?.addEventListener('click', () => { const code = getSelectedUnitCode(); if (code) openRateForm(code); else showBanner('Select a unit first.'); });
   $('#deleteUnitBtn')?.addEventListener('click', () => { const code = getSelectedUnitCode(); if (code) deleteUnit(code); });
   $('#f-branch')?.addEventListener('change', (e) => populateFloorSelect(e.target.value));
@@ -3980,9 +3906,13 @@ function wireEvents() {
     const btn = e.target.closest('button[data-act]');
     if (!btn) return;
     const { act, tid } = btn.dataset;
-    if (act === 'view' || act === 'edit') openEditTenant(tid);
+    if (act === 'view') openTenantHistory(tid);
+    else if (act === 'edit') openEditTenant(tid);
     else if (act === 'deactivate') deactivateTenant(tid);
   });
+  // Tenant stay-history drawer (read-only timeline): overlay + buttons + Escape.
+  $('#tenantHistoryClose')?.addEventListener('click', closeTenantHistory);
+  $('#tenantHistoryDone')?.addEventListener('click', closeTenantHistory);
   // Floor plan events
   fpInitEvents();
   // Area-metrics panel (read-only live reads under the floor-plan editor)
@@ -3995,8 +3925,8 @@ function wireEvents() {
   wireSettingsExt();
   // Booking extras catalog (protection plans + addons).
   wireExtras();
-  // Landing-page site content (ticker / hero / testimonials).
-  wireSiteContent();
+  // Landing content management (hero images, testimonials, text blocks).
+  wireContent();
   // P1 item 3: unit-map read-path filters (Size + Near lift).
   $('#mapSizeFilter')?.addEventListener('change', (e) => { state.mapSize = e.target.value; fetchUnitMap().catch(() => {}); });
   $('#mapNearLiftFilter')?.addEventListener('change', (e) => { state.mapNearLift = !!e.target.checked; fetchUnitMap().catch(() => {}); });
@@ -4007,6 +3937,7 @@ function wireEvents() {
       if (this.id === 'unitModal') closeUnitModal();
       else if (this.id === 'rateModal') closeRateModal();
       else if (this.id === 'tenantModal') closeTenantModal();
+      else if (this.id === 'tenantHistoryModal') closeTenantHistory();
       else if (this.id === 'leadModal') closeLeadModal();
       else if (this.id === 'apptModal') closeApptModal();
       else if (this.id === 'fpViewModal') fpViewClose();
@@ -4019,6 +3950,7 @@ function wireEvents() {
     if (fpOv && !fpOv.hidden) fpViewClose();
     else if (!$('#unitModal').hidden) closeUnitModal();
     else if (!$('#rateModal').hidden) closeRateModal();
+    else if (!$('#tenantHistoryModal').hidden) closeTenantHistory();
     else if (!$('#tenantModal').hidden) closeTenantModal();
     else if (!$('#leadModal').hidden) closeLeadModal();
     else if (!$('#apptModal').hidden) closeApptModal();
@@ -4191,9 +4123,10 @@ async function boot() {
     await login();
     initCharts();
     await Promise.all([loadRefs(), refreshAll()]);
-    // Navigate to initial page from hash
+    // Navigate to initial page from hash (unknown hashes fall back to command,
+    // which covers retired views without a dedicated route).
     const hash = location.hash ? location.hash.slice(1) : 'command';
-    if (['command', 'portfolio', 'leads', 'pipeline', 'inbox', 'calendar', 'analytics', 'automation', 'customers', 'facilities', 'extras', 'promotions', 'billing', 'settings', 'site-content'].includes(hash)) {
+    if (['command', 'portfolio', 'leads', 'pipeline', 'inbox', 'calendar', 'analytics', 'automation', 'customers', 'facilities', 'extras', 'content', 'promotions', 'billing', 'settings'].includes(hash)) {
       if (hash === 'command') openPage('command');
       else if (hash === 'portfolio') openPage('portfolio');
       else if (hash === 'analytics') openPage('analytics');
@@ -4201,10 +4134,10 @@ async function boot() {
       else if (hash === 'customers') openCoreDefault('customers');
       else if (hash === 'facilities') openCoreDefault('facilities');
       else if (hash === 'extras') openCoreDefault('extras');
+      else if (hash === 'content') openCoreDefault('content');
       else if (hash === 'promotions') openCoreDefault('promotions');
       else if (hash === 'billing') openCoreDefault('billing');
       else if (hash === 'settings') openCoreDefault('settings');
-      else if (hash === 'site-content') openPage('site-content');
     } else {
       openPage('command');
     }

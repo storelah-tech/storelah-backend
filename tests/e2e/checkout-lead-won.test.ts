@@ -131,6 +131,10 @@ describe('checkout completion marks matching leads WON', () => {
       .toMatchObject({ status: 'PAID' });
     await expect(prisma.lead.findUnique({ where: { id: lead.id } })).resolves
       .toMatchObject({ stage: 'WON' });
+    // Verified payment occupies the unit in the same transaction: the seeded
+    // AVAILABLE unit flips to OCCUPIED with its tenant link intact.
+    await expect(prisma.unit.findUnique({ where: { unitCode: PIN.rentableUnit } })).resolves
+      .toMatchObject({ status: 'OCCUPIED' });
   });
 
   it('mobile-only contact matches; LOST is never resurrected; other-unit lead is left alone', async () => {
@@ -193,6 +197,9 @@ describe('checkout completion marks matching leads WON', () => {
       .toMatchObject({ status: 'CONFIRMED' });
     await expect(prisma.invoice.findUnique({ where: { id: world.invoiceId } })).resolves
       .toMatchObject({ status: 'PAID' });
+    // Occupancy flip is replay-safe: still OCCUPIED after the no-op redelivery.
+    await expect(prisma.unit.findUnique({ where: { unitCode: PIN.rentableUnit } })).resolves
+      .toMatchObject({ status: 'OCCUPIED' });
   });
 
   it('checkout still succeeds when no lead matches', async () => {

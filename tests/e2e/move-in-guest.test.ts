@@ -35,14 +35,15 @@ describe('move-in guest variant (GUEST create → claim → PERSONAL → portal)
     expect(guest).not.toBeNull();
     expect(guest!.type).toBe('GUEST');
 
-    // … with Tenant email linkage, DUE invoice, and the unit RESERVED.
+    // … with Tenant email linkage, DUE invoice, and the unit still AVAILABLE
+    // (unpaid bookings never reserve — occupancy flips only on verified payment).
     const tenant = await prisma.tenant.findFirst({ where: { email } });
     expect(tenant).not.toBeNull();
     const invoices = await prisma.invoice.findMany({ where: { tenantId: tenant!.id } });
     expect(invoices.length).toBeGreaterThan(0);
     expect(invoices[0].status).toBe('DUE');
     const unit = await prisma.unit.findUnique({ where: { unitCode: PIN.guestUnit } });
-    expect(unit!.status).toBe('RESERVED');
+    expect(unit!.status).toBe('AVAILABLE');
 
     // 2. Claim: proves identity with the out-of-band triple
     //    (bookingRef + email + mobile) and sets a real portal password.

@@ -117,7 +117,7 @@ export async function refreshMoveinsView() {
       const n = rows.length;
       sub.textContent = isRangeActive(state.moveinDate)
         ? `${scope}${n} move-in${n === 1 ? '' : 's'} in ${rangeLabel(state.moveinDate)}`
-        : `${scope}${n} move-in${n === 1 ? '' : 's'} scheduled today`;
+        : `${scope}${n} move-in${n === 1 ? '' : 's'} · all dates`;
     }
     tbody.innerHTML = rows.length ? rows.map(bookingRowHtml).join('') : emptyRowHtml('move-ins', state.moveinDate);
   } catch (err) {
@@ -125,21 +125,20 @@ export async function refreshMoveinsView() {
   }
 }
 
-// Date-range control lives in the move-ins header; changing the range refetches
-// server-side (Booking.moveInDate, overriding the today-only default).
+// Date-range control lives in the move-ins toolbar (same left-side position as
+// every other table); changing the range refetches server-side
+// (Booking.moveInDate). No range = all move-ins.
 function ensureMoveinsDateFilter() {
-  const hdr = document.querySelector('#customer-moveins .sec-hdr');
-  if (!hdr || hdr.dataset.dateFilterMounted) return;
-  hdr.dataset.dateFilterMounted = '1';
+  const bar = document.querySelector('#customer-moveins .tbl-toolbar');
+  if (!bar || bar.dataset.dateFilterMounted) return;
+  bar.dataset.dateFilterMounted = '1';
   const handle = createDateFilter({
     onChange: (r) => {
       state.moveinDate = r;
       refreshMoveinsView();
     },
   });
-  // .sec-hdr leads with the title block — the date trigger goes right after it
-  // so it is the first (and currently only) control.
-  const moveinTitle = hdr.firstElementChild;
-  if (moveinTitle && moveinTitle.nextSibling) hdr.insertBefore(handle.el, moveinTitle.nextSibling);
-  else hdr.appendChild(handle.el);
+  // Date-range trigger is the FIRST control in the toolbar, like the
+  // bookings/tenants tables.
+  bar.prepend(handle.el);
 }

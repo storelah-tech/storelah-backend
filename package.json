@@ -20,6 +20,7 @@
     "db:seed-facility-ops": "tsx scripts/seed-facility-ops.ts",
     "db:seed-settings": "tsx scripts/seed-settings.ts",
     "db:seed-units": "tsx scripts/seed-production-units.ts",
+    "db:free-units": "tsx scripts/free-all-units.ts",
     "db:rotate-admin-password": "tsx scripts/rotate-admin-password.ts",
     "db:backfill-blocks": "tsx scripts/backfill-floor-plan-blocks.ts",
     "db:backfill-footprints": "tsx scripts/backfill-placement-footprints.ts",
@@ -30,6 +31,7 @@
     "seed": "tsx prisma/seed.ts"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1147.0",
     "@aws-sdk/client-ses": "^3.1146.0",
     "@prisma/client": "^6.5.0",
     "bcryptjs": "^2.4.3",

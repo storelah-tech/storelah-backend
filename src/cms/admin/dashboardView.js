@@ -106,19 +106,24 @@ function renderUnitMap(map) {
   if (title) title.textContent = `Units Information — ${b ? b.name : state.branchCode} · Level ${state.level}`;
   if (legend && map && map.legend) {
     const L = map.legend;
+    // Status legend dots mirror the unit-map cells: fill + edge from the
+    // booking floor-plan palette (AVAILABLE #DCEAD9/#2E6B46, RESERVED
+    // #FFF8E1/#F57F17, OCCUPIED/OVERDUE/MAINTENANCE/BLOCKED unavailable
+    // #ECEFF1 with a 0.55-opacity #332B24 edge).
+    const UNAVAIL_EDGE = 'rgba(51,43,36,.55)';
     const items = [
-      ['Occupied', L.occupied, 'var(--teal)'],
-      ['Available', L.available, 'var(--olive)'],
-      ['Reserved', L.reserved, 'var(--amber)'],
-      ['Overdue', L.overdue, 'var(--red)'],
-      ['Maintenance', L.maintenance, 'var(--light)'],
+      ['Occupied', L.occupied, '#ECEFF1', UNAVAIL_EDGE],
+      ['Available', L.available, '#DCEAD9', '#2E6B46'],
+      ['Reserved', L.reserved, '#FFF8E1', '#F57F17'],
+      ['Overdue', L.overdue, '#ECEFF1', UNAVAIL_EDGE],
+      ['Maintenance', L.maintenance, '#ECEFF1', UNAVAIL_EDGE],
       // P1 item 3: BLOCKED legend parity with the UnitStatus enum.
-      ['Blocked', L.blocked || 0, '#8a8478'],
+      ['Blocked', L.blocked || 0, '#ECEFF1', UNAVAIL_EDGE],
     ];
     legend.innerHTML = items
       .map(
-        ([label, count, color]) =>
-          `<div class="u-leg"><div class="u-leg-dot" style="background:${color};"></div>${label} (${count})</div>`,
+        ([label, count, fill, edge]) =>
+          `<div class="u-leg"><div class="u-leg-dot" style="background:${fill};border-color:${edge};"></div>${label} (${count})</div>`,
       )
       .join('');
     // Size legend (additive — the status legend above is untouched). Counts come

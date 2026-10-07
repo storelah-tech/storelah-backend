@@ -41,9 +41,11 @@ button,input,select,textarea{font:inherit}button{cursor:pointer}
 .workspace .mark{width:32px;height:32px;border-radius:9px;background:var(--terra);display:grid;place-items:center;font-weight:800}
 .workspace small{opacity:.65}
 .nav-group{font-size:11px;text-transform:uppercase;letter-spacing:.11em;opacity:.48;padding:16px 10px 7px}
-.nav{display:flex;align-items:center;gap:11px;padding:10px 11px;border-radius:10px;color:rgba(255,255,255,.75);text-decoration:none;font-weight:600;margin:2px 0;cursor:pointer;border:0;background:transparent;width:100%;text-align:left}
+.nav{display:flex;align-items:center;gap:11px;padding:10px 11px;border-radius:10px;color:rgba(255,255,255,.75);text-decoration:none;font-weight:600;font-size:13px;line-height:1.35;margin:2px 0;cursor:pointer;border:0;background:transparent;width:100%;text-align:left;min-height:40px}
 .nav:hover,.nav.active{background:rgba(255,255,255,.1);color:white}
-.nav svg{width:18px;height:18px}.badge{margin-left:auto;background:var(--terra);color:white;border-radius:99px;padding:1px 7px;font-size:11px}
+.nav svg{width:18px;height:18px;flex:none;display:block}
+.nav span{flex:1;min-width:0;line-height:1.35;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.nav .badge{margin-left:auto;flex:none;background:var(--terra);color:white;border-radius:99px;padding:1px 7px;font-size:11px}
 .side-foot{margin-top:auto;border-top:1px solid rgba(255,255,255,.12);padding-top:14px}
 .user{display:flex;align-items:center;gap:10px;padding:9px}
 .avatar{width:34px;height:34px;border-radius:50%;display:grid;place-items:center;font-weight:700;background:#efe1d2;color:var(--olive)}
@@ -322,15 +324,18 @@ main{min-width:0;display:flex;flex-direction:column;min-height:100vh}
 .tbl-pager-btns{display:flex;gap:7px}
 .tbl-pager .tb-btn:disabled{opacity:.4;cursor:not-allowed}
 
-/* Admin legacy badge tones mapping to v8 */
-.badge{display:inline-flex;align-items:center;gap:3px;padding:2px 8px;border-radius:20px;font-size:9.5px;font-weight:700}
-.badge.occ{background:var(--sage);color:var(--olive2)}
-.badge.avail{background:var(--sage);color:var(--olive2)}
-.badge.over{background:var(--red-light);color:var(--red)}
-.badge.res{background:var(--amber-light);color:#8b6324}
-.badge.amber{background:var(--amber-light);color:#8b6324}
-.badge.terra{background:var(--terra-light);color:var(--terra2)}
-.badge.neutral{background:#ede8e2;color:var(--muted)}
+/* Admin legacy badge tones mapping to v8 — unit statuses aligned to the
+   booking floor-plan palette (AVAILABLE #DCEAD9/#2E6B46, RESERVED
+   #FFF8E1/#F57F17, OCCUPIED + OVERDUE/MAINTENANCE/INACTIVE unavailable
+   #ECEFF1/#332B24). */
+.badge{display:inline-flex;align-items:center;gap:3px;padding:2px 8px;border-radius:20px;font-size:9.5px;font-weight:700;border:1px solid transparent}
+.badge.occ{background:#ECEFF1;color:#332B24;border-color:rgba(51,43,36,.55)}
+.badge.avail{background:#DCEAD9;color:#2E6B46;border-color:#2E6B46}
+.badge.over{background:#ECEFF1;color:#332B24;border-color:rgba(51,43,36,.55)}
+.badge.res{background:#FFF8E1;color:#F57F17;border-color:#F57F17}
+.badge.amber{background:var(--amber-light);color:#8b6324;border-color:transparent}
+.badge.terra{background:var(--terra-light);color:var(--terra2);border-color:transparent}
+.badge.neutral{background:#ECEFF1;color:#332B24;border-color:rgba(51,43,36,.55)}
 
 /* Unit detail panel */
 .unit-detail{background:var(--paper);border:1px solid var(--line);border-radius:var(--r);padding:18px;margin-bottom:18px}
@@ -351,6 +356,60 @@ main{min-width:0;display:flex;flex-direction:column;min-height:100vh}
 .ud-stat-val{font-size:17px;font-weight:800;color:var(--ink)}
 .ud-stat-sub{font-size:10px;color:var(--muted);margin-top:2px}
 
+/* ---- Unit detail: header card + tabbed sections (operator UX) ----
+   Header card reuses .ud-hdr/.ud-badges/.act-btn above; tabs reuse the
+   floor-plan status palette via .badge tones (avail/res/occ/over/neutral).
+   Timeline rail reuses --line; dots reuse status tones. No new deps. */
+.ud-tabs{display:flex;gap:4px;border-bottom:1px solid var(--line);margin:0 0 14px;overflow:auto}
+.ud-tab{border:0;background:transparent;padding:10px 13px;border-bottom:2px solid transparent;white-space:nowrap;color:var(--muted);font-weight:650;cursor:pointer;font-family:Manrope,system-ui,sans-serif;font-size:12px}
+.ud-tab:hover{color:var(--ink)}
+.ud-tab.active{border-color:var(--terra);color:var(--terra2);font-weight:700}
+.ud-tab:focus-visible{outline:2px solid var(--terra);outline-offset:2px;border-radius:6px}
+.ud-tab .ud-count{display:inline-grid;place-items:center;min-width:20px;height:18px;padding:0 6px;margin-left:6px;border-radius:99px;background:var(--cream);border:1px solid var(--line);font-size:10px;font-weight:800;color:var(--muted)}
+.ud-tab.active .ud-count{background:var(--terra-light);border-color:transparent;color:var(--terra2)}
+.ud-panel{display:none}
+.ud-panel.active{display:block}
+.ud-sec-hdr{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px;flex-wrap:wrap}
+.ud-sec-title{font-size:13px;font-weight:800;color:var(--ink)}
+.ud-sec-sub{font-size:11px;color:var(--muted);margin-top:2px}
+/* Tenant-history timeline: newest first, rail + status dots, cards reuse
+   .alert-item rhythm so operator scanning matches the rest of the CMS. */
+.ud-timeline{list-style:none;margin:4px 0 0 6px;padding-left:18px;border-left:2px solid var(--line)}
+.ud-titem{margin-bottom:12px;position:relative}
+.ud-titem::before{content:'';width:9px;height:9px;background:var(--terra);border:3px solid var(--paper);border-radius:50%;left:-24px;top:14px;position:absolute;box-sizing:content-box}
+.ud-titem.tone-avail::before{background:#2E6B46}
+.ud-titem.tone-res::before{background:#F57F17}
+.ud-titem.tone-occ::before{background:var(--olive)}
+.ud-titem.tone-over::before{background:var(--red)}
+.ud-titem.tone-amber::before{background:var(--amber)}
+.ud-titem.tone-neutral::before{background:var(--muted)}
+.ud-tcard{background:var(--white);border:1px solid var(--line);border-radius:11px;padding:12px 13px}
+.ud-tcard-top{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.ud-tcard-top b{font-size:13px}
+.ud-tcard-top .pill,.ud-tcard-top .badge{margin-left:auto}
+.ud-tcard-contact{font-size:11px;color:var(--muted);margin-top:3px}
+.ud-tcard-meta{display:flex;gap:12px;flex-wrap:wrap;font-size:11px;color:var(--muted);margin-top:8px}
+.ud-tcard-meta b{color:var(--ink)}
+.ud-tcard-refs{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;font-size:10px}
+.ud-ref{display:inline-flex;align-items:center;gap:4px;background:var(--cream);border:1px solid var(--line);border-radius:7px;padding:3px 8px;font-weight:700;color:var(--muted)}
+.ud-ref b{color:var(--ink)}
+.ud-state{border:1px dashed var(--line);border-radius:10px;padding:18px;text-align:center;color:var(--muted);font-size:12px;font-weight:600;background:var(--cream)}
+.ud-state.err{color:var(--red);border-color:#e6b5b0;background:#fff8f7}
+.ud-history{margin-top:14px}
+.ud-history-title{font-size:12px;font-weight:800;color:var(--ink);margin-bottom:8px}
+.ud-history-empty{text-align:center;padding:26px 16px;color:var(--muted);font-size:12px;border:1px dashed var(--line);border-radius:10px;background:var(--cream)}
+/* Tenant stay-history drawer reuses .modal-overlay/.modal-win/.ud-timeline. */
+.th-sub{font-size:11px;color:var(--muted);margin-top:3px}
+@media(max-width:760px){
+  .ud-hdr{flex-direction:column;gap:10px}
+  .ud-actions{width:100%}
+  .ud-stats{grid-template-columns:1fr 1fr}
+  .ud-timeline{margin-left:2px}
+}
+@media(prefers-reduced-motion:reduce){
+  .ud-tab,.act-btn{transition:none}
+}
+
 /* Unit map card (inside facilities page) — v8 themed */
 .unit-map-card{background:var(--paper);border:1px solid var(--line);border-radius:var(--r);padding:18px;margin-bottom:18px}
 .floor-tabs{display:flex;gap:4px;margin-bottom:12px;border-bottom:1px solid #ede8e2;padding-bottom:10px}
@@ -363,23 +422,28 @@ main{min-width:0;display:flex;flex-direction:column;min-height:100vh}
 .f-search input{border:none;background:transparent;font-family:Manrope,system-ui,sans-serif;font-size:11px;color:var(--ink);outline:none;width:130px}
 .unit-legend{display:flex;gap:18px;flex-wrap:wrap;margin-bottom:14px;align-items:center}
 .u-leg{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:700;color:var(--muted)}
-.u-leg-dot{width:14px;height:14px;border-radius:50%;flex:none}
+.u-leg-dot{width:14px;height:14px;border-radius:50%;flex:none;box-sizing:border-box;border:1.5px solid transparent}
 .unit-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(68px,1fr));gap:5px}
 .u-cell{aspect-ratio:1.15;border-radius:7px;display:flex;flex-direction:column;align-items:center;justify-content:center;cursor:pointer;border:1.5px solid transparent;transition:all.15s;position:relative;padding:3px}
 .u-cell:hover{transform:scale(1.05);box-shadow:0 3px 10px rgba(0,0,0,.1);z-index:5}
-.u-cell.occupied{background:var(--sage);border-color:var(--olive2)}
-.u-cell.available{background:var(--sage);border-color:var(--olive)}
-.u-cell.reserved{background:var(--amber-light);border-color:var(--amber)}
-.u-cell.overdue{background:var(--red-light);border-color:var(--red)}
-.u-cell.maintenance{background:var(--cream);border-color:var(--line)}
-.u-cell.blocked{background:#e8e4de;border-color:#8a8478;border-style:dashed}
-.u-cell.selected{border-color:var(--terra)!important;box-shadow:0 0 0 2px var(--terra-light)}
+/* Unit-map status fills aligned to the booking floor-plan palette:
+   AVAILABLE fill #DCEAD9 edge #2E6B46; RESERVED fill #FFF8E1 edge #F57F17;
+   OCCUPIED/OVERDUE/MAINTENANCE (+INACTIVE via .maintenance, BLOCKED)
+   collapse to unavailable fill #ECEFF1 edge #332B24 at 0.55 opacity. */
+.u-cell.occupied{background:#ECEFF1;border-color:rgba(51,43,36,.55)}
+.u-cell.available{background:#DCEAD9;border-color:#2E6B46}
+.u-cell.reserved{background:#FFF8E1;border-color:#F57F17}
+.u-cell.overdue{background:#ECEFF1;border-color:rgba(51,43,36,.55)}
+.u-cell.maintenance{background:#ECEFF1;border-color:rgba(51,43,36,.55)}
+.u-cell.blocked{background:#ECEFF1;border-color:rgba(51,43,36,.55);border-style:dashed}
+.u-cell.selected{border-color:#7A3B28!important;box-shadow:0 0 0 2px #C1664C}
 .u-dot{position:absolute;top:4px;right:4px;width:5px;height:5px;border-radius:50%}
-.u-cell.occupied .u-dot{background:var(--olive2)}
-.u-cell.available .u-dot{background:var(--olive)}
-.u-cell.reserved .u-dot{background:var(--amber)}
-.u-cell.overdue .u-dot{background:var(--red)}
-.u-cell.blocked .u-dot{background:#8a8478}
+.u-cell.occupied .u-dot{background:#332B24}
+.u-cell.available .u-dot{background:#2E6B46}
+.u-cell.reserved .u-dot{background:#F57F17}
+.u-cell.overdue .u-dot{background:#332B24}
+.u-cell.maintenance .u-dot{background:#332B24}
+.u-cell.blocked .u-dot{background:#332B24}
 .u-id{font-size:10px;font-weight:800;color:var(--ink)}
 .u-size{font-size:8.5px;font-weight:600;color:var(--muted);margin-top:1px}
 .u-psf{font-size:8.5px;font-weight:700;color:var(--terra);margin-top:1px}
@@ -456,8 +520,8 @@ main{min-width:0;display:flex;flex-direction:column;min-height:100vh}
 .fp-canvas{position:relative;background-color:var(--cream);border:1px solid var(--line);background-image:linear-gradient(var(--line) 1px,transparent 1px),linear-gradient(90deg,var(--line) 1px,transparent 1px)}
 .fp-placed{position:absolute;border-radius:6px;display:flex;flex-direction:column;align-items:center;justify-content:center;cursor:grab;border:2px solid var(--olive2);background:var(--sage);box-sizing:border-box;font-weight:800;color:var(--olive);overflow:hidden;z-index:2}
 .fp-placed .fp-code{font-size:10px;line-height:1.15}.fp-placed .fp-size{font-size:8.5px;color:var(--muted);font-weight:600}
-.fp-placed .fp-status{position:absolute;top:3px;right:3px;width:7px;height:7px;border-radius:50%;background:var(--olive2)} /* default status tone — every tile sets its inline status colour (fpStatusColor, never grey fallback) */
-.fp-placed.selected{border-color:var(--terra);box-shadow:0 0 0 2px var(--terra-light)}
+.fp-placed .fp-status{position:absolute;top:3px;right:3px;width:7px;height:7px;border-radius:50%;background:#2E6B46} /* default status tone — every tile sets its inline status colour (fpStatusColor, never grey fallback) */
+.fp-placed.selected{border-color:#7A3B28;box-shadow:0 0 0 2px #C1664C}
 .fp-placed .fp-resize{position:absolute;right:2px;bottom:2px;width:11px;height:11px;background:var(--ink);border-radius:2px;cursor:nwse-resize;opacity:0}
 .fp-placed.selected .fp-resize{opacity:1}
 .fp-placed.fp-stacked{justify-content:center}
@@ -755,14 +819,14 @@ body.lead-drawer-open{overflow-x:hidden}
   </div>
   <div class="nav-group">StoreLah platform</div>
   <button class="nav active" data-core-page="command"><svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 8l7-6 7 6"/><path d="M4 7v7a1 1 0 001 1h3"/><path d="M11 15h3a1 1 0 001-1V9"/><path d="M9 15V9"/></svg> <span>Overview</span></button>
-  <button class="nav" data-core-page="leads"><svg viewBox="0 0 18 18" fill="currentColor"><circle cx="9" cy="9" r="5"/></svg> <span>Leads Management</span><i class="badge" id="leadsBadge">0</i></button>
+  <button class="nav" data-core-page="leads"><svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h14l-5.5 6.5V15l-3 1.5v-7L2 3z"/></svg> <span>Leads Management</span><i class="badge" id="leadsBadge">0</i></button>
   <button class="nav" data-core-page="customers"><svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 9a3 3 0 100-6 3 3 0 000 6z"/><path d="M3 17c0-3.3 2.7-6 6-6s6 2.7 6 6"/></svg> <span>Customer Management</span></button>
   <button class="nav" data-core-page="facilities"><svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="6" height="6" rx="1"/><rect x="10" y="2" width="6" height="6" rx="1"/><rect x="2" y="10" width="6" height="6" rx="1"/><rect x="10" y="10" width="6" height="6" rx="1"/></svg> <span>Facilities Management</span><i class="badge" id="facilityBadge">0</i></button>
   <button class="nav" data-core-page="extras"><svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 1.5l6 2.5v5c0 4-2.7 6.5-6 7.5-3.3-1-6-3.5-6-7.5V4L9 1.5z"/><path d="M9 6v4M7 8h4"/></svg> <span>Protection &amp; Addons</span></button>
-  <button class="nav" data-core-page="promotions">% <span>Discount &amp; Promotion</span></button>
-  <button class="nav" data-core-page="billing">$ <span>Finance Management</span></button>
-  <button class="nav" data-core-page="settings"><svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="9" r="2.5"/><path d="M9 1.5v2M9 14.5v2M1.5 9h2M14.5 9h2M3.3 3.3l1.4 1.4M13.3 13.3l1.4 1.4M3.3 14.7l1.4-1.4M13.3 4.7l1.4-1.4"/></svg> <span>Global Settings</span></button>
-  <button class="nav" data-core-page="site-content"><svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="14" height="12" rx="2"/><path d="M5 7h8M5 10h5"/></svg> <span>Site Content</span></button>
+  <button class="nav" data-core-page="promotions"><svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 2.5H10l5.5 5.5-7.5 7.5-5.5-5.5V2.5z"/><circle cx="6.6" cy="6.6" r="1.3"/></svg> <span>Discount &amp; Promotion</span></button>
+  <button class="nav" data-core-page="billing"><svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="14" height="9" rx="1.5"/><circle cx="9" cy="9.5" r="2"/><path d="M5.5 7.2v.01M12.5 11.8v.01"/></svg> <span>Finance Management</span></button>
+  <button class="nav" data-core-page="content"><svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="14" height="14" rx="2"/><path d="M2 6.5h14M6.5 6.5V16"/></svg> <span>Content Management</span></button>
+  <button class="nav" data-core-page="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg> <span>Global Settings</span></button>
   <div class="side-foot"><div class="user"><div class="avatar" id="userAvatar">FZ</div><div><b id="userName">Faisal</b><br><small id="userRole">Administrator</small></div></div></div>
 </aside>
 
@@ -873,7 +937,7 @@ body.lead-drawer-open{overflow-x:hidden}
 
     <!-- ============ CUSTOMERS (subtabs: Tenants, Bookings, Move-ins) ============ -->
     <section class="page" id="customers">
-      <div class="head"><div><h1>Customers &amp; agreements</h1><p>Every tenant, unit and service record.</p></div><div class="actions"><button class="primary">＋ New customer</button></div></div>
+      <div class="head"><div><h1>Customers &amp; agreements</h1><p>Every tenant, unit and service record.</p></div><div class="actions"><button class="primary" id="addQuoteHeaderBtn" type="button">＋ New Quotation</button></div></div>
       <div class="subtabs" data-tabs="customer"><button class="active" data-tab="customer-tenants">Tenants</button><button data-tab="customer-bookings">Bookings</button><button data-tab="customer-moveins">Move-ins</button><button data-tab="customer-quotes">Quotes</button><button data-tab="customer-moveouts">Move-outs</button></div>
       <!-- Tenants Table -->
       <div class="module-panel active" id="customer-tenants">
@@ -893,18 +957,19 @@ body.lead-drawer-open{overflow-x:hidden}
           <table class="data-tbl" id="bookingsViewTable"><thead><tr><th>Ref</th><th>Customer</th><th>Unit</th><th>Move-in</th><th>Duration</th><th>$/mo</th><th>Paid/Due</th><th>Status</th></tr></thead><tbody id="bookingsViewBody"></tbody></table>
         </div>
       </div>
-      <!-- Move-ins today -->
+      <!-- Move-ins (all, date-filterable) -->
       <div class="module-panel" id="customer-moveins">
         <div class="tbl-card">
-          <div class="sec-hdr"><div><div class="sec-title">Move-ins Today</div><div class="sec-sub" id="moveinsViewSub">Bookings with move-in date today</div></div></div>
+          <div class="sec-hdr"><div><div class="sec-title">Move-ins</div><div class="sec-sub" id="moveinsViewSub">All move-ins by move-in date</div></div></div>
+          <div class="tbl-toolbar" id="moveinsToolbar"></div>
           <table class="data-tbl" id="moveinsViewTable"><thead><tr><th>Ref</th><th>Customer</th><th>Unit</th><th>Move-in</th><th>Duration</th><th>$/mo</th><th>Paid/Due</th><th>Status</th></tr></thead><tbody id="moveinsViewBody"></tbody></table>
         </div>
       </div>
       <!-- Quotes queue (P1): PROPOSAL_SENT leads + live inventory -->
       <div class="module-panel" id="customer-quotes">
         <div class="tbl-card">
-          <div class="sec-hdr"><div><div class="sec-title">Quotes</div><div class="sec-sub" id="quotesSub">Quoted leads · stages move in Leads</div></div><div style="display:flex;gap:7px;"><button class="tb-btn primary" id="addQuoteBtn">+ New quotation</button></div></div>
-          <table class="data-tbl" id="quotesTable"><thead><tr><th>Lead</th><th>Stage</th><th>Facility/Size</th><th>Est. value</th><th>Inventory</th><th>Owner</th><th></th></tr></thead><tbody id="quotesBody"></tbody></table>
+          <div class="sec-hdr"><div><div class="sec-title">Quotes</div><div class="sec-sub" id="quotesSub">Quoted leads · stages move in Leads</div></div></div>
+          <table class="data-tbl" id="quotesTable"><thead><tr><th>Lead</th><th>Stage</th><th>Facility/Size</th><th>Est. value</th><th>Inventory</th><th>Owner</th><th>Quotation No</th><th>PDF</th><th>Email</th><th></th></tr></thead><tbody id="quotesBody"></tbody></table>
           <div id="quoteDetail"></div>
         </div>
       </div>
@@ -930,14 +995,41 @@ body.lead-drawer-open{overflow-x:hidden}
           <div class="floor-tabs" id="floorTabs"></div>
           <div class="unit-grid" id="unitGrid"></div>
         </div>
-        <div class="unit-detail" id="unitDetail">
-          <div class="ud-hdr"><div><div class="ud-id" id="udId">Select a unit</div><div class="ud-badges" id="udBadges"></div></div><div class="ud-actions"><button class="act-btn" id="viewHistoryBtn">📋 History</button><button class="act-btn" id="editUnitBtn">✏️ Edit</button><button class="act-btn primary" id="adjustRateBtn">⚡ Adjust Rate</button><button class="act-btn danger" id="deleteUnitBtn">🗑 Delete</button></div></div>
-          <div class="ud-stats"><div class="ud-stat"><div class="ud-stat-lbl">Tenant</div><div class="ud-stat-val" id="udTenant" style="font-size:14px;">—</div><div class="ud-stat-sub" id="udTenantSub"></div></div><div class="ud-stat"><div class="ud-stat-lbl">Rate</div><div class="ud-stat-val" id="udRate">—</div><div class="ud-stat-sub" id="udRateSub"></div></div><div class="ud-stat"><div class="ud-stat-lbl">Status</div><div class="ud-stat-val" id="udStatus" style="font-size:16px;">—</div></div><div class="ud-stat"><div class="ud-stat-lbl">Branch</div><div class="ud-stat-val" id="udBranch" style="font-size:14px;">—</div><div class="ud-stat-sub" id="udLevel"></div></div><div class="ud-stat"><div class="ud-stat-lbl">Size</div><div class="ud-stat-val" id="udSize" style="font-size:14px;">—</div><div class="ud-stat-sub" id="udSizeSub"></div></div><div class="ud-stat"><div class="ud-stat-lbl">PSF</div><div class="ud-stat-val" id="udPsf">—</div></div><div class="ud-stat"><div class="ud-stat-lbl">Rate history</div><div class="ud-stat-val" id="udRateHistCount" style="font-size:16px;">0</div></div><div class="ud-stat"><div class="ud-stat-lbl">Last change</div><div class="ud-stat-val" id="udLastChange" style="font-size:14px;">—</div></div></div>
-          <div class="ud-history"><div class="ud-history-title">Tenant History</div><div class="ud-history-empty" id="tenantHistoryEmpty">No tenant history recorded for this unit yet.</div></div>
-          <div class="ud-history"><div class="ud-history-title">Inspections (facility)</div><div id="udInspections"><div class="ud-history-empty">Select a unit to view inspections.</div></div></div>
-          <div class="ud-history"><div class="ud-history-title">Compliance (facility)</div><div id="udCertificates"><div class="ud-history-empty">Select a unit to view certificates.</div></div></div>
-          <div class="ud-history"><div class="ud-history-title">Access history (facility)</div><div id="udAccess"><div class="ud-history-empty">Select a unit to view access history.</div></div></div>
-          <div class="ud-history"><div class="ud-history-title">Work orders (unit)</div><div id="udWorkOrders"><div class="ud-history-empty">Select a unit to view work orders.</div></div></div>
+        <div class="unit-detail" id="unitDetail" role="region" aria-label="Unit details">
+          <div class="ud-hdr"><div><div class="ud-id" id="udId">Select a unit</div><div class="ud-badges" id="udBadges"></div></div><div class="ud-actions"><button class="act-btn" id="viewHistoryBtn" title="Jump to tenant history">📋 History</button><button class="act-btn" id="editUnitBtn">✏️ Edit</button><button class="act-btn primary" id="adjustRateBtn">⚡ Adjust Rate</button><button class="act-btn danger" id="deleteUnitBtn">🗑 Delete</button></div></div>
+          <div class="ud-tabs" role="tablist" aria-label="Unit detail sections">
+            <button type="button" class="ud-tab active" role="tab" id="udTab-overview" aria-controls="udPanel-overview" aria-selected="true" data-ud-tab="overview">Overview</button>
+            <button type="button" class="ud-tab" role="tab" id="udTab-history" aria-controls="udPanel-history" aria-selected="false" tabindex="-1" data-ud-tab="history">Tenant history<span class="ud-count" id="udHistCount" hidden></span></button>
+            <button type="button" class="ud-tab" role="tab" id="udTab-bookings" aria-controls="udPanel-bookings" aria-selected="false" tabindex="-1" data-ud-tab="bookings">Bookings</button>
+            <button type="button" class="ud-tab" role="tab" id="udTab-invoices" aria-controls="udPanel-invoices" aria-selected="false" tabindex="-1" data-ud-tab="invoices">Invoices</button>
+            <button type="button" class="ud-tab" role="tab" id="udTab-activity" aria-controls="udPanel-activity" aria-selected="false" tabindex="-1" data-ud-tab="activity">Activity</button>
+          </div>
+          <div class="ud-panel active" id="udPanel-overview" role="tabpanel" aria-labelledby="udTab-overview" tabindex="0">
+            <div class="ud-stats"><div class="ud-stat"><div class="ud-stat-lbl">Tenant</div><div class="ud-stat-val" id="udTenant" style="font-size:14px;">—</div><div class="ud-stat-sub" id="udTenantSub"></div></div><div class="ud-stat"><div class="ud-stat-lbl">Rate</div><div class="ud-stat-val" id="udRate">—</div><div class="ud-stat-sub" id="udRateSub"></div></div><div class="ud-stat"><div class="ud-stat-lbl">Status</div><div class="ud-stat-val" id="udStatus" style="font-size:16px;">—</div><div class="ud-stat-sub" id="udStatusSub"></div></div><div class="ud-stat"><div class="ud-stat-lbl">Branch</div><div class="ud-stat-val" id="udBranch" style="font-size:14px;">—</div><div class="ud-stat-sub" id="udLevel"></div></div><div class="ud-stat"><div class="ud-stat-lbl">Size</div><div class="ud-stat-val" id="udSize" style="font-size:14px;">—</div><div class="ud-stat-sub" id="udSizeSub"></div></div><div class="ud-stat"><div class="ud-stat-lbl">PSF</div><div class="ud-stat-val" id="udPsf">—</div><div class="ud-stat-sub" id="udPsfSub"></div></div><div class="ud-stat"><div class="ud-stat-lbl">Rate history</div><div class="ud-stat-val" id="udRateHistCount" style="font-size:16px;">0</div><div class="ud-stat-sub" id="udRateHistSub"></div></div><div class="ud-stat"><div class="ud-stat-lbl">Last change</div><div class="ud-stat-val" id="udLastChange" style="font-size:14px;">—</div><div class="ud-stat-sub" id="udLastChangeSub"></div></div></div>
+          </div>
+          <div class="ud-panel" id="udPanel-history" role="tabpanel" aria-labelledby="udTab-history" tabindex="0" hidden>
+            <div class="ud-sec-hdr"><div><div class="ud-sec-title">Tenant history</div><div class="ud-sec-sub" id="udHistSub">Newest first</div></div><select id="udHistFilter" class="tbl-select" aria-label="Filter tenant history by stage"><option value="">All stages</option><option value="ACTIVE">Active</option><option value="DUE">Due</option><option value="OVERDUE">Overdue</option><option value="NOTICE">Notice</option></select></div>
+            <div class="ud-state" id="udHistState" hidden></div>
+            <ol class="ud-timeline" id="udTenantTimeline" aria-live="polite"></ol>
+            <div class="ud-history-empty" id="tenantHistoryEmpty">No prior tenants — stays for this unit will appear here newest-first.</div>
+          </div>
+          <div class="ud-panel" id="udPanel-bookings" role="tabpanel" aria-labelledby="udTab-bookings" tabindex="0" hidden>
+            <div class="ud-sec-hdr"><div><div class="ud-sec-title">Bookings</div><div class="ud-sec-sub" id="udBookingsSub">Linked reservations for this unit</div></div></div>
+            <div class="ud-state" id="udBookingsState" hidden></div>
+            <div id="udBookings"></div>
+          </div>
+          <div class="ud-panel" id="udPanel-invoices" role="tabpanel" aria-labelledby="udTab-invoices" tabindex="0" hidden>
+            <div class="ud-sec-hdr"><div><div class="ud-sec-title">Invoices</div><div class="ud-sec-sub" id="udInvoicesSub">Derived from recorded bookings</div></div></div>
+            <div class="ud-state" id="udInvoicesState" hidden></div>
+            <div id="udInvoices"></div>
+          </div>
+          <div class="ud-panel" id="udPanel-activity" role="tabpanel" aria-labelledby="udTab-activity" tabindex="0" hidden>
+            <div class="ud-history"><div class="ud-history-title">Unit activity</div><div class="ud-state" id="udActivityState" hidden></div><div id="udUnitActivity"></div></div>
+            <div class="ud-history"><div class="ud-history-title">Inspections (facility)</div><div id="udInspections"><div class="ud-history-empty">Select a unit to view inspections.</div></div></div>
+            <div class="ud-history"><div class="ud-history-title">Compliance (facility)</div><div id="udCertificates"><div class="ud-history-empty">Select a unit to view certificates.</div></div></div>
+            <div class="ud-history"><div class="ud-history-title">Access history (facility)</div><div id="udAccess"><div class="ud-history-empty">Select a unit to view access history.</div></div></div>
+            <div class="ud-history"><div class="ud-history-title">Work orders (unit)</div><div id="udWorkOrders"><div class="ud-history-empty">Select a unit to view work orders.</div></div></div>
+          </div>
         </div>
       </div>
       <!-- Units Table -->
@@ -1551,23 +1643,11 @@ body.lead-drawer-open{overflow-x:hidden}
       </div>
     </section>
 
-    <!-- ============ SITE CONTENT (landing-page CMS, minimal v1) ============ -->
-    <!-- Ticker = one-per-line textarea; hero/testimonials = JSON textareas.
-         Body self-populated by admin.js bindSiteContent() (no restructuring). -->
-    <section class="page" id="site-content">
-      <div class="head"><div><h1>Site Content</h1><p>Landing-page content: ticker, hero slides, testimonials. Saves go live on the public API immediately.</p></div><div class="actions"><button class="btn" id="siteContentReloadBtn" type="button">Reload</button></div></div>
-      <div class="modal-alert" id="siteContentBanner" hidden></div>
-      <div class="tbl-card">
-        <div class="sec-hdr"><div><div class="sec-title">Ticker items</div><div class="sec-sub" id="tickerCount">—</div></div><div style="display:flex;gap:7px;"><button class="tb-btn primary" id="tickerSaveBtn" type="button">Save ticker</button></div></div>
-        <div class="field full"><label for="tickerTextarea">One item per line · max 50 items · 200 chars each</label><textarea id="tickerTextarea" class="fp-structure-input" rows="6" spellcheck="false" placeholder="One ticker item per line"></textarea></div>
-      </div>
-      <div class="tbl-card">
-        <div class="sec-hdr"><div><div class="sec-title">Hero slides</div><div class="sec-sub" id="heroCount">—</div></div><div style="display:flex;gap:7px;"><button class="tb-btn primary" id="heroSaveBtn" type="button">Save hero slides</button></div></div>
-        <div class="field full"><label for="heroTextarea">JSON array · fields per slide: id, tag, label, headline, sub, cta, img</label><textarea id="heroTextarea" class="fp-structure-input" rows="12" spellcheck="false" placeholder='[{"id":"slide-1","tag":"…","label":"…","headline":"…","sub":"…","cta":"…","img":"/images/hero-1.jpg"}]'></textarea></div>
-      </div>
-      <div class="tbl-card">
-        <div class="sec-hdr"><div><div class="sec-title">Testimonials</div><div class="sec-sub" id="testimonialsCount">—</div></div><div style="display:flex;gap:7px;"><button class="tb-btn primary" id="testimonialsSaveBtn" type="button">Save testimonials</button></div></div>
-        <div class="field full"><label for="testimonialsTextarea">JSON array · fields per item: name, context, quote, stars (1–5), img</label><textarea id="testimonialsTextarea" class="fp-structure-input" rows="12" spellcheck="false" placeholder='[{"name":"…","context":"…","quote":"…","stars":5,"img":"/images/customer-1.jpg"}]'></textarea></div>
+    <!-- ============ CONTENT MANAGEMENT (landing images + texts; body self-mounted by contentView.js) ============ -->
+    <section class="page" id="content">
+      <div class="head"><div><h1>Content Management</h1><p>Landing images + texts: hero banners, testimonials, copy blocks. Publish to make items visible to the landing build.</p></div></div>
+      <div class="subtabs" data-tabs="content"><button class="active" data-tab="content-list">All content</button></div>
+      <div class="module-panel active" id="content-list">
       </div>
     </section>
 
@@ -1705,21 +1785,47 @@ body.lead-drawer-open{overflow-x:hidden}
   <div class="modal-win">
     <div class="modal-hdr"><div class="modal-title" id="quoteModalTitle">New quotation</div><button class="modal-x" id="quoteModalClose" type="button">✕</button></div>
     <div class="modal-alert" id="quoteModalAlert" hidden></div>
-    <div class="modal-hint" id="quoteModalHint">Pick an existing lead to quote it, or leave blank and enter a name to create a new quoted lead.</div>
+    <div class="modal-hint" id="quoteModalHint">Pick a quotable lead (quoted, booked and lost leads are excluded) or leave blank and enter a name to create a new quoted lead. A quotation PDF is generated, saved and emailed on create.</div>
     <form id="quoteForm" novalidate>
+      <!-- (a) Lead — picker from non-won leads + auto-fill name/email/mobile -->
+      <div style="font-weight:700;font-size:13px;margin:10px 2px 6px;">Lead</div>
       <div class="form-grid">
-        <div class="field full"><label for="qf-lead">Existing lead (optional)</label><select id="qf-lead" name="leadId"><option value="">— New lead (enter name below) —</option></select><div class="field-err" id="qe-lead"></div></div>
+        <div class="field full"><label for="qf-lead">Existing lead (quotable stages only)</label><select id="qf-lead" name="leadId"><option value="">— New lead (enter name below) —</option></select><div class="field-err" id="qe-lead"></div></div>
         <div class="field full"><label for="qf-name">Name (required for new lead)</label><input type="text" id="qf-name" name="name" maxlength="120" placeholder="Customer name"><div class="field-err" id="qe-name"></div></div>
         <div class="field"><label for="qf-type">Type</label><select id="qf-type" name="type"><option value="">— default —</option><option value="PERSONAL">Personal</option><option value="BUSINESS">Business</option></select><div class="field-err" id="qe-type"></div></div>
-        <div class="field"><label for="qf-branch">Facility</label><select id="qf-branch" name="preferredBranchId"><option value="">— No facility —</option></select><div class="field-err" id="qe-branch"></div></div>
+        <div class="field"><label for="qf-segment">Segment (optional)</label><input type="text" id="qf-segment" name="segment" maxlength="80" placeholder="E.g. Reno"><div class="field-err" id="qe-segment"></div></div>
+        <div class="field"><label for="qf-source">Source</label><select id="qf-source" name="source"><option value="">— default —</option><option value="WEBSITE">Website</option><option value="WHATSAPP">WhatsApp</option><option value="REFERRAL">Referral</option><option value="GOOGLE">Google</option></select><div class="field-err" id="qe-source"></div></div>
         <div class="field"><label for="qf-mobile">Mobile</label><input type="text" id="qf-mobile" name="mobile" maxlength="40" placeholder="+65 9xxx xxxx"><div class="field-err" id="qe-mobile"></div></div>
-        <div class="field"><label for="qf-email">Email</label><input type="email" id="qf-email" name="email" placeholder="name@example.com"><div class="field-err" id="qe-email"></div></div>
+        <div class="field full"><label for="qf-email">Email</label><input type="email" id="qf-email" name="email" placeholder="name@example.com"><div class="field-err" id="qe-email"></div></div>
+      </div>
+      <!-- (b) Unit information — facility dropdown, preferred size, specific unitCode with live AVAILABLE options -->
+      <div style="font-weight:700;font-size:13px;margin:10px 2px 6px;">Unit information</div>
+      <div class="form-grid">
+        <div class="field"><label for="qf-branch">Facility</label><select id="qf-branch" name="preferredBranchId"><option value="">— No facility —</option></select><div class="field-err" id="qe-branch"></div></div>
         <div class="field"><label for="qf-size">Preferred size</label><input type="text" id="qf-size" name="preferredSize" maxlength="40" placeholder="E.g. SMALL"><div class="field-err" id="qe-size"></div></div>
+        <div class="field full"><label for="qf-unit">Specific unit (live AVAILABLE options)</label><select id="qf-unit" name="unitCode"><option value="">— No specific unit —</option></select><div class="field-err" id="qe-unit"></div></div>
+      </div>
+      <!-- (c) Payment information — rate/duration/move-in/protection/addons/promo/moving/total + live total preview -->
+      <div style="font-weight:700;font-size:13px;margin:10px 2px 6px;">Payment information</div>
+      <div class="form-grid">
         <div class="field"><label for="qf-rate">Monthly rate ($)</label><input type="number" id="qf-rate" name="monthlyRate" min="0" step="0.01"><div class="field-err" id="qe-rate"></div></div>
-        <div class="field"><label for="qf-moveIn">Move-in date</label><input type="date" id="qf-moveIn" name="moveInDate"><div class="field-err" id="qe-moveIn"></div></div>
         <div class="field"><label for="qf-duration">Duration (months)</label><input type="number" id="qf-duration" name="durationMonths" min="1" step="1"><div class="field-err" id="qe-duration"></div></div>
-        <div class="field"><label for="qf-unit">Unit code (optional)</label><input type="text" id="qf-unit" name="unitCode" maxlength="40" placeholder="E.g. BM-01-001"><div class="field-err" id="qe-unit"></div></div>
+        <div class="field"><label for="qf-moveIn">Move-in date</label><input type="date" id="qf-moveIn" name="moveInDate"><div class="field-err" id="qe-moveIn"></div></div>
+        <div class="field"><label for="qf-protectionTier">Protection tier (optional)</label><input type="text" id="qf-protectionTier" name="protectionTier" maxlength="80" placeholder="E.g. standard"><div class="field-err" id="qe-protectionTier"></div></div>
+        <div class="field"><label for="qf-protectionCost">Protection cost ($/mo)</label><input type="number" id="qf-protectionCost" name="protectionCost" min="0" step="0.01"><div class="field-err" id="qe-protectionCost"></div></div>
+        <div class="field"><label for="qf-addons">Addons (optional JSON)</label><input type="text" id="qf-addons" name="addons" placeholder='[{"name":"Medium Box","qty":2,"price":3.5}]'><div class="field-err" id="qe-addons"></div></div>
+        <div class="field"><label for="qf-promoCode">Promo code (optional)</label><input type="text" id="qf-promoCode" name="promoCode" maxlength="40" placeholder="E.g. STORELAH10"><div class="field-err" id="qe-promoCode"></div></div>
+        <div class="field"><label for="qf-promoDiscount">Promo discount ($)</label><input type="number" id="qf-promoDiscount" name="promoDiscountAmt" min="0" step="0.01"><div class="field-err" id="qe-promoDiscount"></div></div>
+        <div class="field"><label for="qf-movingService">Moving service</label><select id="qf-movingService" name="movingService"><option value="">— not requested —</option><option value="yes">Requested</option><option value="no">Not requested</option></select><div class="field-err" id="qe-movingService"></div></div>
+        <div class="field"><label for="qf-total">Total due today ($)</label><input type="number" id="qf-total" name="totalDueToday" min="0" step="0.01"><div class="field-err" id="qe-total"></div></div>
+        <div class="field full"><div class="modal-hint" id="qf-quoteTotalPreview" style="margin:0;">Estimated total: —</div></div>
+      </div>
+      <!-- (d) Note / owner / next action -->
+      <div style="font-weight:700;font-size:13px;margin:10px 2px 6px;">Note / owner / next action</div>
+      <div class="form-grid">
         <div class="field full"><label for="qf-note">Note</label><input type="text" id="qf-note" name="note" maxlength="2000" placeholder="Quotation note"><div class="field-err" id="qe-note"></div></div>
+        <div class="field"><label for="qf-owner">Owner (optional)</label><input type="text" id="qf-owner" name="owner" maxlength="80" placeholder="Operator handling this lead"><div class="field-err" id="qe-owner"></div></div>
+        <div class="field"><label for="qf-nextAction">Next action (optional)</label><input type="date" id="qf-nextAction" name="nextActionAt"><div class="field-err" id="qe-nextAction"></div></div>
       </div>
       <div class="modal-foot"><button class="act-btn" type="button" id="quoteFormCancel">Cancel</button><button class="act-btn primary" type="submit" id="quoteFormSubmit">Create quotation</button></div>
     </form>
@@ -1762,6 +1868,17 @@ body.lead-drawer-open{overflow-x:hidden}
     </div>
     <div class="drawer-body" id="leadDrawerBody"></div>
   </aside>
+</div>
+
+<!-- Tenant stay-history (Tenants View → read-only timeline; single instance) -->
+<div class="modal-overlay" id="tenantHistoryModal" hidden>
+  <div class="modal-win modal-wide" role="dialog" aria-modal="true" aria-labelledby="thTitle">
+    <div class="modal-hdr"><div><div class="modal-title" id="thTitle">Tenant history</div><div class="th-sub" id="thSub"></div></div><button class="modal-x" id="tenantHistoryClose" type="button" aria-label="Close tenant history">✕</button></div>
+    <div class="ud-state" id="thState" hidden></div>
+    <ol class="ud-timeline" id="thTimeline" aria-live="polite"></ol>
+    <div class="ud-history-empty" id="thEmpty" hidden>No stay history yet for this tenant.</div>
+    <div class="modal-foot"><button class="act-btn" type="button" id="tenantHistoryDone">Close</button></div>
+  </div>
 </div>
 
 <!-- Confirm dialog (shared shell, populated per invocation by confirmDialog.js) -->

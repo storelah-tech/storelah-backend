@@ -5,7 +5,7 @@
 // cross-cutting refresh via setRefreshAll() because views must never import
 // the entry module.
 
-import { TENANT_STATUS_TONE, TENANT_STATUS_LABEL, fmtMoney } from './constants.js';
+import { TENANT_STATUS_TONE, TENANT_STATUS_LABEL, BOOKING_TONE, INVOICE_TONE, HIST_STAGE_TONE, fmtMoney, fmtDay } from './constants.js';
 import { $, $$, escapeHtml, showBanner } from './dom.js';
 import { createDateFilter, withDateQuery, isRangeActive, rangeLabel, rangeEmptyText } from './dateFilter.js';
 import { confirmDialog } from './confirmDialog.js';
@@ -493,4 +493,162 @@ export async function deactivateTenant(id) {
   } catch (err) {
     showBanner('Deactivate: ' + describeError(err));
   }
+}
+
+// ---------- tenant stay-history drawer (read-only timeline) ----------
+// Tenants-table "View" opens this; "Edit" still opens the form modal. The
+// table's search/status/date-range filters are untouched — this drawer only
+// reads them indirectly via state.tenants. Timeline is newest-first with
+// status pills; every customer string goes through escapeHtml.
+let thLastFocus = null;
+
+function thTone(stage) {
+  return TENANT_STATUS_TONE[stage] || HIST_STAGE_TONE[stage] || BOOKING_TONE[stage] || INVOICE_TONE[stage] || 'neutral';
+}
+
+function thLabel(stage) {
+  return TENANT_STATUS_LABEL[stage] || (stage ? String(stage).replace(/_/g, ' ') : '—');
+}
+
+function thRowMatches(r, t) {
+  const name = String(r.tenant || r.name || '').trim().toLowerCase();
+  if (name && name === String(t.name || '').trim().toLowerCase()) return true;
+  if (t.email && r.tenantEmail && String(r.tenantEmail).toLowerCase() === String(t.email).toLowerCase()) return true;
+  if (t.mobile && r.tenantMobile && String(r.tenantMobile).replace(/\s/g, '') === String(t.mobile).replace(/\s/g, '')) return true;
+  return false;
+}
+
+function setThState(msg, isErr) {
+  const el = $('#thState');
+  if (!el) return;
+  if (!msg) {
+    el.hidden = true;
+    el.textContent = '';
+    el.classList.remove('err');
+    return;
+  }
+  el.hidden = false;
+  el.textContent = msg;
+  el.classList.toggle('err', !!isErr);
+}
+
+export async function openTenantHistory(id) {
+  const t = state.tenants.find((x) => x.id === id);
+  if (!t) {
+    showBanner('Tenant not found in list.');
+    return;
+  }
+  thLastFocus = document.activeElement;
+  const tone = thTone(t.status);
+  $('#thTitle').textContent = t.name;
+  const sub = $('#thSub');
+  if (sub) {
+    sub.innerHTML =
+      `<span class="badge ${tone}">${escapeHtml(thLabel(t.status))}</span> ` +
+      escapeHtml([t.type === 'BUSINESS' ? 'Business' : 'Personal', t.segment, t.email, t.mobile].filter(Boolean).join(' · '));
+  }
+  const modal = $('#tenantHistoryModal');
+  if (!modal) return;
+  modal.hidden = false;
+  setThState('Loading stay history…', false);
+  const tl = $('#thTimeline');
+  if (tl) {
+    tl.innerHTML = '';
+    tl.setAttribute('aria-busy', 'true');
+  }
+  const empty = $('#thEmpty');
+  if (empty) empty.hidden = true;
+  $('#tenantHistoryClose')?.focus();
+  try {
+    const [bookings, moveins] = await Promise.all([get('/bookings'), get('/move-ins')]);
+    if (modal.hidden) return; // closed while loading — drop the stale render
+    const items = [];
+    if (t.unit || t.since) {
+      items.push({
+        kindLabel: 'Current stay',
+        name: t.unit || 'No unit assigned',
+        contact: [t.size ? `${t.size}${t.sqft ? ' · ' + t.sqft + ' sqft' : ''}` : '', t.rate != null ? fmtMoney(t.rate) + '/mo' : ''].filter(Boolean).join(' · '),
+        stage: t.status || 'ACTIVE',
+        moveIn: t.since || null,
+        moveOut: null,
+        ref: null,
+        invoice: null,
+        pay: t.nextPayment ? 'Next payment ' + fmtDay(t.nextPayment) : '',
+        at: t.since || null,
+      });
+    }
+    for (const [rows, kind] of [[bookings, 'Booking'], [moveins, 'Move-in']]) {
+      (rows || []).forEach((r) => {
+        if (!thRowMatches(r, t)) return;
+        // The current stay already covers the occupant row — a booking for the
+        // same unit without a ref adds no linkable history, so skip it.
+        if (!r.ref && (r.unit || r.unitCode) === t.unit) return;
+        items.push({
+          kindLabel: kind,
+          name: `${r.ref || kind} · ${r.unit || r.unitCode || '—'}`,
+          contact: [r.tenantType, r.tenantEmail, r.tenantMobile].filter(Boolean).join(' · '),
+          stage: r.status || (r.invoiceStatus === 'OVERDUE' ? 'OVERDUE' : 'ACTIVE'),
+          moveIn: r.moveInDate || null,
+          moveOut: r.moveOutDate || r.endDate || null,
+          ref: r.ref || null,
+          invoice: r.invoiceStatus || null,
+          pay: `${fmtMoney(r.paidAmount || 0)} paid${r.amountDue ? ' · ' + fmtMoney(r.amountDue) + ' due' : ''}${r.method ? ' · ' + r.method : ''}`,
+          at: r.moveInDate || r.createdAt || null,
+        });
+      });
+    }
+    items.sort((a, b) => {
+      const ta = a.at ? new Date(a.at).getTime() : -1;
+      const tb = b.at ? new Date(b.at).getTime() : -1;
+      return tb - ta;
+    });
+    if (tl) tl.removeAttribute('aria-busy');
+    if (!items.length) {
+      setThState('', false);
+      if (tl) tl.innerHTML = '';
+      if (empty) {
+        empty.hidden = false;
+        empty.textContent = 'No stay history yet for this tenant.';
+      }
+      return;
+    }
+    setThState('', false);
+    if (empty) empty.hidden = true;
+    if (sub) {
+      const pill = sub.innerHTML;
+      sub.innerHTML = pill + ` <span>· ${items.length} stay${items.length === 1 ? '' : 's'} · newest first</span>`;
+    }
+    if (tl) {
+      tl.innerHTML = items.map((it) => {
+        const tn = thTone(it.stage);
+        return `<li class="ud-titem tone-${tn}"><div class="ud-tcard">` +
+          `<div class="ud-tcard-top"><b>${escapeHtml(it.name)}</b><span class="badge ${tn}">${escapeHtml(thLabel(it.stage))}</span></div>` +
+          (it.contact ? `<div class="ud-tcard-contact">${escapeHtml(it.contact)}</div>` : '') +
+          `<div class="ud-tcard-meta">` +
+          (it.moveIn ? `<span>Moved in <b>${escapeHtml(fmtDay(it.moveIn))}</b></span>` : '') +
+          (it.moveOut ? `<span>Moved out <b>${escapeHtml(fmtDay(it.moveOut))}</b></span>` : '') +
+          (it.pay ? `<span>${escapeHtml(it.pay)}</span>` : '') +
+          `</div>` +
+          (it.ref || it.invoice
+            ? `<div class="ud-tcard-refs">` +
+              (it.ref ? `<span class="ud-ref">${escapeHtml(it.kindLabel)} <b>${escapeHtml(it.ref)}</b></span>` : '') +
+              (it.invoice ? `<span class="badge ${INVOICE_TONE[it.invoice] || 'res'}">${escapeHtml(it.invoice)}</span>` : '') +
+              `</div>`
+            : '') +
+          `</div></li>`;
+      }).join('');
+    }
+  } catch (err) {
+    if (tl) tl.removeAttribute('aria-busy');
+    setThState('Couldn’t load stay history — ' + describeError(err), true);
+  }
+}
+
+export function closeTenantHistory() {
+  const modal = $('#tenantHistoryModal');
+  if (!modal || modal.hidden) return;
+  modal.hidden = true;
+  setThState('', false);
+  if (thLastFocus && thLastFocus.focus) thLastFocus.focus();
+  thLastFocus = null;
 }

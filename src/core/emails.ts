@@ -17,6 +17,14 @@
 //   SES_FROM_NAME    — sender display name (default "StoreLah").
 //   AWS_SES_REGION   — SES send region (default "ap-southeast-1", matching the
 //                      Lambda deploy region).
+// Configuration sets: this module NEVER passes ConfigurationSetName (the
+// SendRawEmail call carries only RawMessage) — there is deliberately no
+// SES_CONFIGURATION_SET env var. If a send still fails with "not authorized
+// ... on resource ...configuration-set/<name>", that set is the SES sender
+// identity's DEFAULT configuration set (an AWS-side setting on the verified
+// identity, not code): either grant the execution role ses:SendRawEmail on
+// that configuration-set resource, or clear the default on the identity.
+// See .env.example + docs/backend-deploy.md.
 // Auth uses the default AWS credential chain: the Lambda execution role in
 // prod (no keys in code), or explicit AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY
 // env vars for local dev.
@@ -30,6 +38,7 @@ import { prisma } from '../lib/prisma';
 import { toNum } from '../lib/format';
 import { getSetting } from './settings';
 import { buildReceiptPdfBytes, deriveReceiptNumber, receiptFilename } from './receiptPdf';
+import { quotationFilename } from './quotationPdf';
 
 // StoreLah application theme tokens (booking-app palette): terra #BD6B50,
 // dark #9E5139, light #F8ECE6, olive #5D6B55, olive-light #EEF0E8, cream
@@ -643,6 +652,10 @@ export async function sendBookingConfirmationEmail(
     // AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY env vars for local dev.
     // NOTE (owner): SendRawEmail needs ses:SendRawEmail on the sender
     // identity/role (ses:SendEmail optional / back-compat only).
+    // Deliberate: no ConfigurationSetName is passed — the configuration set
+    // is optional in SES and this product needs no event publishing. Do NOT
+    // add one without also granting the execution role ses:SendRawEmail on
+    // that configuration-set resource, or every send fails closed.
     const ses = new SESClient({ region: sesRegion() });
     await ses.send(new SendRawEmailCommand({ RawMessage: { Data: raw } }));
     // Log carries the booking ref + outcome only — never the recipient PII.
@@ -653,6 +666,17 @@ export async function sendBookingConfirmationEmail(
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error(`[email] booking confirmation failed bookingRef=${data.bookingRef}: ${message}`);
+    if (/configuration-set/i.test(message)) {
+      // No retry helps here: this send passes no ConfigurationSetName, so the
+      // denied set is the sender identity's AWS-side DEFAULT configuration
+      // set. Log the remediation (IAM grant or clear the default) — payment
+      // is unaffected (best-effort email, `{ sent: false }` below).
+      console.error(
+        `[email] bookingRef=${data.bookingRef} SES denied access to an SES configuration set. ` +
+          `Grant the execution role ses:SendRawEmail on that configuration-set resource, ` +
+          `or clear the default configuration set on the SES sender identity.`,
+      );
+    }
     return { sent: false, reason: 'send-failed' };
   }
 }
@@ -688,6 +712,196 @@ export async function sendBookingConfirmationForBooking(
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error(`[email] booking confirmation load/send failed bookingId=${bookingId}: ${message}`);
+    return { sent: false, reason: 'send-failed' };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Quotation email (Customers → Quotes → New quotation).
+//
+// Sent best-effort from the POST /quotes path AFTER the quotation + PDF bytes
+// commit (`finalizeQuotation` in core/quotes.ts). Same contract as the booking
+// confirmation above: SES SendRawEmail multipart/mixed with the quotation PDF
+// attached, NEVER throws — every failure mode is logged and returned as
+// `{ sent: false, reason }` so quotation creation always succeeds.
+// Guards (same order): NODE_ENV=test skip → SES unconfigured skip →
+// no-recipient skip. Logs carry quoteNo/lead id only — never recipient PII.
+// ---------------------------------------------------------------------------
+
+export interface QuotationEmailData {
+  toEmail: string;
+  leadId: string;
+  leadName: string | null;
+  quoteNo: string;
+  unitCode: string | null;
+  branchName: string | null;
+  monthlyRateSgd: number | null;
+  totalDueTodaySgd: number | null;
+  supportContact: string;
+}
+
+export interface BuiltQuotationEmail {
+  subject: string;
+  html: string;
+  text: string;
+}
+
+/**
+ * Renders the quotation email (HTML + plain-text). Pure function — no I/O,
+ * safe to call from preview scripts and tests.
+ */
+export function buildQuotationEmail(d: QuotationEmailData): BuiltQuotationEmail {
+  const subject = `Your StoreLah quotation ${d.quoteNo}`;
+  const greetingName = d.leadName?.trim() ? d.leadName.trim() : 'there';
+  const e = {
+    name: escapeHtml(greetingName),
+    quoteNo: escapeHtml(d.quoteNo),
+    unit: escapeHtml(d.unitCode?.trim() ? d.unitCode.trim() : 'To be confirmed at viewing'),
+    branch: escapeHtml(d.branchName?.trim() ? d.branchName.trim() : 'To be confirmed'),
+    rate: escapeHtml(d.monthlyRateSgd != null ? formatSgd(d.monthlyRateSgd) : 'To be confirmed'),
+    total: escapeHtml(d.totalDueTodaySgd != null ? formatSgd(d.totalDueTodaySgd) : 'To be confirmed'),
+    support: escapeHtml(d.supportContact),
+  };
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background-color:${C.cream};">
+  <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color:${C.cream};">
+    <tr><td align="center" style="padding:24px 12px;">
+      <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="600" style="max-width:600px;width:100%;background-color:${C.white};border:1px solid ${C.border};border-radius:12px;overflow:hidden;">
+        <tr>
+          <td style="background-color:${C.terra};padding:28px 32px;">
+            <div style="font-family:Arial,Helvetica,sans-serif;font-size:22px;font-weight:bold;color:${C.white};">StoreLah</div>
+            <div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:${C.terraLight};padding-top:4px;">Self-storage, sorted.</div>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:28px 32px 8px 32px;">
+            <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color:${C.oliveLight};border-radius:8px;">
+              <tr><td style="padding:14px 18px;font-family:Arial,Helvetica,sans-serif;font-size:15px;font-weight:bold;color:${C.olive};">Your quotation is ready — ${e.quoteNo}</td></tr>
+            </table>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:12px 32px 0 32px;font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:22px;color:${C.charcoal};">
+            Hi ${e.name},
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:8px 32px 0 32px;font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:22px;color:${C.charcoal};">
+            Thank you for your enquiry — please find your storage quotation attached (PDF). A summary is below.
+          </td>
+        </tr>
+        <tr><td style="padding:8px 32px 0 32px;">
+          <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="border:1px solid ${C.border};border-radius:8px;">
+            <tr><td style="padding:14px 18px;">
+              <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
+                <tr>
+                  <td style="padding:8px 0;font-family:Arial,Helvetica,sans-serif;font-size:14px;color:${C.muted};">Quotation no.</td>
+                  <td align="right" style="padding:8px 0;font-family:Arial,Helvetica,sans-serif;font-size:14px;font-weight:bold;color:${C.charcoal};">${e.quoteNo}</td>
+                </tr>
+                <tr>
+                  <td style="padding:8px 0;font-family:Arial,Helvetica,sans-serif;font-size:14px;color:${C.muted};">Unit</td>
+                  <td align="right" style="padding:8px 0;font-family:Arial,Helvetica,sans-serif;font-size:14px;color:${C.charcoal};">${e.unit}</td>
+                </tr>
+                <tr>
+                  <td style="padding:8px 0;font-family:Arial,Helvetica,sans-serif;font-size:14px;color:${C.muted};">Facility</td>
+                  <td align="right" style="padding:8px 0;font-family:Arial,Helvetica,sans-serif;font-size:14px;color:${C.charcoal};">${e.branch}</td>
+                </tr>
+                <tr>
+                  <td style="padding:8px 0;font-family:Arial,Helvetica,sans-serif;font-size:14px;color:${C.muted};">Monthly rate</td>
+                  <td align="right" style="padding:8px 0;font-family:Arial,Helvetica,sans-serif;font-size:14px;color:${C.charcoal};">${e.rate}</td>
+                </tr>
+                <tr>
+                  <td style="padding:8px 0;font-family:Arial,Helvetica,sans-serif;font-size:14px;color:${C.muted};">Total due today</td>
+                  <td align="right" style="padding:8px 0;font-family:Arial,Helvetica,sans-serif;font-size:16px;font-weight:bold;color:${C.charcoal};">${e.total}</td>
+                </tr>
+              </table>
+            </td></tr>
+          </table>
+        </td></tr>
+        <tr><td style="padding:12px 32px 0 32px;font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:22px;color:${C.green};">&#10003;&nbsp; Your quotation is attached (PDF) — look for the attachment on this email.</td></tr>
+        <tr>
+          <td style="padding:20px 32px 0 32px;font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:22px;color:${C.muted};">
+            Questions? Reply to this email or contact us at ${e.support} — quote ${e.quoteNo} so we can help faster.
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:24px 32px 28px 32px;font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:18px;color:${C.muted};border-top:1px solid ${C.border};">
+            <div style="padding-top:16px;">StoreLah · Self-storage, sorted.<br>This quotation is an estimate only and is valid subject to unit availability.</div>
+          </td>
+        </tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`;
+  const textLines = [
+    `StoreLah — Your quotation ${d.quoteNo}`,
+    ``,
+    `Hi ${greetingName},`,
+    ``,
+    `Thank you for your enquiry — your storage quotation is attached (PDF). Summary:`,
+    `  Quotation no. : ${d.quoteNo}`,
+    `  Unit          : ${d.unitCode?.trim() ? d.unitCode.trim() : 'To be confirmed at viewing'}`,
+    `  Facility      : ${d.branchName?.trim() ? d.branchName.trim() : 'To be confirmed'}`,
+    `  Monthly rate  : ${d.monthlyRateSgd != null ? formatSgd(d.monthlyRateSgd) : 'To be confirmed'}`,
+    `  Total due today: ${d.totalDueTodaySgd != null ? formatSgd(d.totalDueTodaySgd) : 'To be confirmed'}`,
+    ``,
+    `Questions? Contact us at ${d.supportContact} and quote ${d.quoteNo}.`,
+    ``,
+    `StoreLah · Self-storage, sorted. This quotation is an estimate only and is valid subject to unit availability.`,
+  ];
+  return { subject, html, text: textLines.join('\n') };
+}
+
+/**
+ * Renders + sends the quotation email with the quotation PDF attached
+ * (SendRawEmail, multipart/mixed). NEVER throws — every failure mode
+ * (unconfigured, test env, no recipient, SES error) is logged and returned
+ * as `{ sent: false, reason }` so quotation creation always succeeds.
+ * No attachment-fallback retry: without the PDF there is no quotation to
+ * send, so a MIME failure is a FAILED send (the PDF stays downloadable in
+ * the CMS regardless).
+ */
+export async function sendQuotationEmail(
+  data: QuotationEmailData,
+  opts: { pdfBytes: Buffer; pdfFilename?: string | null },
+): Promise<SendResult> {
+  if (process.env.NODE_ENV === 'test') {
+    console.log(`[email] skip quotation quoteNo=${data.quoteNo} (NODE_ENV=test, no send)`);
+    return { sent: false, reason: 'test-env' };
+  }
+  if (!isEmailConfigured()) {
+    console.log(`[email] skip quotation quoteNo=${data.quoteNo} (SES not configured)`);
+    return { sent: false, reason: 'not-configured' };
+  }
+  if (!data.toEmail) {
+    console.log(`[email] skip quotation quoteNo=${data.quoteNo} (no recipient email)`);
+    return { sent: false, reason: 'no-recipient' };
+  }
+  try {
+    const from = fromSender();
+    const attachment: BookingEmailAttachment = {
+      filename: opts?.pdfFilename?.trim() || quotationFilename(data.quoteNo),
+      bytes: opts.pdfBytes,
+    };
+    const built = buildQuotationEmail(data);
+    const raw = buildRawMimeMessage({
+      fromName: from.name,
+      fromEmail: from.email,
+      to: data.toEmail,
+      built,
+      attachment,
+    });
+    const ses = new SESClient({ region: sesRegion() });
+    await ses.send(new SendRawEmailCommand({ RawMessage: { Data: raw } }));
+    // Log carries the quote number only — never the recipient PII.
+    console.log(`[email] quotation sent quoteNo=${data.quoteNo} (quotation attached)`);
+    return { sent: true };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[email] quotation failed quoteNo=${data.quoteNo}: ${message}`);
     return { sent: false, reason: 'send-failed' };
   }
 }

@@ -25,7 +25,7 @@ export const openapiSpec = {
   openapi: '3.0.3',
   info: {
     title: 'StoreLah Booking API',
-    version: '1.8.4',
+    version: '1.9.0',
     description: [
       'Customer-facing booking API for the StoreLah self-storage business.',
       '',
@@ -231,6 +231,35 @@ export const openapiSpec = {
         'email match; GET needs no login). `booking.requireIDVerification` stays ' +
         'display-only. All pre-existing shapes are unchanged.',
 
+      'v1.8.5 is ADDITIVE-ONLY over 1.8.4: quotation PDFs for the operator CMS ' +
+        'quotes queue — `POST /cms/quotes` issues a deterministic-numbered PDF ' +
+        '(`Q-<leadShortId>-<yyyymmdd>-<seq>`, persisted on a Quotation row, emailed ' +
+        'best-effort) and returns `{ quote, options, quotation: { quoteNo, pdfUrl, ' +
+        'emailStatus, emailReason, createdAt } | null }`; quote rows and ' +
+        '`GET /cms/quotes/{id}` gain the same `quotation` metadata; new ' +
+        '`GET /cms/quotes/quotable-leads` serves the quotation picker (excludes ' +
+        'PROPOSAL_SENT / WON / LOST with stage labels); new ' +
+        '`GET /cms/quotes/{id}/pdf` downloads the exact saved bytes ' +
+        '(`application/pdf` attachment). All pre-existing shapes are unchanged.',
+      '',
+      'v1.9.0 is ADDITIVE-ONLY over 1.8.5: landing Content Management ' +
+        '(mini-WordPress for images + texts) — new `ContentItem` rows keyed by ' +
+        'an immutable operator slug (`HERO_IMAGE | TESTIMONIAL | TEXT | IMAGE`; ' +
+        '`TESTIMONIAL` carries quote/author/role; `published: false` is a draft ' +
+        'hidden from every public read) with operator CMS CRUD ' +
+        '`GET|POST /cms/content` + `GET|PUT|DELETE /cms/content/{key}` (Bearer ' +
+        'JWT; PUT carries the published toggle; key/type immutable) plus image ' +
+        'upload `POST /cms/content/{key}/image` (JSON `{ filename, contentType, ' +
+        'dataBase64 }`, png/jpeg/webp/gif ≤ 8 MB; direct server-side PUT — S3 ' +
+        'when `CONTENT_S3_BUCKET` is set, local `/uploads` fallback otherwise) ' +
+        'and `DELETE /cms/content/{key}/image` (best-effort stored-object ' +
+        'cleanup), and new unauthenticated `GET /public/content` + ' +
+        '`GET /public/content/{key}` (published only, no PII; the landing site ' +
+        'consumes them at build time) plus `GET /public/content/{key}/image` ' +
+        '(streams local files, 302s to S3 in S3 mode). Bucket creation is ' +
+        'devops-owned (see `docs/CONTENT_MANAGEMENT.md`). All pre-existing ' +
+        'shapes are unchanged.',
+      '',
       'v1.8.4 is ADDITIVE-ONLY over 1.8.3: operator CMS staff-validation layer for mock ' +
         'ID verifications — every mock row carries `reviewStatus` (`PENDING_VALIDATION` on ' +
         'write, backfilled for pre-existing rows) plus `reviewedAt`/`reviewedBy`, served on ' +
@@ -494,6 +523,54 @@ export const openapiSpec = {
             type: 'array',
             items: { $ref: openapiSchemaRef('Addon') },
           }),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+    },
+    '/public/content': {
+      get: {
+        tags: ['Public'],
+        summary: 'List published landing content',
+        description: [
+          'Landing content slots for the landing site build (hero images, testimonials, text blocks). ',
+          'Published rows only, sortOrder ascending — drafts never appear. Optional `?type=` ',
+          '(HERO_IMAGE | TESTIMONIAL | TEXT | IMAGE). No authentication, no PII. ',
+          'Envelope `{ data, meta: { count } }`.',
+        ].join('\n'),
+        operationId: 'listPublishedContent',
+        security: [],
+        responses: {
+          '200': openapiResponse({
+            type: 'array',
+            items: { $ref: openapiSchemaRef('ContentItem') },
+          }),
+          '400': openapiErrorResponse('Invalid content type filter.'),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+    },
+    '/public/content/{key}': {
+      get: {
+        tags: ['Public'],
+        summary: 'Get a published landing content item',
+        description: [
+          'Single published slot for the landing site build. Drafts 404 — unpublished ',
+          'items are never exposed here. No authentication, no PII.',
+        ].join('\n'),
+        operationId: 'getPublishedContent',
+        security: [],
+        parameters: [
+          {
+            name: 'key',
+            in: 'path',
+            required: true,
+            description: 'Content slug (e.g. hero-banner-1).',
+            schema: { type: 'string' },
+          },
+        ],
+        responses: {
+          '200': openapiResponse({ $ref: openapiSchemaRef('ContentItem') }),
+          '404': openapiErrorResponse('Content item not found or unpublished.'),
           '500': openapiErrorResponse('Unexpected server error'),
         },
       },
@@ -980,6 +1057,66 @@ export const openapiSpec = {
         },
       },
     },
+    '/cms/quotes/quotable-leads': {
+      get: {
+        tags: ['Operator CMS'],
+        summary: 'List quotable leads (quotation picker)',
+        description: [
+          'Leads eligible for quotation: every lead NOT in PROPOSAL_SENT / WON / LOST, newest first (`{ data, meta: { count } }`). ',
+          'Each row carries `stageLabel` for the picker display. The POST /quotes 409 guards stay authoritative.',
+          '',
+          'Operator CMS endpoints are documented here for reference only; they are served on the CMS host under ',
+          '`/api/v1/cms` and require a Bearer JWT issued by `/api/v1/cms/login` (auto-login via `/api/cms/config`).',
+        ].join('\n'),
+        operationId: 'listQuotableLeads',
+        security: [{ bearerAuth: [] }],
+        responses: {
+          '200': openapiResponse({
+            type: 'array',
+            items: { type: 'object' },
+          }),
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+    },
+    '/cms/quotes/{id}/pdf': {
+      get: {
+        tags: ['Operator CMS'],
+        summary: 'Download the issued quotation PDF',
+        description: [
+          'Returns the EXACT saved PDF bytes for the latest quotation issued for the lead (`application/pdf`, `Content-Disposition: attachment`). ',
+          '404 when the lead has no issued quotation yet. Not an envelope — file download.',
+          '',
+          'Operator CMS endpoints are documented here for reference only; they are served on the CMS host under ',
+          '`/api/v1/cms` and require a Bearer JWT issued by `/api/v1/cms/login` (auto-login via `/api/cms/config`).',
+        ].join('\n'),
+        operationId: 'downloadQuotationPdf',
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          {
+            name: 'id',
+            in: 'path',
+            required: true,
+            description: 'Quoted lead id.',
+            schema: { type: 'string' },
+          },
+        ],
+        responses: {
+          '200': {
+            description: 'PDF bytes.',
+            content: {
+              'application/pdf': {
+                schema: { type: 'string', format: 'binary' },
+              },
+            },
+          },
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '404': openapiErrorResponse('Lead not found, or no issued quotation for the lead.'),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+    },
     '/cms/floor-plans/{floorId}/blocks/{blockId}': {
       put: {
         tags: ['Operator CMS'],
@@ -1460,7 +1597,7 @@ export const openapiSpec = {
         tags: ['Customer'],
         summary: 'Create a booking',
         description: [
-          'Books a unit and returns the created booking. On success the unit is marked RESERVED and a DUE invoice is ',
+          'Books a unit and returns the created booking. On success the unit STAYS AVAILABLE while unpaid and a DUE invoice is ',
           'raised for the server-recomputed due-today total — frontend parity with the booking-app Due Today summary: ',
           'discounted rent (ACTIVE promotion-plan matrix exact size × commitment-months cell, integer-rounded, else validated promo-code discount split into recurring vs first-month scope) prorated by move-in day (move-in day inclusive through month-end), plus catalog protection/addon prices; ',
           'deposit/admin are $0 waived and GST is 0. ',
@@ -1471,6 +1608,11 @@ export const openapiSpec = {
           'Auth: dual-mode. WITH a bearer token, books for the authenticated customer (invalid token = 401). ',
           'WITHOUT any Bearer Authorization header, performs guest checkout: the body must include `email`, and the customer ',
           'record is found-or-created by it (new customers get type GUEST and a bcrypt-hashed default password).',
+          '',
+          'Double-booking is prevented without a status flip: a second PENDING_PAYMENT booking on the same unit by a ',
+          'different customer is `409 CONFLICT` (same-customer re-books proceed). Verified payment via the Stripe ',
+          '`checkout.session.completed` webhook flips the unit AVAILABLE → OCCUPIED (legacy RESERVED → OCCUPIED) in the ',
+          'same transaction as the Booking CONFIRMED + Invoice PAID stamps; unpaid/cancelled bookings never move the unit. ',
           '',
           'Errors: `404 NOT_FOUND` when the unit code is unknown, `409 CONFLICT` when the unit is not AVAILABLE/RESERVED, ',
           '`400 VALIDATION` when unauthenticated and `email` is missing/invalid.',
@@ -2088,6 +2230,186 @@ export const openapiSpec = {
           }),
           '401': openapiErrorResponse('Missing/invalid bearer token.'),
           '404': openapiErrorResponse('Addon not found.'),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+    },
+    // --- Operator CMS: landing content management (v1.9.0, additive) ---
+    // Hero images, testimonials and text blocks for the landing site.
+    // Served on the CMS host under `/api/v1/cms` with a Bearer JWT. Key +
+    // type are immutable (delete + recreate to retype); `published: false`
+    // is a draft hidden from every public read. Image upload is a JSON
+    // `{ filename, contentType, dataBase64 }` body (direct server-side PUT:
+    // S3 when CONTENT_S3_BUCKET is set, local /uploads fallback otherwise).
+    '/cms/content': {
+      get: {
+        tags: ['Operator CMS'],
+        summary: 'List content items (published + drafts)',
+        description: 'Every content row in sortOrder. Optional `?type=` (HERO_IMAGE | TESTIMONIAL | TEXT | IMAGE) and `?published=1|0` filters.',
+        operationId: 'listContentItems',
+        security: [{ bearerAuth: [] }],
+        responses: {
+          '200': openapiResponse({ type: 'array', items: { $ref: openapiSchemaRef('ContentItem') } }),
+          '400': openapiErrorResponse('Invalid content query (bad type/published).'),
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+      post: {
+        tags: ['Operator CMS'],
+        summary: 'Create a content item',
+        description: 'Creates a landing slot keyed by its slug (409 on clash). TESTIMONIAL requires body (quote) + author.',
+        operationId: 'createContentItem',
+        security: [{ bearerAuth: [] }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: { $ref: openapiSchemaRef('ContentItemInput') },
+            },
+          },
+        },
+        responses: {
+          '201': openapiCreatedResponse({ $ref: openapiSchemaRef('ContentItem') }),
+          '400': openapiErrorResponse('Invalid content payload.'),
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '409': openapiErrorResponse('Content key already exists.'),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+    },
+    '/cms/content/{key}': {
+      get: {
+        tags: ['Operator CMS'],
+        summary: 'Get a content item (draft or published)',
+        description: 'Single item read for the CMS editor.',
+        operationId: 'getContentItem',
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          {
+            name: 'key',
+            in: 'path',
+            required: true,
+            description: 'Content slug (e.g. hero-banner-1).',
+            schema: { type: 'string' },
+          },
+        ],
+        responses: {
+          '200': openapiResponse({ $ref: openapiSchemaRef('ContentItem') }),
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '404': openapiErrorResponse('Content item not found.'),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+      put: {
+        tags: ['Operator CMS'],
+        summary: 'Update a content item (incl. published toggle)',
+        description: 'Partial update. `{ published: false }` unpublishes (hides the item from public reads). Key/type are immutable — changing type is 400 (delete + recreate instead).',
+        operationId: 'updateContentItem',
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          {
+            name: 'key',
+            in: 'path',
+            required: true,
+            description: 'Content slug (e.g. hero-banner-1).',
+            schema: { type: 'string' },
+          },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: { $ref: openapiSchemaRef('ContentItemInput') },
+            },
+          },
+        },
+        responses: {
+          '200': openapiResponse({ $ref: openapiSchemaRef('ContentItem') }),
+          '400': openapiErrorResponse('Invalid content payload (or type change).'),
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '404': openapiErrorResponse('Content item not found.'),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+      delete: {
+        tags: ['Operator CMS'],
+        summary: 'Delete a content item (hard delete)',
+        description: 'Permanent. The stored image is removed best-effort server-side. Prefer unpublish (`PUT { published: false }`) to hide instead.',
+        operationId: 'deleteContentItem',
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          {
+            name: 'key',
+            in: 'path',
+            required: true,
+            description: 'Content slug (e.g. hero-banner-1).',
+            schema: { type: 'string' },
+          },
+        ],
+        responses: {
+          '200': openapiResponse({
+            type: 'object',
+            required: ['key'],
+            properties: { key: { type: 'string' } },
+          }),
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '404': openapiErrorResponse('Content item not found.'),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+    },
+    '/cms/content/{key}/image': {
+      post: {
+        tags: ['Operator CMS'],
+        summary: 'Upload or replace a content image',
+        description: 'JSON `{ filename, contentType (png/jpeg/webp/gif), dataBase64 }` (max 8 MB default). Direct server-side PUT — S3 when CONTENT_S3_BUCKET is set, local /uploads fallback otherwise (response carries `storage: "s3" | "local"`). Replacing removes the previous file automatically.',
+        operationId: 'uploadContentImage',
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          {
+            name: 'key',
+            in: 'path',
+            required: true,
+            description: 'Content slug (e.g. hero-banner-1).',
+            schema: { type: 'string' },
+          },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: { $ref: openapiSchemaRef('ContentImageUpload') },
+            },
+          },
+        },
+        responses: {
+          '200': openapiResponse({ $ref: openapiSchemaRef('ContentItem') }),
+          '400': openapiErrorResponse('Invalid image payload (bad type/size/base64).'),
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '404': openapiErrorResponse('Content item not found.'),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+      delete: {
+        tags: ['Operator CMS'],
+        summary: 'Remove a content image',
+        description: 'Clears imageKey/imageUrl and deletes the stored object best-effort. The item keeps its text.',
+        operationId: 'removeContentImage',
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          {
+            name: 'key',
+            in: 'path',
+            required: true,
+            description: 'Content slug (e.g. hero-banner-1).',
+            schema: { type: 'string' },
+          },
+        ],
+        responses: {
+          '200': openapiResponse({ $ref: openapiSchemaRef('ContentItem') }),
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '404': openapiErrorResponse('Content item not found.'),
           '500': openapiErrorResponse('Unexpected server error'),
         },
       },
@@ -3029,7 +3351,9 @@ export const openapiSpec = {
         summary: 'Quotes queue (PROPOSAL_SENT + live inventory)',
         description: [
           'Read-model over PROPOSAL_SENT leads: each quote carries its live AVAILABLE-unit match ',
-          'count. No quote table exists by design; creation uses POST /quotes, other stage moves reuse PATCH /leads.',
+          'count. No quote table exists by design; creation uses POST /quotes, other stage moves reuse PATCH /leads. ',
+          'Each row carries `quotation` — the latest issued quotation document ',
+          '(`{ quoteNo, pdfUrl, emailStatus, emailReason, createdAt }`, null when no PDF was issued yet).',
         ].join('\n'),
         operationId: 'listQuotes',
         security: [{ bearerAuth: [] }],
@@ -3046,7 +3370,11 @@ export const openapiSpec = {
           'Creates a quotation as a PROPOSAL_SENT lead with live AVAILABLE-unit options. ',
           'Either pass leadId to quote an existing lead (optional overrides applied, 409 when already ',
           'quoted or WON/LOST) or pass lead fields (name required) to create a new quoted lead ',
-          '(409 on an open duplicate for the same contact + facility). No quote table exists by design.',
+          '(409 on an open duplicate for the same contact + facility). No quote table exists by design. ',
+          'After commit the server best-effort generates the quotation PDF ',
+          '(`Q-<leadShortId>-<yyyymmdd>-<seq>`, persisted on a Quotation row) and emails it to the lead — ',
+          'creation succeeds even when PDF/email fails. The 201 payload is ',
+          '`{ quote, options, quotation: { quoteNo, pdfUrl, emailStatus, emailReason, createdAt } | null }`.',
         ].join('\n'),
         operationId: 'createQuote',
         security: [{ bearerAuth: [] }],
@@ -3722,6 +4050,51 @@ export const openapiSpec = {
             type: 'string',
             description: 'Additive v1.5.2: scope token (FIRST_MONTH / ONE_TIME / DUE_TODAY / RECURRING).',
           },
+        },
+      },
+      ContentItem: {
+        type: 'object',
+        required: ['id', 'key', 'type', 'sortOrder', 'published', 'createdAt', 'updatedAt'],
+        properties: {
+          id: { type: 'string', description: 'Internal row id.' },
+          key: { type: 'string', description: 'Operator slug, e.g. hero-banner-1 (immutable).' },
+          type: { type: 'string', enum: ['HERO_IMAGE', 'TESTIMONIAL', 'TEXT', 'IMAGE'], description: 'Slot type (immutable).' },
+          title: { type: ['string', 'null'], description: 'Heading (all types).' },
+          body: { type: ['string', 'null'], description: 'Landing copy; the quote for TESTIMONIAL.' },
+          author: { type: ['string', 'null'], description: 'Testimonial author (TESTIMONIAL only).' },
+          role: { type: ['string', 'null'], description: 'Testimonial context line.' },
+          imageKey: { type: ['string', 'null'], description: 'S3 object key, or local/<file> for the local fallback.' },
+          imageUrl: { type: ['string', 'null'], description: 'Public URL (S3 public base, or /uploads/… path locally).' },
+          alt: { type: ['string', 'null'], description: 'Image alt text.' },
+          sortOrder: { type: 'integer', description: 'Ascending display order within a type.' },
+          published: { type: 'boolean', description: 'False = CMS draft, hidden from public reads.' },
+          createdAt: { type: 'string', format: 'date-time' },
+          updatedAt: { type: 'string', format: 'date-time' },
+        },
+      },
+      ContentItemInput: {
+        type: 'object',
+        required: ['key', 'type'],
+        properties: {
+          key: { type: 'string', description: 'URL-safe slug (lowercase, numbers, hyphens).' },
+          type: { type: 'string', enum: ['HERO_IMAGE', 'TESTIMONIAL', 'TEXT', 'IMAGE'] },
+          title: { type: ['string', 'null'], maxLength: 200 },
+          body: { type: ['string', 'null'], maxLength: 5000, description: 'Required for TESTIMONIAL (the quote).' },
+          author: { type: ['string', 'null'], maxLength: 120, description: 'Required for TESTIMONIAL.' },
+          role: { type: ['string', 'null'], maxLength: 200 },
+          alt: { type: ['string', 'null'], maxLength: 200 },
+          imageUrl: { type: ['string', 'null'], description: 'HTTPS URL string (or null to clear).' },
+          sortOrder: { type: 'integer', minimum: 0 },
+          published: { type: 'boolean' },
+        },
+      },
+      ContentImageUpload: {
+        type: 'object',
+        required: ['filename', 'contentType', 'dataBase64'],
+        properties: {
+          filename: { type: 'string', description: 'Original filename (extension guides the stored suffix).' },
+          contentType: { type: 'string', description: 'image/png | image/jpeg | image/webp | image/gif.' },
+          dataBase64: { type: 'string', description: 'Base64 image bytes (max 8 MB decoded by default).' },
         },
       },
       PublicPromotionPlanCell: {
@@ -5785,6 +6158,18 @@ export const openapiSpec = {
           preferredSize: { type: ['string', 'null'] },
           monthlyRate: { type: ['number', 'null'] },
           matchingAvailable: { type: 'number' },
+          quotation: { $ref: openapiSchemaRef('QuotationMeta') },
+        },
+      },
+      QuotationMeta: {
+        type: 'object',
+        description: 'Latest issued quotation document for a quoted lead (null when no PDF was issued yet).',
+        properties: {
+          quoteNo: { type: 'string', description: 'Deterministic number, e.g. Q-CM1234-20261007-01.' },
+          pdfUrl: { type: 'string', description: 'CMS download path, e.g. /api/v1/cms/quotes/<leadId>/pdf.' },
+          emailStatus: { type: 'string', enum: ['SENT', 'SKIPPED', 'FAILED'] },
+          emailReason: { type: ['string', 'null'], description: 'Honest skip/failure reason (no-recipient, not-configured, test-env, send-failed).' },
+          createdAt: { type: 'string', format: 'date-time' },
         },
       },
       QuoteDetail: {
@@ -5792,6 +6177,7 @@ export const openapiSpec = {
         properties: {
           quote: { $ref: openapiSchemaRef('Quote') },
           options: { type: 'array', items: { type: 'object' } },
+          quotation: { $ref: openapiSchemaRef('QuotationMeta') },
         },
       },
       MoveOut: {

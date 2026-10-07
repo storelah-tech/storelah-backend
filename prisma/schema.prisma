@@ -604,6 +604,41 @@ model Lead {
   conversations Conversation[]
 
   @@index([idempotencyKey])
+  // Quotation PDFs issued for this lead (PROPOSAL_SENT flow — see Quotation).
+  quotations Quotation[]
+}
+
+// Operator-issued quotation PDF (Customers → Quotes → New quotation).
+//
+// A quotation is pipeline state (a PROPOSAL_SENT Lead — see src/core/quotes.ts)
+// but the ISSUED PDF is a snapshot: quoteNo + rate/total + the PDF bytes are
+// frozen at issue time so the document an operator downloads or a customer
+// received by email never shifts when rates move or units lease. One lead may
+// hold several quotations over time (re-quotes); the CMS reads the LATEST per
+// lead as the current document. Additive only — no changes to Lead beyond the
+// back-relation above.
+//
+// pdf holds the exact bytes served by GET /quotes/:id/pdf (Postgres bytea via
+// Bytes — no filesystem, no new infra). emailStatus is the honest send outcome
+// for the post-create email attempt (SENT | SKIPPED | FAILED) with the reason
+// in emailReason (e.g. no-recipient, not-configured, test-env, send-failed).
+model Quotation {
+  id          String   @id @default(cuid())
+  quoteNo     String   @unique // e.g. Q-CM1234-20261007-01 (see deriveQuoteNo)
+  leadId      String
+  lead        Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  unitCode    String? // unit snapshot at issue time (loose reference, never an FK)
+  monthlyRate Decimal? @db.Decimal(10, 2) // rate snapshot at issue time
+  totalDueToday Decimal? @db.Decimal(10, 2) // total snapshot at issue time
+  pdf         Bytes // exact PDF bytes served on download
+  pdfFilename String? // attachment filename, e.g. StoreLah-quotation-Q-....pdf
+  createdBy   String? // operator name/email from the Bearer JWT (nullable)
+  emailStatus String   @default("PENDING") // SENT | SKIPPED | FAILED
+  emailReason String? // skip/failure reason (no-recipient, not-configured, test-env, send-failed)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([leadId])
 }
 
 model Appointment {
@@ -1394,6 +1429,42 @@ model SiteContent {
   value     Json
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+// ---------------------------------------------------------------------------
+// Landing content management (mini-WordPress for images + texts).
+// One row per landing content slot, addressed by a stable operator-chosen
+// `key` slug (e.g. "hero-banner-1", "testimonial-3", "pricing-note").
+// The landing site consumes PUBLISHED rows only at build time via
+// GET /api/v1/public/content (see docs/CONTENT_MANAGEMENT.md).
+// Images live in S3 when CONTENT_S3_BUCKET is set, otherwise as local files
+// under CONTENT_LOCAL_DIR served at /uploads (see src/lib/contentStorage.ts).
+// ---------------------------------------------------------------------------
+
+enum ContentType {
+  HERO_IMAGE
+  TESTIMONIAL
+  TEXT
+  IMAGE
+}
+
+model ContentItem {
+  id        String      @id @default(cuid())
+  key       String      @unique // operator slug, e.g. "hero-banner-1"
+  type      ContentType
+  title     String? // display heading (all types)
+  body      String? // landing copy; testimonial quote for TESTIMONIAL
+  author    String? // testimonial author name (TESTIMONIAL only)
+  role      String? // testimonial role/context, e.g. "Stored with Woodlands · 12 months"
+  imageKey  String? // S3 object key, or "local/<filename>" for the local fallback
+  imageUrl  String? // public URL (S3 public base, or /uploads/... path locally)
+  alt       String? // image alt text (HERO_IMAGE / IMAGE)
+  sortOrder Int         @default(0) // ascending display order within a type
+  published Boolean     @default(false) // false = CMS draft, hidden from public reads
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+
+  @@index([type, published, sortOrder])
 }
 
 // Mock ID-verification record (Jumio-style camera mock in the booking

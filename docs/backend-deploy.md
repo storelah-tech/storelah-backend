@@ -411,6 +411,23 @@ needs a code change; defer unless asked):
   `ses:SendRawEmail` scoped to that sender identity — no broader SES access. The
   Lambda env keys must be EXACTLY `SES_FROM_EMAIL` / `SES_FROM_NAME` /
   `AWS_SES_REGION` (backend-agent contract — do not invent `SES_SENDER` or others).
+- **SES configuration-set denial (known failure mode):** the backend never sends a
+  `ConfigurationSetName` (`SendRawEmail` carries only `RawMessage` — see
+  `src/core/emails.ts`). If CloudWatch shows `not authorized to perform
+  'ses:SendRawEmail' on resource '...:configuration-set/<name>'`, that set is the
+  sender identity's **default configuration set** (AWS console setting on the verified
+  identity, not code — `my-first-configuration-set` is the console quickstart default
+  name). Fix AWS-side with EITHER:
+  - (a) grant the execution role the missing resource (least-privilege, scoped to the set):
+    ```json
+    { "Effect": "Allow", "Action": ["ses:SendEmail", "ses:SendRawEmail"],
+      "Resource": "arn:aws:ses:ap-southeast-1:<ACCOUNT_ID>:configuration-set/<name>" }
+    ```
+  - (b) cleaner when no event publishing is needed: clear the default configuration set
+    on the SES sender identity (SES console → Verified identities → sender → Default
+    configuration set → none/disabled) — then the existing identity-scoped policy is
+    sufficient and no IAM change is needed. Either way the payment still succeeds; only
+    the best-effort confirmation email is skipped (`{ sent: false }`).
 - **Stack redeploy shape** (`infra/backend-stack.yaml` — param names only, no values;
   secrets passed at deploy time, never committed):
   ```bash

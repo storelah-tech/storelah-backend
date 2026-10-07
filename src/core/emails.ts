@@ -642,7 +642,7 @@ export async function sendBookingConfirmationEmail(
     // Default credential chain: Lambda execution role in prod, explicit
     // AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY env vars for local dev.
     // NOTE (owner): SendRawEmail needs ses:SendRawEmail on the sender
-    // identity/role — the previous SendEmail path needed ses:SendEmail.
+    // identity/role (ses:SendEmail optional / back-compat only).
     const ses = new SESClient({ region: sesRegion() });
     await ses.send(new SendRawEmailCommand({ RawMessage: { Data: raw } }));
     // Log carries the booking ref + outcome only — never the recipient PII.

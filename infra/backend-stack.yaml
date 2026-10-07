@@ -50,6 +50,9 @@
 #       DatabaseUrl='<POOLED-NEON-URL>' \
 #       JwtSecret='<STRONG-RANDOM>' \
 #       AdminPassword='<STRONG-RANDOM>' \
+#       SesFromEmail=tech@storelah.sg \
+#       SesFromName=StoreLah \
+#       SesRegion=ap-southeast-1 \
 #     --capabilities CAPABILITY_NAMED_IAM \
 #     --region ap-southeast-1
 #
@@ -91,6 +94,18 @@ Parameters:
     Type: String
     NoEcho: true
     Description: "STORELAH_ADMIN_PASSWORD — must match the bcrypt hash in the Neon AdminUser row (rotate via `pnpm db:rotate-admin-password`, never `db:seed`, on a live DB)."
+  SesFromEmail:
+    Type: String
+    Default: tech@storelah.sg
+    Description: "SES verified sender email (canonical env SES_FROM_EMAIL). Production SES mode — must be a verified SES identity in SesRegion."
+  SesFromName:
+    Type: String
+    Default: StoreLah
+    Description: "SES sender display name (canonical env SES_FROM_NAME)."
+  SesRegion:
+    Type: String
+    Default: ap-southeast-1
+    Description: "SES region (canonical env AWS_SES_REGION). Must match the region of the verified sender identity."
 
 Resources:
   # --- Execution role (what the function runs AS: logs only, no VPC) ---------
@@ -109,6 +124,22 @@ Resources:
         # Least-privilege logs write (Neon is reached over public internet —
         # no VPC, so no EC2 ENI permissions needed).
         - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        # SES send-as-verified-sender only (least privilege — scoped to the
+        # verified sender identity in SesRegion; tighten to the exact identity
+        # ARN once the sender ARN is known — do NOT broaden beyond SES).
+        - PolicyName: ses-send-as-verified-sender
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ses:SendEmail
+                  - ses:SendRawEmail
+                Resource: !Sub
+                  - "arn:aws:ses:${Region}:${AWS::AccountId}:identity/${Sender}"
+                  - Region: !Ref SesRegion
+                    Sender: !Ref SesFromEmail
 
   # --- Lambda function --------------------------------------------------------
   BackendFunction:
@@ -131,6 +162,9 @@ Resources:
           JWT_EXPIRES_IN: !Ref JwtExpiresIn
           STORELAH_ADMIN_EMAIL: !Ref AdminEmail
           STORELAH_ADMIN_PASSWORD: !Ref AdminPassword
+          SES_FROM_EMAIL: !Ref SesFromEmail
+          SES_FROM_NAME: !Ref SesFromName
+          AWS_SES_REGION: !Ref SesRegion
       # NOTE: zip layout must keep dist/src/cms beside dist/src/index.js
       # (__dirname static serving) — enforced by `pnpm build`, see runbook A2.
 

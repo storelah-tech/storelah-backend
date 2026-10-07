@@ -396,9 +396,42 @@ needs a code change; defer unless asked):
 | `JWT_EXPIRES_IN` | `12h` (or chosen) | |
 | `STORELAH_ADMIN_EMAIL` | `admin@storelah.sg` | |
 | `STORELAH_ADMIN_PASSWORD` | strong value | **⚠ security — see flag below** |
+| `SES_FROM_EMAIL` | verified sender (stack param `SesFromEmail`, default `tech@storelah.sg`) | canonical gate sole key; must be a verified SES identity in `AWS_SES_REGION`; production SES mode |
+| `SES_FROM_NAME` | display name (stack param `SesFromName`, default `StoreLah`) | sender display name only |
+| `AWS_SES_REGION` | SES region (stack param `SesRegion`, default `ap-southeast-1`) | must match the verified sender identity region |
 | `NODE_ENV` | `production` | `config.isProd` + Prisma global-cache behavior key off this |
 | `PORT` | not needed under Lambda | harmless if set; adapter doesn't use it |
 
+- **SES sender (production mode):** the SES account is in **production mode** (not
+  sandbox) — sending is still restricted to the **verified sender identity** in
+  `AWS_SES_REGION`. `SES_FROM_EMAIL` is the sole gate (canonical key, stack param
+  `SesFromEmail`); `SES_FROM_NAME` defaults to `StoreLah`; `AWS_SES_REGION` defaults
+  to `ap-southeast-1`. The sender identity must be verified in SES **before** deploy
+  or sends fail. The stack's execution role allows only `ses:SendEmail` /
+  `ses:SendRawEmail` scoped to that sender identity — no broader SES access. The
+  Lambda env keys must be EXACTLY `SES_FROM_EMAIL` / `SES_FROM_NAME` /
+  `AWS_SES_REGION` (backend-agent contract — do not invent `SES_SENDER` or others).
+- **Stack redeploy shape** (`infra/backend-stack.yaml` — param names only, no values;
+  secrets passed at deploy time, never committed):
+  ```bash
+  aws cloudformation deploy \
+    --stack-name storelah-backend \
+    --template-file infra/backend-stack.yaml \
+    --parameter-overrides \
+      LambdaCodeS3Bucket=<code-bucket> \
+      LambdaCodeS3Key=storelah-backend/<sha>.zip \
+      AcmCertificateArn=<ap-southeast-1-cert-arn> \
+      DatabaseUrl=<pooled-neon-url> \
+      JwtSecret=<jwt-secret> \
+      AdminPassword=<admin-password> \
+      SesFromEmail=<sender-email> \
+      SesFromName=<sender-name> \
+      SesRegion=<ses-region> \
+    --capabilities CAPABILITY_NAMED_IAM \
+    --region ap-southeast-1
+  ```
+  (`SesFromEmail` / `SesFromName` / `SesRegion` have template defaults so may be
+  omitted when defaults apply; shown here for explicitness. Never commit secret values.)
 - **✅ SECURITY FLAG — RESOLVED (2026-08-13, backend-agent commit):** `GET /api/v1/cms/config`
   used to return **`{ email, password }` in plaintext from env** to anyone. It is now gated
   **by host kind, unconditionally (not `NODE_ENV`-dependent):** the **api host

@@ -25,7 +25,7 @@ export const openapiSpec = {
   openapi: '3.0.3',
   info: {
     title: 'StoreLah Booking API',
-    version: '1.9.0',
+    version: '1.9.1',
     description: [
       'Customer-facing booking API for the StoreLah self-storage business.',
       '',
@@ -270,6 +270,20 @@ export const openapiSpec = {
         'gain `latestVerification` (`{ id, status, reviewStatus, idType, verifiedAt, ' +
         'bookingRef }`, null when none). Provider `status` (VERIFIED/FAILED) is never ' +
         'rewritten by staff and the customer POST/GET contract is unchanged.',
+      '',
+      'v1.9.1 is ADDITIVE-ONLY over 1.9.0: floor-plan draft versions for the designer — ' +
+        'the live plan stays single-per-floor while `POST /cms/floor-plans/{floorId}/drafts` ' +
+        'freezes the canvas as an immutable JSON snapshot version (max+1 per floor; every ' +
+        'field optional, omitted fields fall back to the live plan, explicit arrays ' +
+        'replace wholesale; 201), `GET /cms/floor-plans/{floorId}/drafts` lists versions ' +
+        'newest-first (summaries with element counts), `GET /cms/drafts/{draftId}` views one ' +
+        'version with its full snapshot, `DELETE /cms/drafts/{draftId}` removes it (live ' +
+        'plan untouched), and `POST /cms/drafts/{draftId}/publish` wholesale-restores the ' +
+        'snapshot into the live plan (placements added after the snapshot are removed; ' +
+        'units since deleted/moved/deactivated are skipped and reported in ' +
+        '`meta.skippedPlacements`) then walks DRAFT → ACTIVE via the existing publish ' +
+        'path. Drafts are CMS-only (Bearer JWT) — the public floor-plan read resolves ' +
+        'the ACTIVE live plan and never touches drafts. All pre-existing shapes are unchanged.',
     ].join('\n'),
   },
   servers: [
@@ -1361,6 +1375,183 @@ export const openapiSpec = {
           '404': openapiErrorResponse(
             'No plan for this floor, or boundary belongs to a different plan.',
           ),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+    },
+    '/cms/floor-plans/{floorId}/drafts': {
+      get: {
+        tags: ['Operator CMS'],
+        summary: 'List floor-plan draft versions',
+        description: [
+          'A floor\'s versioned design snapshots, newest version first (summaries with element ' +
+            'counts — no snapshot payloads). DRAFT = saved design snapshot; ACTIVE = this version ' +
+            'was published to the live plan (informational marker). Drafts are CMS-only and never ' +
+            'leak to the public booking read.',
+          '',
+          'Operator CMS endpoints are documented here for reference only; they are served on the CMS host under ',
+          '`/api/v1/cms` and require a Bearer JWT issued by `/api/v1/cms/login` (auto-login via `/api/v1/cms/config`).',
+        ].join('\n'),
+        operationId: 'listFloorPlanDrafts',
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          {
+            name: 'floorId',
+            in: 'path',
+            required: true,
+            description: 'Floor row id.',
+            schema: { type: 'string' },
+          },
+        ],
+        responses: {
+          '200': openapiResponse({
+            type: 'array',
+            items: { $ref: openapiSchemaRef('FloorPlanDraftSummary') },
+          }),
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '404': openapiErrorResponse('Floor not found.'),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+      post: {
+        tags: ['Operator CMS'],
+        summary: 'Save a floor-plan draft version',
+        description: [
+          'Freezes the floor\'s canvas as a new immutable JSON snapshot version (max+1 per floor; 201). ' +
+            'Every field is optional: omitted fields fall back to the live plan\'s current values, so an empty ' +
+            'body snapshots the working copy as-is; explicit placements/blocks/boundaries/markers arrays replace ' +
+            'the fallback wholesale. Explicit geometry is validated for unit membership + shape + canvas-fit ' +
+            '(overlap/area rules are live-canvas-only). Never touches the live plan.',
+          '',
+          'Operator CMS endpoints are documented here for reference only; they are served on the CMS host under ',
+          '`/api/v1/cms` and require a Bearer JWT issued by `/api/v1/cms/login` (auto-login via `/api/v1/cms/config`).',
+        ].join('\n'),
+        operationId: 'saveFloorPlanDraft',
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          {
+            name: 'floorId',
+            in: 'path',
+            required: true,
+            description: 'Floor row id.',
+            schema: { type: 'string' },
+          },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: { $ref: openapiSchemaRef('FloorPlanDraftInput') },
+            },
+          },
+        },
+        responses: {
+          '201': openapiCreatedResponse({ $ref: openapiSchemaRef('FloorPlanDraft') }),
+          '400': openapiErrorResponse('Invalid draft payload (bad geometry or unit membership).'),
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '404': openapiErrorResponse('Floor or unit not found.'),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+    },
+    '/cms/drafts/{draftId}': {
+      get: {
+        tags: ['Operator CMS'],
+        summary: 'View a floor-plan draft version',
+        description: [
+          'One draft version with its full canvas snapshot (dims + structure + placements + blocks + ' +
+            'boundaries + markers, plus floor/branch context for the read-only preview).',
+          '',
+          'Operator CMS endpoints are documented here for reference only; they are served on the CMS host under ',
+          '`/api/v1/cms` and require a Bearer JWT issued by `/api/v1/cms/login` (auto-login via `/api/v1/cms/config`).',
+        ].join('\n'),
+        operationId: 'getFloorPlanDraft',
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          {
+            name: 'draftId',
+            in: 'path',
+            required: true,
+            description: 'Draft row id (cuid).',
+            schema: { type: 'string' },
+          },
+        ],
+        responses: {
+          '200': openapiResponse({ $ref: openapiSchemaRef('FloorPlanDraft') }),
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '404': openapiErrorResponse('Draft not found.'),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+      delete: {
+        tags: ['Operator CMS'],
+        summary: 'Delete a floor-plan draft version',
+        description: [
+          'Removes one draft version (design history only — the live plan is untouched).',
+          '',
+          'Operator CMS endpoints are documented here for reference only; they are served on the CMS host under ',
+          '`/api/v1/cms` and require a Bearer JWT issued by `/api/v1/cms/login` (auto-login via `/api/v1/cms/config`).',
+        ].join('\n'),
+        operationId: 'deleteFloorPlanDraft',
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          {
+            name: 'draftId',
+            in: 'path',
+            required: true,
+            description: 'Draft row id (cuid).',
+            schema: { type: 'string' },
+          },
+        ],
+        responses: {
+          '200': openapiResponse({
+            type: 'object',
+            required: ['draftId', 'floorId', 'version', 'deleted'],
+            properties: {
+              draftId: { type: 'string' },
+              floorId: { type: 'string' },
+              version: { type: 'integer' },
+              deleted: { type: 'boolean', enum: [true] },
+            },
+          }),
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '404': openapiErrorResponse('Draft not found.'),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+    },
+    '/cms/drafts/{draftId}/publish': {
+      post: {
+        tags: ['Operator CMS'],
+        summary: 'Publish a floor-plan draft version',
+        description: [
+          'Wholesale-restores the draft snapshot into the live FloorPlan (placements added after the ' +
+            'snapshot are removed), then walks DRAFT → ACTIVE via the existing publish path (same ' +
+            '`promotions.approve` gate for actors holding permission rows). Snapshot placements whose ' +
+            'unit has since been deleted, moved floors, or deactivated are skipped and reported in ' +
+            '`meta.skippedPlacements` (never fatal). The draft row is marked ACTIVE as its published marker.',
+          '',
+          'Operator CMS endpoints are documented here for reference only; they are served on the CMS host under ',
+          '`/api/v1/cms` and require a Bearer JWT issued by `/api/v1/cms/login` (auto-login via `/api/v1/cms/config`).',
+        ].join('\n'),
+        operationId: 'publishFloorPlanDraft',
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          {
+            name: 'draftId',
+            in: 'path',
+            required: true,
+            description: 'Draft row id (cuid).',
+            schema: { type: 'string' },
+          },
+        ],
+        responses: {
+          '200': openapiResponse({
+            type: 'object',
+            description: 'The restored live plan (same shape as the CMS plan read: canvas + placements + blocks + boundaries + markers + boundaryMetrics, status ACTIVE).',
+          }),
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '404': openapiErrorResponse('Draft not found.'),
           '500': openapiErrorResponse('Unexpected server error'),
         },
       },
@@ -5240,6 +5431,72 @@ export const openapiSpec = {
           blockAreaSqft: { type: 'number', description: 'Loop-clipped block area (sqft, 1dp) — SUM over marked loops of rect∩loop per block (solid structure excluded).' },
           gfaSqft: { type: 'number', nullable: true, description: 'Operator-entered plan GFA (sqft); null when unset.' },
           gfaSource: { type: 'string', enum: ['USER', 'CANVAS'], description: 'USER when gfaSqft is set, CANVAS when the metrics report falls back to the canvas rect.' },
+        },
+      },
+      // --- Operator CMS: floor-plan draft versions (v1.9.1, additive) ---
+      FloorPlanDraftSummary: {
+        type: 'object',
+        required: ['id', 'floorId', 'version', 'status', 'width', 'height', 'counts', 'createdAt', 'updatedAt'],
+        description: 'One floor-plan draft version (list shape — no snapshot payloads). DRAFT = saved design snapshot; ACTIVE = this version was published to the live plan (informational marker).',
+        properties: {
+          id: { type: 'string', description: 'Draft row id (cuid).' },
+          floorId: { type: 'string', description: 'Floor row id.' },
+          version: { type: 'integer', description: 'Per-floor version number (1, 2, ...).' },
+          status: { type: 'string', enum: ['DRAFT', 'ACTIVE'] },
+          width: { type: 'integer', description: 'Snapshot canvas width in feet.' },
+          height: { type: 'integer', description: 'Snapshot canvas height in feet.' },
+          gfaSqft: { type: 'number', nullable: true, description: 'Snapshot operator-entered GFA (sqft); null when unset at save time.' },
+          counts: {
+            type: 'object',
+            required: ['placements', 'blocks', 'boundaries', 'markers'],
+            properties: {
+              placements: { type: 'integer' },
+              blocks: { type: 'integer' },
+              boundaries: { type: 'integer' },
+              markers: { type: 'integer' },
+            },
+          },
+          createdBy: { type: ['string', 'null'], description: 'Operator who saved the draft (admin email/name).' },
+          createdAt: { type: 'string', format: 'date-time' },
+          updatedAt: { type: 'string', format: 'date-time' },
+        },
+      },
+      FloorPlanDraft: {
+        type: 'object',
+        required: ['id', 'floorId', 'version', 'status', 'width', 'height', 'placements', 'blocks', 'boundaries', 'markers', 'createdAt', 'updatedAt'],
+        description: 'One floor-plan draft version with its full immutable canvas snapshot (view shape) plus floor/branch context for the read-only preview.',
+        properties: {
+          id: { type: 'string' },
+          floorId: { type: 'string' },
+          version: { type: 'integer' },
+          status: { type: 'string', enum: ['DRAFT', 'ACTIVE'] },
+          width: { type: 'integer' },
+          height: { type: 'integer' },
+          structure: { description: 'Legacy free-form decorations snapshot (same shape as the live plan structure).' },
+          gfaSqft: { type: 'number', nullable: true },
+          placements: { type: 'array', items: { type: 'object' }, description: 'Snapshot placements (editor normalized shape: unitId/unitCode/name/size/sqft/status/hasAC/hasPillar/x/y/width/height/stackTier/doorEdges).' },
+          blocks: { type: 'array', items: { type: 'object' }, description: 'Snapshot blocks (editor normalized shape).' },
+          boundaries: { type: 'array', items: { type: 'object' }, description: 'Snapshot boundaries (editor normalized shape).' },
+          markers: { type: 'array', items: { type: 'object' }, description: 'Snapshot markers (editor normalized shape).' },
+          createdBy: { type: ['string', 'null'] },
+          createdAt: { type: 'string', format: 'date-time' },
+          updatedAt: { type: 'string', format: 'date-time' },
+          floor: { type: 'object', description: 'Floor context ({ id, level, name }).' },
+          branch: { type: 'object', description: 'Branch context ({ id, code, name }).' },
+        },
+      },
+      FloorPlanDraftInput: {
+        type: 'object',
+        description: 'Draft-save payload (all fields optional — omitted fields fall back to the live plan; explicit arrays replace wholesale).',
+        properties: {
+          width: { type: 'integer', minimum: 1, maximum: 500 },
+          height: { type: 'integer', minimum: 1, maximum: 500 },
+          structure: { description: 'Legacy structure JSON (null clears).' },
+          gfaSqft: { type: 'number', description: 'Operator-entered GFA in sqft (null clears, omitted keeps).' },
+          placements: { type: 'array', items: { $ref: openapiSchemaRef('PlacementInput') }, description: 'Full replacement placement set (each needs unitId + int rect; stackTier/doorEdges optional).' },
+          blocks: { type: 'array', items: { $ref: openapiSchemaRef('BlockInput') }, description: 'Full replacement block set.' },
+          boundaries: { type: 'array', items: { $ref: openapiSchemaRef('BoundaryInput') }, description: 'Full replacement boundary set.' },
+          markers: { type: 'array', items: { type: 'object' }, description: 'Full replacement marker set ({ kind, label?, x, y }).' },
         },
       },
       PublicFloorPlan: {

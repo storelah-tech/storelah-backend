@@ -190,6 +190,7 @@ model Floor {
 
   units      Unit[]
   floorPlan  FloorPlan? // one-to-one: a floor has exactly one plan (see FloorPlan)
+  drafts     FloorPlanDraft[] // versioned design snapshots of the plan canvas (see FloorPlanDraft)
   metricsSnapshots FloorplanMetricsSnapshot[]
 
   @@unique([branchId, level])
@@ -341,6 +342,67 @@ model FloorPlanMarker {
   updatedAt   DateTime  @updatedAt
 
   @@index([floorPlanId])
+}
+
+// Versioned design drafts of a floor's plan canvas — the "Save as draft"
+// history behind the CMS floor-plan designer.
+//
+// The live FloorPlan stays single-per-floor (the working copy the editor
+// mutates); a draft is an IMMUTABLE JSON snapshot of the whole canvas at save
+// time (dims + structure + placements + blocks + boundaries + markers) frozen
+// as version N for that floor. Versions auto-increment per floor
+// (`@@unique([floorId, version])`, max+1 in src/core/floorPlanDrafts.ts).
+// Each version can be viewed (read-only preview), deleted, or published
+// (copied into the live FloorPlan, which then walks DRAFT → ACTIVE via the
+// existing publish path — the single-plan publish flow is untouched).
+//
+// Snapshots are JSONB (not relational copies) because canvas geometry is only
+// ever consumed as a whole by the renderer/editor and is never queried or
+// filtered per element — the same presentational-geometry argument as the
+// legacy `structure` JSON — and relational copies would explode the FK graph
+// (UnitPlacement.unitId is @unique, so a second live copy per version is
+// impossible without shadow tables). Snapshots are CMS-only: the public
+// booking read resolves the ACTIVE FloorPlan and never touches this table,
+// so drafts can never leak to booking.
+//
+// Delete semantics: deleting a Floor cascades its drafts (design history is
+// subordinate to the floor); drafts never reference business rows.
+model FloorPlanDraft {
+  id        String   @id @default(cuid())
+  floorId   String
+  floor     Floor    @relation(fields: [floorId], references: [id], onDelete: Cascade)
+  // Per-floor version number (1, 2, ...), assigned max+1 at save time.
+  version   Int
+  // Draft lifecycle: DRAFT = saved design snapshot; ACTIVE = this version was
+  // published to the live plan (informational marker — the live FloorPlan
+  // carries the real DRAFT/ACTIVE state). VALIDATED/SCHEDULED/ENDED are
+  // reserved vocabulary only and are never assigned here.
+  status    PlanStatus @default(DRAFT)
+  width     Int      @default(0) // canvas width in FEET (1 grid unit = 1 ft)
+  height    Int      @default(0) // canvas height in FEET (1 grid unit = 1 ft)
+  structure Json? // legacy free-form decorations snapshot (same shape as FloorPlan.structure)
+  // Operator-entered GFA snapshot in SQFT (null = unset at save time).
+  gfaSqft   Float?
+  // Canvas element snapshots (same shapes the editor normalises to — see
+  // fpNormalizePlacements/fpNormalizeBlocks/fpNormalizeBoundaries/
+  // fpNormalizeMarkers in src/cms/admin/floorplanView.js):
+  // placements = [{ unitId, unitCode, name, sizeCode, sizeName, sqft, status,
+  //   hasAC, hasPillar, x, y, width, height, stackTier, doorEdges[]|null }],
+  // blocks = [{ id?, name, x, y, width, height, color, doorEdges[]|null }],
+  // boundaries = [{ id?, label, kind, points[[x,y]..], closed, sortOrder }],
+  // markers = [{ id?, kind, label, x, y }]. Row ids are traceability only —
+  // publish mints fresh live rows and never reuses them.
+  placements Json
+  blocks     Json
+  boundaries Json
+  markers    Json
+  // Operator who saved the draft (admin email/name from the Bearer JWT).
+  createdBy String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([floorId, version])
+  @@index([floorId])
 }
 
 model UnitSize {

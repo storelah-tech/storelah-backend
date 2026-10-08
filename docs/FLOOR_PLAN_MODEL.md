@@ -367,6 +367,82 @@ untouched; `FloorPlanBlock` starts empty).
 Safe to apply over live data: no existing column/table is altered, unknown/custom
 sizes keep NULL (aspect fallback), and no placement rows are touched.
 
+## Draft versions (`FloorPlanDraft`)
+
+"Save as draft" freezes the floor's canvas as an immutable, versioned design
+snapshot. The live `FloorPlan` stays single-per-floor (the working copy the
+editor mutates — "Save canvas" upserts it and demotes to DRAFT, Publish walks
+DRAFT → ACTIVE); a draft is the whole canvas at save time frozen as version N
+for that floor. Each version can be viewed (read-only preview), loaded back
+into the editable designer, or deleted — there is no per-draft Publish button in the designer UI; publishing is canvas/live-plan only (`Publish` in the designer header, `POST /floor-plans/:floorId/publish`). The existing single-plan
+publish flow is untouched.
+
+| Field        | Type        | Meaning                                                        |
+| ------------ | ----------- | -------------------------------------------------------------- |
+| `id`         | `cuid`      | PK                                                             |
+| `floorId`    | FK → Floor  | `@@index([floorId])`; `onDelete: Cascade`                      |
+| `version`    | `Int`       | per-floor version (1, 2, …), assigned max+1 at save; `@@unique([floorId, version])` |
+| `status`     | `PlanStatus`| `DRAFT` on save; set to `ACTIVE` as the published marker when this version is published (informational — the live `FloorPlan` carries the real state; VALIDATED/SCHEDULED/ENDED are never assigned) |
+| `width`/`height` | `Int`  | snapshot canvas dims in **FEET**                                |
+| `structure`  | `Json?`     | legacy decorations snapshot (same shape as `FloorPlan.structure`) |
+| `gfaSqft`    | `Float?`    | operator-entered GFA snapshot (`NULL` = unset at save time)    |
+| `placements` | `Json`      | snapshot array in the editor normalized shape (`unitId`, `unitCode`, `name`, `sizeCode`, `sizeName`, `sqft`, `status`, `hasAC`, `hasPillar`, `x`, `y`, `width`, `height`, `stackTier`, `doorEdges[]|null`) |
+| `blocks`     | `Json`      | snapshot array (`name`, `x`, `y`, `width`, `height`, `color`, `doorEdges[]|null`) |
+| `boundaries` | `Json`      | snapshot array (`label`, `kind`, `points[[x,y]..]`, `closed`, `sortOrder`) |
+| `markers`    | `Json`      | snapshot array (`kind`, `label`, `x`, `y`)                     |
+| `createdBy`  | `String?`   | operator who saved the draft (admin email/name from the Bearer JWT) |
+| timestamps   |             | `createdAt` / `updatedAt`                                      |
+
+**Why JSON snapshots, not relational copies?** Canvas geometry is only ever
+consumed as a whole by the renderer/editor and is never queried or filtered
+per element — the same presentational-geometry argument as the legacy
+`structure` JSON. Relational copies would explode the FK graph
+(`UnitPlacement.unitId` is `@unique`, so a second live copy per version is
+impossible without shadow tables). Snapshot rows carry the editor normalized
+shapes, so the read-only preview renders them with zero translation; row ids
+ride along for traceability only — publish mints fresh live rows and never
+reuses them.
+
+**Semantics** (`src/core/floorPlanDrafts.ts`, CMS routes
+`POST|GET /floor-plans/:floorId/drafts`, `GET|DELETE /drafts/:draftId`,
+`POST /drafts/:draftId/publish` — Bearer JWT, envelope `{ data, meta }`):
+
+- **Save** (`saveDraft`): every field optional — omitted fields fall back to
+  the live plan's values, so `POST {}` snapshots the working copy as-is;
+  explicit arrays replace the fallback wholesale (no per-element merge).
+  Explicit geometry is validated for unit membership (exists, same floor, not
+  soft-deleted, not INACTIVE) + shape + canvas-fit; the overlap guard and the
+  ±15% area-vs-sqft rule are live-canvas-only (the interactive editor enforces
+  them there). Never touches the live plan. Version races retry once on the
+  `@@unique([floorId, version])` guard.
+- **List** (`listDrafts`): newest version first, summaries with element counts
+  (no snapshot payloads).
+- **Load** (client-side only, no new endpoint — reuses `GET /drafts/:draftId`):
+  the designer replaces its local `state.fp.*` (canvas dims, placements,
+  blocks, boundaries, markers, structure, GFA) with the snapshot and
+  re-renders, setting an "Editing from draft vN" indicator; the live plan is
+  never written. Canvas edits after a load guard on unsaved changes
+  (`confirmDialog`), and the next save freezes a NEW version (max+1 — the
+  loaded version is never overwritten). Publish from a loaded draft still
+  wholesale-restores the live plan.
+- **Publish** (`publishDraft`): wholesale-restores the snapshot into the live
+  plan (canvas upsert + delete-all/re-create placements/blocks/boundaries/
+  markers in one transaction — placements added after the snapshot are
+  removed), marks the draft `ACTIVE`, then walks the live plan DRAFT → ACTIVE
+  via the existing `publishFloorPlan` path (same `promotions.approve` gate).
+  Snapshot placements whose unit has since been deleted, moved floors, or been
+   deactivated are skipped and reported in `meta.skippedPlacements` (never
+   fatal). The designer UI no longer offers this per-draft action — the endpoint stays for compatibility, unwired.
+- **Drafts never leak to booking**: `GET /public/floor-plans/:branchCode/:level`
+  (`getPublicFloorPlan`) resolves the ACTIVE live plan only and never touches
+  `FloorPlanDraft` — a draft-only floor still reads as `plan: null`.
+
+**Migration**: `prisma/migrations/20261008044429_add_floor_plan_drafts/migration.sql` —
+additive `CREATE TABLE "FloorPlanDraft"` + floor index + `(floorId, version)`
+unique + cascade FK. No existing table touched; sorts before
+`20261009000000_add_content_items` but the two are independent creates, so
+fresh-DB replay order is irrelevant.
+
 ## Forward compatibility
 
 The single plan-per-floor shape already serves the **public read endpoint** (see

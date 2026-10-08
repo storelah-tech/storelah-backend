@@ -773,6 +773,7 @@ function fpPopulateSelects() {
 async function fpFetch() {
   if (!state.fp.floorId) {
     fpRender();
+    fpFetchDrafts().catch(() => {});
     return;
   }
   try {
@@ -795,6 +796,10 @@ async function fpFetch() {
     state.fp.armedMarker = null;
     state.fp.scale = 1;
     fpClearUndo(); // floor (re)load invalidates inverse ops from the previous floor
+    // A (re)load shows the live plan — no draft version is loaded anymore and
+    // the canvas matches the server (unsaved-changes guard resets).
+    fpSetLoadedDraft(null);
+    fpCanvasDirty = false;
     // A (re)load resets the live-typed canvas size back to server state, and
     // shrink-fits any placements/blocks the server may hold beyond a (possibly
     // just-saved, smaller) canvas so nothing renders off-grid.
@@ -805,6 +810,7 @@ async function fpFetch() {
     fpRenderMarkerTools();
     fpSetPaletteCollapsed(false);
     notifyMetricsFloorChanged();
+    fpFetchDrafts().catch(() => {});
   } catch (err) {
     fpToast('Load floor plan: ' + describeError(err), false);
   }
@@ -3080,6 +3086,8 @@ function fpRenderPlanStatus() {
 async function fpMutate(url, opts) {
   const res = await request(url, opts);
   if (state.fp.plan) state.fp.plan.status = 'DRAFT';
+  fpCanvasDirty = true; // every designer write funnels through here — the
+  // canvas now differs from the last load/save (Load guards on this)
   fpRenderPlanStatus();
   return res;
 }
@@ -3167,6 +3175,340 @@ async function fpDeletePlan() {
     await fpFetch();
   } catch (err) {
     fpToast('Delete plan: ' + describeError(err), false);
+  }
+}
+
+// ---------- floor-plan draft versions (versioned design snapshots) ----------
+// "Save as draft" freezes the canvas as version N (max+1 per floor); each row
+// offers Load (populate the editable canvas from the snapshot so the operator
+// can keep designing from it), View (read-only preview in the existing
+// #fpViewModal) and Delete (confirmDialog). Publishing is canvas/live-plan
+// only (the #fpPublishPlan flow) — there is no per-draft Publish action.
+// Loading never writes the live
+// plan — it only replaces local editor state; the next Save-as-draft freezes
+// the edited canvas as a NEW version (never overwrites the loaded one).
+// Reuses the existing .data-tbl/.tb-btn/.t-type/.pill theme only — no new
+// CSS. Drafts are CMS-only: the public booking read resolves the ACTIVE live
+// plan and never touches them.
+let fpDrafts = []; // last GET /floor-plans/:floorId/drafts rows (summaries)
+// Loaded-version tracking for "Load into designer": which draft snapshot the
+// editable canvas was last populated from (null = live plan). Set ONLY by
+// fpLoadDraft/fpSaveDraft, cleared by fpFetch (any live reload).
+let fpLoadedDraftId = null;
+let fpLoadedDraftVersion = null;
+// Unsaved-changes guard for Load: set by fpMutate (every designer write
+// funnels through it), cleared on fpFetch / after a load / after a draft save
+// (the edits are then frozen as a version). Load confirms via confirmDialog
+// while this is true. Declared here (after fpMutate/fpFetch textually) but
+// only assigned at runtime, post module-evaluation — never in TDZ.
+let fpCanvasDirty = false;
+
+async function fpFetchDrafts() {
+  if (!state.fp.floorId) {
+    fpDrafts = [];
+    fpRenderDrafts();
+    return;
+  }
+  try {
+    fpDrafts = await get(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/drafts`);
+    fpRenderDrafts();
+  } catch (err) {
+    fpDrafts = [];
+    fpRenderDrafts();
+    fpToast('Load drafts: ' + describeError(err), false);
+  }
+}
+
+function fpRenderDrafts() {
+  const tb = $('#fpDraftsBody');
+  const sub = $('#fpDraftsSub');
+  if (!tb) return;
+  if (sub) {
+    sub.textContent = fpDrafts.length
+      ? `${fpDrafts.length} saved version${fpDrafts.length === 1 ? '' : 's'} — view, load into the editor, or delete`
+      : 'No saved versions yet — Save as draft freezes the current canvas as v1';
+  }
+  if (!fpDrafts.length) {
+    tb.innerHTML = '<tr><td colspan="6" class="t-type">No draft versions saved for this floor yet.</td></tr>';
+    return;
+  }
+  tb.innerHTML = fpDrafts
+    .map((d) => {
+      const live = String(d.status || '').toUpperCase() === 'ACTIVE';
+      const c = d.counts || {};
+      const when = d.createdAt ? new Date(d.createdAt).toLocaleString() : '—';
+      return (
+        '<tr>' +
+        `<td><strong>v${escapeHtml(d.version)}</strong>${d.id && d.id === fpLoadedDraftId ? ' <span class="pill amber">editing</span>' : ''}</td>` +
+        `<td><span class="t-type">${live ? '● Published' : '○ Draft'}</span></td>` +
+        `<td>${escapeHtml(d.width)}×${escapeHtml(d.height)} ft</td>` +
+        `<td class="t-type">${escapeHtml(c.placements || 0)} units · ${escapeHtml(c.blocks || 0)} blocks · ` +
+        `${escapeHtml(c.boundaries || 0)} lines · ${escapeHtml(c.markers || 0)} markers</td>` +
+        `<td class="t-type">${escapeHtml(when)}${d.createdBy ? ' · ' + escapeHtml(d.createdBy) : ''}</td>` +
+        '<td style="white-space:nowrap">' +
+        `<button class="tb-btn ghost" data-fp-draft-act="load" data-fp-draft-id="${escapeHtml(d.id)}" title="Load this version into the editable canvas (live plan unchanged)">Load</button> ` +
+        `<button class="tb-btn ghost" data-fp-draft-act="view" data-fp-draft-id="${escapeHtml(d.id)}">View</button> ` +
+        `<button class="tb-btn danger" data-fp-draft-act="delete" data-fp-draft-id="${escapeHtml(d.id)}">Delete</button>` +
+        '</td></tr>'
+      );
+    })
+    .join('');
+}
+
+// Loaded-version indicator (#fpLoadedDraft pill in the drafts card header):
+// textContent-only (escaped by nature), hidden unless a draft is loaded.
+function fpRenderLoadedDraft() {
+  const el = document.getElementById('fpLoadedDraft');
+  if (!el) return;
+  if (fpLoadedDraftVersion == null) {
+    el.hidden = true;
+    el.textContent = '';
+    return;
+  }
+  el.hidden = false;
+  el.textContent = `Editing from draft v${fpLoadedDraftVersion} — live plan unchanged`;
+}
+
+function fpSetLoadedDraft(d) {
+  fpLoadedDraftId = d ? d.id : null;
+  fpLoadedDraftVersion = d ? d.version : null;
+  fpRenderLoadedDraft();
+  fpRenderDrafts(); // refresh the per-row "editing" tag
+}
+
+// Load a draft version INTO the editable designer: fetches the full snapshot
+// via the existing GET /drafts/:id view payload (no new endpoint) and
+// populates state.fp.* (canvas dims, placements, blocks, boundaries, markers,
+// structure, gfaSqft), then re-renders. Local state only — the live plan is
+// never written. The operator then edits and either saves a NEW draft version
+// (max+1, never overwrites the loaded one); publishing stays on the
+// canvas-level Publish action (#fpPublishPlan). Unsaved canvas edits guard
+// via confirmDialog (fpCanvasDirty).
+async function fpLoadDraft(draftId) {
+  const meta = fpDrafts.find((r) => r.id === draftId);
+  if (fpCanvasDirty) {
+    const loadOk = await confirmDialog({
+      title: `Load draft v${meta ? meta.version : ''} into the editor?`,
+      message: 'The canvas has unsaved changes — loading replaces the editable canvas with this version. The live plan is unchanged either way.',
+      confirmLabel: 'Load draft',
+    });
+    if (!loadOk) return;
+  }
+  try {
+    const res = await request(`/drafts/${encodeURIComponent(draftId)}`);
+    const d = res.data;
+    // Re-partition the units palette around the snapshot: every unit the
+    // snapshot places leaves the unplaced pool; every other known unit
+    // stays (or returns) in it. Known = current placements + current unplaced
+    // (rebuilt in the fpNormalizeUnit input shape so the round-trip is exact).
+    // Snapshot placements carry their own full unit metadata, so units created
+    // after the last fetch still render on the canvas.
+    const snapPlacements = Array.isArray(d.placements) ? d.placements : [];
+    const placedIds = new Set(snapPlacements.map((p) => p.unitId));
+    const pool = new Map();
+    for (const p of state.fp.placements || []) {
+      pool.set(p.unitId, {
+        id: p.unitId, unitCode: p.unitCode, name: p.name,
+        size: { code: p.sizeCode, name: p.sizeName }, sqft: p.sqft, status: p.status,
+        hasAC: p.hasAC === true, hasPillar: p.hasPillar === true,
+      });
+    }
+    for (const u of state.fp.unplaced || []) {
+      pool.set(u.id, {
+        id: u.id, unitCode: u.unitCode, name: u.name,
+        size: { code: u.sizeCode, name: u.sizeName }, sqft: u.sqft, status: u.status,
+        hasAC: u.hasAC === true, hasPillar: u.hasPillar === true,
+      });
+    }
+    state.fp.placements = snapPlacements.map((p) => ({
+      id: p.id || '',
+      unitId: p.unitId,
+      unitCode: p.unitCode,
+      name: p.name ?? null,
+      sizeCode: p.sizeCode,
+      sizeName: p.sizeName,
+      sqft: p.sqft,
+      status: p.status,
+      hasAC: p.hasAC === true,
+      hasPillar: p.hasPillar === true,
+      x: p.x,
+      y: p.y,
+      width: p.width,
+      height: p.height,
+      stackTier: p.stackTier === 1 ? 1 : 0,
+      doorEdges: Array.isArray(p.doorEdges) && p.doorEdges.length ? p.doorEdges.slice() : null,
+    }));
+    state.fp.unplaced = [...pool.values()].filter((u) => !placedIds.has(u.id)).map(fpNormalizeUnit);
+    state.fp.blocks = (Array.isArray(d.blocks) ? d.blocks : []).map((b) => ({
+      id: b.id || '',
+      name: b.name,
+      x: b.x,
+      y: b.y,
+      width: b.width,
+      height: b.height,
+      color: b.color || null,
+      doorEdges: Array.isArray(b.doorEdges) && b.doorEdges.length ? b.doorEdges.slice() : null,
+    }));
+    state.fp.boundaries = (Array.isArray(d.boundaries) ? d.boundaries : []).map((b) => ({
+      id: b.id || '',
+      label: b.label,
+      kind: b.kind,
+      points: fpBoundaryPoints(b.points),
+      closed: !!b.closed,
+      sortOrder: b.sortOrder || 0,
+    }));
+    state.fp.markers = (Array.isArray(d.markers) ? d.markers : []).map((m) => ({
+      id: m.id || '',
+      kind: m.kind,
+      label: m.label || null,
+      x: m.x,
+      y: m.y,
+    }));
+    // Canvas dims + GFA + structure come from the snapshot. The live plan row
+    // is untouched (no POST/PUT here); the shell (when no live plan exists
+    // yet) only feeds fpCanvasDims/fpRenderPlanStatus until Save Canvas runs.
+    const w = Number(d.width) > 0 ? Number(d.width) : state.fp.canvasDefaults.width;
+    const h = Number(d.height) > 0 ? Number(d.height) : state.fp.canvasDefaults.height;
+    state.fp.plan = state.fp.plan ? { ...state.fp.plan, width: w, height: h } : { width: w, height: h, status: 'DRAFT' };
+    state.fp.liveDims = null;
+    state.fp.structure = d.structure ?? null;
+    state.fp.gfa = d.gfaSqft != null && Number.isFinite(Number(d.gfaSqft)) ? Number(d.gfaSqft) : null;
+    state.fp.selected = null;
+    state.fp.selectedBlock = null;
+    state.fp.selectedBoundary = null;
+    state.fp.selectedMarker = null;
+    state.fp.armedMarker = null;
+    fpDraftLine = null;
+    fpClearUndo(); // inverse ops captured against the live rows no longer apply
+    fpCanvasDirty = false;
+    fpSetLoadedDraft({ id: d.id, version: d.version });
+    fpRender();
+    fpRenderMarkerTools();
+    // Metrics KPIs read the live server plan, so no notifyMetricsFloorChanged
+    // here — the toolbar UFA/NLA strip already re-renders from canvas state.
+    fpToast(`Draft v${d.version} loaded into the editor — live plan unchanged. Edit, then Save Canvas + Publish to expose it to booking, or Save as draft for a new version.`, true);
+  } catch (err) {
+    fpToast('Load draft: ' + describeError(err), false);
+  }
+}
+
+async function fpSaveDraft() {
+  if (!state.fp.floorId) {
+    fpToast('Pick a facility and floor first.', false);
+    return;
+  }
+  const w = Number($('#fpWidth').value);
+  const h = Number($('#fpHeight').value);
+  if (!Number.isInteger(w) || w < 1 || w > 500 || !Number.isInteger(h) || h < 1 || h > 500) {
+    fpToast('Canvas size must be a whole number between 1 and 500 feet.', false);
+    return;
+  }
+  const gfaEl = $('#fpGfa');
+  const gfaParsed = fpParseGfa(gfaEl ? gfaEl.value : '');
+  if (!gfaParsed.ok) {
+    fpToast('GFA must be a positive number of sqft (up to 10,000,000) — or empty to unset.', false);
+    if (gfaEl) gfaEl.focus();
+    return;
+  }
+  let structure = null;
+  const raw = $('#fpStructure').value.trim();
+  if (raw) {
+    try {
+      structure = JSON.parse(raw);
+    } catch (err) {
+      fpToast('Structure JSON is invalid — fix the syntax or clear the field.', false);
+      return;
+    }
+  }
+  // Snapshot the CURRENT editor state (which may hold unsaved drag/resize
+  // work): the normalized shapes already match the draft snapshot contract,
+  // and the server falls back to the live plan for anything omitted.
+  const body = {
+    width: w,
+    height: h,
+    structure,
+    gfaSqft: gfaParsed.value,
+    placements: (state.fp.placements || []).map((p) => ({
+      unitId: p.unitId,
+      x: p.x,
+      y: p.y,
+      width: p.width,
+      height: p.height,
+      stackTier: p.stackTier || 0,
+      doorEdges: p.doorEdges || null,
+    })),
+    blocks: state.fp.blocks || [],
+    boundaries: state.fp.boundaries || [],
+    markers: state.fp.markers || [],
+  };
+  try {
+    const saved = await request(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/drafts`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+    fpToast(`Draft v${saved.data.version} saved — the live canvas is unchanged.`, true);
+    // The canvas now matches the freshly frozen version — point the
+    // loaded-version indicator at it and reset the unsaved-changes guard.
+    fpCanvasDirty = false;
+    fpSetLoadedDraft({ id: saved.data.id, version: saved.data.version });
+    await fpFetchDrafts();
+  } catch (err) {
+    fpToast('Save as draft: ' + describeError(err), false);
+  }
+}
+
+async function fpViewDraft(draftId) {
+  try {
+    const res = await request(`/drafts/${encodeURIComponent(draftId)}`);
+    const d = res.data;
+    fpView.floorId = d.floor ? d.floor.id : state.fp.floorId;
+    fpView.plan = {
+      id: d.id,
+      status: d.status,
+      width: d.width,
+      height: d.height,
+      structure: d.structure ?? null,
+      gfaSqft: d.gfaSqft ?? null,
+    };
+    fpView.structure = d.structure ?? null;
+    // Snapshot arrays already carry the editor normalized shapes — the
+    // read-only renderer consumes them directly (no translation).
+    fpView.placements = Array.isArray(d.placements) ? d.placements : [];
+    fpView.blocks = Array.isArray(d.blocks) ? d.blocks : [];
+    fpView.boundaries = Array.isArray(d.boundaries) ? d.boundaries : [];
+    fpView.markers = Array.isArray(d.markers) ? d.markers : [];
+    fpView.dims = { w: d.width > 0 ? d.width : 70, h: d.height > 0 ? d.height : 80 };
+    const title = $('#fpViewTitle');
+    if (title) {
+      title.textContent = `Draft v${d.version} — ${d.branch ? d.branch.name : ''} · Level ${d.floor ? d.floor.level : ''} (read-only preview)`;
+    }
+    const overlay = $('#fpViewModal');
+    if (overlay) overlay.hidden = false;
+    const empty = $('#fpViewEmpty');
+    if (empty) empty.hidden = true;
+    const wrap = $('#fpViewCanvasWrap');
+    if (wrap) wrap.hidden = false;
+    fpViewRender();
+  } catch (err) {
+    fpToast('View draft: ' + describeError(err), false);
+  }
+}
+
+async function fpDeleteDraft(draftId) {
+  const d = fpDrafts.find((r) => r.id === draftId);
+  const delOk = await confirmDialog({
+    title: `Delete draft v${d ? d.version : ''}?`,
+    message: 'The snapshot is removed permanently. The live canvas is unaffected.',
+    confirmLabel: 'Delete draft',
+    danger: true,
+  });
+  if (!delOk) return;
+  try {
+    await request(`/drafts/${encodeURIComponent(draftId)}`, { method: 'DELETE' });
+    fpToast(`Draft v${d ? d.version : ''} deleted.`, true);
+    await fpFetchDrafts();
+  } catch (err) {
+    fpToast('Delete draft: ' + describeError(err), false);
   }
 }
 
@@ -3510,6 +3852,7 @@ export function fpInitEvents() {
     fpFetch().catch(() => {});
   });
   $('#fpSaveCanvas').addEventListener('click', fpSaveCanvas);
+  $('#fpSaveDraft').addEventListener('click', fpSaveDraft);
   $('#fpPublishPlan').addEventListener('click', fpPublishPlan);
   $('#fpDeletePlan').addEventListener('click', fpDeletePlan);
   // --- Group: units (Units) — palette ghost orientation + sqft lock ---
@@ -3790,6 +4133,16 @@ export function fpInitEvents() {
   $('#unitShowFloorPlan').addEventListener('click', fpViewOpen);
   $('#fpViewClose').addEventListener('click', fpViewClose);
   $('#fpViewCloseBtn').addEventListener('click', fpViewClose);
+  // Draft versions table (Load / View / Delete per saved version).
+  $('#fpDraftsBody')?.addEventListener('click', (e) => {
+    const btn = e.target && e.target.closest ? e.target.closest('[data-fp-draft-act]') : null;
+    if (!btn) return;
+    const id = btn.dataset.fpDraftId;
+    const act = btn.dataset.fpDraftAct;
+    if (act === 'load') fpLoadDraft(id);
+    else if (act === 'view') fpViewDraft(id);
+    else if (act === 'delete') fpDeleteDraft(id);
+  });
   // --- Studio ribbon: Mode segments (Select / Add Unit) ---
   // Draw Wall + Add Block reuse #fpBoundaryTool / #fpAddBlock above, so the
   // segmented control has one handler per tool and the audit stays green.

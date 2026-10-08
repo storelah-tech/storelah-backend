@@ -174,6 +174,13 @@ import {
   getAuthoritativeSnapshot,
 } from '../core/floorPlanMetricsService';
 import {
+  saveDraft,
+  listDrafts,
+  getDraft,
+  deleteDraft,
+  publishDraft,
+} from '../core/floorPlanDrafts';
+import {
   listProtectionPlans,
   createProtectionPlan,
   updateProtectionPlan,
@@ -1442,6 +1449,112 @@ router.delete('/floor-plans/:floorId/markers/:markerId', requireAuth, async (req
 // that hold permission rows, legacy fallback otherwise).
 router.post('/floor-plans/:floorId/publish', requireAuth, async (req: Request, res: Response) => {
   ok(res, await publishFloorPlan(String(req.params.floorId), { actorId: (req as any).user?.sub }));
+});
+
+// --- Floor-plan draft versions (versioned design snapshots) ---
+// "Save as draft" freezes the floor's canvas as version N (max+1 per floor);
+// each version can be viewed (full snapshot), deleted, or published (copied
+// into the live FloorPlan, which then walks DRAFT → ACTIVE via the existing
+// publish path). Drafts are CMS-only — the public read resolves the ACTIVE
+// live plan and never touches them. Payload fields are all optional: omitted
+// fields fall back to the live plan's current values, so POST {} snapshots
+// the working copy as-is; explicit arrays replace the fallback wholesale.
+
+const floorPlanDraftPlacementSchema = z.object({
+  unitId: z.string().min(1),
+  x: z.number().int().min(0),
+  y: z.number().int().min(0),
+  width: z.number().int().min(1),
+  height: z.number().int().min(1),
+  stackTier: z.number().int().min(0).max(1).optional(),
+  doorEdges: z.array(z.enum(['N', 'S', 'E', 'W'])).max(4).nullish(),
+});
+
+const floorPlanDraftBlockSchema = z.object({
+  name: z.string().trim().min(1).max(80),
+  x: z.number().int().min(0),
+  y: z.number().int().min(0),
+  width: z.number().int().min(1),
+  height: z.number().int().min(1),
+  color: z.string().trim().max(20).nullish(),
+  doorEdges: z.array(z.enum(['N', 'S', 'E', 'W'])).max(4).nullish(),
+});
+
+const floorPlanDraftBoundarySchema = z.object({
+  label: z.string().trim().min(1).max(80).optional(),
+  kind: z.string().trim().min(1).max(24).nullish(),
+  points: z.array(z.tuple([z.number().int(), z.number().int()])).min(2).max(500),
+  closed: z.boolean().optional(),
+  sortOrder: z.number().int().min(0).max(100000).nullish(),
+});
+
+const floorPlanDraftMarkerSchema = z.object({
+  kind: z.enum(FP_MARKER_KINDS),
+  label: z.string().trim().max(80).nullish(),
+  x: z.number().int().min(0),
+  y: z.number().int().min(0),
+});
+
+const floorPlanDraftPayloadSchema = z.object({
+  width: z.number().int().min(1).max(500).optional(),
+  height: z.number().int().min(1).max(500).optional(),
+  structure: z.unknown().nullable().optional(),
+  gfaSqft: z.number().positive().max(10000000).nullish(),
+  placements: z.array(floorPlanDraftPlacementSchema).max(2000).optional(),
+  blocks: z.array(floorPlanDraftBlockSchema).max(2000).optional(),
+  boundaries: z.array(floorPlanDraftBoundarySchema).max(500).optional(),
+  markers: z.array(floorPlanDraftMarkerSchema).max(500).optional(),
+});
+
+// Save the floor's canvas as a new draft version (max+1 per floor). 201.
+router.post('/floor-plans/:floorId/drafts', requireAuth, async (req: Request, res: Response) => {
+  const parsed = floorPlanDraftPayloadSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid draft payload', parsed.error.flatten());
+    return;
+  }
+  const user = (req as any).user as { email?: string; name?: string } | undefined;
+  created(
+    res,
+    await saveDraft(String(req.params.floorId), {
+      width: parsed.data.width,
+      height: parsed.data.height,
+      structure: parsed.data.structure,
+      gfaSqft: parsed.data.gfaSqft,
+      placements: parsed.data.placements,
+      blocks: parsed.data.blocks,
+      boundaries: parsed.data.boundaries,
+      markers: parsed.data.markers,
+      createdBy: user?.email ?? user?.name ?? null,
+    }),
+  );
+});
+
+// List a floor's draft versions, newest first (summaries — no snapshots).
+router.get('/floor-plans/:floorId/drafts', requireAuth, async (req: Request, res: Response) => {
+  const rows = await listDrafts(String(req.params.floorId));
+  ok(res, rows, { count: rows.length });
+});
+
+// View one draft version with its full canvas snapshot.
+router.get('/drafts/:draftId', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await getDraft(String(req.params.draftId)));
+});
+
+// Delete one draft version (design history only — the live plan is untouched).
+router.delete('/drafts/:draftId', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await deleteDraft(String(req.params.draftId)));
+});
+
+// Publish a draft version: wholesale-restore its snapshot into the live plan
+// (placements added after the snapshot are removed), then DRAFT → ACTIVE via
+// the existing publish path. Placements whose unit has since been deleted,
+// moved floors, or deactivated are skipped and reported in meta.
+router.post('/drafts/:draftId/publish', requireAuth, async (req: Request, res: Response) => {
+  const { plan, skippedPlacements } = await publishDraft(String(req.params.draftId), {
+    actorId: (req as any).user?.sub,
+  });
+  ok(res, plan, { skippedPlacements });
 });
 
 // --- Promotion Plans ---

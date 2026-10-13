@@ -152,7 +152,8 @@ import {
   setUnitPlacement,
   removeUnitPlacement,
   deleteFloorPlan,
-  publishFloorPlan,
+  publishFloorPlanWithSync,
+  reconcileUnitSizes,
   createFloorPlanBlock,
   setFloorPlanBlock,
   removeFloorPlanBlock,
@@ -167,6 +168,7 @@ import {
   updateFloorPlanMarker,
   removeFloorPlanMarker,
 } from '../core/floorPlans';
+import { RATE_POLICIES, buildSizeSyncPlan, listSizeMismatches } from '../core/unitSizeSync';
 import { getUnderlay, getUnderlayImage, removeUnderlay, setUnderlay, updateUnderlay } from '../core/floorPlanUnderlay';
 import {
   getFloorMetrics,
@@ -1596,8 +1598,80 @@ router.delete('/floor-plans/:floorId/markers/:markerId', requireAuth, async (req
 // DRAFT, so corrections are edit-draft + re-publish. Permission gate mirrors
 // PATCH /promotion-plans/:id/status (gated 'promotions.approve' for actors
 // that hold permission rows, legacy fallback otherwise).
+//
+// Floor-plan unit sync (docs/FLOOR_PLAN_UNIT_SYNC_PLAN.md D2): publish also
+// applies every pending drawn-size change to its Unit row in the same
+// transaction. Body (all optional — an empty body publishes with defaults):
+// `token` from GET .../publish-preview (409 STALE_PREVIEW when the plan moved
+// on) and per-unit `choices` (ratePolicy KEEP_PSF | KEEP_RATE | SET + rate,
+// sizeId tier override). 409 PUBLISH_BLOCKED lists blockers; meta.sizeSync
+// reports what changed.
+const sizeSyncChoiceSchema = z.object({
+  unitId: z.string().min(1).max(64),
+  ratePolicy: z.enum(RATE_POLICIES).optional(),
+  rate: z.number().min(0).max(1_000_000).optional(),
+  sizeId: z.string().min(1).max(64).optional(),
+});
+const publishBodySchema = z
+  .object({
+    token: z.string().min(1).max(64).optional(),
+    choices: z.array(sizeSyncChoiceSchema).max(2000).optional(),
+  })
+  .optional();
+
+function publishOpts(req: Request) {
+  const parsed = publishBodySchema.safeParse(req.body && Object.keys(req.body).length ? req.body : undefined);
+  if (!parsed.success) return { error: parsed.error.flatten() } as const;
+  const user = (req as any).user as { sub?: string; name?: string; email?: string } | undefined;
+  return {
+    opts: { actorId: user?.sub, actorName: user?.name || user?.email || 'Operator', token: parsed.data?.token, choices: parsed.data?.choices },
+  } as const;
+}
+
 router.post('/floor-plans/:floorId/publish', requireAuth, async (req: Request, res: Response) => {
-  ok(res, await publishFloorPlan(String(req.params.floorId), { actorId: (req as any).user?.sub }));
+  const p = publishOpts(req);
+  if ('error' in p) {
+    fail(res, 400, 'VALIDATION', 'Invalid publish body', p.error);
+    return;
+  }
+  const { plan, sizeSync } = await publishFloorPlanWithSync(String(req.params.floorId), p.opts);
+  ok(res, plan, { sizeSync });
+});
+
+// Publish review (read-only): the exact Unit changes publish would make —
+// size/tier/rate per resized unit, DRAFT units to promote, blockers — plus a
+// `token` to send back with publish and the size tiers for overrides.
+router.get('/floor-plans/:floorId/publish-preview', requireAuth, async (req: Request, res: Response) => {
+  const floorId = String(req.params.floorId);
+  const plan = await prisma.floorPlan.findUnique({ where: { floorId }, select: { status: true } });
+  if (!plan) {
+    fail(res, 404, 'NOT_FOUND', `No floor plan exists for floor ${floorId} — save a canvas first`);
+    return;
+  }
+  ok(res, { planStatus: plan.status, ...(await buildSizeSyncPlan(floorId)), sizes: await listSizes() });
+});
+
+// Reconcile grandfathered size mismatches (placed units whose drawn area ≠
+// Unit.sqft and that are not already pending sync). Read-only list…
+router.get('/floor-plans/:floorId/size-mismatches', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await listSizeMismatches(String(req.params.floorId)));
+});
+
+// …and per-unit resolution: MARK_FOR_SYNC (unit follows the drawing on the
+// next publish) or FIT_DRAWING (drawing resized to the unit's sqft).
+const reconcileSchema = z.object({
+  items: z
+    .array(z.object({ unitId: z.string().min(1).max(64), action: z.enum(['MARK_FOR_SYNC', 'FIT_DRAWING']) }))
+    .min(1)
+    .max(500),
+});
+router.post('/floor-plans/:floorId/reconcile', requireAuth, async (req: Request, res: Response) => {
+  const parsed = reconcileSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid reconcile body', parsed.error.flatten());
+    return;
+  }
+  ok(res, await reconcileUnitSizes(String(req.params.floorId), parsed.data.items));
 });
 
 // --- Floor-plan draft versions (versioned design snapshots) ---
@@ -1701,9 +1775,12 @@ router.delete('/drafts/:draftId', requireAuth, async (req: Request, res: Respons
 // the existing publish path. Placements whose unit has since been deleted,
 // moved floors, or deactivated are skipped and reported in meta.
 router.post('/drafts/:draftId/publish', requireAuth, async (req: Request, res: Response) => {
-  const { plan, skippedPlacements } = await publishDraft(String(req.params.draftId), {
-    actorId: (req as any).user?.sub,
-  });
+  const p = publishOpts(req);
+  if ('error' in p) {
+    fail(res, 400, 'VALIDATION', 'Invalid publish body', p.error);
+    return;
+  }
+  const { plan, skippedPlacements } = await publishDraft(String(req.params.draftId), p.opts);
   ok(res, plan, { skippedPlacements });
 });
 

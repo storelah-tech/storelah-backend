@@ -796,6 +796,9 @@ export async function openEditForm(code) {
     populateSizeSelect(u.sizeId);
     populateStatusSelect('edit', u.status);
     $('#f-sqft').value = u.sqft ?? '';
+    // Floor-plan unit sync: a placed unit's size is set by its drawing.
+    $('#f-sqft').disabled = !!d.sizeOwnedByPlan;
+    $('#f-sqft').title = d.sizeOwnedByPlan ? 'Set by the floor plan — resize this unit in the Floor Plan Designer and publish.' : '';
     $('#f-monthlyRate').value = u.rate ?? '';
     $('#f-hasAC').value = u.hasAC ? 'yes' : 'no';
     $('#f-hasPillar').value = u.hasPillar ? 'yes' : 'no';
@@ -816,6 +819,8 @@ export function closeUnitModal() {
   $('#f-branch').disabled = false;
   $('#f-floor').disabled = false;
   $('#f-size').disabled = false;
+  $('#f-sqft').disabled = false;
+  $('#f-sqft').title = '';
   clearFieldErrors();
 }
 

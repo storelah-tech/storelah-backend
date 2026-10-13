@@ -1,3 +1,4 @@
+import type { Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { AppError } from '../lib/http';
 import { AREA_TOLERANCE, areaDeviation, formatFt, rectAreaSqft } from './planGeometry';
@@ -34,10 +35,13 @@ export function sqftForRect(r: { width: number; height: number }): number {
  * (booking lists AVAILABLE units as rentable), and stale Tenant.unitId links
  * on AVAILABLE units exist (seed data, `db:free-units --keep-tenant-links`).
  */
-export async function loadContractedUnits(unitIds: readonly string[]): Promise<Map<string, string>> {
+export async function loadContractedUnits(
+  unitIds: readonly string[],
+  db: Prisma.TransactionClient | typeof prisma = prisma,
+): Promise<Map<string, string>> {
   const out = new Map<string, string>();
   if (!unitIds.length) return out;
-  const rows = await prisma.unit.findMany({
+  const rows = await db.unit.findMany({
     where: { id: { in: [...unitIds] } },
     select: {
       id: true,
@@ -97,24 +101,47 @@ export function checkPlacementArea(input: {
   return sqft !== unit.sqft;
 }
 
-/** The LOCKER size band (sqftFrom..sqftTo), or null when no LOCKER size exists. */
-export async function loadLockerBand(): Promise<{ from: number; to: number } | null> {
-  const s = await prisma.unitSize.findUnique({ where: { code: 'LOCKER' }, select: { sqftFrom: true, sqftTo: true } });
-  return s ? { from: s.sqftFrom, to: s.sqftTo } : null;
+export type SizeTierRow = { id: string; code: string; name: string; sqftFrom: number; sqftTo: number; sortOrder: number };
+
+/**
+ * Size tier for `sqft` (D4, revised in Phase 2): the tier whose sqft band is
+ * NEAREST to the new area (distance 0 = inside the band); ties keep the
+ * current tier, then lowest sortOrder. Bands are often single points in
+ * practice (prisma/seed.ts seeds sqftFrom = sqftTo, and no CMS screen edits
+ * them), so "no band covers it" is the norm and must not block — `inBand`
+ * tells the review UI to flag the pick as "nearest". null only when no
+ * size tiers exist at all.
+ */
+export function resolveSizeTier(
+  sizes: readonly SizeTierRow[],
+  currentSizeId: string,
+  sqft: number,
+): { size: SizeTierRow; inBand: boolean } | null {
+  const dist = (s: SizeTierRow) => (sqft < s.sqftFrom ? s.sqftFrom - sqft : sqft > s.sqftTo ? sqft - s.sqftTo : 0);
+  const ranked = [...sizes].sort(
+    (a, b) => dist(a) - dist(b) || Number(b.id === currentSizeId) - Number(a.id === currentSizeId) || a.sortOrder - b.sortOrder,
+  );
+  return ranked.length ? { size: ranked[0], inBand: dist(ranked[0]) === 0 } : null;
+}
+
+/** All size tiers (for the stacked-locker tier check). */
+export async function loadSizeTiers(): Promise<SizeTierRow[]> {
+  return prisma.unitSize.findMany({ select: { id: true, code: true, name: true, sqftFrom: true, sqftTo: true, sortOrder: true } });
 }
 
 /**
- * D4: a stacked locker pair is lockers-only, so a resize may not push its
- * footprint out of the LOCKER band (the pair would re-tier on publish).
+ * D4: a stacked locker pair is lockers-only, so a resize may not move its
+ * footprint into another tier (the pair would re-tier on publish). Uses the
+ * same nearest-tier rule as publish (resolveSizeTier).
  */
-export function assertStackedLockerBand(unitCode: string, geom: Rect, band: { from: number; to: number } | null): void {
-  if (!band) return;
+export function assertStackedLockerTier(unitCode: string, currentSizeId: string, geom: Rect, sizes: readonly SizeTierRow[]): void {
   const sqft = sqftForRect(geom);
-  if (sqft < band.from || sqft > band.to) {
+  const tier = resolveSizeTier(sizes, currentSizeId, sqft);
+  if (tier && tier.size.code.toUpperCase() !== 'LOCKER') {
     throw new AppError(
       400,
       'VALIDATION',
-      `Stacked locker ${unitCode} ${formatFt(geom.width)}×${formatFt(geom.height)} ft would be ${sqft} sqft — stacked lockers must stay within the LOCKER band (${band.from}–${band.to} sqft). Unstack first to resize beyond it.`,
+      `Stacked locker ${unitCode} ${formatFt(geom.width)}×${formatFt(geom.height)} ft would be ${sqft} sqft — that sizes it as ${tier.size.name}, and stacked pairs must stay lockers. Unstack first to resize beyond the locker size.`,
     );
   }
 }

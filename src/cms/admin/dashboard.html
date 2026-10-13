@@ -283,6 +283,14 @@ main{min-width:0;display:flex;flex-direction:column;min-height:100vh}
 .modal-alert.olive{background:var(--sage);color:var(--olive2)}
 .modal-hint{font-size:10px;color:var(--muted);margin-bottom:10px}
 #confirmModal{z-index:300}
+.fp-publish-win{width:800px}
+.fp-publish-scroll{max-height:52vh;overflow:auto;margin:6px 0 4px;border:1px solid var(--line);border-radius:10px}
+.fp-publish-win .data-tbl td{padding:7px 8px}
+.fp-publish-win .data-tbl th{position:sticky;top:0;background:var(--paper)}
+.fp-pub-arrow{color:var(--muted);padding:0 3px}
+.fp-pub-up{color:var(--terra,#C1664C);font-weight:700}
+.fp-pub-rate{width:86px}
+.fp-pub-note{font-size:11px;color:var(--muted);margin:4px 0}
 .confirm-win{width:440px;max-width:100%}
 .confirm-msg{font-size:13px;color:var(--ink);margin:2px 0 0}
 /* Toolbar buttons (used across floor-plan editor, pagers, CRUD headers).
@@ -1917,6 +1925,16 @@ body.lead-drawer-open{overflow-x:hidden}
     <div class="modal-hdr"><div class="modal-title" id="confirmTitle">Are you sure?</div><button class="modal-x" id="confirmClose" type="button" aria-label="Cancel">✕</button></div>
     <p class="confirm-msg" id="confirmMessage"></p>
     <div class="modal-foot"><button class="act-btn" type="button" id="confirmCancel">Cancel</button><button class="act-btn primary" type="button" id="confirmOk">Confirm</button></div>
+  </div>
+</div>
+
+<!-- Floor-plan publish review (populated by fpPublishPlan in floorplanView.js) -->
+<div class="modal-overlay" id="fpPublishModal" hidden>
+  <div class="modal-win fp-publish-win" role="dialog" aria-modal="true" aria-labelledby="fpPublishTitle">
+    <div class="modal-hdr"><div class="modal-title" id="fpPublishTitle">Publish this floor plan?</div><button class="modal-x" id="fpPublishClose" type="button" aria-label="Cancel">✕</button></div>
+    <div class="modal-alert" id="fpPublishAlert" hidden></div>
+    <div id="fpPublishBody"></div>
+    <div class="modal-foot"><button class="act-btn" type="button" id="fpPublishCancel">Cancel</button><button class="act-btn primary" type="button" id="fpPublishGo">Publish</button></div>
   </div>
 </div>
 

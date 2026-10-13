@@ -25,7 +25,7 @@ export const openapiSpec = {
   openapi: '3.0.3',
   info: {
     title: 'StoreLah Booking API',
-    version: '1.9.6',
+    version: '1.10.0',
     description: [
       'Customer-facing booking API for the StoreLah self-storage business.',
       '',
@@ -321,6 +321,21 @@ export const openapiSpec = {
         'calibration `{ ftPerPx, offsetX, offsetY, rotation, opacity, visible, locked }`) and ' +
         '`GET /cms/floor-plans/{floorId}/underlay/image` → `{ mime, dataBase64 }`. The CMS plan read ' +
         'gains `underlay` metadata; the public read never includes it.',
+      'v1.10.0 — floor-plan unit sync (docs/FLOOR_PLAN_UNIT_SYNC_PLAN.md), CMS only (Bearer JWT). ' +
+        'BEHAVIOUR CHANGE: placement writes (`PUT /cms/floor-plans/{floorId}/units/{unitId}`, `POST ' +
+        '.../batch`) no longer reject resizes beyond 2% of `Unit.sqft` — the placement is flagged ' +
+        '`areaDirty` (new field on plan reads) and `POST /cms/floor-plans/{floorId}/publish` applies it: ' +
+        '`Unit.sqft = round(w×h)`, size tier re-derived from UnitSize bands, rate per policy, history in ' +
+        '`UnitAreaChange` / `RateChange`, DRAFT units promoted to AVAILABLE. Contracted units (OCCUPIED, ' +
+        'OVERDUE, RESERVED, or a PENDING_PAYMENT booking) keep the 2% rule → 409 `UNIT_CONTRACTED`. ' +
+        'Publish (and `POST /cms/drafts/{draftId}/publish`) take an optional body `{ token?, choices?: ' +
+        '[{ unitId, ratePolicy?: KEEP_PSF|KEEP_RATE|SET, rate?, sizeId? }] }`; 409 `PUBLISH_BLOCKED` ' +
+        '(`details.blockers`) / `STALE_PREVIEW`; `meta.sizeSync` = `{ changed, promoted }`. New: `GET ' +
+        '/cms/floor-plans/{floorId}/publish-preview` → `{ planStatus, token, changes, unchanged, newUnits, ' +
+        'blockers, sizes }`; `GET .../size-mismatches`; `POST .../reconcile` `{ items: [{ unitId, action: ' +
+        'MARK_FOR_SYNC|FIT_DRAWING }] }`. `PUT /cms/units/{code}` with a changed `sqft` on a placed unit → ' +
+        '409 `SIZE_OWNED_BY_PLAN`; `GET /cms/units/{code}` gains `placement`, `sizeOwnedByPlan`, ' +
+        '`areaHistory`. `UnitStatus` gains `DRAFT` (never on public reads). Public shapes unchanged.',
     ].join('\n'),
   },
   servers: [
@@ -4041,9 +4056,10 @@ export const openapiSpec = {
           'MAINTENANCE',
           'INACTIVE',
           'BLOCKED',
+          'DRAFT',
         ],
         description:
-          'Full unit status (P1 adds BLOCKED: held out of inventory — counts toward totals, never leased/browseable). Public listing/map surfaces only ever expose AVAILABLE or RESERVED rows.',
+          'Full unit status (1.10.0 adds DRAFT: drawn on a CMS floor plan, not yet published — never browseable; P1 adds BLOCKED: held out of inventory — counts toward totals, never leased/browseable). Public listing/map surfaces only ever expose AVAILABLE or RESERVED rows.',
       },
       PublicBranch: {
         type: 'object',

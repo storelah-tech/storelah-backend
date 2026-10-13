@@ -300,8 +300,20 @@ export async function createUnit(input: CreateUnitInput) {
 export async function updateUnit(code: string, input: UpdateUnitInput) {
   const unit = await prisma.unit.findUnique({
     where: { unitCode: code, deletedAt: null },
+    include: { placement: { select: { id: true } } },
   });
   if (!unit) throw new AppError(404, 'NOT_FOUND', `Unit ${code} not found`);
+  // Floor-plan unit sync (docs/FLOOR_PLAN_UNIT_SYNC_PLAN.md D1): a PLACED
+  // unit's size is set by its drawing (synced on publish) — resize it on the
+  // floor plan instead. Re-sending the current sqft (the edit form always
+  // does) stays a no-op.
+  if (unit.placement && input.sqft !== undefined && input.sqft !== unit.sqft) {
+    throw new AppError(
+      409,
+      'SIZE_OWNED_BY_PLAN',
+      `Unit ${code} is placed on a floor plan — its size (${unit.sqft} sqft) is set by the drawing. Resize it in the Floor Plan Designer and publish.`,
+    );
+  }
 
   // name is optional display label only: undefined = not provided (leave unchanged),
   // null or empty string = explicit clear (display name falls back to unitCode).
@@ -530,6 +542,8 @@ export async function getUnitDetail(code: string) {
       floor: true,
       tenant: true,
       rateHistory: { orderBy: { date: 'desc' } },
+      placement: { select: { width: true, height: true, areaDirty: true, floorPlan: { select: { status: true } } } },
+      areaHistory: { orderBy: { createdAt: 'desc' }, take: 20 },
     },
   });
   if (!unit) throw new AppError(404, 'NOT_FOUND', `Unit ${code} not found`);
@@ -608,6 +622,26 @@ export async function getUnitDetail(code: string) {
       changePct: toNum(r.changePct, 1),
       reason: r.reason,
       by: r.appliedBy,
+    })),
+    // Floor-plan unit sync: a placed unit's size is owned by its drawing
+    // (sizeOwnedByPlan → the edit form makes sqft read-only).
+    placement: unit.placement
+      ? {
+          widthFt: unit.placement.width,
+          heightFt: unit.placement.height,
+          areaDirty: unit.placement.areaDirty,
+          floorPlanStatus: unit.placement.floorPlan.status,
+        }
+      : null,
+    sizeOwnedByPlan: !!unit.placement,
+    areaHistory: unit.areaHistory.map((a) => ({
+      date: a.createdAt,
+      previous: a.previous,
+      current: a.current,
+      widthFt: a.widthFt,
+      heightFt: a.heightFt,
+      source: a.source,
+      by: a.appliedBy,
     })),
     // P1 item 3: drawer sections (branch-scoped where the P0 model has no
     // unit FK — see the query above).

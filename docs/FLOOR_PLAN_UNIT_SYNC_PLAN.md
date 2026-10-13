@@ -1,6 +1,6 @@
 # Floor Plan ⇄ Unit Sync — Feature Plan
 
-Status: **Phase 1 implemented** (2026-10-13, branch `feature/5-floorplan-unit-sync`, uncommitted). Owner accepted all recommendations: Q1 integer sqft, Q2 keep $/sqft, Q3 `MARKET_PSF[tier] × sqft`, Q4 no pillar deduction, Q5 sync on publish, Q6 RESERVED/pending-payment locked, no override.
+Status: **Phase 1 pushed (`b68cec4`), Phase 2 implemented** (2026-10-13/14, branch `feature/5-floorplan-unit-sync`; Phase 2 uncommitted). Owner accepted all recommendations: Q1 integer sqft, Q2 keep $/sqft, Q3 `MARKET_PSF[tier] × sqft`, Q4 no pillar deduction, Q5 sync on publish, Q6 RESERVED/pending-payment locked, no override.
 Lane: backend (CMS designer + API). Optional cross-lane follow-up: booking (§9).
 Builds on: `FLOOR_PLAN_MODEL.md`, `FLOOR_PLAN_PRECISION_PLAN.md` (decimal-feet geometry, Phases 1–5 merged on `main` at `9b46aa9`/`960edfd`).
 
@@ -63,12 +63,17 @@ applies size changes to `Unit` rows in the same transaction as `DRAFT → ACTIVE
 - Open question Q1 if the owner wants decimal sqft (would need `Int → Decimal(10,2)` widening and
   every consumer re-checked — out of scope here).
 
-### D4 — Size tier follows area
-On sync, `sizeId` is re-derived from `UnitSize.sqftFrom ≤ sqft ≤ sqftTo` (by `sortOrder`).
-- Area falls in **no band** → publish blocked with `SIZE_OUT_OF_BAND` listing the unit, unless the
-  operator picks a tier manually in the publish review (stored as an explicit override).
-- **Lockers:** a stacked pair (stackTier 0/1) syncs both units to the same sqft; resizing a
-  stacked pair into a non-LOCKER band is rejected (stacking is lockers-only).
+### D4 — Size tier follows area (revised in Phase 2)
+On sync, `sizeId` becomes the tier whose `sqftFrom..sqftTo` band is **nearest** to the new sqft
+(distance 0 = inside; ties keep the current tier, then `sortOrder`) — `resolveSizeTier` in
+`src/core/unitSizing.ts`. The publish review pre-selects it, flags it "nearest tier" when no band
+covers the area, and lets the operator override it.
+- **Why revised:** `prisma/seed.ts` seeds every tier as a single point (`sqftFrom = sqftTo`, e.g.
+  Medium 60–60) and no CMS screen edits bands, so the original "no band → block" rule would have
+  blocked every resize. `SIZE_OUT_OF_BAND` now only fires when no tiers exist at all.
+- Follow-up worth doing: give tiers real ranges (or a CMS editor for them).
+- **Lockers:** a stacked pair (stackTier 0/1) syncs both units to the same sqft; a resize whose
+  nearest tier is not LOCKER is rejected on save (stacking is lockers-only).
 
 ### D5 — Rate policy on resize (operator choice at publish, default per unit status)
 | Option | Effect | Default for |
@@ -267,7 +272,7 @@ skill on the resize readout, create popover and publish review before shipping.
 | --- | --- | --- |
 | 0 | Owner answers Q1–Q6 | decisions logged |
 | 1 ✅ | Migration `20261014000000_floor_plan_unit_sync` (DRAFT enum, `areaDirty`, `UnitAreaChange`); `src/core/unitSizing.ts` (`checkPlacementArea`, contracted guard, locker band) wired into `setUnitPlacement` + `applyFloorPlanBatch`; `areaDirty` in placement reads; minimal editor: sqft lock default OFF, contracted units force-locked, readout "unit 60 → 72 on publish" | `tests/e2e/floor-plan-unit-sync.test.ts` (16); precision tests re-pointed at contracted units. **Gap until Phase 2:** dirty sizes do not sync yet, and draft-snapshot publish does not mark dirty |
-| 2 | Publish preview + publish sync (D2/D4/D5) + reconcile endpoint; Units API 409 + detail fields | e2e sync suite green |
+| 2 ✅ | `src/core/unitSizeSync.ts` (`buildSizeSyncPlan`, `applySizeSync` inside the publish transaction, token, `listSizeMismatches`); `publishFloorPlanWithSync` + `reconcileUnitSizes` (MARK_FOR_SYNC / FIT_DRAWING); draft-version publish flags restored size changes with a contracted preflight; routes `GET …/publish-preview`, `POST …/publish` + `/drafts/:id/publish` body `{ token, choices }`, `GET …/size-mismatches`, `POST …/reconcile`; Units `PUT` 409 `SIZE_OWNED_BY_PLAN`, detail `placement` / `sizeOwnedByPlan` / `areaHistory`; OpenAPI 1.10.0; **publish review dialog** (moved up from Phase 4) + Units form sqft lock | e2e 32 in unit-sync suite; browser-verified end to end on clone. Reconcile has API only (UI in Phase 4) |
 | 3 | Unit creation API (single + batch tempIds + discard) + DRAFT exclusion audit §5.4 | public-invisibility tests |
 | 4 | Designer UX: resize readout/inspector, create tool + popover, duplicate/array/stack-new, publish review dialog, reconcile view, Units page read-only | browser verification + ui-ux review |
 | 5 | Docs (`FLOOR_PLAN_MODEL.md`, OpenAPI 1.10.0), decision log, prod rollout (authorized) | prod smoke |

@@ -20,7 +20,8 @@ import {
   toMilli,
 } from './planGeometry';
 import { serializeUnderlay } from './floorPlanUnderlay';
-import { assertStackedLockerBand, checkPlacementArea, loadContractedUnits, loadLockerBand } from './unitSizing';
+import { assertStackedLockerTier, checkPlacementArea, loadContractedUnits, loadSizeTiers } from './unitSizing';
+import { applySizeSync, listSizeMismatches, type SizeSyncChoice, type SizeSyncResult } from './unitSizeSync';
 import { Prisma } from '@prisma/client';
 
 // Floor-plan layout aggregate (see docs/FLOOR_PLAN_MODEL.md).
@@ -1037,12 +1038,36 @@ async function markDraft(planId: string): Promise<void> {
  * 'promotions.approve'; actors without rows keep the legacy ungated behavior
  * so existing auth flows never break.
  */
-export async function publishFloorPlan(floorId: string, opts?: { actorId?: string }) {
+export async function publishFloorPlan(floorId: string, opts?: PublishFloorPlanOptions) {
+  return (await publishFloorPlanWithSync(floorId, opts)).plan;
+}
+
+export interface PublishFloorPlanOptions {
+  actorId?: string;
+  /** Recorded on UnitAreaChange / RateChange rows (CMS user name). */
+  actorName?: string;
+  /** Token from GET .../publish-preview — a mismatch means the preview is stale (409). */
+  token?: string;
+  /** Per-unit rate policy / tier override chosen in the publish review. */
+  choices?: readonly SizeSyncChoice[];
+}
+
+/**
+ * Publish + floor-plan unit sync (docs/FLOOR_PLAN_UNIT_SYNC_PLAN.md D2): in ONE
+ * transaction, apply every pending drawn-size change to its Unit row (sqft,
+ * size tier, rate per policy, history), promote DRAFT units, then walk
+ * DRAFT → ACTIVE. Blockers (contracted size change, area in no tier) refuse
+ * the whole publish with 409 PUBLISH_BLOCKED and write nothing.
+ */
+export async function publishFloorPlanWithSync(
+  floorId: string,
+  opts?: PublishFloorPlanOptions,
+): Promise<{ plan: ReturnType<typeof serializePlan>; sizeSync: SizeSyncResult }> {
   const plan = await prisma.floorPlan.findUnique({ where: { floorId } });
   if (!plan) throw new AppError(404, 'NOT_FOUND', `No floor plan exists for floor ${floorId} — save a canvas first`);
   if (plan.status === 'ACTIVE') {
     const full = await prisma.floorPlan.findUniqueOrThrow({ where: { floorId }, include: planInclude });
-    return serializePlan(full);
+    return { plan: serializePlan(full), sizeSync: { changed: [], promoted: [] } };
   }
   if (plan.status !== 'DRAFT') {
     throw new AppError(400, 'INVALID_TRANSITION', `Cannot publish a floor plan from ${plan.status} — expected DRAFT`, {
@@ -1055,12 +1080,63 @@ export async function publishFloorPlan(floorId: string, opts?: { actorId?: strin
     const { requirePermission } = await import('./users');
     await requirePermission(opts.actorId, 'promotions.approve');
   }
-  const published = await prisma.floorPlan.update({
-    where: { floorId },
-    data: { status: 'ACTIVE' },
-    include: planInclude,
+  const { published, sizeSync } = await prisma.$transaction(async (tx) => {
+    const sizeSync = await applySizeSync(tx, floorId, {
+      token: opts?.token,
+      choices: opts?.choices,
+      appliedBy: opts?.actorName || 'Operator',
+      floorPlanId: plan.id,
+    });
+    const published = await tx.floorPlan.update({
+      where: { floorId },
+      data: { status: 'ACTIVE' },
+      include: planInclude,
+    });
+    return { published, sizeSync };
   });
-  return serializePlan(published);
+  return { plan: serializePlan(published), sizeSync };
+}
+
+export type ReconcileAction = 'MARK_FOR_SYNC' | 'FIT_DRAWING';
+
+/**
+ * Resolve grandfathered size mismatches (listSizeMismatches) one unit at a
+ * time — never automatic:
+ *  - MARK_FOR_SYNC: flag the placement areaDirty so the next publish sets
+ *    Unit.sqft from the drawing (refused for contracted units);
+ *  - FIT_DRAWING: resize the drawing to the unit's sqft (sqftFootprint, same
+ *    origin and orientation) through the normal placement validation.
+ * Stacked pairs are refused (unstack first). Stops at the first error.
+ */
+export async function reconcileUnitSizes(floorId: string, items: ReadonlyArray<{ unitId: string; action: ReconcileAction }>) {
+  const mismatches = new Map((await listSizeMismatches(floorId)).map((m) => [m.unitId, m]));
+  const plan = await prisma.floorPlan.findUniqueOrThrow({ where: { floorId }, select: { id: true } });
+  const done: Array<{ unitCode: string; action: ReconcileAction }> = [];
+  for (const item of items) {
+    const m = mismatches.get(item.unitId);
+    if (!m) throw new AppError(400, 'VALIDATION', `Unit ${item.unitId} has no size mismatch on this floor's plan`);
+    const row = await prisma.unitPlacement.findUniqueOrThrow({ where: { unitId: item.unitId }, include: { unit: { include: { size: true } } } });
+    const mate = await prisma.unitPlacement.findFirst({
+      where: { floorPlanId: plan.id, unitId: { not: item.unitId }, x: row.x, y: row.y, width: row.width, height: row.height },
+      select: { id: true },
+    });
+    if (mate) throw new AppError(400, 'VALIDATION', `Unit ${m.unitCode} is in a stacked pair — unstack it before reconciling its size`);
+    if (item.action === 'MARK_FOR_SYNC') {
+      if (m.contracted) {
+        throw new AppError(409, 'UNIT_CONTRACTED', `Unit ${m.unitCode} is ${m.contracted.toLowerCase()} — its size can't follow the drawing; use FIT_DRAWING instead`);
+      }
+      await prisma.unitPlacement.update({ where: { unitId: item.unitId }, data: { areaDirty: true } });
+      await markDraft(plan.id);
+    } else {
+      const u = row.unit;
+      const fp = sqftFootprint(u.sqft, u.size.code, u.size.widthFt, u.size.heightFt);
+      const landscape = row.width >= row.height;
+      const [w, h] = landscape === fp.w >= fp.h ? [fp.w, fp.h] : [fp.h, fp.w];
+      await setUnitPlacement(floorId, item.unitId, { x: row.x, y: row.y, width: w, height: h });
+    }
+    done.push({ unitCode: m.unitCode, action: item.action });
+  }
+  return { reconciled: done, mismatches: await listSizeMismatches(floorId) };
 }
 
 /**
@@ -1224,7 +1300,7 @@ export async function setUnitPlacement(floorId: string, unitId: string, input: P
   // stacking/overlap rules so stack attempts report their specific error first.
   const contracted = await loadContractedUnits([unitId]);
   const areaDirty = checkPlacementArea({ unit, geom, existing, contractedReason: contracted.get(unitId) });
-  // D4: a stacked locker pair stays inside the LOCKER band. Stacked = this write
+  // D4: a stacked locker pair stays in the LOCKER tier. Stacked = this write
   // is an upper tier, sits under an upper tier, or moves a ground tier whose
   // upper mate follows onto the new rect.
   const areaChanged = !existing || rectAreaSqft(existing) !== rectAreaSqft(geom);
@@ -1235,7 +1311,7 @@ export async function setUnitPlacement(floorId: string, unitId: string, input: P
     existing.stackTier === 0 &&
     siblings.some((s) => s.stackTier === 1 && sameFtRect(s, existing));
   if (areaChanged && selfIsLocker && (tier === 1 || sameRect.some((s) => s.stackTier === 1) || movingWithMate)) {
-    assertStackedLockerBand(unit.unitCode, geom, await loadLockerBand());
+    assertStackedLockerTier(unit.unitCode, unit.sizeId, geom, await loadSizeTiers());
   }
 
   if (!rectFitsCanvas(geom, plan)) {
@@ -1904,14 +1980,14 @@ export async function applyFloorPlanBatch(floorId: string, input: FloorPlanBatch
     }
   }
 
-  // D4: a resized locker that ends up in a stacked pair stays in the LOCKER band.
+  // D4: a resized locker that ends up in a stacked pair stays in the LOCKER tier.
   const stackedResized = [...resized].filter((id) => {
     const f = final.get(id);
     return !!f && isLockerSize(f.sizeCode) && finals.some((o) => o.unitId !== id && sameFtRect(o, f));
   });
   if (stackedResized.length) {
-    const band = await loadLockerBand();
-    for (const id of stackedResized) assertStackedLockerBand(final.get(id)!.unitCode, final.get(id)!, band);
+    const sizes = await loadSizeTiers();
+    for (const id of stackedResized) assertStackedLockerTier(final.get(id)!.unitCode, unitById.get(id)?.sizeId ?? '', final.get(id)!, sizes);
   }
 
   // ---- blocks / markers / boundaries ----

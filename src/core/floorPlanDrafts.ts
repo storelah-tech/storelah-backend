@@ -8,7 +8,9 @@ import {
   boundaryPointsOf,
   normalizeDoorEdges,
   publishFloorPlan,
+  type PublishFloorPlanOptions,
 } from './floorPlans';
+import { loadContractedUnits, sqftForRect } from './unitSizing';
 import {
   DEFAULT_WALL_THICKNESS_FT,
   MAX_WALL_THICKNESS_FT,
@@ -19,6 +21,7 @@ import {
   pointOnCanvas,
   quantizeFt,
   quantizeRect,
+  rectAreaSqft,
   rectFitsCanvas,
 } from './planGeometry';
 
@@ -525,7 +528,7 @@ export interface PublishDraftResult {
  * are SKIPPED (reported, never fatal). The draft row is marked ACTIVE as its
  * published marker. The single-plan publish flow is untouched.
  */
-export async function publishDraft(draftId: string, opts?: { actorId?: string }): Promise<PublishDraftResult> {
+export async function publishDraft(draftId: string, opts?: PublishFloorPlanOptions): Promise<PublishDraftResult> {
   const draft = await prisma.floorPlanDraft.findUnique({
     where: { id: draftId },
     include: { floor: true },
@@ -547,6 +550,16 @@ export async function publishDraft(draftId: string, opts?: { actorId?: string })
   }
   const skippedPlacements: string[] = [];
   const placementRows: Prisma.UnitPlacementCreateManyInput[] = [];
+  // Floor-plan unit sync: a restored rect whose area differs from the CURRENT
+  // live rect (or was already pending) and from Unit.sqft is flagged
+  // areaDirty, so publish syncs it; grandfathered mismatches carried over
+  // unchanged stay unflagged (docs/FLOOR_PLAN_UNIT_SYNC_PLAN.md §5.3).
+  const live = await prisma.unitPlacement.findMany({
+    where: { floorPlan: { floorId }, unitId: { in: [...byUnit.keys()] } },
+    select: { unitId: true, width: true, height: true, areaDirty: true },
+  });
+  const liveByUnit = new Map(live.map((l) => [l.unitId, l]));
+  const sizeChanges: Array<{ unitId: string; unitCode: string; from: number; to: number }> = [];
   if (byUnit.size) {
     const units = await prisma.unit.findMany({ where: { id: { in: [...byUnit.keys()] } } });
     const unitById = new Map(units.map((u) => [u.id, u]));
@@ -575,7 +588,28 @@ export async function publishDraft(draftId: string, opts?: { actorId?: string })
         height: r.height,
         stackTier: p.stackTier === 1 ? 1 : 0,
         doorEdges: (normalizeDoorEdges(p.doorEdges) ?? null) as string | null,
+        areaDirty: (() => {
+          const prev = liveByUnit.get(unitId);
+          const changed = !prev || prev.areaDirty || rectAreaSqft(prev) !== rectAreaSqft(r);
+          const dirty = changed && sqftForRect(r) !== unit.sqft;
+          if (dirty) sizeChanges.push({ unitId, unitCode: unit.unitCode, from: unit.sqft, to: sqftForRect(r) });
+          return dirty;
+        })(),
       });
+    }
+  }
+  // Preflight before the working copy is replaced: a contracted unit's size
+  // can never sync, so refuse up front instead of leaving a half-applied draft.
+  if (sizeChanges.length) {
+    const contracted = await loadContractedUnits(sizeChanges.map((c) => c.unitId));
+    const blocked = sizeChanges.filter((c) => contracted.has(c.unitId));
+    if (blocked.length) {
+      throw new AppError(
+        409,
+        'PUBLISH_BLOCKED',
+        `Publish blocked: this version resizes contracted unit(s) ${blocked.map((b) => `${b.unitCode} (${contracted.get(b.unitId)!.toLowerCase()}, ${b.from}→${b.to} sqft)`).join(', ')}`,
+        { blockers: blocked.map((b) => ({ unitId: b.unitId, unitCode: b.unitCode, code: 'UNIT_CONTRACTED' })) },
+      );
     }
   }
 
@@ -655,6 +689,6 @@ export async function publishDraft(draftId: string, opts?: { actorId?: string })
     await tx.floorPlanDraft.update({ where: { id: draftId }, data: { status: 'ACTIVE' } });
   });
 
-  const plan = await publishFloorPlan(floorId, { actorId: opts?.actorId });
+  const plan = await publishFloorPlan(floorId, opts);
   return { plan, skippedPlacements };
 }

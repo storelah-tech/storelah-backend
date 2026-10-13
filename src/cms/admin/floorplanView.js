@@ -5571,6 +5571,11 @@ async function fpSaveCanvas() {
   }
 }
 
+// Publish with floor-plan unit sync (docs/FLOOR_PLAN_UNIT_SYNC_PLAN.md D2/D5):
+// fetch the publish preview; with no unit changes it is the plain confirm,
+// otherwise a review dialog lists every resized unit (sqft, tier, rate policy)
+// plus DRAFT units to promote and blockers. Publish sends the preview token
+// (stale → re-review) and the per-unit choices.
 async function fpPublishPlan() {
   if (!state.fp.floorId || !state.fp.plan) {
     fpToast('No plan to publish — set a canvas size and save first.', false);
@@ -5580,20 +5585,169 @@ async function fpPublishPlan() {
     fpToast('Plan is already published.', true);
     return;
   }
-  // Publish/destructive only — Save Canvas stays a plain draft write.
-  const pubOk = await confirmDialog({
-    title: 'Publish this floor plan?',
-    message: 'The current draft becomes visible to the booking frontend. Further edits return it to draft until re-published.',
-    confirmLabel: 'Publish',
-  });
-  if (!pubOk) return;
+  const floorId = state.fp.floorId;
+  let preview;
   try {
-    await request(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/publish`, { method: 'POST' });
-    fpToast('Plan published — now visible to booking.', true);
-    await fpFetch();
+    preview = await get(`/floor-plans/${encodeURIComponent(floorId)}/publish-preview`);
   } catch (err) {
     fpToast('Publish plan: ' + describeError(err), false);
+    return;
   }
+  const hasUnitWork = preview.changes.length || preview.newUnits.length || preview.blockers.length;
+  if (!hasUnitWork) {
+    // Publish/destructive only — Save Canvas stays a plain draft write.
+    const pubOk = await confirmDialog({
+      title: 'Publish this floor plan?',
+      message: 'The current draft becomes visible to the booking frontend. Further edits return it to draft until re-published.',
+      confirmLabel: 'Publish',
+    });
+    if (!pubOk) return;
+    await fpSendPublish(floorId, { token: preview.token });
+    return;
+  }
+  fpOpenPublishReview(floorId, preview);
+}
+
+async function fpSendPublish(floorId, body) {
+  try {
+    const res = await request(`/floor-plans/${encodeURIComponent(floorId)}/publish`, { method: 'POST', body: JSON.stringify(body) });
+    const sync = (res && res.meta && res.meta.sizeSync) || { changed: [], promoted: [] };
+    const bits = [];
+    if (sync.changed.length) bits.push(`${sync.changed.length} unit size${sync.changed.length === 1 ? '' : 's'} updated`);
+    if (sync.promoted.length) bits.push(`${sync.promoted.length} new unit${sync.promoted.length === 1 ? '' : 's'} available`);
+    fpToast(`Plan published — now visible to booking${bits.length ? ' · ' + bits.join(' · ') : ''}.`, true);
+    await fpFetch();
+    return true;
+  } catch (err) {
+    fpToast('Publish plan: ' + describeError(err), false);
+    return err;
+  }
+}
+
+const FP_RATE_POLICY_LABELS = { KEEP_PSF: 'Keep $/sqft', KEEP_RATE: 'Keep rate', SET: 'Set rate' };
+const fpMoney = (n) => 'S$' + (Math.round(Number(n) * 100) / 100).toLocaleString('en-SG', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+function fpOpenPublishReview(floorId, preview) {
+  const modal = $('#fpPublishModal');
+  const body = $('#fpPublishBody');
+  const alertEl = $('#fpPublishAlert');
+  const go = $('#fpPublishGo');
+  if (!modal || !body || !go) return;
+  const blockedBy = new Map(preview.blockers.map((b) => [b.unitId, b]));
+  const contractedBlock = preview.blockers.filter((b) => b.code === 'UNIT_CONTRACTED');
+  const sizeOpts = (sel) =>
+    '<option value="">Pick tier…</option>' +
+    (preview.sizes || []).map((s) => `<option value="${escapeHtml(s.id)}"${s.id === sel ? ' selected' : ''}>${escapeHtml(s.name)} (${s.sqftFrom}–${s.sqftTo})</option>`).join('');
+  const rows = preview.changes.map((c) => {
+    const blk = blockedBy.get(c.unitId);
+    // Tier: pre-selected from the server (nearest band when none covers the
+    // new sqft — flagged so the operator confirms it); always overridable.
+    const tierCell =
+      `<select class="tbl-select" data-pub-tier="${escapeHtml(c.unitId)}" aria-label="Size tier for ${escapeHtml(c.unitCode)}">${sizeOpts(c.newSize ? c.newSize.id : '')}</select>` +
+      `<div class="fp-pub-note">was ${escapeHtml(c.oldSize.name)}${c.newSize && !c.tierInBand ? ' · nearest tier — no tier range covers ' + c.newSqft + ' sqft' : ''}</div>`;
+    const policy = `<select class="tbl-select" data-pub-policy="${escapeHtml(c.unitId)}" aria-label="Rate for ${escapeHtml(c.unitCode)}">` +
+      Object.entries(FP_RATE_POLICY_LABELS).map(([k, v]) => `<option value="${k}"${k === c.defaultPolicy ? ' selected' : ''}>${v}</option>`).join('') +
+      '</select>';
+    return `<tr data-pub-row="${escapeHtml(c.unitId)}"${blk && blk.code === 'UNIT_CONTRACTED' ? ' style="background:var(--red-light)"' : ''}>` +
+      `<td><b>${escapeHtml(c.unitCode)}</b><div class="fp-pub-note">${formatFt(c.widthFt)}×${formatFt(c.heightFt)} ft</div></td>` +
+      `<td>${c.oldSqft}<span class="fp-pub-arrow">→</span><span class="fp-pub-up">${c.newSqft}</span></td>` +
+      `<td>${tierCell}</td>` +
+      `<td>${policy}</td>` +
+      `<td><input type="number" class="tbl-search fp-pub-rate" min="0" step="0.01" data-pub-rate="${escapeHtml(c.unitId)}" aria-label="New monthly rate for ${escapeHtml(c.unitCode)}" disabled></td>` +
+      `<td class="fp-pub-note" data-pub-psf="${escapeHtml(c.unitId)}"></td>` +
+      '</tr>';
+  });
+  body.innerHTML =
+    (preview.changes.length
+      ? `<p class="fp-pub-note">Publishing updates ${preview.changes.length} unit${preview.changes.length === 1 ? '' : 's'} to match the drawing (size, tier and monthly rate). Booking sees the new values immediately.</p>` +
+        '<div class="fp-publish-scroll"><table class="data-tbl"><thead><tr><th>Unit</th><th>Sqft</th><th>Tier</th><th>Rate rule</th><th>New rate</th><th>$/sqft</th></tr></thead><tbody>' +
+        rows.join('') +
+        '</tbody></table></div>'
+      : '') +
+    (preview.newUnits.length
+      ? `<p class="fp-pub-note">${preview.newUnits.length} new unit${preview.newUnits.length === 1 ? '' : 's'} become${preview.newUnits.length === 1 ? 's' : ''} available: ${preview.newUnits.map((n) => `<b>${escapeHtml(n.unitCode)}</b> (${n.sqft} sqft, ${fpMoney(n.rate)})`).join(', ')}.</p>`
+      : '') +
+    '<p class="fp-pub-note">The plan also becomes visible to the booking frontend. Further edits return it to draft until re-published.</p>';
+
+  const changeBy = new Map(preview.changes.map((c) => [c.unitId, c]));
+  const refreshRow = (unitId) => {
+    const c = changeBy.get(unitId);
+    const pol = body.querySelector(`[data-pub-policy="${CSS.escape(unitId)}"]`).value;
+    const rateIn = body.querySelector(`[data-pub-rate="${CSS.escape(unitId)}"]`);
+    rateIn.disabled = pol !== 'SET';
+    if (pol !== 'SET') rateIn.value = (pol === 'KEEP_RATE' ? c.ratePreview.KEEP_RATE : c.ratePreview.KEEP_PSF).toFixed(2);
+    const rate = Number(rateIn.value);
+    body.querySelector(`[data-pub-psf="${CSS.escape(unitId)}"]`).textContent =
+      Number.isFinite(rate) && c.newSqft > 0 ? `${fpMoney(rate / c.newSqft)} (was ${fpMoney(c.oldSqft ? c.oldRate / c.oldSqft : 0)})` : '—';
+  };
+  const validate = () => {
+    const missingTier = [...body.querySelectorAll('[data-pub-tier]')].some((s) => !s.value);
+    const badRate = [...body.querySelectorAll('[data-pub-rate]')].some((i) => !i.disabled && !(Number(i.value) >= 0 && i.value !== ''));
+    const msgs = contractedBlock.map((b) => b.message);
+    if (missingTier) msgs.push('Pick a size tier for every resized unit.');
+    alertEl.hidden = !msgs.length;
+    alertEl.textContent = msgs.join(' ');
+    go.disabled = !!contractedBlock.length || missingTier || badRate;
+  };
+  for (const c of preview.changes) refreshRow(c.unitId);
+  body.oninput = body.onchange = (e) => {
+    const id = e.target && (e.target.dataset.pubPolicy || e.target.dataset.pubRate);
+    if (id && e.target.dataset.pubPolicy) refreshRow(id);
+    else if (id) {
+      const c = changeBy.get(id);
+      const rate = Number(e.target.value);
+      body.querySelector(`[data-pub-psf="${CSS.escape(id)}"]`).textContent = Number.isFinite(rate) && c.newSqft > 0 ? fpMoney(rate / c.newSqft) : '—';
+    }
+    validate();
+  };
+  validate();
+
+  const close = () => {
+    modal.hidden = true;
+    document.removeEventListener('keydown', onKey, true);
+  };
+  const onKey = (e) => {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      close();
+    }
+  };
+  document.addEventListener('keydown', onKey, true);
+  $('#fpPublishClose').onclick = close;
+  $('#fpPublishCancel').onclick = close;
+  modal.onclick = (e) => {
+    if (e.target === modal) close();
+  };
+  go.onclick = async () => {
+    const choices = preview.changes.map((c) => {
+      const pol = body.querySelector(`[data-pub-policy="${CSS.escape(c.unitId)}"]`).value;
+      const tierSel = body.querySelector(`[data-pub-tier="${CSS.escape(c.unitId)}"]`);
+      const ch = { unitId: c.unitId, ratePolicy: pol };
+      if (pol === 'SET') ch.rate = Number(body.querySelector(`[data-pub-rate="${CSS.escape(c.unitId)}"]`).value);
+      if (tierSel && tierSel.value && (!c.newSize || tierSel.value !== c.newSize.id)) ch.sizeId = tierSel.value;
+      return ch;
+    });
+    go.disabled = true;
+    const result = await fpSendPublish(floorId, { token: preview.token, choices });
+    if (result === true) {
+      close();
+      return;
+    }
+    if (result && result.code === 'STALE_PREVIEW') {
+      close();
+      fpToast('The plan changed since this review — reopening it with the latest changes.', false);
+      await fpPublishPlan();
+      return;
+    }
+    alertEl.hidden = false;
+    alertEl.textContent = describeError(result);
+    go.disabled = false;
+  };
+  modal.hidden = false;
+  try {
+    go.focus({ preventScroll: true });
+  } catch (e) { /* noop */ }
 }
 
 async function fpDeletePlan() {

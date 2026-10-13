@@ -8,9 +8,13 @@ editor; the CMS editor UI and CRUD routes land in later dispatches.
 
 All canvas geometry (plan `width`/`height`, placement/block `x`/`y`,
 `width`/`height`) is in **feet**: canvas W/H are the building's real dimensions
-in feet, and every placement/block rect is an integer foot rect in the same
-space. Columns stay `Int` (1 grid unit maps 1:1 to 1 ft — no fractional feet).
-The editor snaps to the grid and the renderer scales ft → px at whatever zoom
+in feet, and every placement/block rect is a **decimal-foot** rect in the same
+space. Since 2026-10-13 (migration `20261013000000_floor_plan_decimal_feet`)
+columns are `Float`; every write is quantized to **0.001 ft** and all
+comparisons (overlap, canvas fit, same-rect stacking, touching edges) run in
+integer milli-feet via `src/core/planGeometry.ts`, so `1.1 + 2.2` meets `3.3`
+exactly. Integer-foot rows are a valid subset. Rect sides must be >= 0.1 ft.
+See `docs/FLOOR_PLAN_PRECISION_PLAN.md`. The editor snaps to the grid and the renderer scales ft → px at whatever zoom
 it wants (editor: 24 px/ft at zoom 1), so a layout is both blueprint-accurate
 and resolution-independent.
 
@@ -119,12 +123,14 @@ sizes — no re-seed, existing rows untouched):
 | MEDIUM | 60   | 6 × 10         | 0.6          |
 | LARGE  | 120  | 10 × 12        | ≈0.833       |
 
-Resolution order (`sqftFootprint()` in `src/core/floorPlans.ts`, mirrored by
-`sizeFootprint()` in the editor): explicit `widthFt`/`heightFt` → per-size
-constants → documented fallback **`w = round(sqrt(sqft·aspect))`,
-`h = ceil(sqft/w)`** with the per-size aspects above (default aspect 0.75).
-Areas match sqft exactly for the catalogue sizes, so the 15% tolerance below
-never bites them. The palette chip shows `sqft · W×H ft`.
+Resolution order (`sqftFootprint()` in `src/core/floorPlans.ts` and
+`sizeFootprint()` in the editor both call **`fitSqftFootprint()`** in
+`src/core/planGeometry.ts` — one shared function since precision Phase 2):
+explicit `widthFt`/`heightFt` (or the editor's per-size constants) win when
+their area is within `AREA_TOLERANCE` of the unit's sqft; otherwise the rect
+keeps the dims' (or per-size, default 0.75) aspect scaled to the exact sqft:
+**`w = sqrt(sqft·aspect)` snapped to 0.1 ft, `h = sqft / w` at 0.001 ft**.
+The palette chip shows `sqft · W×H ft`.
 
 **Dead XLBIZ key — dropped.** The old editor hardcoded an `XLBIZ: 6×5`
 footprint, but no such `UnitSize` exists in the DB or seed (catalogue is
@@ -158,12 +164,15 @@ Blocks stay below units (z-index 1 vs 2) and the read-only preview renders no
 handles (`pointer-events:none`).
 
 **Server area-vs-sqft validation (P3) — 400.** `setUnitPlacement` rejects
-writes whose drawn area deviates more than **±15%** (`AREA_TOLERANCE`) from
-the unit's sqft, with a message naming the expected footprint
-(`400 VALIDATION`). Rejection (not warn-and-save) was chosen so the canvas can
-never silently drift from the booking truth. Grandfathered rows (e.g. seeded
-uniform 2×3 geometry) keep reading fine — the check fires on write only, and
-the editor guides the operator back to true size. Fit-in-canvas,
+NEW or RESIZED placements whose drawn area deviates more than **±2%**
+(`AREA_TOLERANCE` in `src/core/planGeometry.ts`; owner decision 2026-10-13 —
+was ±15% under the integer-foot grid) from the unit's sqft, with a message
+naming the expected footprint (`400 VALIDATION`). Rejection (not
+warn-and-save) was chosen so the canvas can never silently drift from the
+booking truth. **Grandfathering:** a write that keeps an existing placement's
+stored area (pure move, 90° rotation) skips the check, so plans drawn under
+the old band stay editable; rows keep reading fine, and the editor's exact
+lock-to-sqft resize and numeric inspector guide operators to true size. Fit-in-canvas,
 floor-membership, and not-deleted checks are unchanged; place/move never
 writes `Unit` rows.
 
@@ -270,6 +279,23 @@ after `fpSaveDoors` succeeds, and markers round-trip through the existing
 | Delete a `Floor`          | Cascades its plan (and so its placements/blocks); a floor with units is already undeletable (`Unit.floorId` has no cascade) |
 | Soft-delete a `Unit`      | Placement row persists; visible reads filter it out                       |
 | Hard-delete a `Unit` (future) | Blocked (`Restrict`) until its placement is removed (or the decision is revisited) |
+
+## Line kinds (precision Phase 3)
+
+`FloorPlanBoundary.kind` stays a free string (≤ 24 chars, additive), but the
+editor authors four kinds (`LINE_KINDS` in `src/core/planGeometry.ts`):
+
+| Kind | Marks area (UFA/NLA)? | Rendering | Public read |
+| --- | --- | --- | --- |
+| `BOUNDARY` (+ legacy `PENCIL`, unknown kinds) | yes — marked-area rule below | solid, loop shaded | yes |
+| `WALL` | no | band of `thickness` ft (nullable column, default 0.5, 0.05–10) | yes |
+| `PARTITION` | no | thin dashed | yes |
+| `GUIDE` | no | dotted construction line | **no** (CMS-only) |
+
+`thickness` is stored only for `WALL` (forced `null` for other kinds; changing
+a wall to another kind clears it). Drafts snapshot it. Only area-marking kinds
+reach `computeBoundaryMetrics`, the editor's local mirror, and auto-place's
+usable area.
 
 ## Operator-entered GFA + line-area UFA/NLA (marked facility area)
 
@@ -412,7 +438,7 @@ reuses them.
   explicit arrays replace the fallback wholesale (no per-element merge).
   Explicit geometry is validated for unit membership (exists, same floor, not
   soft-deleted, not INACTIVE) + shape + canvas-fit; the overlap guard and the
-  ±15% area-vs-sqft rule are live-canvas-only (the interactive editor enforces
+  ±2% area-vs-sqft rule are live-canvas-only (the interactive editor enforces
   them there). Never touches the live plan. Version races retry once on the
   `@@unique([floorId, version])` guard.
 - **List** (`listDrafts`): newest version first, summaries with element counts

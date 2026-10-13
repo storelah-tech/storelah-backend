@@ -1,13 +1,35 @@
 import { prisma } from '../lib/prisma';
 import { AppError } from '../lib/http';
+import {
+  AREA_TOLERANCE,
+  MIN_RECT_SIDE_FT,
+  DEFAULT_WALL_THICKNESS_FT,
+  MAX_WALL_THICKNESS_FT,
+  MIN_WALL_THICKNESS_FT,
+  areaDeviation,
+  fitSqftFootprint,
+  isGuideLine,
+  lineFeedsArea,
+  formatFt,
+  isPlanNumber,
+  pointOnCanvas,
+  quantizeFt,
+  rectAreaSqft,
+  rectFitsCanvas,
+  rectsOverlapExact,
+  sameRect as sameFtRect,
+  toMilli,
+} from './planGeometry';
+import { serializeUnderlay } from './floorPlanUnderlay';
 import { Prisma } from '@prisma/client';
 
 // Floor-plan layout aggregate (see docs/FLOOR_PLAN_MODEL.md).
 //
 // BLUEPRINT SCALE: 1 grid unit = 1 FOOT. Plan width/height are the building's
-// real dimensions in feet; placement/block x/y/width/height are integer foot
-// rects in the same space. Columns stay `Int` (1:1 grid-unit→ft); renderers
-// scale ft → px at whatever zoom they want.
+// real dimensions in feet; placement/block x/y/width/height are decimal-foot
+// rects in the same space, quantized to 0.001 ft on write; comparisons run in
+// integer milli-feet (./planGeometry.ts) so touching edges stay exact.
+// Renderers scale ft → px at whatever zoom they want.
 //
 // Single plan per floor (FloorPlan.floorId is @unique). The upsert key for the
 // operator editor save is therefore the floorId itself.
@@ -34,16 +56,17 @@ import { Prisma } from '@prisma/client';
 export const CANVAS_DEFAULTS = { width: 70, height: 80 } as const;
 const MAX_CANVAS = 500; // feet per axis, sanity cap
 
-// P3: a placement's drawn area (w×h, square feet) must be within ±15% of the
-// unit's sqft. Rejected with 400 VALIDATION; the editor's lock-to-sqft resize
-// keeps operators inside the band, and the ops override warns that breaching
-// it will be rejected here. Grandfathered rows (e.g. seeded uniform 2×3
-// geometry) keep READING fine — this only fires on write.
-export const AREA_TOLERANCE = 0.15;
+// P3: a placement's drawn area (w×h, square feet) must be within ±2%
+// (AREA_TOLERANCE, src/core/planGeometry.ts — owner decision 2026-10-13, was
+// 15% under the integer-foot grid) of the unit's sqft. Enforced only when a
+// placement is NEW or its AREA CHANGES (resize): moves and 90° rotations of an
+// existing placement keep its stored area and are grandfathered, so plans
+// drawn under the old 15% band stay editable. Rejected with 400 VALIDATION.
+export { AREA_TOLERANCE };
 
 // Per-size width/height aspect (w/h) used ONLY when a UnitSize row has no
 // widthFt/heightFt dims. Chosen so the formula reproduces the catalogue
-// footprints exactly: LOCKER 3/4, SMALL 5/6, MEDIUM 6/10, LARGE 10/12.
+// footprints' proportions: LOCKER 3/4, SMALL 5/6, MEDIUM 6/10, LARGE 10/12.
 const SIZE_ASPECT: Record<string, number> = {
   LOCKER: 3 / 4,
   SMALL: 5 / 6,
@@ -53,10 +76,11 @@ const SIZE_ASPECT: Record<string, number> = {
 const DEFAULT_ASPECT = 3 / 4;
 
 /**
- * Integer foot rect for a unit of `sqft` square feet. Prefers explicit
- * UnitSize.widthFt/heightFt dims; otherwise derives from the per-size aspect:
- * w = round(sqrt(sqft·aspect)), h = ceil(sqft/w) (so w·h ≥ sqft and the rect
- * stays integral). Unknown sizes use DEFAULT_ASPECT.
+ * Decimal-foot rect for a unit of `sqft` square feet (fitSqftFootprint in
+ * src/core/planGeometry.ts — the CMS editor runs the same function). Explicit
+ * UnitSize.widthFt/heightFt dims win when their area is within tolerance of
+ * the unit's sqft; otherwise the rect keeps the dims' (or the per-size)
+ * aspect, scaled to the exact sqft (w snapped to 0.1 ft, h = sqft / w).
  */
 export function sqftFootprint(
   sqft: number,
@@ -64,28 +88,17 @@ export function sqftFootprint(
   widthFt?: number | null,
   heightFt?: number | null,
 ): { w: number; h: number } {
-  if (
-    widthFt != null &&
-    heightFt != null &&
-    Number.isInteger(widthFt) &&
-    Number.isInteger(heightFt) &&
-    widthFt > 0 &&
-    heightFt > 0
-  ) {
-    return { w: widthFt, h: heightFt };
-  }
-  const aspect = (sizeCode && SIZE_ASPECT[sizeCode.toUpperCase()]) || DEFAULT_ASPECT;
-  const w = Math.max(1, Math.round(Math.sqrt(Math.max(1, sqft) * aspect)));
-  const h = Math.max(1, Math.ceil(Math.max(1, sqft) / w));
-  return { w, h };
+  const fallbackAspect = (sizeCode && SIZE_ASPECT[sizeCode.toUpperCase()]) || DEFAULT_ASPECT;
+  return fitSqftFootprint(sqft, { widthFt, heightFt, fallbackAspect });
 }
 
-/** True when two integer foot rects share any interior area (touching edges are fine). */
+/** True when two decimal-foot rects share any interior area (touching edges are
+ * fine). Integer-exact in milli-feet — see src/core/planGeometry.ts. */
 export function rectsOverlap(
   a: { x: number; y: number; width: number; height: number },
   b: { x: number; y: number; width: number; height: number },
 ): boolean {
-  return a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
+  return rectsOverlapExact(a, b);
 }
 
 // Plan payload used by every read; placements exclude soft-deleted units AND
@@ -169,13 +182,14 @@ type BoundaryRow = {
   id: string;
   label: string;
   kind: string;
-  points: unknown; // JSONB [[x,y],...] polyline vertices in grid-ft units
+  points: unknown; // JSONB [[x,y],...] polyline vertices in decimal ft
   closed: boolean;
   sortOrder: number;
+  thickness?: number | null; // WALL thickness in ft (null for other kinds)
 };
 
-// Boundary points as validated [x, y] integer pairs (grid-ft units). Rows that
-// fail validation normalise to [] so a malformed row can never break a read.
+// Boundary points as validated [x, y] finite decimal-ft pairs. Rows that fail
+// validation normalise to [] so a malformed row can never break a read.
 export function boundaryPointsOf(points: unknown): Array<[number, number]> {
   if (!Array.isArray(points)) return [];
   const out: Array<[number, number]> = [];
@@ -183,7 +197,7 @@ export function boundaryPointsOf(points: unknown): Array<[number, number]> {
     if (!Array.isArray(p) || p.length < 2) continue;
     const x = Number(p[0]);
     const y = Number(p[1]);
-    if (!Number.isInteger(x) || !Number.isInteger(y)) continue;
+    if (!isPlanNumber(x) || !isPlanNumber(y)) continue;
     out.push([x, y]);
   }
   return out;
@@ -201,6 +215,8 @@ function serializeBoundary(b: BoundaryRow) {
     // segments contribute 0 until extended/closed.
     closed: b.closed,
     sortOrder: b.sortOrder,
+    // Wall thickness in feet (kind WALL); null for every other kind. Additive.
+    thickness: b.thickness ?? null,
   };
 }
 
@@ -246,7 +262,7 @@ function serializeMarker(m: MarkerRow) {
 //     contributing lines are summed (non-overlapping marks assumed;
 //     overlapping marks may double-count).
 //   - Pencil-stroke stitching: leftover polylines (2-vertex sides, degenerate
-//     rows) that share exact integer endpoints are chained via
+//     rows) that share exact endpoints (0.001 ft) are chained via
 //     chainBoundarySegments, and each resulting >= 3-vertex nonzero ring feeds
 //     UFA/NLA as one loop — a square drawn as four separate strokes counts.
 //   - A LONE open 2-vertex segment encloses no area and contributes 0 — a line has
@@ -322,7 +338,7 @@ export function polygonArea(points: ReadonlyArray<readonly [number, number]>): n
  * fpChainBoundarySegments() in src/cms/admin/floorplanView.js — keep the two
  * in sync). The pencil tool persists one row per stroke, so a loop drawn as
  * several 2-vertex sides (e.g. four strokes forming a 3x3 square) never forms
- * a single >= 3-vertex row — chaining joins rows that share an exact integer
+ * a single >= 3-vertex row — chaining joins rows that share an exact (0.001 ft)
  * endpoint (either orientation) into one vertex list, repeating until no two
  * open chains share an endpoint. Closed chains (first == last vertex) are
  * final and never extended; zero-length polylines (all vertices identical)
@@ -334,7 +350,7 @@ export function polygonArea(points: ReadonlyArray<readonly [number, number]>): n
 export function chainBoundarySegments(
   segments: Array<ReadonlyArray<readonly [number, number]>>,
 ): Array<Array<[number, number]>> {
-  const key = (p: readonly [number, number]): string => `${p[0]},${p[1]}`;
+  const key = (p: readonly [number, number]): string => `${toMilli(p[0])},${toMilli(p[1])}`;
   const chains: Array<Array<[number, number]>> = [];
   for (const seg of segments) {
     const pts = seg.map(([x, y]) => [x, y] as [number, number]);
@@ -370,7 +386,7 @@ export function chainBoundarySegments(
 }
 
 /**
- * Exact intersection area of an integer foot rect with a polygon: clips the
+ * Exact intersection area of a decimal-foot rect with a polygon: clips the
  * polygon to the rect (Sutherland–Hodgman, 4 half-planes) then shoelaces.
  * Handles rects partially outside the loop or canvas — only the overlap counts.
  */
@@ -494,14 +510,17 @@ export function pillarRectsOf(
  * UFA is untouched). Omit it and the report is byte-identical to before.
  */
 export function computeBoundaryMetrics(input: {
-  boundaries: Array<{ points: unknown; closed: boolean }>;
+  boundaries: Array<{ points: unknown; closed: boolean; kind?: string | null }>;
   blocks: FootRect[];
   structure: unknown;
   placements: FootRect[];
   gfaSqft?: number | null;
   pillarRects?: FootRect[];
 }): BoundaryMetrics {
+  // Only area-marking lines (BOUNDARY, legacy PENCIL, unknown kinds) feed the
+  // marked-area rule — WALL / PARTITION / GUIDE lines never do (Phase 3).
   const validated = input.boundaries
+    .filter((b) => lineFeedsArea(b.kind))
     .map((b) => boundaryPointsOf(b.points))
     .filter((pts) => pts.length >= 2 && pts.some(([x, y]) => x !== pts[0][0] || y !== pts[0][1]));
   const direct = validated.filter((pts) => pts.length >= 3 && polygonArea(pts) > 0);
@@ -560,7 +579,9 @@ export function computeBoundaryMetrics(input: {
 // published): the CMS designer renders the draft pill from it, and public
 // readers ignore it (a draft-only floor reads as plan: null, never as a
 // draft payload).
-function serializePlan(p: PlanPayload) {
+// `publicView` (the booking read) drops CMS-only GUIDE construction lines.
+function serializePlan(p: PlanPayload, opts: { publicView?: boolean } = {}) {
+  const boundaries = opts.publicView ? p.boundaries.filter((b) => !isGuideLine(b.kind)) : p.boundaries;
   return {
     id: p.id,
     floorId: p.floorId,
@@ -578,7 +599,7 @@ function serializePlan(p: PlanPayload) {
     // Safety/facility point icons (grid-ft points) in authored order.
     markers: p.markers.map(serializeMarker),
     // Facility-boundary line items (grid-ft polylines) in editor sort order.
-    boundaries: p.boundaries.map(serializeBoundary),
+    boundaries: boundaries.map(serializeBoundary),
     // Operator-entered gross floor area (sqft); null when unset — the metrics
     // report then falls back to the canvas-derived rect (gfaSource 'CANVAS').
     gfaSqft: p.gfaSqft ?? null,
@@ -587,7 +608,7 @@ function serializePlan(p: PlanPayload) {
     // marked-area rule). All-zero with boundaryClosed: false when no marked
     // line contributes area — never fabricated.
     boundaryMetrics: computeBoundaryMetrics({
-      boundaries: p.boundaries,
+      boundaries: p.boundaries, // GUIDE lines are filtered by kind inside
       blocks: p.blocks,
       structure: p.structure,
       placements: p.placements,
@@ -606,23 +627,30 @@ async function assertFloor(floorId: string) {
   if (!floor) throw new AppError(404, 'NOT_FOUND', `Floor ${floorId} not found`);
 }
 
+// Canvas dims are decimal feet in [1, MAX_CANVAS], quantized to 0.001 ft.
 function checkCanvasDim(v: number, axis: 'width' | 'height'): number {
-  if (!Number.isInteger(v) || v < 1 || v > MAX_CANVAS) {
-    throw new AppError(400, 'VALIDATION', `Canvas ${axis} must be an integer between 1 and ${MAX_CANVAS}`);
+  if (!isPlanNumber(v) || quantizeFt(v) < 1 || quantizeFt(v) > MAX_CANVAS) {
+    throw new AppError(400, 'VALIDATION', `Canvas ${axis} must be a number of feet between 1 and ${MAX_CANVAS}`);
   }
-  return v;
+  return quantizeFt(v);
 }
 
-function checkGeometry(g: PlacementGeometry): void {
-  const check = (v: number, name: string, min: number) => {
-    if (!Number.isInteger(v) || v < min) {
-      throw new AppError(400, 'VALIDATION', `${name} must be an integer >= ${min}`);
+// Rect geometry is decimal feet: x/y >= 0, sides >= MIN_RECT_SIDE_FT. Returns
+// the four values quantized to 0.001 ft — callers persist the RETURNED values.
+function checkGeometry(g: { x: number; y: number; width: number; height: number }): { x: number; y: number; width: number; height: number } {
+  const check = (v: number, name: string, min: number): number => {
+    const q = isPlanNumber(v) ? quantizeFt(v) : NaN;
+    if (!Number.isFinite(q) || q < min) {
+      throw new AppError(400, 'VALIDATION', `${name} must be a number of feet >= ${min}`);
     }
+    return q;
   };
-  check(g.x, 'x', 0);
-  check(g.y, 'y', 0);
-  check(g.width, 'width', 1);
-  check(g.height, 'height', 1);
+  return {
+    x: check(g.x, 'x', 0),
+    y: check(g.y, 'y', 0),
+    width: check(g.width, 'width', MIN_RECT_SIDE_FT),
+    height: check(g.height, 'height', MIN_RECT_SIDE_FT),
+  };
 }
 
 function checkBlockName(name: string): string {
@@ -848,7 +876,7 @@ export async function listFloorPlans(query: ListFloorPlansQuery = {}) {
     include: planInclude,
     orderBy: [{ floor: { branch: { code: 'asc' } } }, { floor: { level: 'asc' } }],
   });
-  return plans.map(serializePlan);
+  return plans.map((p) => serializePlan(p));
 }
 
 /**
@@ -870,8 +898,15 @@ export async function getFloorPlan(floorId: string) {
     orderBy: { unitCode: 'asc' },
   });
 
+  // CMS-only tracing underlay metadata (precision Phase 5) — never in the
+  // public read; the image itself is GET /floor-plans/:floorId/underlay/image.
+  const underlay = plan ? await prisma.floorPlanUnderlay.findUnique({
+    where: { floorPlanId: plan.id },
+    select: { id: true, name: true, mime: true, widthPx: true, heightPx: true, ftPerPx: true, offsetX: true, offsetY: true, rotation: true, opacity: true, visible: true, locked: true, updatedAt: true },
+  }) : null;
   return {
     plan: plan ? serializePlan(plan) : null,
+    underlay: underlay ? serializeUnderlay(underlay) : null,
     canvasDefaults: CANVAS_DEFAULTS,
     floor: { id: floor.id, level: floor.level, name: floor.name },
     branch: { id: floor.branchId, code: floor.branch.code, name: floor.branch.name },
@@ -952,7 +987,7 @@ async function demoteOrphanedUppers(
 // always has a surface to land on (the editor snap-clamps; the canvas can be
 // resized afterwards via POST /floor-plans/:floorId). Also promotes a plan whose
 // canvas is still at the zero-size schema default to a renderable size.
-async function ensureCanvasPlan(floorId: string) {
+export async function ensureCanvasPlan(floorId: string) {
   await assertFloor(floorId);
   let plan = await prisma.floorPlan.findUnique({ where: { floorId } });
   if (!plan) {
@@ -1045,8 +1080,8 @@ export async function publishFloorPlan(floorId: string, opts?: { actorId?: strin
  * Moving a ground tier off its rect (or deleting it) demotes a leftover upper
  * to a standalone tier-0 single, so "move restores single" holds.
  */
-export async function setUnitPlacement(floorId: string, unitId: string, geom: PlacementGeometry) {
-  checkGeometry(geom);
+export async function setUnitPlacement(floorId: string, unitId: string, input: PlacementGeometry) {
+  const geom: PlacementGeometry = { ...input, ...checkGeometry(input) };
 
   const unit = await prisma.unit.findUnique({ where: { id: unitId }, include: { size: true } });
   if (!unit) throw new AppError(404, 'NOT_FOUND', `Unit ${unitId} not found`);
@@ -1088,8 +1123,7 @@ export async function setUnitPlacement(floorId: string, unitId: string, geom: Pl
       unit: { select: { unitCode: true, size: { select: { code: true } } } },
     },
   });
-  const isSameRect = (s: { x: number; y: number; width: number; height: number }) =>
-    s.x === geom.x && s.y === geom.y && s.width === geom.width && s.height === geom.height;
+  const isSameRect = (s: { x: number; y: number; width: number; height: number }) => sameFtRect(s, geom);
   const sameRect = siblings.filter(isSameRect);
   const rectLabel = `${geom.x},${geom.y} ${geom.width}×${geom.height}`;
   const selfIsLocker = isLockerSize(unit.size.code);
@@ -1165,15 +1199,10 @@ export async function setUnitPlacement(floorId: string, unitId: string, geom: Pl
     existing &&
     existing.floorPlanId === plan.id &&
     existing.stackTier === 0 &&
-    (existing.x !== geom.x || existing.y !== geom.y || existing.width !== geom.width || existing.height !== geom.height)
+    !sameFtRect(existing, geom)
   ) {
     const mate = siblings.find(
-      (s) =>
-        s.stackTier === 1 &&
-        s.x === existing.x &&
-        s.y === existing.y &&
-        s.width === existing.width &&
-        s.height === existing.height,
+      (s) => s.stackTier === 1 && sameFtRect(s, existing),
     );
     if (mate) exemptIds.add(mate.id);
   }
@@ -1191,19 +1220,22 @@ export async function setUnitPlacement(floorId: string, unitId: string, geom: Pl
   // lock-to-sqft resize and true-size ghost keep new writes inside the band.
   // Runs after the stacking/overlap rules so stack attempts report their
   // specific error first.
-  const area = geom.width * geom.height;
-  const deviation = Math.abs(area - unit.sqft) / Math.max(1, unit.sqft);
-  if (deviation > AREA_TOLERANCE) {
+  // Grandfathering: an existing placement whose area is unchanged (pure move or
+  // 90° rotation) skips the check — only new or resized placements must fit.
+  const area = rectAreaSqft(geom);
+  const deviation = areaDeviation(geom, unit.sqft);
+  const areaChanged = !existing || rectAreaSqft(existing) !== area;
+  if (areaChanged && deviation > AREA_TOLERANCE) {
     const pct = Math.round(deviation * 100);
     const fp = sqftFootprint(unit.sqft, unit.size.code, unit.size.widthFt, unit.size.heightFt);
     throw new AppError(
       400,
       'VALIDATION',
-      `Placement ${geom.width}×${geom.height} (= ${area} sq ft) deviates ${pct}% from unit ${unit.unitCode}'s ${unit.sqft} sqft (tolerance ${Math.round(AREA_TOLERANCE * 100)}%) — use ~${fp.w}×${fp.h} ft`,
+      `Placement ${formatFt(geom.width)}×${formatFt(geom.height)} (= ${Math.round(area * 100) / 100} sq ft) deviates ${pct}% from unit ${unit.unitCode}'s ${unit.sqft} sqft (tolerance ${Math.round(AREA_TOLERANCE * 100)}%) — use ~${fp.w}×${fp.h} ft`,
     );
   }
 
-  if (geom.x + geom.width > plan.width || geom.y + geom.height > plan.height) {
+  if (!rectFitsCanvas(geom, plan)) {
     throw new AppError(
       400,
       'VALIDATION',
@@ -1240,7 +1272,7 @@ export async function setUnitPlacement(floorId: string, unitId: string, geom: Pl
     existing &&
     existing.floorPlanId === plan.id &&
     existing.stackTier === 0 &&
-    (existing.x !== geom.x || existing.y !== geom.y || existing.width !== geom.width || existing.height !== geom.height)
+    !sameFtRect(existing, geom)
   ) {
     await demoteOrphanedUppers(plan.id, { x: existing.x, y: existing.y, width: existing.width, height: existing.height });
   }
@@ -1293,11 +1325,11 @@ export interface BlockInput {
  */
 export async function createFloorPlanBlock(floorId: string, input: BlockInput) {
   checkBlockName(input.name);
-  checkGeometry(input);
+  input = { ...input, ...checkGeometry(input) };
   const color = checkBlockColor(input.color);
   const doorEdges = normalizeDoorEdges(input.doorEdges);
   const plan = await ensureCanvasPlan(floorId);
-  if (input.x + input.width > plan.width || input.y + input.height > plan.height) {
+  if (!rectFitsCanvas(input, plan)) {
     throw new AppError(
       400,
       'VALIDATION',
@@ -1329,11 +1361,11 @@ export async function createFloorPlanBlock(floorId: string, input: BlockInput) {
  */
 export async function setFloorPlanBlock(floorId: string, blockId: string, input: BlockInput) {
   checkBlockName(input.name);
-  checkGeometry(input);
+  input = { ...input, ...checkGeometry(input) };
   const color = checkBlockColor(input.color);
   const doorEdges = normalizeDoorEdges(input.doorEdges);
   const plan = await ensureCanvasPlan(floorId);
-  if (input.x + input.width > plan.width || input.y + input.height > plan.height) {
+  if (!rectFitsCanvas(input, plan)) {
     throw new AppError(
       400,
       'VALIDATION',
@@ -1422,12 +1454,13 @@ function checkBoundarySortOrder(sortOrder: number | null | undefined): number | 
   return sortOrder;
 }
 
-// Strict polyline validation: an array of [x, y] integer-foot pairs (2+
+// Strict polyline validation: an array of [x, y] decimal-foot pairs (2+
 // vertices; 3+ distinct vertices when closed). Vertices must sit on the canvas
 // (edges included) — enlarge the canvas first, same contract as blocks.
+// Vertices are quantized to 0.001 ft; the RETURNED points are persisted.
 function checkBoundaryPoints(points: unknown, closed: boolean, plan: { width: number; height: number }): Array<[number, number]> {
   if (!Array.isArray(points)) {
-    throw new AppError(400, 'VALIDATION', 'Boundary points must be an array of [x, y] integer pairs');
+    throw new AppError(400, 'VALIDATION', 'Boundary points must be an array of [x, y] number pairs (feet)');
   }
   if (points.length < 2) {
     throw new AppError(400, 'VALIDATION', 'Boundary points must list at least 2 vertices');
@@ -1437,11 +1470,12 @@ function checkBoundaryPoints(points: unknown, closed: boolean, plan: { width: nu
   }
   const out: Array<[number, number]> = [];
   for (const p of points) {
-    if (!Array.isArray(p) || p.length !== 2 || !Number.isInteger(p[0]) || !Number.isInteger(p[1])) {
-      throw new AppError(400, 'VALIDATION', 'Boundary points must be an array of [x, y] integer pairs');
+    if (!Array.isArray(p) || p.length !== 2 || !isPlanNumber(p[0]) || !isPlanNumber(p[1])) {
+      throw new AppError(400, 'VALIDATION', 'Boundary points must be an array of [x, y] number pairs (feet)');
     }
-    const [x, y] = p as [number, number];
-    if (x < 0 || y < 0 || x > plan.width || y > plan.height) {
+    const x = quantizeFt(p[0] as number);
+    const y = quantizeFt(p[1] as number);
+    if (!pointOnCanvas(x, y, plan)) {
       throw new AppError(
         400,
         'VALIDATION',
@@ -1465,6 +1499,25 @@ export interface BoundaryInput {
   points?: unknown;
   closed?: boolean;
   sortOrder?: number | null;
+  // WALL thickness in feet; null clears; omitted keeps (WALL defaults to
+  // DEFAULT_WALL_THICKNESS_FT). Stored only for kind WALL.
+  thickness?: number | null;
+}
+
+// Wall thickness: decimal feet in [MIN, MAX], quantized; null/undefined → null.
+function checkBoundaryThickness(v: number | null | undefined): number | null {
+  if (v == null) return null;
+  if (!isPlanNumber(v) || quantizeFt(v) < MIN_WALL_THICKNESS_FT || quantizeFt(v) > MAX_WALL_THICKNESS_FT) {
+    throw new AppError(400, 'VALIDATION', `Wall thickness must be a number of feet between ${MIN_WALL_THICKNESS_FT} and ${MAX_WALL_THICKNESS_FT}`);
+  }
+  return quantizeFt(v);
+}
+
+// Only WALL lines carry a thickness (default when unset); other kinds store null.
+function resolveThickness(kind: string, requested: number | null | undefined, current: number | null): number | null {
+  if (String(kind).toUpperCase() !== 'WALL') return null;
+  if (requested !== undefined) return checkBoundaryThickness(requested) ?? DEFAULT_WALL_THICKNESS_FT;
+  return current ?? DEFAULT_WALL_THICKNESS_FT;
 }
 
 /** List a floor's boundary line items (editor sort order). Empty when no plan exists yet. */
@@ -1490,12 +1543,13 @@ export async function createFloorPlanBoundary(floorId: string, input: BoundaryIn
   const kind = checkBoundaryKind(input.kind);
   const closed = input.closed ?? false;
   if (input.points === undefined) {
-    throw new AppError(400, 'VALIDATION', 'Boundary points must be an array of [x, y] integer pairs');
+    throw new AppError(400, 'VALIDATION', 'Boundary points must be an array of [x, y] number pairs (feet)');
   }
   const points = checkBoundaryPoints(input.points, closed, plan);
   const sortOrder = checkBoundarySortOrder(input.sortOrder) ?? 0;
+  const thickness = resolveThickness(kind, input.thickness, null);
   const boundary = await prisma.floorPlanBoundary.create({
-    data: { floorPlanId: plan.id, label, kind, points, closed, sortOrder },
+    data: { floorPlanId: plan.id, label, kind, points, closed, sortOrder, thickness },
   });
   // Boundary writes never auto-promote — the plan returns to DRAFT.
   await markDraft(plan.id);
@@ -1529,6 +1583,8 @@ export async function updateFloorPlanBoundary(floorId: string, boundaryId: strin
     checkBoundaryPoints(boundaryPointsOf(existing.points), true, plan);
   }
   data.closed = closed;
+  const nextKind = (data.kind as string | undefined) ?? existing.kind;
+  data.thickness = resolveThickness(nextKind, input.thickness, existing.thickness ?? null);
   const boundary = await prisma.floorPlanBoundary.update({ where: { id: boundaryId }, data });
   // Boundary writes never auto-promote — the plan returns to DRAFT.
   await markDraft(plan.id);
@@ -1591,16 +1647,18 @@ function checkMarkerLabel(label: string | null | undefined): string | null {
 
 // Marker points sit ON the canvas edge-inclusive (0..width / 0..height) — the
 // same contract as boundary vertices in checkBoundaryPoints.
-function checkMarkerPoint(x: number, y: number, plan: { width: number; height: number }): void {
+// Decimal feet, quantized to 0.001 ft — callers persist the RETURNED point.
+function checkMarkerPoint(x: number, y: number, plan: { width: number; height: number }): { x: number; y: number } {
   for (const [v, name, max] of [[x, 'x', plan.width], [y, 'y', plan.height]] as const) {
-    if (!Number.isInteger(v) || v < 0 || v > max) {
+    if (!isPlanNumber(v) || quantizeFt(v) < 0 || quantizeFt(v) > quantizeFt(max)) {
       throw new AppError(
         400,
         'VALIDATION',
-        `Marker point ${x},${y} sits outside the ${plan.width}×${plan.height} ft canvas for this plan — ${name} must be an integer between 0 and ${max}`,
+        `Marker point ${x},${y} sits outside the ${plan.width}×${plan.height} ft canvas for this plan — ${name} must be a number of feet between 0 and ${max}`,
       );
     }
   }
+  return { x: quantizeFt(x), y: quantizeFt(y) };
 }
 
 export interface MarkerInput {
@@ -1628,9 +1686,9 @@ export async function createFloorPlanMarker(floorId: string, input: MarkerInput)
   const kind = checkMarkerKind(input.kind);
   const label = checkMarkerLabel(input.label);
   const plan = await ensureCanvasPlan(floorId);
-  checkMarkerPoint(input.x, input.y, plan);
+  const pt = checkMarkerPoint(input.x, input.y, plan);
   const marker = await prisma.floorPlanMarker.create({
-    data: { floorPlanId: plan.id, kind, label, x: input.x, y: input.y },
+    data: { floorPlanId: plan.id, kind, label, x: pt.x, y: pt.y },
   });
   // Marker writes never auto-promote — the plan returns to DRAFT.
   await markDraft(plan.id);
@@ -1657,9 +1715,9 @@ export async function updateFloorPlanMarker(floorId: string, markerId: string, i
   if (input.x !== undefined) x = input.x;
   if (input.y !== undefined) y = input.y;
   if (input.x !== undefined || input.y !== undefined) {
-    checkMarkerPoint(x, y, plan);
-    data.x = x;
-    data.y = y;
+    const pt = checkMarkerPoint(x, y, plan);
+    data.x = pt.x;
+    data.y = pt.y;
   }
   const marker = await prisma.floorPlanMarker.update({ where: { id: markerId }, data });
   // Marker writes never auto-promote — the plan returns to DRAFT.
@@ -1717,6 +1775,195 @@ export async function getPublicFloorPlan(branchCode: string, level: number) {
   return {
     branch: { id: floor.branchId, code: floor.branch.code, name: floor.branch.name },
     floor: { id: floor.id, level: floor.level, name: floor.name },
-    plan: plan ? serializePlan(plan) : null,
+    plan: plan ? serializePlan(plan, { publicView: true }) : null,
   };
+}
+// ---------- batch edits (precision Phase 4) ----------
+//
+// One transactional write for multi-element edits: group moves / nudges,
+// align & distribute, arrays, duplicate / paste, and undo / redo. The batch
+// is validated against the FINAL layout (so a row of units can shift into
+// each other's old positions), then applied atomically. Upserts are keyed by
+// unitId (placements) or row id (blocks / markers / boundaries — a missing id
+// is CREATED with that id, so undo of a delete restores the same row). Every
+// per-element rule still applies: unit membership / INACTIVE / occupied lock,
+// 2% area tolerance with move/rotate grandfathering, canvas fit, unit-vs-unit
+// overlap, locker stacking (orphaned upper tiers demote to ground singles).
+
+export interface FloorPlanBatchInput {
+  upsert?: {
+    placements?: Array<PlacementGeometry & { unitId: string }>;
+    blocks?: Array<BlockInput & { id: string }>;
+    markers?: Array<MarkerInput & { id: string }>;
+    boundaries?: Array<BoundaryInput & { id: string; points: unknown }>;
+  };
+  delete?: { placements?: string[]; blocks?: string[]; markers?: string[]; boundaries?: string[] };
+}
+
+const MAX_BATCH_ITEMS = 2000;
+
+export async function applyFloorPlanBatch(floorId: string, input: FloorPlanBatchInput) {
+  const up = input.upsert ?? {};
+  const del = input.delete ?? {};
+  const count =
+    (up.placements?.length ?? 0) + (up.blocks?.length ?? 0) + (up.markers?.length ?? 0) + (up.boundaries?.length ?? 0) +
+    (del.placements?.length ?? 0) + (del.blocks?.length ?? 0) + (del.markers?.length ?? 0) + (del.boundaries?.length ?? 0);
+  if (count === 0) throw new AppError(400, 'VALIDATION', 'Batch is empty — nothing to apply');
+  if (count > MAX_BATCH_ITEMS) throw new AppError(400, 'VALIDATION', `Batch has ${count} items — at most ${MAX_BATCH_ITEMS} per request`);
+
+  const plan = await ensureCanvasPlan(floorId);
+  const live = plan.status === 'ACTIVE';
+  const current = await prisma.unitPlacement.findMany({
+    where: { floorPlanId: plan.id },
+    include: { unit: { include: { size: true } } },
+  });
+  const currentByUnit = new Map(current.map((p) => [p.unitId, p]));
+
+  // ---- placements: final layout ----
+  type Final = { unitId: string; unitCode: string; sizeCode: string; x: number; y: number; width: number; height: number; stackTier: 0 | 1; explicitTier: boolean };
+  const final = new Map<string, Final>();
+  for (const p of current) {
+    if (p.unit.deletedAt || p.unit.status === 'INACTIVE') continue; // hidden rows never collide (same as reads)
+    final.set(p.unitId, { unitId: p.unitId, unitCode: p.unit.unitCode, sizeCode: p.unit.size.code, x: p.x, y: p.y, width: p.width, height: p.height, stackTier: p.stackTier === 1 ? 1 : 0, explicitTier: false });
+  }
+  const lockCheck = (unit: { unitCode: string; status: string }, action: string) => {
+    if (live && (unit.status === 'OCCUPIED' || unit.status === 'OVERDUE')) {
+      throw new AppError(409, 'CONFLICT', `Unit ${unit.unitCode} is ${unit.status} and the plan is live (ACTIVE) — Occupied, uneditable when live. Unpublish to draft before ${action}.`);
+    }
+  };
+  for (const unitId of del.placements ?? []) {
+    const cur = currentByUnit.get(unitId);
+    if (!cur) continue; // already unplaced — idempotent
+    lockCheck(cur.unit, 'removing this placement');
+    final.delete(unitId);
+  }
+  const placementWrites: Array<{ unitId: string; x: number; y: number; width: number; height: number; stackTier: 0 | 1; doorEdges: string | null | undefined }> = [];
+  const upUnitIds = (up.placements ?? []).map((p) => p.unitId);
+  const units = upUnitIds.length
+    ? await prisma.unit.findMany({ where: { id: { in: upUnitIds } }, include: { size: true } })
+    : [];
+  const unitById = new Map(units.map((u) => [u.id, u]));
+  for (const raw of up.placements ?? []) {
+    const geom = { ...raw, ...checkGeometry(raw) };
+    const unit = unitById.get(raw.unitId);
+    if (!unit) throw new AppError(404, 'NOT_FOUND', `Unit ${raw.unitId} not found`);
+    if (unit.deletedAt) throw new AppError(400, 'VALIDATION', `Unit ${unit.unitCode} is deleted and cannot be placed on a plan`);
+    if (unit.status === 'INACTIVE') throw new AppError(400, 'VALIDATION', `Unit ${unit.unitCode} is INACTIVE and cannot be placed on a plan — reactivate it first`);
+    if (unit.floorId !== floorId) throw new AppError(400, 'VALIDATION', `Unit ${unit.unitCode} does not belong to floor ${floorId}`);
+    const existing = currentByUnit.get(raw.unitId);
+    if (!existing || !sameFtRect(existing, geom) || (geom.stackTier !== undefined && geom.stackTier !== existing.stackTier)) {
+      lockCheck(unit, 'editing this placement');
+    }
+    if (!rectFitsCanvas(geom, plan)) {
+      throw new AppError(400, 'VALIDATION', `Placement ${unit.unitCode} ${formatFt(geom.x)},${formatFt(geom.y)} ${formatFt(geom.width)}×${formatFt(geom.height)} exceeds the ${formatFt(plan.width)}×${formatFt(plan.height)} ft canvas — enlarge the canvas first`);
+    }
+    const area = rectAreaSqft(geom);
+    const areaChanged = !existing || rectAreaSqft(existing) !== area;
+    if (areaChanged && areaDeviation(geom, unit.sqft) > AREA_TOLERANCE) {
+      const fp = sqftFootprint(unit.sqft, unit.size.code, unit.size.widthFt, unit.size.heightFt);
+      throw new AppError(400, 'VALIDATION', `Placement ${formatFt(geom.width)}×${formatFt(geom.height)} (= ${Math.round(area * 100) / 100} sq ft) deviates ${Math.round(areaDeviation(geom, unit.sqft) * 100)}% from unit ${unit.unitCode}'s ${unit.sqft} sqft (tolerance ${Math.round(AREA_TOLERANCE * 100)}%) — use ~${fp.w}×${fp.h} ft`);
+    }
+    const explicitTier = geom.stackTier !== undefined;
+    const tier = explicitTier ? checkStackTier(geom.stackTier as number) : ((existing?.stackTier ?? 0) === 1 ? 1 : 0);
+    final.set(unit.id, { unitId: unit.id, unitCode: unit.unitCode, sizeCode: unit.size.code, x: geom.x, y: geom.y, width: geom.width, height: geom.height, stackTier: tier, explicitTier });
+    placementWrites.push({ unitId: unit.id, x: geom.x, y: geom.y, width: geom.width, height: geom.height, stackTier: tier, doorEdges: normalizeDoorEdges(geom.doorEdges) });
+  }
+  // Stacking + overlap over the FINAL layout (only pairs touching a changed unit).
+  const changed = new Set([...placementWrites.map((w) => w.unitId)]);
+  const finals = [...final.values()];
+  const demote = new Set<string>();
+  for (const f of finals) {
+    const mates = finals.filter((o) => o.unitId !== f.unitId && sameFtRect(o, f));
+    if (f.stackTier === 1 && !mates.some((o) => o.stackTier === 0)) {
+      if (f.explicitTier) throw new AppError(400, 'VALIDATION', `Cannot place ${f.unitCode} as upper tier (stackTier 1) — no ground-tier placement shares its exact rect`);
+      demote.add(f.unitId); // orphaned upper → ground single (same as the single-write path)
+    }
+  }
+  for (const id of demote) {
+    const f = final.get(id)!;
+    f.stackTier = 0;
+    changed.add(id);
+    const w = placementWrites.find((x) => x.unitId === id);
+    if (w) w.stackTier = 0;
+    else placementWrites.push({ unitId: id, x: f.x, y: f.y, width: f.width, height: f.height, stackTier: 0, doorEdges: undefined });
+  }
+  for (const id of changed) {
+    const f = final.get(id)!;
+    for (const o of final.values()) {
+      if (o.unitId === id || !rectsOverlapExact(f, o)) continue;
+      const stackPair = sameFtRect(f, o) && f.stackTier !== o.stackTier && isLockerSize(f.sizeCode) && isLockerSize(o.sizeCode);
+      const third = [...final.values()].filter((x) => sameFtRect(x, f)).length > 2;
+      if (!stackPair || third) {
+        throw new AppError(409, 'PLACEMENT_OVERLAP', `Placement ${f.unitCode} (${formatFt(f.x)},${formatFt(f.y)} ${formatFt(f.width)}×${formatFt(f.height)}) overlaps ${o.unitCode} (${formatFt(o.x)},${formatFt(o.y)} ${formatFt(o.width)}×${formatFt(o.height)}) — move to a free spot`);
+      }
+    }
+  }
+
+  // ---- blocks / markers / boundaries ----
+  const ownedIds = async (model: 'floorPlanBlock' | 'floorPlanMarker' | 'floorPlanBoundary', ids: string[]) => {
+    if (!ids.length) return new Map<string, { floorPlanId: string } & Record<string, unknown>>();
+    const rows = await (prisma[model] as unknown as { findMany: (a: unknown) => Promise<Array<{ id: string; floorPlanId: string } & Record<string, unknown>>> }).findMany({ where: { id: { in: ids } } });
+    for (const r of rows) {
+      if (r.floorPlanId !== plan.id) throw new AppError(404, 'NOT_FOUND', `${model.replace('floorPlan', '')} ${r.id} does not belong to floor ${floorId}'s plan`);
+    }
+    return new Map(rows.map((r) => [r.id, r]));
+  };
+  await ownedIds('floorPlanBlock', [...(up.blocks ?? []).map((b) => b.id), ...(del.blocks ?? [])]);
+  await ownedIds('floorPlanMarker', [...(up.markers ?? []).map((m) => m.id), ...(del.markers ?? [])]);
+  const boundaryRows = await ownedIds('floorPlanBoundary', [...(up.boundaries ?? []).map((b) => b.id), ...(del.boundaries ?? [])]);
+  const idOk = (id: unknown) => typeof id === 'string' && id.length >= 1 && id.length <= 64;
+  const blockWrites = (up.blocks ?? []).map((b) => {
+    if (!idOk(b.id)) throw new AppError(400, 'VALIDATION', 'Block id must be a 1–64 character string');
+    const g = checkGeometry(b);
+    if (!rectFitsCanvas(g, plan)) throw new AppError(400, 'VALIDATION', `Block "${b.name}" ${formatFt(g.x)},${formatFt(g.y)} ${formatFt(g.width)}×${formatFt(g.height)} exceeds the canvas — enlarge the canvas first`);
+    return { id: b.id, name: checkBlockName(b.name), ...g, color: checkBlockColor(b.color), doorEdges: normalizeDoorEdges(b.doorEdges) };
+  });
+  const markerWrites = (up.markers ?? []).map((m) => {
+    if (!idOk(m.id)) throw new AppError(400, 'VALIDATION', 'Marker id must be a 1–64 character string');
+    return { id: m.id, kind: checkMarkerKind(m.kind), label: checkMarkerLabel(m.label), ...checkMarkerPoint(m.x, m.y, plan) };
+  });
+  const boundaryWrites = (up.boundaries ?? []).map((b) => {
+    if (!idOk(b.id)) throw new AppError(400, 'VALIDATION', 'Boundary id must be a 1–64 character string');
+    const closed = b.closed ?? false;
+    const kind = checkBoundaryKind(b.kind);
+    const prev = boundaryRows.get(b.id) as { thickness?: number | null } | undefined;
+    return {
+      id: b.id,
+      label: b.label === undefined ? 'Boundary' : checkBoundaryLabel(b.label),
+      kind,
+      points: checkBoundaryPoints(b.points, closed, plan),
+      closed,
+      sortOrder: checkBoundarySortOrder(b.sortOrder) ?? 0,
+      thickness: resolveThickness(kind, b.thickness, prev?.thickness ?? null),
+    };
+  });
+
+  // ---- apply atomically ----
+  await prisma.$transaction(async (tx) => {
+    if (del.placements?.length) await tx.unitPlacement.deleteMany({ where: { floorPlanId: plan.id, unitId: { in: del.placements } } });
+    if (del.blocks?.length) await tx.floorPlanBlock.deleteMany({ where: { floorPlanId: plan.id, id: { in: del.blocks } } });
+    if (del.markers?.length) await tx.floorPlanMarker.deleteMany({ where: { floorPlanId: plan.id, id: { in: del.markers } } });
+    if (del.boundaries?.length) await tx.floorPlanBoundary.deleteMany({ where: { floorPlanId: plan.id, id: { in: del.boundaries } } });
+    for (const w of placementWrites) {
+      const { doorEdges, ...g } = w;
+      await tx.unitPlacement.upsert({
+        where: { unitId: w.unitId },
+        create: { floorPlanId: plan.id, ...g, ...(doorEdges !== undefined ? { doorEdges } : {}) },
+        update: { floorPlanId: plan.id, ...g, ...(doorEdges !== undefined ? { doorEdges } : {}) },
+      });
+    }
+    for (const { id, doorEdges, ...b } of blockWrites) {
+      const data = { ...b, ...(doorEdges !== undefined ? { doorEdges } : {}) };
+      await tx.floorPlanBlock.upsert({ where: { id }, create: { id, floorPlanId: plan.id, ...data }, update: data });
+    }
+    for (const { id, ...m } of markerWrites) {
+      await tx.floorPlanMarker.upsert({ where: { id }, create: { id, floorPlanId: plan.id, ...m }, update: m });
+    }
+    for (const { id, points, ...b } of boundaryWrites) {
+      const data = { ...b, points: points as unknown as Prisma.InputJsonValue };
+      await tx.floorPlanBoundary.upsert({ where: { id }, create: { id, floorPlanId: plan.id, ...data }, update: data });
+    }
+  });
+  await markDraft(plan.id);
+  return getFloorPlan(floorId);
 }

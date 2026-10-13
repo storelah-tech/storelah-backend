@@ -485,11 +485,11 @@ function assertRect(name: string, x: number, y: number, w: number, h: number): v
     [w, 'width'],
     [h, 'height'],
   ] as Array<[number, string]>) {
-    if (!Number.isInteger(v)) {
-      throw new AppError(400, 'NON_RECTANGULAR', `${name}: ${label} must be an integer-foot rect coordinate, got ${v}`);
+    if (!Number.isFinite(v)) {
+      throw new AppError(400, 'NON_RECTANGULAR', `${name}: ${label} must be a finite decimal-foot rect coordinate, got ${v}`);
     }
   }
-  if (w < 1 || h < 1 || x < 0 || y < 0) {
+  if (w <= 0 || h <= 0 || x < 0 || y < 0) {
     throw new AppError(400, 'NON_RECTANGULAR', `${name}: non-positive or negative geometry is not measurable (${x},${y} ${w}x${h})`);
   }
 }
@@ -512,7 +512,7 @@ export async function getFloorMetrics(floorId: string): Promise<FloorMetricsRepo
     },
   });
   if (!plan) throw new AppError(404, 'NOT_FOUND', `No floor plan exists for floor ${floorId}`);
-  if (!Number.isInteger(plan.width) || !Number.isInteger(plan.height) || plan.width < 1 || plan.height < 1) {
+  if (!Number.isFinite(plan.width) || !Number.isFinite(plan.height) || plan.width < 1 || plan.height < 1) {
     throw new AppError(400, 'VALIDATION', `Floor plan canvas for floor ${floorId} is not initialized (${plan.width}x${plan.height} ft) — save the canvas first`);
   }
 
@@ -591,7 +591,7 @@ export async function getFloorMetrics(floorId: string): Promise<FloorMetricsRepo
   // area — never the whole-canvas rect. `sqft` echoes the 1dp boundaryMetrics
   // numbers exactly; `q` is derived from them (BigInt would throw via JSON).
   const boundaryMetrics: BoundaryMetrics = computeBoundaryMetrics({
-    boundaries: (plan.boundaries ?? []).map((b) => ({ points: b.points, closed: b.closed })),
+    boundaries: (plan.boundaries ?? []).map((b) => ({ points: b.points, closed: b.closed, kind: b.kind })),
     blocks: plan.blocks.map((b) => ({ x: b.x, y: b.y, width: b.width, height: b.height })),
     structure: (plan as { structure?: unknown }).structure ?? null,
     placements: placed.map((p) => ({ x: p.x, y: p.y, width: p.width, height: p.height })),

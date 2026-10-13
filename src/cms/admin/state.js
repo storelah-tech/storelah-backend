@@ -92,7 +92,18 @@ export const state = {
     selectedBlock: null, // selected block id
     canvasDefaults: { width: 70, height: 80 },
     liveDims: null, // live-typed canvas size from the W/H inputs (local, unsaved); null = use plan/server size
-    lockSqft: true, // resize snaps to the nearest rect preserving area≈sqft (ops can toggle off; server still enforces ±15%)
+    lockSqft: true, // resize snaps to the decimal rect preserving area = sqft (ops can toggle off; server enforces ±2% on new/resized units)
+    penKind: 'BOUNDARY', // kind for NEW lines (toolbar #fpPenKind): BOUNDARY | WALL | PARTITION | GUIDE
+    wallThickness: 0.5, // default thickness (ft) for new WALL lines (follows the last thickness typed)
+    objSnap: true, // snap to line endpoints/midpoints/edges and unit/block corners (toolbar #fpObjSnap)
+    measureMode: false, // 📏 measure tool active (two clicks → temporary dimension; Esc clears)
+    multi: [], // multi-selection [{ type: 'placement'|'block'|'marker', id }] (Shift-click / marquee / Cmd+A); 0–1 items = single selection
+    layers: null, // { units|blocks|lines|markers: { hidden, locked } } — Layers menu, remembered per browser
+    arrayOpen: false, // ⇶ Array form open in the selection strip
+    underlay: null, // CMS-only tracing image metadata (GET /floor-plans/:floorId → underlay); bytes via /underlay/image
+    underlayMode: null, // null | 'calibrate' (two clicks + real distance) | 'move' (drag the image)
+    selectedVertex: null, // index of the selected vertex on the selected line (inspector X/Y, Delete removes)
+    snapStep: 0.1, // decimal-ft snap step for drags/resizes/lines/nudges (toolbar #fpSnapStep, remembered per browser; Alt = 0.01 ft)
     ghostRotated: false, // palette drag ghost orientation toggle (swaps W/H for rectangular footprints)
     boundaries: [], // normalized boundary line items (grid-ft polylines; kind 'PENCIL' = pencil-drawn lines)
     drawMode: false, // ✎ line tool active — canvas press-drag draws a line, placement/block drags gated off

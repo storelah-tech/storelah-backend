@@ -9,6 +9,37 @@ import { confirmDialog } from './confirmDialog.js';
 import { get, request, describeError } from './api.js';
 import { state, branchByCode, branchFloors, selectedFacilityName } from './state.js';
 import { notifyMetricsFloorChanged } from './metricsView.js';
+// Shared decimal-feet geometry (generated from src/core/planGeometry.ts — the
+// API runs the same code; regenerate with `pnpm build:admin-geometry`).
+import {
+  AREA_TOLERANCE,
+  DEFAULT_SNAP_FT,
+  DEFAULT_WALL_THICKNESS_FT,
+  LINE_KINDS,
+  MAX_WALL_THICKNESS_FT,
+  MIN_WALL_THICKNESS_FT,
+  angleDeg,
+  calibrateUnderlay,
+  lineFeedsArea,
+  nearestOnSegment,
+  pointAtAngle,
+  polylineLengthFt,
+  segmentLengthFt,
+  FINE_SNAP_FT,
+  MIN_RECT_SIDE_FT,
+  SNAP_STEPS_FT,
+  areaDeviation,
+  clampFt,
+  fitSqftFootprint,
+  formatFt,
+  ftEquals,
+  quantizeFt,
+  rectAreaSqft,
+  rectsOverlapExact,
+  sameRect,
+  snapFt,
+  toMilli,
+} from './planGeometry.js';
 
 // Ref-data retry hook — the entry hands its loadRefs() down here so fpOpen()'s
 // lazy guard keeps working without importing the entry.
@@ -20,9 +51,6 @@ export function setRefsLoader(fn) {
 // ---------- floor-plan constants & private module state ----------
 const FP_BASE = 24; // px per foot at zoom 1 (BLUEPRINT SCALE: 1 grid unit = 1 ft)
 let fpDimsTimer = null;
-// In-flight pencil draft (line tool ON): { x1, y1, x2, y2 } in grid-ft units.
-// Transient drag state only — persisted lines live in state.fp.boundaries.
-let fpDraftLine = null;
 
 // ---------- toolbar groups (canonical order + audit) ----------
 // The toolbar markup (#fpToolbar in dashboard.html) groups tools as
@@ -38,15 +66,15 @@ let fpDraftLine = null;
 // is a future dead tool, so it warns instead of silently lingering. Audit is
 // console-only and never blocks the editor.
 const FP_TOOLBAR_GROUPS = [
-  { id: 'units', label: 'Units', tools: ['fpPaletteReopen', 'fpAutoPlace', 'fpAutoDoors', 'fpUndoBtn', 'fpRotateGhost', 'fpLockSqft'] },
+  { id: 'units', label: 'Units', tools: ['fpPaletteReopen', 'fpAutoPlace', 'fpAutoDoors', 'fpUndoBtn', 'fpRedoBtn', 'fpRotateGhost', 'fpLockSqft'] },
   // Studio ribbon: the Select/Add-Unit/Draw-Wall/Add-Block segmented control.
   // fpBoundaryTool (line tool) + fpAddBlock (block form) are the Draw/Block
   // segments — no duplicate buttons, one handler each.
-  { id: 'mode', label: 'Mode', tools: ['fpModeSelect', 'fpModeAddUnit', 'fpBoundaryTool', 'fpAddBlock'] },
+  { id: 'mode', label: 'Mode', tools: ['fpModeSelect', 'fpModeAddUnit', 'fpBoundaryTool', 'fpPenKind', 'fpMeasureTool', 'fpAddBlock'] },
   { id: 'markers', label: 'Markers/Safety', tools: ['fpMarkersBtn', 'fpMarkerTools'] },
   { id: 'canvas', label: 'Canvas', tools: ['fpWidth', 'fpHeight'] },
   { id: 'plan', label: 'Plan', tools: ['fpGfa', 'fpBoundaryMetrics'] },
-  { id: 'view', label: 'View', tools: ['fpZoomOut', 'fpZoomIn', 'fpZoomPreset', 'fpGridToggle'] },
+  { id: 'view', label: 'View', tools: ['fpZoomOut', 'fpZoomIn', 'fpZoomPreset', 'fpGridToggle', 'fpSnapStep', 'fpObjSnap', 'fpLayersBtn', 'fpUnderlayBtn', 'fpUnderlayCalib', 'fpUnderlayMove', 'fpUnderlayRot', 'fpUnderlayRemove', 'fpExportBtn', 'fpExportGo', 'fpShortcutsBtn'] },
   { id: 'info', label: 'Labels', tools: ['fpSelInfo'] },
 ];
 
@@ -123,24 +151,23 @@ const FP_SIZE_DIMS = {
 const FP_SIZE_ASPECT = { LOCKER: 3 / 4, SMALL: 5 / 6, MEDIUM: 6 / 10, LARGE: 10 / 12 };
 const FP_DEFAULT_ASPECT = 3 / 4;
 
-// Documented fallback: w = round(sqrt(sqft·aspect)), h = ceil(sqft/w).
-// Mirrors sqftFootprint() in src/core/floorPlans.ts — keep the two in sync.
-function sqftFootprint(sqft, sizeCode) {
-  const aspect = FP_SIZE_ASPECT[String(sizeCode || '').toUpperCase()] || FP_DEFAULT_ASPECT;
-  const safe = Math.max(1, Number(sqft) || 1);
-  const w = Math.max(1, Math.round(Math.sqrt(safe * aspect)));
-  return { w, h: Math.max(1, Math.ceil(safe / w)) };
-}
-
+// Decimal-foot footprint for a unit (fitSqftFootprint, shared with the API's
+// sqftFootprint): live /sizes dims (widthFt/heightFt) → FP_SIZE_DIMS → the
+// per-size aspect, scaled to the unit's exact sqft when the catalogue dims'
+// area is off by more than AREA_TOLERANCE.
 function sizeFootprint(sizeCode, sqft) {
   const code = String(sizeCode || '').toUpperCase();
   const live = (state.sizes || []).find((s) => String(s.code || '').toUpperCase() === code);
-  if (live && Number.isInteger(live.widthFt) && live.widthFt > 0 && Number.isInteger(live.heightFt) && live.heightFt > 0) {
-    return { w: live.widthFt, h: live.heightFt };
-  }
-  const d = FP_SIZE_DIMS[code];
-  if (d) return { w: d.w, h: d.h };
-  return sqftFootprint(sqft, code);
+  // Size dims are decimal feet since the precision migration (src/core/planGeometry.ts).
+  const dims =
+    live && Number.isFinite(live.widthFt) && live.widthFt > 0 && Number.isFinite(live.heightFt) && live.heightFt > 0
+      ? { w: live.widthFt, h: live.heightFt }
+      : FP_SIZE_DIMS[code] || null;
+  return fitSqftFootprint(Number(sqft) || 0, {
+    widthFt: dims ? dims.w : null,
+    heightFt: dims ? dims.h : null,
+    fallbackAspect: FP_SIZE_ASPECT[code] || FP_DEFAULT_ASPECT,
+  });
 }
 
 function unitFootprint(u) {
@@ -163,9 +190,9 @@ function fpOverlapAt(x, y, w, h, ignore, tier) {
   return (
     state.fp.placements.find((o) => {
       if (ignored.has(o.unitId)) return false;
-      if (!(x < o.x + o.width && o.x < x + w && y < o.y + o.height && o.y < y + h)) return false;
-      const sameRect = x === o.x && y === o.y && w === o.width && h === o.height;
-      if (sameRect && (o.stackTier || 0) !== t) return false; // stacked pair shares one rect
+      const r = { x, y, width: w, height: h };
+      if (!rectsOverlapExact(r, o)) return false; // integer-exact (milli-ft): touching decimal edges never collide
+      if (sameRect(r, o) && (o.stackTier || 0) !== t) return false; // stacked pair shares one rect
       return true;
     }) || null
   );
@@ -175,7 +202,7 @@ function fpOverlapAt(x, y, w, h, ignore, tier) {
 // with tiers 0 (lower/ground) + 1 (upper). Rendered as ONE block split by a
 // middle divider line (upper code above, lower code below).
 function fpSameRect(a, b) {
-  return a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height;
+  return sameRect(a, b);
 }
 
 function fpIsLockerPlacement(p) {
@@ -253,7 +280,7 @@ async function fpStackMovedOn(pl, hit, orig) {
 function fpGroupByRect(list) {
   const groups = new Map();
   for (const pl of list || []) {
-    const k = `${pl.x},${pl.y},${pl.width},${pl.height}`;
+    const k = [pl.x, pl.y, pl.width, pl.height].map(toMilli).join(',');
     if (!groups.has(k)) groups.set(k, []);
     groups.get(k).push(pl);
   }
@@ -265,6 +292,83 @@ function fpGroupByRect(list) {
 
 function fpPx() {
   return Math.max(8, Math.round(FP_BASE * state.fp.scale));
+}
+
+// ---------- decimal-feet snapping (precision Phase 2) ----------
+// Every pointer→feet mapping snaps to the operator's snap step (toolbar
+// #fpSnapStep, default 0.1 ft, remembered per browser). Holding Alt during a
+// drag snaps to the fine 0.01 ft step instead. Values stay quantized to
+// 0.001 ft (src/core/planGeometry.ts), so equality/overlap checks are exact.
+const FP_SNAP_STORAGE_KEY = 'storelah.fp.snapStep';
+
+function fpSnapStep(ev) {
+  if (ev && ev.altKey) return FINE_SNAP_FT;
+  const s = Number(state.fp.snapStep);
+  return SNAP_STEPS_FT.includes(s) ? s : DEFAULT_SNAP_FT;
+}
+
+// Smallest side a resize may produce: the snap step, never below 0.1 ft.
+function fpMinSide(ev) {
+  return Math.max(MIN_RECT_SIDE_FT, fpSnapStep(ev));
+}
+
+function fpLoadSnapStep() {
+  try {
+    const v = Number(window.localStorage.getItem(FP_SNAP_STORAGE_KEY));
+    if (SNAP_STEPS_FT.includes(v)) state.fp.snapStep = v;
+  } catch (_) {
+    // Storage blocked (private window) — keep the default step.
+  }
+}
+
+function fpSetSnapStep(v) {
+  const n = Number(v);
+  state.fp.snapStep = SNAP_STEPS_FT.includes(n) ? n : DEFAULT_SNAP_FT;
+  try {
+    window.localStorage.setItem(FP_SNAP_STORAGE_KEY, String(state.fp.snapStep));
+  } catch (_) {
+    // Storage blocked — the choice still applies for this session.
+  }
+  const sel = $('#fpSnapStep');
+  if (sel) sel.value = String(state.fp.snapStep);
+  fpRenderCanvas(); // the minor grid follows the snap step
+}
+
+// Shift-constrained line end: 0°, 45° or 90° from the start point.
+function fpConstrainLine(x1, y1, x2, y2, step) {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const ax = Math.abs(dx);
+  const ay = Math.abs(dy);
+  if (ax > 2 * ay) return { x: x2, y: y1 };
+  if (ay > 2 * ax) return { x: x1, y: y2 };
+  const d = snapFt((ax + ay) / 2, step);
+  return { x: quantizeFt(x1 + Math.sign(dx) * d), y: quantizeFt(y1 + Math.sign(dy) * d) };
+}
+
+// Square feet for display: at most 2 decimals, no float noise.
+function fpFmtArea(sqft) {
+  return (Math.round(Number(sqft || 0) * 100) / 100).toLocaleString('en-SG', { maximumFractionDigits: 2 });
+}
+
+// Live status readout at the right of the selection strip: cursor position
+// while hovering, live position / size / length while dragging or drawing.
+function fpSetReadout(text) {
+  const el = $('#fpReadout');
+  if (el) el.textContent = text || '';
+}
+
+// Hover readout: snapped cursor position + the active snap step.
+function fpOnCanvasHover(e) {
+  const canvas = $('#fpCanvas');
+  if (!canvas || !canvas.contains(e.target)) return;
+  if (state.fp.drawMode || state.fp.measureMode) {
+    fpPenHover(e); // rubber band / measure / snap indicator own the readout
+    return;
+  }
+  const p = fpCanvasPointAt(e.clientX, e.clientY, e);
+  if (!p) return;
+  fpSetReadout(`x ${formatFt(p.x)} · y ${formatFt(p.y)} ft · snap ${formatFt(fpSnapStep(e))} ft`);
 }
 
 // Door-edge markers (UI-visibility for authored doorEdges). Effective-edges
@@ -364,21 +468,15 @@ function fpBoundaryPoints(points) {
     if (!Array.isArray(p) || p.length < 2) continue;
     const x = Number(p[0]);
     const y = Number(p[1]);
-    if (!Number.isInteger(x) || !Number.isInteger(y)) continue;
+    // Decimal-ft vertices are valid (0.001 ft precision) — never drop them on read.
+    if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
     out.push([x, y]);
   }
   return out;
 }
 
 function fpNormalizeBoundaries(plan) {
-  return (plan && plan.boundaries ? plan.boundaries : []).map((b) => ({
-    id: b.id,
-    label: b.label,
-    kind: b.kind,
-    points: fpBoundaryPoints(b.points),
-    closed: !!b.closed,
-    sortOrder: b.sortOrder || 0,
-  }));
+  return (plan && plan.boundaries ? plan.boundaries : []).map(fpNormalizeBoundary);
 }
 
 // ---------- marked-area metrics parity (client mirror of computeBoundaryMetrics) ----------
@@ -482,6 +580,7 @@ function fpChainBoundarySegments(segments) {
 
 function fpBoundaryMetricsLocal() {
   const validated = (state.fp.boundaries || [])
+    .filter((b) => lineFeedsArea(b.kind)) // WALL / PARTITION / GUIDE never mark area
     .map((b) => fpBoundaryPoints(b.points))
     .filter((pts) => pts.length >= 2 && pts.some(([x, y]) => x !== pts[0][0] || y !== pts[0][1]));
   const direct = validated.filter((pts) => pts.length >= 3 && fpPolygonArea(pts) > 0);
@@ -557,9 +656,15 @@ function fpCanvasDims() {
   return { w: state.fp.canvasDefaults.width, h: state.fp.canvasDefaults.height };
 }
 
+// Canvas dims are decimal feet in [1, 500], quantized to 0.001 ft (same
+// contract as checkCanvasDim in src/core/floorPlans.ts).
 function fpParseDim(v) {
-  const n = Number(v);
-  return Number.isInteger(n) && n >= 1 && n <= 500 ? n : null;
+  const t = String(v == null ? '' : v).trim();
+  if (!t) return null;
+  const n = Number(t);
+  if (!Number.isFinite(n)) return null;
+  const q = quantizeFt(n);
+  return q >= 1 && q <= 500 ? q : null;
 }
 
 function fpReadInputDims() {
@@ -601,27 +706,24 @@ function fpParseGfa(v) {
 
 function fpClampCanvasContent(w, h) {
   const clampItem = (item) => {
-    item.width = Math.max(1, Math.min(item.width, w));
-    item.height = Math.max(1, Math.min(item.height, h));
-    item.x = Math.min(Math.max(0, item.x), Math.max(0, w - item.width));
-    item.y = Math.min(Math.max(0, item.y), Math.max(0, h - item.height));
+    item.width = clampFt(item.width, MIN_RECT_SIDE_FT, w);
+    item.height = clampFt(item.height, MIN_RECT_SIDE_FT, h);
+    item.x = clampFt(item.x, 0, w - item.width);
+    item.y = clampFt(item.y, 0, h - item.height);
   };
   state.fp.placements.forEach(clampItem);
   state.fp.blocks.forEach(clampItem);
   // Marker points clamp edge-INCLUSIVE (0..w / 0..h — the same contract as
   // checkMarkerPoint in src/core/floorPlans.ts).
   (state.fp.markers || []).forEach((m) => {
-    m.x = Math.min(Math.max(0, m.x), w);
-    m.y = Math.min(Math.max(0, m.y), h);
+    m.x = clampFt(m.x, 0, w);
+    m.y = clampFt(m.y, 0, h);
   });
   // Boundary vertices clamp edge-INCLUSIVE (0..w / 0..h — the same contract as
   // checkBoundaryPoints in src/core/floorPlans.ts) so drawn lines never render
   // off-grid after a canvas shrink.
   (state.fp.boundaries || []).forEach((b) => {
-    b.points = fpBoundaryPoints(b.points).map(([x, y]) => [
-      Math.min(Math.max(0, x), w),
-      Math.min(Math.max(0, y), h),
-    ]);
+    b.points = fpBoundaryPoints(b.points).map(([x, y]) => [clampFt(x, 0, w), clampFt(y, 0, h)]);
   });
 }
 
@@ -658,7 +760,7 @@ function fpOnDimCommit() {
   fpApplyLiveDims();
   if (wEl) wEl.value = w;
   if (hEl) hEl.value = h;
-  fpToast('Canvas size must be a whole number between 1 and 500 feet.', false);
+  fpToast('Canvas size must be a number between 1 and 500 feet (decimals allowed).', false);
 }
 
 function fpOnDimEnter(e) {
@@ -778,24 +880,7 @@ async function fpFetch() {
   }
   try {
     const body = await get(`/floor-plans/${encodeURIComponent(state.fp.floorId)}`);
-    state.fp.plan = body.plan;
-    state.fp.canvasDefaults = body.canvasDefaults || { width: 70, height: 80 };
-    state.fp.structure = body.plan ? body.plan.structure : null;
-    state.fp.placements = fpNormalizePlacements(body.plan);
-    state.fp.blocks = fpNormalizeBlocks(body.plan);
-    state.fp.boundaries = fpNormalizeBoundaries(body.plan);
-    state.fp.markers = fpNormalizeMarkers(body.plan);
-    state.fp.gfa = body.plan && body.plan.gfaSqft != null && Number.isFinite(body.plan.gfaSqft) ? body.plan.gfaSqft : null;
-    state.fp.unplaced = (body.unplacedUnits || []).map(fpNormalizeUnit);
-    state.fp.branchName = body.branch && body.branch.name;
-    state.fp.floorName = body.floor ? `Level ${body.floor.level}` : '';
-    state.fp.selected = null;
-    state.fp.selectedBlock = null;
-    state.fp.selectedBoundary = null;
-    state.fp.selectedMarker = null;
-    state.fp.armedMarker = null;
-    state.fp.scale = 1;
-    fpClearUndo(); // floor (re)load invalidates inverse ops from the previous floor
+    fpApplyPlanPayload(body, false); // full reload: selection, zoom and undo reset
     // A (re)load shows the live plan — no draft version is loaded anymore and
     // the canvas matches the server (unsaved-changes guard resets).
     fpSetLoadedDraft(null);
@@ -917,52 +1002,18 @@ const fpUndoStack = [];
 function fpPushUndo(entry) {
   if (!entry || !entry.kind) return;
   fpUndoStack.push(entry);
-  if (fpUndoStack.length > 50) fpUndoStack.shift();
+  if (fpUndoStack.length > FP_UNDO_LIMIT) fpUndoStack.shift();
+  fpRedoStack.length = 0; // a new action invalidates the redo branch
+  fpSyncUndoButtons();
 }
 function fpClearUndo() {
   fpUndoStack.length = 0;
+  fpRedoStack.length = 0;
+  fpSyncUndoButtons();
 }
 function fpUndoDepth() {
   return fpUndoStack.length;
 }
-async function fpUndo() {
-  const entry = fpUndoStack.pop();
-  if (!entry) {
-    fpToast('Nothing to undo.', false);
-    return;
-  }
-  const floorId = encodeURIComponent(state.fp.floorId);
-  try {
-    if (entry.kind === 'placement') {
-      const url = `/floor-plans/${floorId}/units/${encodeURIComponent(entry.unitId)}`;
-      if (entry.prev) await fpMutate(url, { method: 'PUT', body: JSON.stringify(entry.prev) });
-      else await fpMutate(url, { method: 'DELETE' });
-    } else if (entry.kind === 'block') {
-      const url = `/floor-plans/${floorId}/blocks/${encodeURIComponent(entry.blockId)}`;
-      if (entry.prev) await fpMutate(url, { method: 'PUT', body: JSON.stringify(entry.prev) });
-      else await fpMutate(url, { method: 'DELETE' });
-    } else if (entry.kind === 'marker') {
-      const url = `/floor-plans/${floorId}/markers/${encodeURIComponent(entry.markerId)}`;
-      if (entry.prev && entry.deleted) await fpMutate(`/floor-plans/${floorId}/markers`, { method: 'POST', body: JSON.stringify(entry.prev) });
-      else if (entry.prev) await fpMutate(url, { method: 'PUT', body: JSON.stringify(entry.prev) });
-      else await fpMutate(url, { method: 'DELETE' });
-    } else if (entry.kind === 'boundary') {
-      const url = `/floor-plans/${floorId}/boundaries/${encodeURIComponent(entry.boundaryId)}`;
-      if (entry.prev && entry.deleted) await fpMutate(`/floor-plans/${floorId}/boundaries`, { method: 'POST', body: JSON.stringify(entry.prev) });
-      else if (entry.prev) await fpMutate(url, { method: 'PUT', body: JSON.stringify(entry.prev) });
-      else await fpMutate(url, { method: 'DELETE' });
-    } else {
-      fpToast('Nothing to undo.', false);
-      return;
-    }
-    fpToast('Undone.', true);
-    await fpFetch();
-  } catch (err) {
-    fpToast('Undo: ' + describeError(err), false);
-    await fpFetch();
-  }
-}
-
 // ---------- occupied edit lock (live plans) ----------
 // Mirrors assertPlacementEditable() in src/core/floorPlans.ts: when the plan
 // is ACTIVE, OCCUPIED/OVERDUE placements are uneditable (no drag/resize/
@@ -1167,7 +1218,7 @@ function fpRenderStructure(canvas, u, structure) {
 // lines" means before pressing auto-place: units will only ever land in the
 // washed region, and the amber box says "close the loop for exact interior
 // placement" without a toast round-trip.
-function fpRenderBoundaryLayer(canvas, u, dims, boundaries, draft, selectedId) {
+function fpRenderBoundaryLayer(canvas, u, dims, boundaries, withOverlay, selectedId) {
   const SVG_NS = 'http://www.w3.org/2000/svg';
   const svg = document.createElementNS(SVG_NS, 'svg');
   svg.setAttribute('class', 'fp-boundary-layer');
@@ -1203,7 +1254,12 @@ function fpRenderBoundaryLayer(canvas, u, dims, boundaries, draft, selectedId) {
   for (const b of boundaries || []) {
     const pts = fpBoundaryPoints(b.points);
     if (pts.length < 2) continue;
-    addShape(pts, b.closed, 'fp-boundary' + (b.closed ? '' : ' open') + (b.id && b.id === selectedId ? ' selected' : ''));
+    // Line kinds (Phase 3): WALL = band of `thickness` ft, PARTITION = thin
+    // dashed, GUIDE = dotted construction line; BOUNDARY/PENCIL = marked area.
+    const kind = String(b.kind || '').toUpperCase();
+    const kindCls = kind === 'WALL' ? ' wall' : kind === 'PARTITION' ? ' partition' : kind === 'GUIDE' ? ' guide' : '';
+    addShape(pts, b.closed, 'fp-boundary' + kindCls + (b.closed && !kindCls ? '' : ' open') + (b.id && b.id === selectedId ? ' selected' : ''));
+    if (kind === 'WALL') svg.lastChild.style.strokeWidth = Math.max(2, (b.thickness || DEFAULT_WALL_THICKNESS_FT) * u) + 'px';
     if (String(b.kind || '').toUpperCase() !== 'PENCIL' || b.id === selectedId) {
       const [lx, ly] = pts[0];
       const label = document.createElementNS(SVG_NS, 'text');
@@ -1214,8 +1270,9 @@ function fpRenderBoundaryLayer(canvas, u, dims, boundaries, draft, selectedId) {
       svg.appendChild(label);
     }
   }
-  if (draft && (draft.x1 !== draft.x2 || draft.y1 !== draft.y2)) {
-    addShape([[draft.x1, draft.y1], [draft.x2, draft.y2]], false, 'fp-boundary draft');
+  if (withOverlay) {
+    fpRenderPenOverlay(svg, u);
+    fpRenderCalibOverlay(svg, u);
   }
   canvas.appendChild(svg);
 }
@@ -1227,19 +1284,36 @@ function fpRenderCanvas() {
   const u = fpPx();
   canvas.style.width = w * u + 'px';
   canvas.style.height = h * u + 'px';
-  canvas.style.backgroundSize = `${u}px ${u}px`;
-  // Studio grid toggle: off removes the 1-ft grid overlay (state.fp.showGrid,
-  // default true) without touching dims, zoom or content.
-  canvas.style.backgroundImage = state.fp.showGrid === false ? 'none' : '';
+  // Adaptive grid (decimal-feet Phase 2): 1-ft lines (the original grid),
+  // darker 10-ft majors, and faint snap-step minors once they are >= 6px apart
+  // so sub-foot snapping is visible when zoomed in. Studio grid toggle off
+  // removes every layer (state.fp.showGrid, default true).
+  if (state.fp.showGrid === false) {
+    canvas.style.backgroundImage = 'none';
+  } else {
+    const layers = [];
+    const sizes = [];
+    const line = (color, px) => {
+      layers.push(`linear-gradient(${color} 1px,transparent 1px)`, `linear-gradient(90deg,${color} 1px,transparent 1px)`);
+      sizes.push(`${px}px ${px}px`, `${px}px ${px}px`);
+    };
+    line('rgba(51,43,36,0.22)', u * 10);
+    line('var(--line)', u);
+    const minor = fpSnapStep() * u;
+    if (fpSnapStep() < 1 && minor >= 6) line('rgba(51,43,36,0.06)', minor);
+    canvas.style.backgroundImage = layers.join(',');
+    canvas.style.backgroundSize = sizes.join(',');
+  }
   canvas.innerHTML = '';
+  fpRenderUnderlay(canvas, u); // tracing image sits under everything (first child)
   fpRenderStructure(canvas, u);
-  fpRenderBoundaryLayer(canvas, u, fpCanvasDims(), state.fp.boundaries || [], fpDraftLine, state.fp.selectedBoundary);
+  fpRenderBoundaryLayer(canvas, u, fpCanvasDims(), fpLayerHidden('lines') ? [] : state.fp.boundaries || [], true, state.fp.selectedBoundary);
   // Decoration blocks — BELOW units in z-order (blocks z-index 1, units 2).
   // Fill falls back to FP_DEFAULT_BLOCK_COLOR (== the .fp-block CSS tone) when
   // the block has no persisted colour, so unset blocks render exactly as before.
-  for (const blk of state.fp.blocks) {
+  for (const blk of fpLayerHidden('blocks') ? [] : state.fp.blocks) {
     const el = document.createElement('div');
-    el.className = 'fp-block' + (state.fp.selectedBlock === blk.id ? ' selected' : '');
+    el.className = 'fp-block' + (state.fp.selectedBlock === blk.id || fpInMulti('block', blk.id) ? ' selected' : '');
     el.dataset.blockId = blk.id;
     el.style.left = blk.x * u + 'px';
     el.style.top = blk.y * u + 'px';
@@ -1259,13 +1333,13 @@ function fpRenderCanvas() {
   const statusDot = null; // retired: tile colours come from fpStatusColor() (no grey unknown fallback)
   // Stacked pairs (same rect, tiers 0 + 1) render as ONE block split by a
   // middle divider line: upper unit code above, lower code below.
-  for (const group of fpGroupByRect(state.fp.placements)) {
+  for (const group of fpGroupByRect(fpLayerHidden('units') ? [] : state.fp.placements)) {
     const r = group.rect;
     if (group.members.length >= 2) {
       const lower = group.members[0];
       const upper = group.members[1];
       const el = document.createElement('div');
-      const selected = state.fp.selected === lower.unitId || state.fp.selected === upper.unitId;
+      const selected = state.fp.selected === lower.unitId || state.fp.selected === upper.unitId || fpInMulti('placement', lower.unitId) || fpInMulti('placement', upper.unitId);
       el.className = 'fp-placed fp-stacked' + (selected ? ' selected' : '');
       el.dataset.unitId = lower.unitId;
       el.dataset.stackMateId = upper.unitId;
@@ -1288,7 +1362,7 @@ function fpRenderCanvas() {
     }
     const pl = group.members[0];
     const el = document.createElement('div');
-    el.className = 'fp-placed' + (state.fp.selected === pl.unitId ? ' selected' : '');
+    el.className = 'fp-placed' + (state.fp.selected === pl.unitId || fpInMulti('placement', pl.unitId) ? ' selected' : '');
     el.dataset.unitId = pl.unitId;
     el.dataset.stackTier = String(pl.stackTier || 0);
     el.style.left = pl.x * u + 'px';
@@ -1308,10 +1382,10 @@ function fpRenderCanvas() {
   // placement/block drags only run when the tool is toggled off). An armed
   // marker (Markers/Safety group) behaves the same — the next canvas click
   // places it, so the crosshair applies there too.
-  canvas.style.cursor = state.fp.drawMode || state.fp.armedMarker ? 'crosshair' : '';
+  canvas.style.cursor = state.fp.underlayMode === 'move' ? 'move' : state.fp.drawMode || state.fp.armedMarker || state.fp.measureMode || state.fp.underlayMode ? 'crosshair' : '';
   // Safety/facility point icons render LAST (top of the z-order) so a marker
   // never hides under a placement.
-  fpRenderMarkerLayer(canvas, u, state.fp.markers || [], true, state.fp.selectedMarker);
+  fpRenderMarkerLayer(canvas, u, fpLayerHidden('markers') ? [] : state.fp.markers || [], true, state.fp.selectedMarker);
   fpZoomLabel();
 }
 
@@ -1324,7 +1398,8 @@ function fpRenderMarkerLayer(canvas, u, markers, interactive, selectedId) {
     const def = fpMarkerDef(m.kind);
     const size = Math.max(22, Math.round(u * 1.1));
     const el = document.createElement('div');
-    el.className = 'fp-marker' + (m.id && m.id === selectedId ? ' selected' : '');
+    const isSel = !!m.id && (m.id === selectedId || (interactive && fpInMulti('marker', m.id)));
+    el.className = 'fp-marker' + (isSel ? ' selected' : '');
     el.dataset.markerId = m.id;
     el.title = `${fpMarkerLabel(m)} · ${m.x},${m.y} ft${interactive ? ' — drag to move, click to select' : ''}`;
     el.style.position = 'absolute';
@@ -1344,15 +1419,1683 @@ function fpRenderMarkerLayer(canvas, u, markers, interactive, selectedId) {
     el.style.boxSizing = 'border-box';
     el.style.zIndex = '3';
     if (!interactive) el.style.pointerEvents = 'none';
-    if (m.id && m.id === selectedId) el.style.boxShadow = `0 0 0 2px ${def.tone}`;
+    if (isSel) el.style.boxShadow = `0 0 0 2px ${def.tone}`;
     el.textContent = def.icon;
     canvas.appendChild(el);
   }
 }
 
+// ---------- tracing underlay + export (precision Phase 5) ----------
+// Underlay: one CMS-only image per plan (the architect's drawing) under the
+// canvas. PNG / JPEG / WebP upload as-is (downsized to ≤ 4000 px and ≤ 3.5 MB);
+// PDFs are rasterised client-side from page 1 with pdf.js (lazy-loaded from
+// cdnjs, like chart.js). Calibrate = click two features of known distance and
+// type it; Move = drag the image; rotation / offset / opacity / show / lock in
+// the 🗺 panel. Bytes are served only by the authenticated image route.
+// Export: SVG (vector, mm-sized at the chosen scale), PNG (raster of that
+// SVG) or PDF (jsPDF, lazy-loaded; page = the drawing's exact mm size so a
+// 100% print is to scale) with title block, scale bar, north arrow, legend.
+
+const FP_PDFJS_URL = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+const FP_PDFJS_WORKER_URL = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+const FP_JSPDF_URL = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';
+const FP_UNDERLAY_MAX_PX = 4000;
+const FP_UNDERLAY_MAX_BYTES = 3.5 * 1024 * 1024;
+let fpUnderlayImg = null; // { key, url } — object URL of the loaded image
+let fpCalib = null; // { a: [x,y], b: [x,y]|null } while calibrating
+const fpScriptCache = new Map();
+
+function fpLoadScript(url) {
+  if (fpScriptCache.has(url)) return fpScriptCache.get(url);
+  const p = new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = url;
+    s.async = true;
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error(`Could not load ${url} — check the network connection.`));
+    document.head.appendChild(s);
+  });
+  fpScriptCache.set(url, p);
+  p.catch(() => fpScriptCache.delete(url));
+  return p;
+}
+
+// Load (or reuse) the underlay image for the current plan; re-renders when ready.
+async function fpEnsureUnderlayImage() {
+  const u = state.fp.underlay;
+  if (!u) {
+    if (fpUnderlayImg) URL.revokeObjectURL(fpUnderlayImg.url);
+    fpUnderlayImg = null;
+    return;
+  }
+  // Settings-only updates (calibration, opacity) keep the same bytes, so the
+  // cache keys on image identity; a replace clears the cache explicitly.
+  const key = `${state.fp.floorId}:${u.id}:${u.widthPx}x${u.heightPx}:${u.mime}`;
+  if (fpUnderlayImg && fpUnderlayImg.key === key) return;
+  try {
+    const img = await get(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/underlay/image`);
+    const bin = atob(img.dataBase64);
+    const buf = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+    if (fpUnderlayImg) URL.revokeObjectURL(fpUnderlayImg.url);
+    fpUnderlayImg = { key, url: URL.createObjectURL(new Blob([buf], { type: img.mime })) };
+    fpRenderCanvas();
+  } catch (err) {
+    fpToast('Underlay image: ' + describeError(err), false);
+  }
+}
+
+function fpRenderUnderlay(canvas, u) {
+  const ul = state.fp.underlay;
+  if (!ul || !ul.visible || !fpUnderlayImg) return;
+  const img = document.createElement('img');
+  img.className = 'fp-underlay';
+  img.src = fpUnderlayImg.url;
+  img.alt = '';
+  img.draggable = false;
+  img.style.left = ul.offsetX * u + 'px';
+  img.style.top = ul.offsetY * u + 'px';
+  img.style.width = ul.widthPx * ul.ftPerPx * u + 'px';
+  img.style.height = ul.heightPx * ul.ftPerPx * u + 'px';
+  img.style.opacity = String(ul.opacity);
+  img.style.transform = `rotate(${ul.rotation}deg)`;
+  canvas.appendChild(img);
+}
+
+// ---- upload ----
+function fpCanvasToBlob(c, type, quality) {
+  return new Promise((resolve) => c.toBlob((b) => resolve(b), type, quality));
+}
+
+function fpBlobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result).replace(/^data:[^,]*,/, ''));
+    r.onerror = () => reject(r.error);
+    r.readAsDataURL(blob);
+  });
+}
+
+// File → canvas (PDF page 1 via pdf.js; images via createImageBitmap), ≤ 4000 px.
+async function fpFileToCanvas(file) {
+  const c = document.createElement('canvas');
+  const ctx = c.getContext('2d');
+  if (file.type === 'application/pdf' || /\.pdf$/i.test(file.name || '')) {
+    await fpLoadScript(FP_PDFJS_URL);
+    const pdfjs = window.pdfjsLib;
+    if (!pdfjs) throw new Error('pdf.js did not load');
+    pdfjs.GlobalWorkerOptions.workerSrc = FP_PDFJS_WORKER_URL;
+    const doc = await pdfjs.getDocument({ data: await file.arrayBuffer() }).promise;
+    const page = await doc.getPage(1);
+    const vp1 = page.getViewport({ scale: 1 });
+    const vp = page.getViewport({ scale: Math.min(6, FP_UNDERLAY_MAX_PX / Math.max(vp1.width, vp1.height)) });
+    c.width = Math.round(vp.width);
+    c.height = Math.round(vp.height);
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, c.width, c.height);
+    await page.render({ canvasContext: ctx, viewport: vp }).promise;
+    return { canvas: c, pages: doc.numPages };
+  }
+  const bmp = await createImageBitmap(file);
+  const k = Math.min(1, FP_UNDERLAY_MAX_PX / Math.max(bmp.width, bmp.height));
+  c.width = Math.max(1, Math.round(bmp.width * k));
+  c.height = Math.max(1, Math.round(bmp.height * k));
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, c.width, c.height);
+  ctx.drawImage(bmp, 0, 0, c.width, c.height);
+  return { canvas: c, pages: 1 };
+}
+
+// PNG when it fits the cap (crisp line work), else JPEG, downscaling until it fits.
+async function fpEncodeUnderlay(canvas) {
+  let c = canvas;
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const png = await fpCanvasToBlob(c, 'image/png');
+    if (png && png.size <= FP_UNDERLAY_MAX_BYTES) return { blob: png, mime: 'image/png', w: c.width, h: c.height };
+    for (const q of [0.88, 0.75]) {
+      const jpg = await fpCanvasToBlob(c, 'image/jpeg', q);
+      if (jpg && jpg.size <= FP_UNDERLAY_MAX_BYTES) return { blob: jpg, mime: 'image/jpeg', w: c.width, h: c.height };
+    }
+    const next = document.createElement('canvas');
+    next.width = Math.max(1, Math.round(c.width * 0.8));
+    next.height = Math.max(1, Math.round(c.height * 0.8));
+    next.getContext('2d').drawImage(c, 0, 0, next.width, next.height);
+    c = next;
+  }
+  throw new Error('The drawing is too detailed to fit 3.5 MB — export a smaller image or a simpler PDF page.');
+}
+
+async function fpUploadUnderlay(file) {
+  if (!file || !state.fp.floorId) return;
+  try {
+    fpToast(`Preparing "${file.name}"…`, true);
+    const { canvas, pages } = await fpFileToCanvas(file);
+    const enc = await fpEncodeUnderlay(canvas);
+    const res = await fpMutate(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/underlay`, {
+      method: 'POST',
+      body: JSON.stringify({ name: file.name, contentType: enc.mime, dataBase64: await fpBlobToBase64(enc.blob), widthPx: enc.w, heightPx: enc.h }),
+    });
+    state.fp.underlay = res.data;
+    fpUnderlayImg = null;
+    await fpEnsureUnderlayImage();
+    fpRenderUnderlayMenu();
+    fpRenderCanvas();
+    fpToast(
+      `Underlay "${file.name}" uploaded (${enc.w}×${enc.h} px${pages > 1 ? `, page 1 of ${pages}` : ''}) — now 📐 Calibrate it: click two points of a known distance.`,
+      true,
+    );
+  } catch (err) {
+    fpToast('Underlay upload: ' + describeError(err), false);
+  }
+}
+
+async function fpPatchUnderlay(patch, verb) {
+  try {
+    const res = await fpMutate(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/underlay`, { method: 'PUT', body: JSON.stringify(patch) });
+    state.fp.underlay = res.data;
+    fpRenderUnderlayMenu();
+    fpRenderCanvas();
+    if (verb) fpToast(verb, true);
+    return true;
+  } catch (err) {
+    fpToast('Underlay: ' + describeError(err), false);
+    return false;
+  }
+}
+
+async function fpRemoveUnderlay() {
+  const ok = await confirmDialog({ title: 'Remove the underlay image?', message: 'The tracing image is deleted. Drawn units, blocks and lines are not affected.', confirmLabel: 'Remove', danger: true });
+  if (!ok) return;
+  try {
+    await fpMutate(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/underlay`, { method: 'DELETE' });
+    state.fp.underlay = null;
+    await fpEnsureUnderlayImage();
+    fpSetUnderlayMode(null);
+    fpRenderUnderlayMenu();
+    fpRenderCanvas();
+    fpToast('Underlay removed.', true);
+  } catch (err) {
+    fpToast('Remove underlay: ' + describeError(err), false);
+  }
+}
+
+// ---- calibrate / move modes ----
+// state.fp.underlayMode: null | 'calibrate' | 'move'
+function fpSetUnderlayMode(mode) {
+  state.fp.underlayMode = mode;
+  fpCalib = null;
+  if (mode) {
+    state.fp.drawMode = false;
+    fpResetPen();
+    if (state.fp.measureMode) fpSetMeasureMode(false);
+    state.fp.armedMarker = null;
+    fpClearSingles();
+    state.fp.multi = [];
+  }
+  fpRenderUnderlayMenu();
+  fpRenderCanvas();
+  fpRenderSelInfo();
+  fpSyncModeUI();
+  fpSetReadout(
+    mode === 'calibrate'
+      ? 'Calibrate · click the first point of a known dimension on the drawing (Esc cancels)'
+      : mode === 'move'
+        ? 'Move underlay · drag the drawing into place (Esc ends)'
+        : '',
+  );
+}
+
+function fpCalibRaw(e) {
+  const raw = fpCanvasRawAt(e.clientX, e.clientY);
+  return raw ? [quantizeFt(raw[0]), quantizeFt(raw[1])] : null;
+}
+
+function fpUnderlayPointerDown(e) {
+  if (e.button !== 0) return;
+  const ul = state.fp.underlay;
+  if (!ul) return;
+  e.preventDefault();
+  if (state.fp.underlayMode === 'calibrate') {
+    const p = fpCalibRaw(e);
+    if (!p) return;
+    if (!fpCalib || fpCalib.b) fpCalib = { a: p, b: null };
+    else fpCalib.b = p;
+    fpRenderCanvas();
+    fpRenderSelInfo();
+    if (fpCalib.b) {
+      const len = segmentLengthFt(fpCalib.a, fpCalib.b);
+      fpSetReadout(`Calibrate · currently ${formatFt(Math.round(len * 100) / 100)} ft on the plan — type the REAL distance below`);
+      $('#fpSelInfo [data-fp-calib="dist"]')?.focus();
+    } else fpSetReadout('Calibrate · now click the second point');
+    return;
+  }
+  // Move: drag the image by the pointer delta (raw, unsnapped).
+  const raw0 = fpCanvasRawAt(e.clientX, e.clientY);
+  const ox = ul.offsetX;
+  const oy = ul.offsetY;
+  let moved = false;
+  const move = (ev) => {
+    const raw = fpCanvasRawAt(ev.clientX, ev.clientY);
+    if (!raw || !raw0) return;
+    moved = true;
+    ul.offsetX = quantizeFt(ox + raw[0] - raw0[0]);
+    ul.offsetY = quantizeFt(oy + raw[1] - raw0[1]);
+    fpRenderCanvas();
+    fpSetReadout(`Underlay offset ${formatFt(ul.offsetX)}, ${formatFt(ul.offsetY)} ft`);
+  };
+  const up = () => {
+    document.removeEventListener('pointermove', move);
+    document.removeEventListener('pointerup', up);
+    if (moved) fpPatchUnderlay({ offsetX: ul.offsetX, offsetY: ul.offsetY }, 'Underlay moved.');
+  };
+  document.addEventListener('pointermove', move);
+  document.addEventListener('pointerup', up);
+}
+
+async function fpApplyCalibration() {
+  const ul = state.fp.underlay;
+  if (!ul || !fpCalib || !fpCalib.b) return;
+  const real = fpParseLen(($('#fpSelInfo [data-fp-calib="dist"]') || {}).value);
+  if (real === null || real <= 0) {
+    fpToast('Type the real distance between the two points in feet (e.g. 75 or 24.5).', false);
+    return;
+  }
+  const t = calibrateUnderlay(ul, fpCalib.a, fpCalib.b, real);
+  const before = ul.ftPerPx;
+  const ok = await fpPatchUnderlay({ ftPerPx: t.ftPerPx, offsetX: quantizeFt(t.offsetX), offsetY: quantizeFt(t.offsetY) });
+  if (ok) {
+    const ulNow = state.fp.underlay;
+    fpToast(`Calibrated — the drawing is now ${formatFt(ulNow.widthFt)} × ${formatFt(ulNow.heightFt)} ft (scale ×${Math.round((t.ftPerPx / before) * 1000) / 1000}). Check a second known dimension with 📏 Measure.`, true);
+    fpSetUnderlayMode(null);
+  }
+}
+
+function fpCalibInfoHTML() {
+  if (!fpCalib || !fpCalib.b) return `<span class="t-type">📐 Calibrate underlay — click ${fpCalib ? 'the second' : 'the first'} point of a known dimension · Esc cancels</span>`;
+  const len = segmentLengthFt(fpCalib.a, fpCalib.b);
+  return (
+    `<span class="t-type">📐 Plan distance ${formatFt(Math.round(len * 1000) / 1000)} ft · real distance</span>` +
+    `<input type="text" inputmode="decimal" class="tbl-search fp-num" data-fp-calib="dist" aria-label="Real distance in feet" placeholder="ft" autocomplete="off">` +
+    `<span class="t-type">ft</span><button class="act-btn primary" id="fpCalibApply" style="padding:2px 9px;font-size:10px;">Apply</button>` +
+    `<button class="act-btn" id="fpCalibCancel" style="padding:2px 9px;font-size:10px;">Cancel</button>`
+  );
+}
+
+function fpRenderCalibOverlay(svg, u) {
+  if (state.fp.underlayMode !== 'calibrate' || !fpCalib) return;
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+  const mk = (tag, attrs) => {
+    const n = document.createElementNS(SVG_NS, tag);
+    for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, String(v));
+    svg.appendChild(n);
+  };
+  const { a, b } = fpCalib;
+  if (b) mk('line', { x1: a[0] * u, y1: a[1] * u, x2: b[0] * u, y2: b[1] * u, class: 'fp-measure-line' });
+  [a, b].filter(Boolean).forEach((p) => {
+    mk('circle', { cx: p[0] * u, cy: p[1] * u, r: 6, class: 'fp-calib-mark' });
+    mk('path', { d: `M${p[0] * u - 9},${p[1] * u}H${p[0] * u + 9}M${p[0] * u},${p[1] * u - 9}V${p[1] * u + 9}`, class: 'fp-calib-cross' });
+  });
+}
+
+// ---- 🗺 panel ----
+function fpRenderUnderlayMenu() {
+  const el = $('#fpUnderlayPanel');
+  if (!el) return;
+  const ul = state.fp.underlay;
+  const btn = $('#fpUnderlayBtn');
+  if (btn) btn.classList.toggle('on', !!ul && ul.visible);
+  const file = `<label class="act-btn" style="padding:3px 9px;font-size:11px;cursor:pointer;">${ul ? 'Replace…' : '⤒ Upload drawing…'}<input type="file" id="fpUnderlayFile" accept="image/png,image/jpeg,image/webp,application/pdf,.pdf" hidden></label>`;
+  if (!ul) {
+    el.innerHTML = `<div class="t-type" style="max-width:260px;white-space:normal;margin-bottom:6px;">Trace over the architect's plan: upload a PNG / JPEG / WebP or a PDF (page 1). It stays CMS-only — never shown to customers.</div>${file}`;
+    return;
+  }
+  const row = (inner) => `<div style="display:flex;gap:6px;align-items:center;margin:4px 0;white-space:nowrap;">${inner}</div>`;
+  const num = (key, label, v, title) => `<span class="fp-num-lbl">${label}</span><input type="text" inputmode="decimal" class="tbl-search fp-num" data-fp-ul="${key}" value="${escapeHtml(formatFt(v))}" title="${title}" aria-label="${title}" autocomplete="off">`;
+  el.innerHTML =
+    row(`<span class="t-type" style="font-weight:700;max-width:220px;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(ul.name || 'Underlay')}</span>`) +
+    row(`<span class="t-type">${formatFt(ul.widthFt)} × ${formatFt(ul.heightFt)} ft · ${ul.widthPx}×${ul.heightPx} px · 1 px = ${Math.round(ul.ftPerPx * 100000) / 100000} ft</span>`) +
+    row(
+      `<label class="t-type"><input type="checkbox" data-fp-ul="visible"${ul.visible ? ' checked' : ''}> show</label>` +
+        `<label class="t-type"><input type="checkbox" data-fp-ul="locked"${ul.locked ? ' checked' : ''}> lock</label>` +
+        `<span class="fp-num-lbl">opacity</span><input type="range" min="5" max="100" step="5" data-fp-ul="opacity" value="${Math.round(ul.opacity * 100)}" aria-label="Underlay opacity" style="width:90px;">`,
+    ) +
+    row(
+      `<button class="act-btn${state.fp.underlayMode === 'calibrate' ? ' primary' : ''}" id="fpUnderlayCalib" style="padding:2px 9px;font-size:11px;"${ul.locked ? ' disabled' : ''} title="Click two features of a known distance on the drawing, then type that distance">📐 Calibrate</button>` +
+        `<button class="act-btn${state.fp.underlayMode === 'move' ? ' primary' : ''}" id="fpUnderlayMove" style="padding:2px 9px;font-size:11px;"${ul.locked ? ' disabled' : ''} title="Drag the drawing into place">✥ Move</button>` +
+        `<button class="act-btn" id="fpUnderlayRot" style="padding:2px 9px;font-size:11px;"${ul.locked ? ' disabled' : ''} title="Rotate 90° clockwise">↻ 90°</button>`,
+    ) +
+    row(num('offsetX', 'X', ul.offsetX, 'Underlay left edge, feet') + num('offsetY', 'Y', ul.offsetY, 'Underlay top edge, feet') + num('rotation', '∠', ul.rotation, 'Rotation in degrees (clockwise)')) +
+    row(file + `<button class="act-btn danger" id="fpUnderlayRemove" style="padding:2px 9px;font-size:11px;">Remove</button>`);
+}
+
+function fpWireUnderlayPanel() {
+  const panel = $('#fpUnderlayPanel');
+  if (!panel) return;
+  panel.addEventListener('change', (e) => {
+    const t = e.target;
+    if (!t) return;
+    if (t.id === 'fpUnderlayFile') {
+      const f = t.files && t.files[0];
+      if (f) fpUploadUnderlay(f);
+      t.value = '';
+      return;
+    }
+    const key = t.dataset && t.dataset.fpUl;
+    if (!key || !state.fp.underlay) return;
+    if (key === 'visible' || key === 'locked') {
+      fpPatchUnderlay({ [key]: t.checked });
+      if (key === 'locked' && t.checked) fpSetUnderlayMode(null);
+    } else if (key === 'opacity') fpPatchUnderlay({ opacity: Math.max(0.05, Math.min(1, Number(t.value) / 100)) });
+    else {
+      const v = key === 'rotation' ? Number(t.value) : fpParseLen(t.value);
+      if (v === null || !Number.isFinite(v)) {
+        fpToast('Enter a number.', false);
+        fpRenderUnderlayMenu();
+        return;
+      }
+      fpPatchUnderlay({ [key]: key === 'rotation' ? v : quantizeFt(v) });
+    }
+  });
+  panel.addEventListener('input', (e) => {
+    const t = e.target;
+    if (t && t.dataset && t.dataset.fpUl === 'opacity' && state.fp.underlay) {
+      state.fp.underlay.opacity = Number(t.value) / 100; // live preview; `change` persists
+      fpRenderCanvas();
+    }
+  });
+  panel.addEventListener('click', (e) => {
+    const id = e.target && e.target.id;
+    if (id === 'fpUnderlayCalib') fpSetUnderlayMode(state.fp.underlayMode === 'calibrate' ? null : 'calibrate');
+    else if (id === 'fpUnderlayMove') fpSetUnderlayMode(state.fp.underlayMode === 'move' ? null : 'move');
+    else if (id === 'fpUnderlayRot' && state.fp.underlay) fpPatchUnderlay({ rotation: (state.fp.underlay.rotation + 90) % 360 }, 'Underlay rotated 90°.');
+    else if (id === 'fpUnderlayRemove') fpRemoveUnderlay();
+  });
+}
+
+// ---- export ----
+const FP_EXPORT_SCALES = [20, 25, 50, 75, 100, 125, 150, 200, 250, 300, 400, 500, 750, 1000, 1250, 1500, 2000];
+const FP_PAPER = { A4: [297, 210], A3: [420, 297], A2: [594, 420], A1: [841, 594] };
+const FP_EXPORT_FILL = { AVAILABLE: ['#DCEAD9', '#2E6B46'], RESERVED: ['#FFF8E1', '#F57F17'], OCCUPIED: ['#ECEFF1', '#332B24'] };
+const FP_EXPORT_MARGIN = 12;
+const FP_EXPORT_TITLE_H = 30;
+
+function fpExportFill(status) {
+  const s = String(status || '').toUpperCase();
+  return FP_EXPORT_FILL[s] || (s === 'AVAILABLE' ? FP_EXPORT_FILL.AVAILABLE : FP_EXPORT_FILL.OCCUPIED);
+}
+
+function fpXml(s) {
+  return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+// Resolve the sheet: fixed 1:n (sheet sized to the drawing) or "fit A3/A4…"
+// (largest standard scale whose drawing fits the paper, landscape or portrait).
+function fpExportLayout(scaleOpt) {
+  const { w, h } = fpCanvasDims();
+  const ftMm = 304.8;
+  const fit = /^fit-(A\d)$/.exec(scaleOpt || '');
+  if (fit) {
+    const [pw, ph] = FP_PAPER[fit[1]];
+    let best = null;
+    for (const [sw, sh] of [[pw, ph], [ph, pw]]) {
+      const availW = sw - 2 * FP_EXPORT_MARGIN;
+      const availH = sh - 2 * FP_EXPORT_MARGIN - FP_EXPORT_TITLE_H;
+      const n = FP_EXPORT_SCALES.find((k) => (w * ftMm) / k <= availW && (h * ftMm) / k <= availH);
+      if (n && (!best || n < best.n)) best = { n, sheetW: sw, sheetH: sh, paper: fit[1] };
+    }
+    if (!best) best = { n: FP_EXPORT_SCALES[FP_EXPORT_SCALES.length - 1], sheetW: pw, sheetH: ph, paper: fit[1] };
+    return { ...best, mmPerFt: ftMm / best.n, drawW: (w * ftMm) / best.n, drawH: (h * ftMm) / best.n };
+  }
+  const n = Number(String(scaleOpt || '100').replace(/^1:/, '')) || 100;
+  const drawW = (w * ftMm) / n;
+  const drawH = (h * ftMm) / n;
+  return { n, mmPerFt: ftMm / n, drawW, drawH, sheetW: Math.max(drawW + 2 * FP_EXPORT_MARGIN, 160), sheetH: drawH + 2 * FP_EXPORT_MARGIN + FP_EXPORT_TITLE_H, paper: 'custom' };
+}
+
+// A "nice" scale-bar length in feet (~1/4 of the drawing width).
+function fpScaleBarFt(planW) {
+  const target = planW / 4;
+  const steps = [1, 2, 5, 10, 20, 25, 50, 100, 200, 500];
+  return steps.reduce((best, s) => (Math.abs(s - target) < Math.abs(best - target) ? s : best), steps[0]);
+}
+
+/** Standalone SVG of the plan at a real print scale (all coordinates in mm). */
+function fpBuildExportSVG(opts) {
+  const L = fpExportLayout(opts.scale);
+  const k = L.mmPerFt;
+  const { w: cw, h: ch } = fpCanvasDims();
+  const ox = (L.sheetW - L.drawW) / 2;
+  const oy = FP_EXPORT_MARGIN;
+  const X = (ft) => (ox + ft * k).toFixed(3);
+  const Y = (ft) => (oy + ft * k).toFixed(3);
+  const out = [];
+  out.push(`<svg xmlns="http://www.w3.org/2000/svg" width="${L.sheetW.toFixed(2)}mm" height="${L.sheetH.toFixed(2)}mm" viewBox="0 0 ${L.sheetW.toFixed(3)} ${L.sheetH.toFixed(3)}" font-family="Helvetica, Arial, sans-serif">`);
+  out.push(`<rect x="0" y="0" width="${L.sheetW}" height="${L.sheetH}" fill="#ffffff"/>`);
+  // Optional underlay (embedded data URL) — off by default.
+  const ul = state.fp.underlay;
+  if (opts.underlay && ul && ul.visible && opts.underlayDataUrl) {
+    out.push(`<image href="${opts.underlayDataUrl}" x="${X(ul.offsetX)}" y="${Y(ul.offsetY)}" width="${(ul.widthPx * ul.ftPerPx * k).toFixed(3)}" height="${(ul.heightPx * ul.ftPerPx * k).toFixed(3)}" opacity="${ul.opacity}" transform="rotate(${ul.rotation} ${X(ul.offsetX)} ${Y(ul.offsetY)})" preserveAspectRatio="none"/>`);
+  }
+  out.push(`<rect x="${X(0)}" y="${Y(0)}" width="${(cw * k).toFixed(3)}" height="${(ch * k).toFixed(3)}" fill="none" stroke="#B8B0A4" stroke-width="0.25"/>`);
+  if (opts.grid) {
+    const g = [];
+    for (let x = 1; x < cw; x++) g.push(`M${X(x)},${Y(0)}V${Y(ch)}`);
+    for (let y = 1; y < ch; y++) g.push(`M${X(0)},${Y(y)}H${X(cw)}`);
+    out.push(`<path d="${g.join('')}" stroke="#ECE6DC" stroke-width="0.12" fill="none"/>`);
+  }
+  // Lines by kind (GUIDE lines never print).
+  for (const b of fpLayerHidden('lines') ? [] : state.fp.boundaries || []) {
+    const kind = String(b.kind || '').toUpperCase();
+    if (kind === 'GUIDE') continue;
+    const pts = fpBoundaryPoints(b.points);
+    if (pts.length < 2) continue;
+    const d = 'M' + pts.map(([x, y]) => `${X(x)},${Y(y)}`).join('L') + (b.closed ? 'Z' : '');
+    if (kind === 'WALL') out.push(`<path d="${d}" fill="none" stroke="#3A322B" stroke-width="${((b.thickness || DEFAULT_WALL_THICKNESS_FT) * k).toFixed(3)}" stroke-linejoin="miter" stroke-linecap="square"/>`);
+    else if (kind === 'PARTITION') out.push(`<path d="${d}" fill="none" stroke="#6B5F55" stroke-width="0.25" stroke-dasharray="1.5 1"/>`);
+    else out.push(`<path d="${d}" fill="${b.closed || pts.length >= 3 ? 'rgba(11,79,94,0.05)' : 'none'}" stroke="#0B4F5E" stroke-width="0.5" stroke-linejoin="round"/>`);
+  }
+  // Blocks.
+  for (const blk of fpLayerHidden('blocks') ? [] : state.fp.blocks) {
+    out.push(`<rect x="${X(blk.x)}" y="${Y(blk.y)}" width="${(blk.width * k).toFixed(3)}" height="${(blk.height * k).toFixed(3)}" fill="${fpXml(fpBlockFill(blk))}" stroke="#9C9284" stroke-width="0.2"/>`);
+    const fs = Math.min(blk.height * k * 0.35, (blk.width * k) / Math.max(4, String(blk.name || '').length * 0.62), 3.2);
+    if (fs >= 0.9) out.push(`<text x="${X(blk.x + blk.width / 2)}" y="${Y(blk.y + blk.height / 2)}" font-size="${fs.toFixed(2)}" text-anchor="middle" dominant-baseline="central" fill="#5A5048">${fpXml(blk.name)}</text>`);
+  }
+  // Units (stacked pairs print once with both codes).
+  for (const group of fpLayerHidden('units') ? [] : fpGroupByRect(state.fp.placements)) {
+    const r = group.rect;
+    const lower = group.members[0];
+    const [fill, ink] = fpExportFill(lower.status);
+    out.push(`<rect x="${X(r.x)}" y="${Y(r.y)}" width="${(r.width * k).toFixed(3)}" height="${(r.height * k).toFixed(3)}" fill="${fill}" stroke="${ink}" stroke-width="0.25"/>`);
+    if (opts.labels !== false) {
+      const code = group.members.map((m) => m.unitCode).join(' / ');
+      const sq = group.members.map((m) => `${m.sqft}`).join('/') + ' sqft';
+      const wmm = r.width * k;
+      const hmm = r.height * k;
+      const fs = Math.min(hmm * 0.3, wmm / Math.max(3, code.length * 0.62), 3.4);
+      if (fs >= 0.8) {
+        out.push(`<text x="${X(r.x + r.width / 2)}" y="${(oy + (r.y + r.height / 2) * k - fs * 0.15).toFixed(3)}" font-size="${fs.toFixed(2)}" font-weight="700" text-anchor="middle" fill="${ink}">${fpXml(code)}</text>`);
+        if (hmm > fs * 2.6) out.push(`<text x="${X(r.x + r.width / 2)}" y="${(oy + (r.y + r.height / 2) * k + fs * 1.05).toFixed(3)}" font-size="${(fs * 0.75).toFixed(2)}" text-anchor="middle" fill="${ink}">${fpXml(sq)}</text>`);
+      }
+    }
+  }
+  // Markers.
+  for (const m of fpLayerHidden('markers') ? [] : state.fp.markers || []) {
+    const def = fpMarkerDef(m.kind);
+    const rr = Math.max(1.2, Math.min(2.4, 1.2 * k));
+    out.push(`<circle cx="${X(m.x)}" cy="${Y(m.y)}" r="${rr.toFixed(2)}" fill="#fff" stroke="${def.tone}" stroke-width="0.35"/>`);
+    out.push(`<text x="${X(m.x)}" y="${Y(m.y)}" font-size="${(rr * 1.1).toFixed(2)}" text-anchor="middle" dominant-baseline="central">${fpXml(def.icon)}</text>`);
+  }
+  // North arrow (plan up = north) at the drawing's top-right.
+  const nx = ox + L.drawW - 6;
+  const ny = oy + 8;
+  out.push(`<g><path d="M${nx},${ny - 6}L${nx + 2.6},${ny + 2}L${nx},${ny}L${nx - 2.6},${ny + 2}Z" fill="#332B24"/><text x="${nx}" y="${ny + 6}" font-size="3" font-weight="700" text-anchor="middle" fill="#332B24">N</text></g>`);
+  // Title block.
+  const ty = L.sheetH - FP_EXPORT_MARGIN - FP_EXPORT_TITLE_H + 4;
+  const tx = FP_EXPORT_MARGIN;
+  const tw = L.sheetW - 2 * FP_EXPORT_MARGIN;
+  out.push(`<rect x="${tx}" y="${ty}" width="${tw}" height="${FP_EXPORT_TITLE_H - 4}" fill="none" stroke="#332B24" stroke-width="0.3"/>`);
+  const m = fpBoundaryMetricsLocal();
+  const title = `StoreLah — ${state.fp.branchName || ''} · ${state.fp.floorName || ''}`;
+  const dateStr = new Date().toLocaleDateString('en-SG', { year: 'numeric', month: 'short', day: 'numeric' });
+  out.push(`<text x="${tx + 4}" y="${ty + 7}" font-size="4" font-weight="700" fill="#332B24">${fpXml(title)}</text>`);
+  out.push(`<text x="${tx + 4}" y="${ty + 13}" font-size="2.6" fill="#5A5048">Floor plan · ${fpXml(formatFt(cw))} × ${fpXml(formatFt(ch))} ft canvas · ${state.fp.placements.length} units placed${m.boundaryClosed ? ` · UFA ${fpFmtArea(m.ufa)} sqft · NLA ${fpFmtArea(m.nla)} sqft` : ''}</text>`);
+  out.push(`<text x="${tx + 4}" y="${ty + 19}" font-size="2.6" fill="#5A5048">Printed ${fpXml(dateStr)} · status ${fpXml(String(state.fp.plan && state.fp.plan.status || 'DRAFT'))}</text>`);
+  // Scale bar.
+  const barFt = fpScaleBarFt(cw);
+  const barMm = barFt * k;
+  const bx = tx + tw / 2 - barMm / 2;
+  const by = ty + 9;
+  for (let i = 0; i < 4; i++) out.push(`<rect x="${(bx + (i * barMm) / 4).toFixed(3)}" y="${by}" width="${(barMm / 4).toFixed(3)}" height="1.6" fill="${i % 2 ? '#fff' : '#332B24'}" stroke="#332B24" stroke-width="0.2"/>`);
+  out.push(`<text x="${bx.toFixed(3)}" y="${by + 5}" font-size="2.4" text-anchor="middle" fill="#332B24">0</text><text x="${(bx + barMm).toFixed(3)}" y="${by + 5}" font-size="2.4" text-anchor="middle" fill="#332B24">${barFt} ft</text>`);
+  out.push(`<text x="${(bx + barMm / 2).toFixed(3)}" y="${by + 11}" font-size="3" font-weight="700" text-anchor="middle" fill="#332B24">Scale 1:${L.n}${L.paper !== 'custom' ? ` @ ${L.paper}` : ''} · sheet ${Math.round(L.sheetW)}×${Math.round(L.sheetH)} mm</text>`);
+  // Legend.
+  const lx = tx + tw - 58;
+  [['Available', 'AVAILABLE'], ['Reserved', 'RESERVED'], ['Occupied / other', 'OCCUPIED']].forEach(([label, s], i) => {
+    const [fill, ink] = fpExportFill(s);
+    out.push(`<rect x="${lx}" y="${ty + 4 + i * 6}" width="5" height="3.6" fill="${fill}" stroke="${ink}" stroke-width="0.25"/><text x="${lx + 7}" y="${ty + 6.9 + i * 6}" font-size="2.6" fill="#332B24">${label}</text>`);
+  });
+  out.push('</svg>');
+  return { svg: out.join(''), layout: L };
+}
+
+function fpDownload(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 30000);
+}
+
+async function fpSvgToPngBlob(svg, layout, dpiWanted) {
+  const maxPx = 9000;
+  const dpi = Math.max(72, Math.min(dpiWanted, (maxPx * 25.4) / Math.max(layout.sheetW, layout.sheetH)));
+  const wpx = Math.round((layout.sheetW / 25.4) * dpi);
+  const hpx = Math.round((layout.sheetH / 25.4) * dpi);
+  const img = new Image();
+  const url = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' }));
+  try {
+    await new Promise((resolve, reject) => {
+      img.onload = resolve;
+      img.onerror = () => reject(new Error('Could not rasterise the plan'));
+      img.src = url;
+    });
+    const c = document.createElement('canvas');
+    c.width = wpx;
+    c.height = hpx;
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, wpx, hpx);
+    ctx.drawImage(img, 0, 0, wpx, hpx);
+    return { blob: await fpCanvasToBlob(c, 'image/png'), dpi: Math.round(dpi), wpx, hpx };
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+async function fpExport() {
+  const fmt = (($('#fpExportFormat') || {}).value || 'pdf').toLowerCase();
+  const scale = ($('#fpExportScale') || {}).value || 'fit-A3';
+  const grid = !!($('#fpExportGrid') || {}).checked;
+  const withUnderlay = !!($('#fpExportUnderlay') || {}).checked;
+  try {
+    let underlayDataUrl = null;
+    if (withUnderlay && state.fp.underlay && fpUnderlayImg) {
+      const blob = await (await fetch(fpUnderlayImg.url)).blob();
+      underlayDataUrl = `data:${blob.type};base64,${await fpBlobToBase64(blob)}`;
+    }
+    const { svg, layout } = fpBuildExportSVG({ scale, grid, underlay: withUnderlay, underlayDataUrl, labels: true });
+    const base = `StoreLah-${String(state.fp.branchName || 'plan').replace(/[^A-Za-z0-9]+/g, '-')}-${String(state.fp.floorName || '').replace(/[^A-Za-z0-9]+/g, '')}-1to${layout.n}`;
+    if (fmt === 'svg') {
+      fpDownload(new Blob([svg], { type: 'image/svg+xml' }), `${base}.svg`);
+    } else if (fmt === 'png') {
+      const png = await fpSvgToPngBlob(svg, layout, 200);
+      fpDownload(png.blob, `${base}.png`);
+    } else {
+      await fpLoadScript(FP_JSPDF_URL);
+      const jsPDF = window.jspdf && window.jspdf.jsPDF;
+      if (!jsPDF) throw new Error('jsPDF did not load');
+      const png = await fpSvgToPngBlob(svg, layout, 220);
+      const dataUrl = `data:image/png;base64,${await fpBlobToBase64(png.blob)}`;
+      const landscape = layout.sheetW > layout.sheetH;
+      const doc = new jsPDF({ unit: 'mm', format: [layout.sheetW, layout.sheetH], orientation: landscape ? 'landscape' : 'portrait', compress: true });
+      doc.addImage(dataUrl, 'PNG', 0, 0, layout.sheetW, layout.sheetH, undefined, 'FAST');
+      doc.setProperties({ title: `${base} (scale 1:${layout.n})`, creator: 'StoreLah CMS' });
+      fpDownload(doc.output('blob'), `${base}.pdf`);
+    }
+    fpToast(`Exported ${fmt.toUpperCase()} at 1:${layout.n} — sheet ${Math.round(layout.sheetW)} × ${Math.round(layout.sheetH)} mm${fmt === 'pdf' ? '. Print at 100% / "Actual size" to keep the scale.' : '.'}`, true);
+    const menu = $('#fpExportMenu');
+    if (menu) menu.hidden = true;
+  } catch (err) {
+    fpToast('Export: ' + describeError(err), false);
+  }
+}
+
+// ---------- productivity (precision Phase 4) ----------
+// Multi-element edits go through POST /floor-plans/:floorId/batch, which
+// validates the FINAL layout and applies it atomically, then returns the full
+// plan read. Built on it: generic undo / REDO (every entry is a list of
+// {type, id, before, after} element states — legacy single-element entries are
+// converted on the fly), multi-select (Shift-click, marquee, Cmd/Ctrl+A) with
+// group drag / nudge / delete, align & distribute, copy / paste / duplicate
+// (blocks, markers, lines — units are real inventory), unit arrays (place the
+// next N unplaced units of the same size in a row), layers (show / lock) and
+// a keyboard-shortcut sheet. A save-status chip tracks in-flight writes and a
+// beforeunload guard protects pending ones.
+
+const fpRedoStack = [];
+let fpClipboard = null; // { items: [{ type, state }], pastes: number }
+let fpSaving = 0;
+let fpSaveFailed = false;
+let fpLastSavedAt = null;
+let fpGroupNudge = null; // { before, timer }
+const FP_UNDO_LIMIT = 100;
+const FP_LAYERS = [['units', 'Units'], ['blocks', 'Blocks'], ['lines', 'Lines'], ['markers', 'Markers']];
+const FP_LAYERS_STORAGE_KEY = 'storelah.fp.layers';
+const FP_BATCH_KEYS = { placement: 'placements', block: 'blocks', marker: 'markers', boundary: 'boundaries' };
+
+// ---- save status ----
+function fpRenderSaveStatus() {
+  const el = $('#fpSaveStatus');
+  if (!el) return;
+  if (fpSaving > 0) el.textContent = 'Saving…';
+  else if (fpSaveFailed) el.textContent = '⚠ Last save failed';
+  else if (fpLastSavedAt) el.textContent = `✓ Saved ${fpLastSavedAt.toLocaleTimeString('en-SG', { hour: '2-digit', minute: '2-digit' })}`;
+  else el.textContent = '';
+  el.style.color = fpSaveFailed && !fpSaving ? 'var(--terra,#C1664C)' : '';
+}
+
+function fpHasPendingWrites() {
+  return fpSaving > 0 || !!fpNudgePending || !!fpGroupNudge;
+}
+
+// ---- layers ----
+function fpLoadLayers() {
+  const base = Object.fromEntries(FP_LAYERS.map(([k]) => [k, { hidden: false, locked: false }]));
+  try {
+    const saved = JSON.parse(window.localStorage.getItem(FP_LAYERS_STORAGE_KEY) || '{}');
+    for (const [k] of FP_LAYERS) if (saved && saved[k]) base[k] = { hidden: !!saved[k].hidden, locked: !!saved[k].locked };
+  } catch (_) {
+    // Storage blocked or corrupt — every layer visible + unlocked.
+  }
+  state.fp.layers = base;
+}
+
+function fpLayerHidden(layer) {
+  return !!(state.fp.layers && state.fp.layers[layer] && state.fp.layers[layer].hidden);
+}
+
+// Hidden layers are also non-interactive.
+function fpLayerLocked(layer) {
+  return fpLayerHidden(layer) || !!(state.fp.layers && state.fp.layers[layer] && state.fp.layers[layer].locked);
+}
+
+function fpRenderLayersMenu() {
+  const menu = $('#fpLayersList');
+  if (!menu) return;
+  menu.innerHTML = FP_LAYERS.map(
+    ([k, label]) =>
+      `<label class="t-type" style="display:flex;gap:8px;align-items:center;padding:3px 2px;white-space:nowrap;">` +
+      `<span style="min-width:62px;font-weight:700;">${label}</span>` +
+      `<span><input type="checkbox" data-fp-layer="${k}" data-fp-layer-prop="hidden"${fpLayerHidden(k) ? '' : ' checked'}> show</span>` +
+      `<span><input type="checkbox" data-fp-layer="${k}" data-fp-layer-prop="locked"${state.fp.layers[k].locked ? ' checked' : ''}> lock</span></label>`,
+  ).join('');
+}
+
+function fpSetLayerProp(layer, prop, on) {
+  if (!state.fp.layers || !state.fp.layers[layer]) return;
+  state.fp.layers[layer][prop] = on;
+  try {
+    window.localStorage.setItem(FP_LAYERS_STORAGE_KEY, JSON.stringify(state.fp.layers));
+  } catch (_) {
+    // Storage blocked — applies for this session only.
+  }
+  // Drop selections that just became hidden / locked.
+  const layerOfType = { placement: 'units', block: 'blocks', marker: 'markers' };
+  state.fp.multi = (state.fp.multi || []).filter((m) => !fpLayerLocked(layerOfType[m.type]));
+  if (fpLayerLocked('units')) state.fp.selected = null;
+  if (fpLayerLocked('blocks')) state.fp.selectedBlock = null;
+  if (fpLayerLocked('markers')) state.fp.selectedMarker = null;
+  if (fpLayerLocked('lines')) {
+    state.fp.selectedBoundary = null;
+    state.fp.selectedVertex = null;
+  }
+  fpRenderLayersMenu();
+  fpRenderCanvas();
+  fpRenderSelInfo();
+}
+
+// ---- element states (the unit of undo / redo / batch) ----
+function fpElemState(type, id) {
+  if (type === 'placement') {
+    const p = state.fp.placements.find((x) => x.unitId === id);
+    return p ? { unitId: p.unitId, x: p.x, y: p.y, width: p.width, height: p.height, stackTier: p.stackTier || 0, doorEdges: p.doorEdges || null } : null;
+  }
+  if (type === 'block') {
+    const b = state.fp.blocks.find((x) => x.id === id);
+    return b ? { id: b.id, name: b.name, x: b.x, y: b.y, width: b.width, height: b.height, color: b.color || null, doorEdges: b.doorEdges || null } : null;
+  }
+  if (type === 'marker') {
+    const m = (state.fp.markers || []).find((x) => x.id === id);
+    return m ? { id: m.id, kind: m.kind, label: m.label || null, x: m.x, y: m.y } : null;
+  }
+  if (type === 'boundary') {
+    const b = (state.fp.boundaries || []).find((x) => x.id === id);
+    return b
+      ? { id: b.id, label: b.label || 'Boundary', kind: b.kind || 'BOUNDARY', points: fpBoundaryPoints(b.points), closed: !!b.closed, sortOrder: b.sortOrder || 0, thickness: b.thickness ?? null }
+      : null;
+  }
+  return null;
+}
+
+function fpBatchBody(items) {
+  const body = { upsert: {}, delete: {} };
+  for (const it of items) {
+    const k = FP_BATCH_KEYS[it.type];
+    if (!k) continue;
+    if (it.state) (body.upsert[k] = body.upsert[k] || []).push(it.state);
+    else (body.delete[k] = body.delete[k] || []).push(it.id);
+  }
+  return body;
+}
+
+// Adopt a plan payload (GET /floor-plans/:floorId shape). `keep` preserves
+// selection, zoom and undo history (batch responses); otherwise it is a full
+// reload (fpFetch).
+function fpApplyPlanPayload(body, keep) {
+  state.fp.plan = body.plan;
+  state.fp.underlay = body.underlay || null; // CMS-only tracing image metadata
+  fpEnsureUnderlayImage().catch(() => {});
+  state.fp.canvasDefaults = body.canvasDefaults || { width: 70, height: 80 };
+  state.fp.structure = body.plan ? body.plan.structure : null;
+  state.fp.placements = fpNormalizePlacements(body.plan);
+  state.fp.blocks = fpNormalizeBlocks(body.plan);
+  state.fp.boundaries = fpNormalizeBoundaries(body.plan);
+  state.fp.markers = fpNormalizeMarkers(body.plan);
+  state.fp.gfa = body.plan && body.plan.gfaSqft != null && Number.isFinite(body.plan.gfaSqft) ? body.plan.gfaSqft : null;
+  state.fp.unplaced = (body.unplacedUnits || []).map(fpNormalizeUnit);
+  state.fp.branchName = body.branch && body.branch.name;
+  state.fp.floorName = body.floor ? `Level ${body.floor.level}` : '';
+  if (keep) {
+    // Keep only selections whose element still exists.
+    if (state.fp.selected && !fpElemState('placement', state.fp.selected)) state.fp.selected = null;
+    if (state.fp.selectedBlock && !fpElemState('block', state.fp.selectedBlock)) state.fp.selectedBlock = null;
+    if (state.fp.selectedMarker && !fpElemState('marker', state.fp.selectedMarker)) state.fp.selectedMarker = null;
+    if (state.fp.selectedBoundary && !fpElemState('boundary', state.fp.selectedBoundary)) state.fp.selectedBoundary = null;
+    state.fp.multi = (state.fp.multi || []).filter((m) => fpElemState(m.type, m.id));
+    fpRender();
+    return;
+  }
+  state.fp.selected = null;
+  state.fp.selectedBlock = null;
+  state.fp.selectedBoundary = null;
+  state.fp.selectedMarker = null;
+  state.fp.selectedVertex = null;
+  state.fp.multi = [];
+  state.fp.armedMarker = null;
+  state.fp.scale = 1;
+  fpClearUndo(); // floor (re)load invalidates inverse ops from the previous floor
+}
+
+async function fpSendBatch(items) {
+  const res = await fpMutate(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/batch`, {
+    method: 'POST',
+    body: JSON.stringify(fpBatchBody(items)),
+  });
+  fpApplyPlanPayload(res.data, true);
+  notifyMetricsFloorChanged();
+}
+
+/**
+ * Persist target element states in one batch and record ONE undo step.
+ * `before` (optional) = the states to restore on undo, when the caller has
+ * already mutated local state (drags / nudges); else captured now.
+ */
+async function fpCommitBatch(targets, verb, before) {
+  const prior = before || targets.map((t) => ({ type: t.type, id: t.id, state: fpElemState(t.type, t.id) }));
+  try {
+    await fpSendBatch(targets);
+    fpPushUndo({
+      kind: 'batch',
+      items: prior.map((p) => ({ type: p.type, id: p.id, before: p.state, after: fpElemState(p.type, p.id) })),
+    });
+    fpToast(verb, true);
+    return true;
+  } catch (err) {
+    fpToast(`${verb.replace(/\.$/, '')}: ${describeError(err)}`, false);
+    await fpFetch();
+    return false;
+  }
+}
+
+// ---- undo / redo ----
+// Legacy single-element entries ({kind, <id>, prev, deleted?}) become one
+// {type, id, before, after} item; partial `prev` payloads merge over the
+// element's current state.
+function fpUndoItems(entry) {
+  if (entry.kind === 'batch') return entry.items;
+  const type = entry.kind;
+  const id = entry.unitId || entry.blockId || entry.markerId || entry.boundaryId;
+  const current = fpElemState(type, id);
+  let before = null;
+  if (entry.prev) {
+    before = { ...(current || {}), ...entry.prev };
+    if (type === 'placement') before.unitId = id;
+    else before.id = id;
+    if (type === 'boundary') before.points = fpBoundaryPoints(before.points);
+  }
+  return [{ type, id, before, after: current }];
+}
+
+async function fpUndo() {
+  fpFlushNudge();
+  fpFlushGroupNudge();
+  const entry = fpUndoStack.pop();
+  if (!entry) {
+    fpToast('Nothing to undo.', false);
+    return;
+  }
+  const items = fpUndoItems(entry);
+  try {
+    await fpSendBatch(items.map((i) => ({ type: i.type, id: i.id, state: i.before })));
+    fpRedoStack.push({ kind: 'batch', items });
+    fpToast(`Undone (${fpUndoStack.length} more · ${fpRedoStack.length} to redo).`, true);
+  } catch (err) {
+    fpToast('Undo: ' + describeError(err), false);
+    await fpFetch();
+  }
+  fpSyncUndoButtons();
+}
+
+async function fpRedo() {
+  const entry = fpRedoStack.pop();
+  if (!entry) {
+    fpToast('Nothing to redo.', false);
+    return;
+  }
+  try {
+    await fpSendBatch(entry.items.map((i) => ({ type: i.type, id: i.id, state: i.after })));
+    fpUndoStack.push(entry);
+    fpToast(`Redone (${fpRedoStack.length} more to redo).`, true);
+  } catch (err) {
+    fpToast('Redo: ' + describeError(err), false);
+    await fpFetch();
+  }
+  fpSyncUndoButtons();
+}
+
+function fpSyncUndoButtons() {
+  const u = $('#fpUndoBtn');
+  const r = $('#fpRedoBtn');
+  if (u) u.disabled = fpUndoStack.length === 0;
+  if (r) r.disabled = fpRedoStack.length === 0;
+}
+
+// ---- multi-select ----
+function fpInMulti(type, id) {
+  return (state.fp.multi || []).some((m) => m.type === type && m.id === id);
+}
+
+function fpSingleAsMulti() {
+  if (state.fp.selected) return [{ type: 'placement', id: state.fp.selected }];
+  if (state.fp.selectedBlock) return [{ type: 'block', id: state.fp.selectedBlock }];
+  if (state.fp.selectedMarker) return [{ type: 'marker', id: state.fp.selectedMarker }];
+  return [];
+}
+
+function fpClearSingles() {
+  state.fp.selected = null;
+  state.fp.selectedBlock = null;
+  state.fp.selectedMarker = null;
+  state.fp.selectedBoundary = null;
+  state.fp.selectedVertex = null;
+}
+
+// Replace the selection with `list`; one item collapses to a single selection.
+function fpSetSelection(list) {
+  fpClearSingles();
+  if (list.length === 1) {
+    const [m] = list;
+    if (m.type === 'placement') state.fp.selected = m.id;
+    else if (m.type === 'block') state.fp.selectedBlock = m.id;
+    else if (m.type === 'marker') state.fp.selectedMarker = m.id;
+    state.fp.multi = [];
+  } else {
+    state.fp.multi = list;
+  }
+  fpRenderCanvas();
+  fpRenderSelInfo();
+}
+
+function fpToggleMulti(type, id) {
+  const cur = state.fp.multi && state.fp.multi.length ? state.fp.multi.slice() : fpSingleAsMulti();
+  const i = cur.findIndex((m) => m.type === type && m.id === id);
+  if (i >= 0) cur.splice(i, 1);
+  else cur.push({ type, id });
+  fpSetSelection(cur);
+}
+
+function fpLiveItem(type, id) {
+  if (type === 'placement') return state.fp.placements.find((p) => p.unitId === id) || null;
+  if (type === 'block') return state.fp.blocks.find((b) => b.id === id) || null;
+  if (type === 'marker') return (state.fp.markers || []).find((m) => m.id === id) || null;
+  return null;
+}
+
+// Selected items with live refs; placements expand to include stack mates.
+function fpMultiItems() {
+  const out = [];
+  const seen = new Set();
+  for (const m of state.fp.multi || []) {
+    const it = fpLiveItem(m.type, m.id);
+    if (!it || seen.has(m.type + m.id)) continue;
+    seen.add(m.type + m.id);
+    out.push({ type: m.type, id: m.id, it });
+    if (m.type === 'placement') {
+      const mate = fpStackMate(it);
+      if (mate && !seen.has('placement' + mate.unitId)) {
+        seen.add('placement' + mate.unitId);
+        out.push({ type: 'placement', id: mate.unitId, it: mate, mateOf: m.id });
+      }
+    }
+  }
+  return out;
+}
+
+function fpItemRect(m) {
+  return m.type === 'marker' ? { x: m.it.x, y: m.it.y, width: 0, height: 0 } : { x: m.it.x, y: m.it.y, width: m.it.width, height: m.it.height };
+}
+
+function fpBBox(items) {
+  const rs = items.map(fpItemRect);
+  const x0 = Math.min(...rs.map((r) => r.x));
+  const y0 = Math.min(...rs.map((r) => r.y));
+  const x1 = Math.max(...rs.map((r) => quantizeFt(r.x + r.width)));
+  const y1 = Math.max(...rs.map((r) => quantizeFt(r.y + r.height)));
+  return { x0, y0, x1, y1 };
+}
+
+// After local positions changed: first moved placement that overlaps a unit
+// (other moved units are already at their final spots), else null.
+function fpGroupOverlap(items) {
+  for (const m of items) {
+    if (m.type !== 'placement') continue;
+    const mate = fpStackMate(m.it);
+    const ignore = [m.it.unitId].concat(mate ? [mate.unitId] : []);
+    const hit = fpOverlapAt(m.it.x, m.it.y, m.it.width, m.it.height, ignore, m.it.stackTier || 0);
+    if (hit) return { m, hit };
+  }
+  return null;
+}
+
+function fpGroupLocked(items) {
+  return items.find((m) => m.type === 'placement' && fpIsOccupiedLocked(m.it)) || null;
+}
+
+const fpStatesOf = (items) => items.map((m) => ({ type: m.type, id: m.id, state: fpElemState(m.type, m.id) }));
+
+// Translate the group by (dx, dy), clamped so the bbox stays on canvas.
+function fpShiftGroup(items, orig, dx, dy) {
+  const { w: cw, h: ch } = fpCanvasDims();
+  const bb = fpBBox(orig.map((o) => ({ type: o.type, it: o })));
+  const cdx = clampFt(dx, -bb.x0, quantizeFt(cw - bb.x1));
+  const cdy = clampFt(dy, -bb.y0, quantizeFt(ch - bb.y1));
+  items.forEach((m, i) => {
+    m.it.x = quantizeFt(orig[i].x + cdx);
+    m.it.y = quantizeFt(orig[i].y + cdy);
+  });
+  return { dx: cdx, dy: cdy };
+}
+
+function fpGroupStartMove(e) {
+  const items = fpMultiItems();
+  const locked = fpGroupLocked(items);
+  if (locked) {
+    fpToast(`${locked.it.unitCode} is occupied on a live plan — the group can't move. Unpublish to draft first.`, false);
+    return;
+  }
+  e.preventDefault();
+  const raw0 = fpCanvasRawAt(e.clientX, e.clientY);
+  const orig = items.map((m) => ({ type: m.type, x: m.it.x, y: m.it.y, width: m.it.width || 0, height: m.it.height || 0 }));
+  const before = fpStatesOf(items);
+  let moved = false;
+  const move = (ev) => {
+    const raw = fpCanvasRawAt(ev.clientX, ev.clientY);
+    if (!raw || !raw0) return;
+    const step = fpSnapStep(ev);
+    let dx = snapFt(raw[0] - raw0[0], step);
+    let dy = snapFt(raw[1] - raw0[1], step);
+    if (ev.shiftKey) {
+      if (Math.abs(dx) >= Math.abs(dy)) dy = 0;
+      else dx = 0;
+    }
+    if (!dx && !dy && !moved) return;
+    moved = true;
+    const d = fpShiftGroup(items, orig, dx, dy);
+    fpRenderCanvas();
+    fpSetReadout(`${items.length} items Δ ${formatFt(d.dx)}, ${formatFt(d.dy)} ft`);
+  };
+  const up = () => {
+    document.removeEventListener('pointermove', move);
+    document.removeEventListener('pointerup', up);
+    if (!moved) return;
+    const clash = fpGroupOverlap(items);
+    if (clash) {
+      items.forEach((m, i) => {
+        m.it.x = orig[i].x;
+        m.it.y = orig[i].y;
+      });
+      fpRenderCanvas();
+      fpToast(`Cannot move the group — ${clash.m.it.unitCode} would overlap ${clash.hit.unitCode}. Reverted.`, false);
+      return;
+    }
+    fpCommitBatch(fpStatesOf(items), `Moved ${items.length} items.`, before);
+  };
+  document.addEventListener('pointermove', move);
+  document.addEventListener('pointerup', up);
+}
+
+function fpFlushGroupNudge() {
+  if (!fpGroupNudge) return;
+  clearTimeout(fpGroupNudge.timer);
+  const { before, items } = fpGroupNudge;
+  fpGroupNudge = null;
+  fpCommitBatch(fpStatesOf(items), `Nudged ${items.length} items.`, before);
+}
+
+// Arrow-key nudge for a multi-selection (one batch + undo step per burst).
+function fpNudgeGroup(dx, dy) {
+  const items = fpMultiItems();
+  if (!items.length) return;
+  const locked = fpGroupLocked(items);
+  if (locked) {
+    fpToast(`${locked.it.unitCode} is occupied on a live plan — the group can't move.`, false);
+    return;
+  }
+  const orig = items.map((m) => ({ type: m.type, x: m.it.x, y: m.it.y, width: m.it.width || 0, height: m.it.height || 0 }));
+  fpShiftGroup(items, orig, dx, dy);
+  const clash = fpGroupOverlap(items);
+  if (clash) {
+    items.forEach((m, i) => {
+      m.it.x = orig[i].x;
+      m.it.y = orig[i].y;
+    });
+    fpToast(`Cannot nudge — ${clash.m.it.unitCode} would overlap ${clash.hit.unitCode}.`, false);
+    return;
+  }
+  if (!fpGroupNudge) {
+    const before = items.map((m, i) => {
+      const s = fpElemState(m.type, m.id);
+      return { type: m.type, id: m.id, state: s ? { ...s, x: orig[i].x, y: orig[i].y } : s };
+    });
+    fpGroupNudge = { before, items, timer: null };
+  }
+  clearTimeout(fpGroupNudge.timer);
+  fpGroupNudge.timer = setTimeout(fpFlushGroupNudge, 450);
+  fpRenderCanvas();
+  fpRenderSelInfo();
+}
+
+// Marquee selection from an empty-canvas press; a plain click deselects.
+function fpMarqueeStart(e) {
+  const raw0 = fpCanvasRawAt(e.clientX, e.clientY);
+  const additive = e.shiftKey;
+  const base = additive ? (state.fp.multi && state.fp.multi.length ? state.fp.multi.slice() : fpSingleAsMulti()) : [];
+  let box = null;
+  const canvas = $('#fpCanvas');
+  const move = (ev) => {
+    const raw = fpCanvasRawAt(ev.clientX, ev.clientY);
+    if (!raw || !raw0) return;
+    const u = fpPx();
+    if (!box && Math.hypot((raw[0] - raw0[0]) * u, (raw[1] - raw0[1]) * u) < 4) return;
+    box = { x0: Math.min(raw0[0], raw[0]), y0: Math.min(raw0[1], raw[1]), x1: Math.max(raw0[0], raw[0]), y1: Math.max(raw0[1], raw[1]) };
+    let el = canvas && canvas.querySelector('.fp-marquee');
+    if (!el && canvas) {
+      el = document.createElement('div');
+      el.className = 'fp-marquee';
+      canvas.appendChild(el);
+    }
+    if (el) {
+      el.style.left = box.x0 * u + 'px';
+      el.style.top = box.y0 * u + 'px';
+      el.style.width = (box.x1 - box.x0) * u + 'px';
+      el.style.height = (box.y1 - box.y0) * u + 'px';
+    }
+  };
+  const up = () => {
+    document.removeEventListener('pointermove', move);
+    document.removeEventListener('pointerup', up);
+    if (!box) {
+      if (!additive) fpSetSelection([]);
+      return;
+    }
+    const hits = [];
+    const touches = (r) => r.x <= box.x1 && quantizeFt(r.x + r.width) >= box.x0 && r.y <= box.y1 && quantizeFt(r.y + r.height) >= box.y0;
+    if (!fpLayerLocked('units')) for (const p of state.fp.placements) if ((p.stackTier || 0) === 0 && touches(p)) hits.push({ type: 'placement', id: p.unitId });
+    if (!fpLayerLocked('blocks')) for (const b of state.fp.blocks) if (touches(b)) hits.push({ type: 'block', id: b.id });
+    if (!fpLayerLocked('markers')) for (const m of state.fp.markers || []) if (touches({ x: m.x, y: m.y, width: 0, height: 0 })) hits.push({ type: 'marker', id: m.id });
+    const merged = base.slice();
+    for (const h of hits) if (!merged.some((m) => m.type === h.type && m.id === h.id)) merged.push(h);
+    fpSetSelection(merged);
+    fpSetReadout(`${merged.length} selected`);
+  };
+  document.addEventListener('pointermove', move);
+  document.addEventListener('pointerup', up);
+}
+
+function fpSelectAll() {
+  const all = [];
+  if (!fpLayerLocked('units')) for (const p of state.fp.placements) if ((p.stackTier || 0) === 0) all.push({ type: 'placement', id: p.unitId });
+  if (!fpLayerLocked('blocks')) for (const b of state.fp.blocks) all.push({ type: 'block', id: b.id });
+  if (!fpLayerLocked('markers')) for (const m of state.fp.markers || []) all.push({ type: 'marker', id: m.id });
+  fpSetSelection(all);
+  fpToast(`Selected ${all.length} items.`, true);
+}
+
+async function fpDeleteMulti() {
+  const items = fpMultiItems();
+  if (!items.length) return;
+  const locked = fpGroupLocked(items);
+  if (locked) {
+    fpToast(`${locked.it.unitCode} is occupied on a live plan — remove it from the selection first.`, false);
+    return;
+  }
+  const units = items.filter((m) => m.type === 'placement').length;
+  const ok = await confirmDialog({
+    title: `Remove ${items.length} selected item${items.length === 1 ? '' : 's'}?`,
+    message: units ? `${units} unit${units === 1 ? ' goes' : 's go'} back to the palette (unit records are untouched); blocks and markers are deleted. Undo restores everything.` : 'Blocks and markers are deleted. Undo restores them.',
+    confirmLabel: 'Remove',
+    danger: true,
+  });
+  if (!ok) return;
+  const targets = items.map((m) => ({ type: m.type, id: m.id, state: null }));
+  state.fp.multi = [];
+  fpCommitBatch(targets, `Removed ${items.length} items.`);
+}
+
+// Align (left / center / right / top / middle / bottom) or distribute (h / v).
+function fpAlignMulti(mode) {
+  const items = fpMultiItems().filter((m) => !m.mateOf);
+  if (items.length < 2 || (mode.startsWith('dist') && items.length < 3)) {
+    fpToast(mode.startsWith('dist') ? 'Distribute needs at least 3 items.' : 'Align needs at least 2 items.', false);
+    return;
+  }
+  const locked = fpGroupLocked(fpMultiItems());
+  if (locked) {
+    fpToast(`${locked.it.unitCode} is occupied on a live plan — it can't be moved.`, false);
+    return;
+  }
+  const all = fpMultiItems();
+  const before = fpStatesOf(all);
+  const orig = all.map((m) => ({ x: m.it.x, y: m.it.y }));
+  const bb = fpBBox(items);
+  const w = (m) => m.it.width || 0;
+  const h = (m) => m.it.height || 0;
+  const place = (m, x, y) => {
+    m.it.x = quantizeFt(x);
+    m.it.y = quantizeFt(y);
+    const mate = all.find((o) => o.mateOf === m.id);
+    if (mate) {
+      mate.it.x = m.it.x;
+      mate.it.y = m.it.y;
+    }
+  };
+  if (mode === 'left') items.forEach((m) => place(m, bb.x0, m.it.y));
+  else if (mode === 'right') items.forEach((m) => place(m, bb.x1 - w(m), m.it.y));
+  else if (mode === 'center') items.forEach((m) => place(m, (bb.x0 + bb.x1) / 2 - w(m) / 2, m.it.y));
+  else if (mode === 'top') items.forEach((m) => place(m, m.it.x, bb.y0));
+  else if (mode === 'bottom') items.forEach((m) => place(m, m.it.x, bb.y1 - h(m)));
+  else if (mode === 'middle') items.forEach((m) => place(m, m.it.x, (bb.y0 + bb.y1) / 2 - h(m) / 2));
+  else if (mode === 'dist-h' || mode === 'dist-v') {
+    const horiz = mode === 'dist-h';
+    const sorted = items.slice().sort((a, b) => (horiz ? a.it.x - b.it.x : a.it.y - b.it.y));
+    const span = horiz ? bb.x1 - bb.x0 : bb.y1 - bb.y0;
+    const sizes = sorted.reduce((s, m) => s + (horiz ? w(m) : h(m)), 0);
+    const gap = (span - sizes) / (sorted.length - 1);
+    let pos = horiz ? bb.x0 : bb.y0;
+    for (const m of sorted) {
+      if (horiz) place(m, pos, m.it.y);
+      else place(m, m.it.x, pos);
+      pos += (horiz ? w(m) : h(m)) + gap;
+    }
+  }
+  const clash = fpGroupOverlap(all);
+  if (clash) {
+    all.forEach((m, i) => {
+      m.it.x = orig[i].x;
+      m.it.y = orig[i].y;
+    });
+    fpRenderCanvas();
+    fpToast(`Cannot ${mode.startsWith('dist') ? 'distribute' : 'align'} — ${clash.m.it.unitCode} would overlap ${clash.hit.unitCode}.`, false);
+    return;
+  }
+  fpRenderCanvas();
+  const label = { left: 'Aligned left', center: 'Aligned centres', right: 'Aligned right', top: 'Aligned top', middle: 'Aligned middles', bottom: 'Aligned bottom', 'dist-h': 'Distributed horizontally', 'dist-v': 'Distributed vertically' }[mode];
+  fpCommitBatch(fpStatesOf(all), `${label} — ${items.length} items.`, before);
+}
+
+// ---- copy / paste / duplicate (blocks, markers, lines) ----
+function fpNewId(prefix) {
+  const rnd = window.crypto && typeof window.crypto.randomUUID === 'function' ? window.crypto.randomUUID() : `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+  return `${prefix}-${rnd}`.slice(0, 64);
+}
+
+function fpCopySelection() {
+  const picked = [];
+  let skippedUnits = 0;
+  const list = state.fp.multi && state.fp.multi.length ? state.fp.multi : fpSingleAsMulti();
+  for (const m of list) {
+    if (m.type === 'placement') skippedUnits++;
+    else {
+      const s = fpElemState(m.type, m.id);
+      if (s) picked.push({ type: m.type, state: s });
+    }
+  }
+  if (state.fp.selectedBoundary) {
+    const s = fpElemState('boundary', state.fp.selectedBoundary);
+    if (s) picked.push({ type: 'boundary', state: s });
+  }
+  if (!picked.length) {
+    fpToast(skippedUnits ? 'Units are real inventory and can’t be copied — use ⇶ Array to lay out more units.' : 'Select blocks, markers or a line to copy.', false);
+    return false;
+  }
+  fpClipboard = { items: picked, pastes: 0 };
+  fpToast(`Copied ${picked.length} item${picked.length === 1 ? '' : 's'}${skippedUnits ? ` (${skippedUnits} unit${skippedUnits === 1 ? '' : 's'} skipped — use ⇶ Array)` : ''}.`, true);
+  return true;
+}
+
+async function fpPasteClipboard() {
+  if (!fpClipboard || !fpClipboard.items.length) {
+    fpToast('Nothing to paste — copy blocks, markers or a line first (Cmd/Ctrl+C).', false);
+    return;
+  }
+  fpClipboard.pastes += 1;
+  const off = quantizeFt(Math.max(1, fpSnapStep() * 10) * fpClipboard.pastes);
+  const { w: cw, h: ch } = fpCanvasDims();
+  const targets = fpClipboard.items.map(({ type, state: s }) => {
+    const id = fpNewId(type === 'block' ? 'blk' : type === 'marker' ? 'mk' : 'bd');
+    if (type === 'boundary') {
+      const xs = s.points.map((p) => p[0]);
+      const ys = s.points.map((p) => p[1]);
+      const dx = clampFt(off, -Math.min(...xs), cw - Math.max(...xs));
+      const dy = clampFt(off, -Math.min(...ys), ch - Math.max(...ys));
+      return { type, id, state: { ...s, id, points: s.points.map(([x, y]) => [quantizeFt(x + dx), quantizeFt(y + dy)]) } };
+    }
+    const w = s.width || 0;
+    const h = s.height || 0;
+    return { type, id, state: { ...s, id, x: clampFt(s.x + off, 0, cw - w), y: clampFt(s.y + off, 0, ch - h) } };
+  });
+  const ok = await fpCommitBatch(targets, `Pasted ${targets.length} item${targets.length === 1 ? '' : 's'}.`);
+  if (ok) {
+    const sel = targets.filter((t) => t.type !== 'boundary').map((t) => ({ type: t.type, id: t.id }));
+    if (sel.length) fpSetSelection(sel);
+    else {
+      fpClearSingles();
+      state.fp.selectedBoundary = targets[0].id;
+      fpRenderCanvas();
+      fpRenderSelInfo();
+    }
+  }
+}
+
+// Duplicate = copy + paste without disturbing the clipboard.
+async function fpDuplicateSelection() {
+  const saved = fpClipboard;
+  if (!fpCopySelection()) {
+    fpClipboard = saved;
+    return;
+  }
+  await fpPasteClipboard();
+  fpClipboard = saved;
+}
+
+// ---- arrays ----
+// Units: place the next N unplaced units of the selected unit's size (whose
+// sqft fits its W×H within tolerance) in a row from the selected unit.
+// Blocks: N copies. Direction → ↓ ← ↑; gap in ft. Stops at the canvas edge
+// or at the first overlap.
+async function fpApplyArray() {
+  const count = Math.max(1, Math.min(99, parseInt(($('#fpSelInfo [data-fp-arr="count"]') || {}).value, 10) || 0));
+  const dir = (($('#fpSelInfo [data-fp-arr="dir"]') || {}).value || 'right');
+  const gap = Math.max(0, fpParseLen(($('#fpSelInfo [data-fp-arr="gap"]') || {}).value) || 0);
+  const { w: cw, h: ch } = fpCanvasDims();
+  const pl = state.fp.placements.find((p) => p.unitId === state.fp.selected);
+  const blk = state.fp.blocks.find((b) => b.id === state.fp.selectedBlock);
+  const src = pl || blk;
+  if (!src) return;
+  const vec = { right: [1, 0], down: [0, 1], left: [-1, 0], up: [0, -1] }[dir] || [1, 0];
+  const stepX = quantizeFt(vec[0] * (src.width + gap));
+  const stepY = quantizeFt(vec[1] * (src.height + gap));
+  const spots = [];
+  for (let i = 1; spots.length < count && i <= count; i++) {
+    const x = quantizeFt(src.x + stepX * i);
+    const y = quantizeFt(src.y + stepY * i);
+    if (x < 0 || y < 0 || toMilli(x) + toMilli(src.width) > toMilli(cw) || toMilli(y) + toMilli(src.height) > toMilli(ch)) break;
+    if (pl && fpOverlapAt(x, y, src.width, src.height, null, 0)) break;
+    spots.push({ x, y });
+  }
+  if (!spots.length) {
+    fpToast('No room for an array in that direction — the canvas edge or another unit is in the way.', false);
+    return;
+  }
+  let targets;
+  if (pl) {
+    const pool = state.fp.unplaced
+      .filter((u) => String(u.sizeCode || '').toUpperCase() === String(pl.sizeCode || '').toUpperCase() && u.sqft > 0 && areaDeviation(pl, u.sqft) <= AREA_TOLERANCE)
+      .sort((a, b) => String(a.unitCode).localeCompare(String(b.unitCode)));
+    if (!pool.length) {
+      fpToast(`No unplaced ${pl.sizeName || pl.sizeCode} units whose sqft fits ${formatFt(pl.width)}×${formatFt(pl.height)} ft (±${Math.round(AREA_TOLERANCE * 100)}%).`, false);
+      return;
+    }
+    targets = spots.slice(0, pool.length).map((s, i) => ({ type: 'placement', id: pool[i].id, state: { unitId: pool[i].id, x: s.x, y: s.y, width: pl.width, height: pl.height, stackTier: 0 } }));
+  } else {
+    targets = spots.map((s) => {
+      const id = fpNewId('blk');
+      return { type: 'block', id, state: { ...fpElemState('block', blk.id), id, x: s.x, y: s.y } };
+    });
+  }
+  state.fp.arrayOpen = false;
+  const ok = await fpCommitBatch(targets, `Arrayed ${targets.length} ${pl ? 'unit' : 'block'}${targets.length === 1 ? '' : 's'} ${dir}${spots.length < count || (pl && targets.length < count) ? ` (${count - targets.length} short — ${pl && targets.length < spots.length ? 'ran out of matching units' : 'hit the canvas edge or a unit'})` : ''}.`);
+  if (ok) fpSetSelection([{ type: pl ? 'placement' : 'block', id: pl ? pl.unitId : blk.id }, ...targets.map((t) => ({ type: t.type, id: t.id }))]);
+}
+
+function fpArrayFormHTML() {
+  return (
+    `<span class="fp-num-lbl">Array</span>` +
+    `<input type="text" inputmode="numeric" class="tbl-search fp-num" data-fp-arr="count" value="10" aria-label="Number of copies" title="How many to add (1–99)" style="width:48px;">` +
+    `<select class="fp-zoompreset" data-fp-arr="dir" aria-label="Array direction"><option value="right">→ right</option><option value="down">↓ down</option><option value="left">← left</option><option value="up">↑ up</option></select>` +
+    `<span class="fp-num-lbl">gap</span><input type="text" inputmode="decimal" class="tbl-search fp-num" data-fp-arr="gap" value="0" aria-label="Gap in feet" style="width:48px;"><span class="t-type">ft</span>` +
+    `<button class="act-btn primary" id="fpArrayApply" style="padding:2px 9px;font-size:10px;">Place</button>` +
+    `<button class="act-btn" id="fpArrayCancel" style="padding:2px 9px;font-size:10px;">Cancel</button>`
+  );
+}
+
+// Multi-selection strip: count + align / distribute / duplicate / remove.
+function fpRenderMultiInfo(info) {
+  const items = fpMultiItems().filter((m) => !m.mateOf);
+  const n = { placement: 0, block: 0, marker: 0 };
+  items.forEach((m) => n[m.type]++);
+  const bb = items.length ? fpBBox(items) : null;
+  const btn = (act, label, title) => `<button class="act-btn" data-fp-align="${act}" style="padding:2px 7px;font-size:10px;" title="${title}">${label}</button>`;
+  info.innerHTML =
+    `<span class="t-type">⧉ ${items.length} selected · ${[n.placement && `${n.placement} unit${n.placement === 1 ? '' : 's'}`, n.block && `${n.block} block${n.block === 1 ? '' : 's'}`, n.marker && `${n.marker} marker${n.marker === 1 ? '' : 's'}`].filter(Boolean).join(', ')}` +
+    (bb ? ` · ${formatFt(Math.round((bb.x1 - bb.x0) * 100) / 100)}×${formatFt(Math.round((bb.y1 - bb.y0) * 100) / 100)} ft` : '') +
+    `</span>` +
+    btn('left', '⇤', 'Align left edges') + btn('center', '↔', 'Align horizontal centres') + btn('right', '⇥', 'Align right edges') +
+    btn('top', '⤒', 'Align top edges') + btn('middle', '↕', 'Align vertical middles') + btn('bottom', '⤓', 'Align bottom edges') +
+    btn('dist-h', '⋯', 'Distribute horizontally (equal gaps, 3+ items)') + btn('dist-v', '⋮', 'Distribute vertically (equal gaps, 3+ items)') +
+    (n.block || n.marker ? `<button class="act-btn" id="fpDupBtn" style="padding:2px 9px;font-size:10px;" title="Duplicate the selected blocks / markers (Cmd/Ctrl+D)">⎘ Duplicate</button>` : '') +
+    `<button class="act-btn danger" id="fpMultiRemoveBtn" style="padding:2px 9px;font-size:10px;" title="Remove the selection (Delete) — units return to the palette">Remove</button>` +
+    `<span class="t-type">drag any to move · arrows nudge · Esc clears</span>`;
+}
+
+// ---- keyboard shortcut sheet ----
+const FP_SHORTCUTS = [
+  ['Selection', [['Click / Shift+click', 'select / add or remove from the selection'], ['Drag on empty canvas', 'marquee select (Shift adds)'], ['Cmd/Ctrl+A', 'select all units, blocks and markers'], ['Esc', 'clear selection / cancel the current tool'], ['Delete', 'remove the selection (or the selected line vertex)']]],
+  ['Move & edit', [['Arrows', 'nudge by the snap step (Shift ×10, Alt 0.01 ft)'], ['Shift while dragging', 'lock to one axis'], ['Alt while dragging', 'fine 0.01 ft snap'], ['Cmd/Ctrl+C · V · D', 'copy · paste · duplicate (blocks, markers, lines)'], ['Cmd/Ctrl+Z · Shift+Z (or Y)', 'undo · redo']]],
+  ['Lines & measure', [['L', 'line tool on / off'], ['Click · double-click / Enter', 'add vertex · finish'], ['Click first vertex / C', 'close the loop'], ['Type a number (+ Tab angle) · Enter', 'exact segment length / angle'], ['Backspace', 'remove the last vertex'], ['M', 'measure tool (two clicks)']]],
+  ['Help', [['?', 'this sheet']]],
+];
+
+function fpToggleShortcutSheet(force) {
+  let el = document.getElementById('fpShortcutSheet');
+  const open = force !== undefined ? force : !el;
+  if (!open) {
+    if (el) el.remove();
+    return;
+  }
+  if (el) return;
+  el = document.createElement('div');
+  el.id = 'fpShortcutSheet';
+  el.className = 'fp-shortcuts';
+  el.setAttribute('role', 'dialog');
+  el.setAttribute('aria-label', 'Floor plan keyboard shortcuts');
+  el.innerHTML =
+    `<div class="fp-shortcuts-card"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;"><span class="chart-title">Floor plan shortcuts</span><button class="act-btn" id="fpShortcutClose" type="button">Close</button></div>` +
+    FP_SHORTCUTS.map(([group, rows]) =>
+      `<div class="fp-num-lbl" style="margin:10px 0 4px;">${group}</div>` +
+      rows.map(([k, d]) => `<div style="display:flex;gap:12px;font-size:12px;padding:2px 0;"><span style="min-width:190px;font-weight:700;">${escapeHtml(k)}</span><span>${escapeHtml(d)}</span></div>`).join(''),
+    ).join('') +
+    `</div>`;
+  el.addEventListener('click', (e) => {
+    if (e.target === el || (e.target && e.target.id === 'fpShortcutClose')) fpToggleShortcutSheet(false);
+  });
+  document.body.appendChild(el);
+}
+
+// Editing shortcuts with modifiers (Cmd/Ctrl + A / C / V / D / Y / Shift+Z) plus ?.
+function fpOnEditKey(e) {
+  const t = e.target;
+  if (t && typeof t.closest === 'function' && t.closest('input, textarea, select, [contenteditable]')) return;
+  const designer = document.querySelector('#facility-floorplans');
+  if (!designer || designer.offsetParent === null) return;
+  const viewModal = $('#fpViewModal');
+  if (viewModal && !viewModal.hidden) return;
+  const confirmModal = $('#confirmModal');
+  if (confirmModal && !confirmModal.hidden) return;
+  const k = String(e.key).toLowerCase();
+  if (e.key === '?' || (e.shiftKey && k === '/')) {
+    e.preventDefault();
+    fpToggleShortcutSheet();
+    return;
+  }
+  if (e.key === 'Escape' && document.getElementById('fpShortcutSheet')) {
+    e.preventDefault();
+    fpToggleShortcutSheet(false);
+    return;
+  }
+  if (e.key === 'Escape' && state.fp.multi && state.fp.multi.length) {
+    e.preventDefault();
+    fpSetSelection([]);
+    return;
+  }
+  if (!(e.metaKey || e.ctrlKey) || e.altKey) return;
+  if ((k === 'z' && e.shiftKey) || k === 'y') {
+    e.preventDefault();
+    fpRedo().catch(() => {});
+  } else if (k === 'a') {
+    e.preventDefault();
+    fpSelectAll();
+  } else if (k === 'c' && !e.shiftKey) {
+    e.preventDefault();
+    fpCopySelection();
+  } else if (k === 'v' && !e.shiftKey) {
+    e.preventDefault();
+    fpPasteClipboard();
+  } else if (k === 'd') {
+    e.preventDefault();
+    fpDuplicateSelection();
+  }
+}
+
+// ---------- numeric inspector + arrow-key nudge (precision Phase 2) ----------
+// The selection strip carries editable X / Y / W / H fields (decimal feet) for
+// the selected unit, stacked pair or block, and X / Y for a marker. Typed
+// values and arrow-key nudges both funnel through fpApplySelectionGeom, which
+// runs the same guards as a drag (occupied lock, canvas fit, unit overlap,
+// 2% area tolerance) and persists through the existing fpPersist* paths, so
+// undo and server validation are unchanged.
+
+// Parse a typed length: "4.73", "4.73 ft", "4.73'", or one simple operation
+// ("12/2", "3.5*2", "10+0.25", "10-0.5"). Returns quantized feet or null.
+function fpParseLen(raw) {
+  const t = String(raw == null ? '' : raw).trim().replace(/\s*(ft|feet|')$/i, '');
+  if (!t) return null;
+  const m = /^(-?\d*\.?\d+)\s*([+\-*/])\s*(-?\d*\.?\d+)$/.exec(t);
+  let n;
+  if (m) {
+    const a = Number(m[1]);
+    const b = Number(m[3]);
+    n = m[2] === '+' ? a + b : m[2] === '-' ? a - b : m[2] === '*' ? a * b : b !== 0 ? a / b : NaN;
+  } else {
+    n = /^-?\d*\.?\d+$/.test(t) ? Number(t) : NaN;
+  }
+  return Number.isFinite(n) ? quantizeFt(n) : null;
+}
+
+// Editable decimal-ft fields for the selection strip. `vals` = { x, y, width?, height? }.
+function fpNumFieldsHTML(vals) {
+  const field = (key, label, v) =>
+    `<span class="fp-num-lbl">${label}</span><input type="text" inputmode="decimal" class="tbl-search fp-num" data-fp-num="${key}" value="${escapeHtml(formatFt(v))}" aria-label="${label} in feet" title="${label} in feet — Enter applies, Esc reverts, ↑/↓ steps by the snap step (Shift ×10)" autocomplete="off" spellcheck="false">`;
+  return (
+    field('x', 'X', vals.x) +
+    field('y', 'Y', vals.y) +
+    (vals.width !== undefined ? field('width', 'W', vals.width) + field('height', 'H', vals.height) : '') +
+    '<span class="t-type">ft</span>'
+  );
+}
+
+// Area readout for a unit rect vs its sqft: "29.99 sqft · −0.03%" (flags > tolerance).
+function fpAreaNoteHTML(rect, sqft) {
+  const area = rectAreaSqft(rect);
+  if (!(sqft > 0)) return `<span class="t-type">${fpFmtArea(area)} sqft</span>`;
+  const dev = (area - sqft) / sqft;
+  const pct = (Math.round(dev * 10000) / 100).toLocaleString('en-SG', { maximumFractionDigits: 2, signDisplay: 'exceptZero' });
+  const bad = Math.abs(dev) > AREA_TOLERANCE + 1e-9;
+  return `<span class="t-type" style="${bad ? 'color:var(--terra,#C1664C);font-weight:700;' : ''}" title="Drawn area vs the unit's ${sqft} sqft (new or resized units must stay within ${Math.round(AREA_TOLERANCE * 100)}%)">${fpFmtArea(area)} sqft · ${pct}%</span>`;
+}
+
+// What the selection strip is editing right now: { kind, item, pair? }.
+function fpSelectionTarget() {
+  const blk = state.fp.blocks.find((b) => b.id === state.fp.selectedBlock);
+  if (blk) return { kind: 'block', item: blk };
+  const mk = (state.fp.markers || []).find((m) => m.id === state.fp.selectedMarker);
+  if (mk) return { kind: 'marker', item: mk };
+  const pl = state.fp.placements.find((p) => p.unitId === state.fp.selected);
+  if (pl) {
+    const mate = fpStackMate(pl);
+    const pair = mate ? [pl, mate].slice().sort((a, b) => (a.stackTier || 0) - (b.stackTier || 0)) : [pl];
+    return { kind: 'unit', item: pl, pair };
+  }
+  return null;
+}
+
+let fpNudgeTimer = null;
+let fpNudgePending = null; // { target, verb } awaiting a debounced persist
+
+function fpFlushNudge() {
+  clearTimeout(fpNudgeTimer);
+  fpNudgeTimer = null;
+  const pending = fpNudgePending;
+  fpNudgePending = null;
+  if (pending) fpPersistTarget(pending.target, pending.verb);
+}
+
+function fpPersistTarget(target, verb) {
+  if (target.kind === 'block') return fpPersistBlock(target.item, verb);
+  if (target.kind === 'marker') return fpPersistMarker(target.item, verb);
+  if (target.pair.length > 1) return fpPersistPair(target.pair[0], target.pair[1], verb);
+  return fpPersist(target.item, verb);
+}
+
+/**
+ * Apply a geometry patch ({x?, y?, width?, height?} in feet) to the current
+ * selection. `opts.clamp` keeps the result on-canvas (nudges) instead of
+ * rejecting it (typed values); `opts.debounce` coalesces a burst of nudges
+ * into one persist + one undo step. Returns true when the change applied.
+ */
+function fpApplySelectionGeom(patch, verb, opts = {}) {
+  const target = fpSelectionTarget();
+  if (!target) return false;
+  if (fpNudgePending && fpNudgePending.target.item !== target.item) fpFlushNudge();
+  const { w: cw, h: ch } = fpCanvasDims();
+  const it = target.item;
+  if (target.kind === 'marker') {
+    let x = patch.x !== undefined ? patch.x : it.x;
+    let y = patch.y !== undefined ? patch.y : it.y;
+    if (opts.clamp) {
+      x = clampFt(x, 0, cw);
+      y = clampFt(y, 0, ch);
+    } else if (x < 0 || y < 0 || x > cw || y > ch) {
+      fpToast(`Marker point ${formatFt(x)}, ${formatFt(y)} is outside the ${formatFt(cw)}×${formatFt(ch)} ft canvas.`, false);
+      return false;
+    }
+    if (ftEquals(x, it.x) && ftEquals(y, it.y)) return false;
+    if (!it._undoPrev) it._undoPrev = { kind: it.kind, label: it.label || null, x: it.x, y: it.y };
+    it.x = quantizeFt(x);
+    it.y = quantizeFt(y);
+  } else {
+    if (target.kind === 'unit' && fpGuardLocked(it)) return false;
+    let width = patch.width !== undefined ? patch.width : it.width;
+    let height = patch.height !== undefined ? patch.height : it.height;
+    // Sqft lock: typing one side derives the other so area stays = sqft.
+    if (target.kind === 'unit' && state.fp.lockSqft && it.sqft > 0) {
+      if (patch.width !== undefined && patch.height === undefined) height = quantizeFt(it.sqft / width);
+      else if (patch.height !== undefined && patch.width === undefined) width = quantizeFt(it.sqft / height);
+    }
+    if (!(width >= MIN_RECT_SIDE_FT) || !(height >= MIN_RECT_SIDE_FT)) {
+      fpToast(`Width and height must be at least ${MIN_RECT_SIDE_FT} ft.`, false);
+      return false;
+    }
+    let x = patch.x !== undefined ? patch.x : it.x;
+    let y = patch.y !== undefined ? patch.y : it.y;
+    if (opts.clamp) {
+      x = clampFt(x, 0, cw - width);
+      y = clampFt(y, 0, ch - height);
+    }
+    const next = { x: quantizeFt(x), y: quantizeFt(y), width: quantizeFt(width), height: quantizeFt(height) };
+    if (next.x < 0 || next.y < 0 || toMilli(next.x) + toMilli(next.width) > toMilli(cw) || toMilli(next.y) + toMilli(next.height) > toMilli(ch)) {
+      fpToast(`${formatFt(next.x)}, ${formatFt(next.y)} · ${formatFt(next.width)}×${formatFt(next.height)} ft does not fit the ${formatFt(cw)}×${formatFt(ch)} ft canvas.`, false);
+      return false;
+    }
+    if (sameRect(next, it)) return false;
+    if (target.kind === 'unit') {
+      const ids = target.pair.map((p) => p.unitId);
+      const hit = fpOverlapAt(next.x, next.y, next.width, next.height, ids, 0);
+      if (hit) {
+        const action = { Moved: 'move', Resized: 'resize', Nudged: 'nudge' }[verb] || 'change';
+        fpToast(`Cannot ${action} ${it.unitCode} — ${formatFt(next.width)}×${formatFt(next.height)} ft at ${formatFt(next.x)}, ${formatFt(next.y)} overlaps ${hit.unitCode}.`, false);
+        return false;
+      }
+      const areaChanged = rectAreaSqft(next) !== rectAreaSqft(it);
+      if (areaChanged && it.sqft > 0 && areaDeviation(next, it.sqft) > AREA_TOLERANCE) {
+        fpToast(`${formatFt(next.width)}×${formatFt(next.height)} ft = ${fpFmtArea(rectAreaSqft(next))} sqft is more than ${Math.round(AREA_TOLERANCE * 100)}% off ${it.unitCode}'s ${it.sqft} sqft — turn on 🔒 sqft or adjust the other side.`, false);
+        return false;
+      }
+      for (const p of target.pair) {
+        if (!p._undoPrev) p._undoPrev = { x: p.x, y: p.y, width: p.width, height: p.height, stackTier: p.stackTier || 0 };
+        Object.assign(p, next);
+      }
+    } else {
+      if (!it._undoPrev) it._undoPrev = { name: it.name, x: it.x, y: it.y, width: it.width, height: it.height, color: it.color || null, doorEdges: it.doorEdges || null };
+      Object.assign(it, next);
+    }
+  }
+  fpRenderCanvas();
+  fpRenderSelInfo();
+  if (opts.debounce) {
+    fpNudgePending = { target, verb };
+    clearTimeout(fpNudgeTimer);
+    fpNudgeTimer = setTimeout(fpFlushNudge, 450);
+  } else {
+    fpPersistTarget(target, verb);
+  }
+  return true;
+}
+
+// Commit one inspector field (Enter / change).
+function fpCommitNumField(input) {
+  const key = input.dataset.fpNum;
+  const target = fpSelectionTarget();
+  if (!target) return;
+  const v = fpParseLen(input.value);
+  if (v === null) {
+    fpToast(`"${input.value}" is not a length in feet — try 4.73, 12/2 or 3.5*2.`, false);
+    input.value = formatFt(target.item[key]);
+    return;
+  }
+  if (ftEquals(v, target.item[key])) {
+    input.value = formatFt(v);
+    return;
+  }
+  const verb = key === 'width' || key === 'height' ? 'Resized' : 'Moved';
+  if (!fpApplySelectionGeom({ [key]: v }, verb)) input.value = formatFt(target.item[key]);
+}
+
+// Arrow keys nudge the selection by the snap step (Shift ×10, Alt = 0.01 ft).
+// One debounced persist + undo step per burst. Ignored while typing, while a
+// modal is open, or when the designer is not on screen.
+function fpOnArrowKey(e) {
+  const dir = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[e.key];
+  if (!dir || e.defaultPrevented || e.metaKey || e.ctrlKey) return;
+  const t = e.target;
+  if (t && typeof t.closest === 'function' && t.closest('input, textarea, select, [contenteditable]')) return;
+  const designer = document.querySelector('#facility-floorplans');
+  if (!designer || designer.offsetParent === null) return;
+  const viewModal = $('#fpViewModal');
+  if (viewModal && !viewModal.hidden) return;
+  const confirmModal = $('#confirmModal');
+  if (confirmModal && !confirmModal.hidden) return;
+  if (state.fp.multi && state.fp.multi.length > 1) {
+    e.preventDefault();
+    const st = fpSnapStep(e) * (e.shiftKey ? 10 : 1);
+    fpNudgeGroup(quantizeFt(dir[0] * st), quantizeFt(dir[1] * st));
+    return;
+  }
+  const target = fpSelectionTarget();
+  if (!target) return;
+  e.preventDefault();
+  const step = fpSnapStep(e) * (e.shiftKey ? 10 : 1);
+  fpApplySelectionGeom(
+    { x: quantizeFt(target.item.x + dir[0] * step), y: quantizeFt(target.item.y + dir[1] * step) },
+    'Nudged',
+    { clamp: true, debounce: true },
+  );
+}
+
 function fpRenderSelInfo() {
   const info = $('#fpSelInfo');
   if (!info) return;
+  if (state.fp.underlayMode === 'calibrate') {
+    info.innerHTML = fpCalibInfoHTML();
+    return;
+  }
+  if (state.fp.multi && state.fp.multi.length > 1) {
+    fpRenderMultiInfo(info);
+    return;
+  }
   // A selected decoration block takes priority over any selected unit.
   const blk = state.fp.blocks.find((b) => b.id === state.fp.selectedBlock);
   if (blk) {
@@ -1361,7 +3104,9 @@ function fpRenderSelInfo() {
         `<button class="act-btn${(blk.color || '').toUpperCase() === c ? ' primary' : ''}" data-block-color="${c}" style="padding:0;width:18px;height:18px;min-width:18px;border-radius:50%;background:${c};border:1px solid var(--line);" title="Fill ${c}" aria-label="Fill block ${c}"></button>`,
     ).join('');
     info.innerHTML =
-      `<span class="t-type">Block · ${escapeHtml(blk.name)} · ${blk.x},${blk.y} · ${blk.width}×${blk.height}</span>` +
+      `<span class="t-type">Block · ${escapeHtml(blk.name)}</span>` +
+      fpNumFieldsHTML(blk) +
+      `<span class="t-type">${fpFmtArea(rectAreaSqft(blk))} sqft</span>` +
       `<span class="fp-rename-wrap"><label class="fp-sr" for="fpBlockRename">Block name</label>` +
       `<svg class="fp-name-icon" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M2.5 2.5H10l5.5 5.5-7.5 7.5-5.5-5.5V2.5z"/><circle cx="6.6" cy="6.6" r="1.3"/></svg>` +
       `<input type="text" id="fpBlockRename" class="tbl-search fp-name-input" maxlength="80" value="${escapeHtml(blk.name)}" placeholder="Rename block" aria-label="Rename block" autocomplete="off" spellcheck="false"></span>` +
@@ -1369,6 +3114,10 @@ function fpRenderSelInfo() {
       `<span class="t-type">Fill${blk.color ? '' : ' (default)'}:</span>` + swatches +
       `<input type="color" id="fpBlockColorPick" value="${escapeHtml(fpBlockFill(blk))}" title="Custom fill colour" aria-label="Custom fill colour" style="width:30px;height:20px;padding:0;border:1px solid var(--line);border-radius:6px;background:#fff;">` +
       (blk.color ? `<button class="act-btn" id="fpBlockColorDefault" style="padding:2px 9px;font-size:10px;" title="Clear the fill back to the default block tone">Default</button>` : '') +
+      (state.fp.arrayOpen
+        ? fpArrayFormHTML()
+        : `<button class="act-btn" id="fpArrayBtn" style="padding:2px 9px;font-size:10px;" title="Array — add N copies of this block in a row">⇶ Array</button>` +
+          `<button class="act-btn" id="fpDupBtn" style="padding:2px 9px;font-size:10px;" title="Duplicate (Cmd/Ctrl+D)">⎘ Duplicate</button>`) +
       `<button class="act-btn danger" id="fpBlockRemoveBtn" style="padding:2px 9px;font-size:10px;">Remove block</button>`;
     return;
   }
@@ -1378,23 +3127,44 @@ function fpRenderSelInfo() {
   // segment renders solid but contributes 0 until extended/closed.
   const bnd = (state.fp.boundaries || []).find((b) => b.id === state.fp.selectedBoundary);
   if (bnd) {
+    // Line inspector (Phase 3): label, kind, wall thickness, totals, and the
+    // selected vertex's X / Y. Handles on the canvas: ● vertex (drag / click to
+    // select, Delete removes), ■ midpoint (drag or click to insert a vertex).
     const pts = fpBoundaryPoints(bnd.points);
-    let len = 0;
-    for (let i = 1; i < pts.length; i++) len += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
-    const isPencil = String(bnd.kind || '').toUpperCase() === 'PENCIL';
-    const contributing = pts.length >= 3 && fpPolygonArea(pts) > 0;
-    const distinct = new Set(pts.map(([x, y]) => `${x},${y}`)).size;
+    const kind = String(bnd.kind || '').toUpperCase();
+    const shownKind = kind === 'PENCIL' ? 'BOUNDARY' : kind;
+    const feeds = lineFeedsArea(kind);
+    const len = polylineLengthFt(pts, !!bnd.closed);
+    const contributing = feeds && pts.length >= 3 && fpPolygonArea(pts) > 0;
+    const distinct = new Set(pts.map(([x, y]) => `${toMilli(x)},${toMilli(y)}`)).size;
+    const kindSel =
+      `<select class="fp-zoompreset" data-fp-line="kind" aria-label="Line kind" title="Boundary lines mark facility area (UFA/NLA); walls, partitions and guides do not. Guides are CMS-only.">` +
+      LINE_KINDS.map((k) => `<option value="${k}"${k === shownKind ? ' selected' : ''}>${FP_LINE_KIND_LABELS[k]}</option>`).join('') +
+      (LINE_KINDS.includes(shownKind) ? '' : `<option value="${escapeHtml(kind)}" selected>${escapeHtml(kind)}</option>`) +
+      '</select>';
+    const lineNum = (key, label, v, title) =>
+      `<span class="fp-num-lbl">${label}</span><input type="text" inputmode="decimal" class="tbl-search fp-num" data-fp-line="${key}" value="${escapeHtml(formatFt(v))}" aria-label="${title}" title="${title} — Enter applies, Esc reverts" autocomplete="off" spellcheck="false">`;
+    const vi = state.fp.selectedVertex;
     const meta = [
-      `${pts.length} vertex${pts.length === 1 ? '' : 'es'}`,
-      len ? `${Math.round(len)} ft` : null,
-      contributing ? 'marked area — feeds UFA/NLA' : 'open line segment — needs a 3rd vertex (close the loop) to feed UFA/NLA',
-    ]
-      .filter(Boolean)
-      .join(' · ');
+      `${pts.length} vertices`,
+      `${formatFt(Math.round(len * 100) / 100)} ft`,
+      contributing
+        ? `${fpFmtArea(fpPolygonArea(pts))} sqft marked — feeds UFA/NLA`
+        : feeds
+          ? 'open — needs a 3rd vertex (or close the loop) to feed UFA/NLA'
+          : `${fpLineKindLabel(kind).toLowerCase()} — not counted in UFA/NLA`,
+    ].join(' · ');
     info.innerHTML =
-      `<span class="t-type">${isPencil ? '✎ Line' : '⌒ Boundary'} · ${escapeHtml(bnd.label || 'Line')} · ${meta}</span>` +
+      `<span class="t-type">✎</span>` +
+      `<input type="text" class="tbl-search fp-name-input" data-fp-line="label" maxlength="80" value="${escapeHtml(bnd.label || '')}" aria-label="Line name" title="Line name — Enter applies" autocomplete="off" spellcheck="false" style="width:120px;">` +
+      kindSel +
+      (kind === 'WALL' ? lineNum('thickness', 'T', bnd.thickness || DEFAULT_WALL_THICKNESS_FT, 'Wall thickness in feet') + '<span class="t-type">ft</span>' : '') +
+      `<span class="t-type">${meta}</span>` +
+      (vi != null && pts[vi]
+        ? `<span class="t-type">· vertex ${vi + 1}</span>` + lineNum('vx', 'X', pts[vi][0], 'Vertex X in feet') + lineNum('vy', 'Y', pts[vi][1], 'Vertex Y in feet') + '<span class="t-type">ft</span>'
+        : `<span class="t-type" title="Drag a ● vertex to move it, click it to edit X/Y or press Delete to remove it; drag or click a ■ midpoint to insert a vertex.">● move · ■ insert</span>`) +
       (!bnd.closed && distinct >= 3
-        ? `<button class="act-btn primary" id="fpBoundaryCloseBtn" style="padding:2px 9px;font-size:10px;" title="Close the loop — the marked area starts feeding UFA/NLA">Close loop</button>`
+        ? `<button class="act-btn primary" id="fpBoundaryCloseBtn" style="padding:2px 9px;font-size:10px;" title="Close the loop${feeds ? ' — the marked area starts feeding UFA/NLA' : ''}">Close loop</button>`
         : '') +
       `<button class="act-btn danger" id="fpBoundaryRemoveBtn" style="padding:2px 9px;font-size:10px;">Remove line</button>`;
     return;
@@ -1406,7 +3176,8 @@ function fpRenderSelInfo() {
   if (mk) {
     const def = fpMarkerDef(mk.kind);
     info.innerHTML =
-      `<span class="t-type">${escapeHtml(def.icon)} ${escapeHtml(def.label)} · ${mk.x},${mk.y} ft</span>` +
+      `<span class="t-type">${escapeHtml(def.icon)} ${escapeHtml(def.label)}</span>` +
+      fpNumFieldsHTML({ x: mk.x, y: mk.y }) +
       `<span class="fp-rename-wrap"><label class="fp-sr" for="fpMarkerRename">Marker label</label>` +
       `<input type="text" id="fpMarkerRename" class="tbl-search fp-name-input" maxlength="80" value="${escapeHtml(mk.label || '')}" placeholder="${escapeHtml(def.label)} (optional)" aria-label="Marker label override" autocomplete="off" spellcheck="false"></span>` +
       `<button class="act-btn" id="fpMarkerRenameBtn" style="padding:2px 9px;font-size:10px;">Set label</button>` +
@@ -1424,7 +3195,7 @@ function fpRenderSelInfo() {
     const lockMate = fpStackMate(pl);
     const who = lockMate ? `⧉ Stacked pair · ${escapeHtml(pl.unitCode)} / ${escapeHtml(lockMate.unitCode)}` : escapeHtml(pl.unitCode);
     info.innerHTML =
-      `<span class="t-type" title="Occupied — uneditable when live">${who} · ${pl.x},${pl.y} · ${pl.width}×${pl.height} ft · ${pl.sqft} sqft · Occupied — uneditable when live</span>`;
+      `<span class="t-type" title="Occupied — uneditable when live">${who} · ${formatFt(pl.x)}, ${formatFt(pl.y)} · ${formatFt(pl.width)}×${formatFt(pl.height)} ft · ${pl.sqft} sqft · Occupied — uneditable when live</span>`;
     return;
   }
   const lockNote = state.fp.lockSqft ? ' · 🔒 sqft' : '';
@@ -1435,7 +3206,10 @@ function fpRenderSelInfo() {
     const upper = (pl.stackTier || 0) === 1 ? pl : mate;
     const lower = upper === pl ? mate : pl;
     info.innerHTML =
-      `<span class="t-type">⧉ Stacked pair · ${escapeHtml(upper.unitCode)} (upper) over ${escapeHtml(lower.unitCode)} (lower) · ${pl.x},${pl.y} · ${pl.width}×${pl.height} ft${lockNote} · doors auto (ghost ticks = all edges)</span>` +
+      `<span class="t-type">⧉ Stacked pair · ${escapeHtml(upper.unitCode)} (upper) over ${escapeHtml(lower.unitCode)} (lower)${lockNote}</span>` +
+      fpNumFieldsHTML(pl) +
+      fpAreaNoteHTML(pl, lower.sqft) +
+      `<span class="t-type">doors auto (ghost ticks = all edges)</span>` +
       `<button class="act-btn" id="fpRotateBtn" style="padding:2px 9px;font-size:10px;" title="Swap width/height (90° rotation) for both tiers">⟳ Rotate</button>` +
       `<button class="act-btn" id="fpUnstackBtn" style="padding:2px 9px;font-size:10px;" title="Remove the upper tier — the lower tier stays as a single">Unstack</button>` +
       `<button class="act-btn danger" id="fpRemoveBtn" style="padding:2px 9px;font-size:10px;">Remove from floor</button>`;
@@ -1453,13 +3227,18 @@ function fpRenderSelInfo() {
     .map((e) => `<button class="act-btn${effDoors.includes(e) ? ' primary' : ''}" data-door="${e}" style="padding:2px 8px;font-size:10px;" title="Toggle ${e} door edge">${e}</button>`)
     .join('');
   info.innerHTML =
-    `<span class="t-type">${escapeHtml(pl.unitCode)} · ${pl.x},${pl.y} · ${pl.width}×${pl.height} ft · ${pl.sqft} sqft${lockNote}</span>` +
+    `<span class="t-type">${escapeHtml(pl.unitCode)} · ${pl.sqft} sqft${lockNote}</span>` +
+    fpNumFieldsHTML(pl) +
+    fpAreaNoteHTML(pl, pl.sqft) +
     `<button class="act-btn" id="fpRotateBtn" style="padding:2px 9px;font-size:10px;" title="Swap width/height (90° rotation)">⟳ Rotate</button>` +
     (stackable.length === 1
       ? `<button class="act-btn" id="fpStackBtn" style="padding:2px 9px;font-size:10px;" title="Stack ${escapeHtml(stackable[0].unitCode)} (upper) onto this block">⧉ Stack ${escapeHtml(stackable[0].unitCode)}</button>`
       : '') +
     `<span class="t-type">Doors${authored ? ' · terra ticks = authored' : ' (auto · ghost ticks = all edges)'}:</span>` + doorBtns +
     (authored ? `<button class="act-btn" id="fpDoorsAutoBtn" style="padding:2px 9px;font-size:10px;" title="Clear authored doors — fall back to all edges">Auto</button>` : '') +
+    (state.fp.arrayOpen
+      ? fpArrayFormHTML()
+      : `<button class="act-btn" id="fpArrayBtn" style="padding:2px 9px;font-size:10px;" title="Array — place the next unplaced units of this size in a row from here">⇶ Array</button>`) +
     `<button class="act-btn danger" id="fpRemoveBtn" style="padding:2px 9px;font-size:10px;">Remove from floor</button>`;
 }
 
@@ -1520,7 +3299,7 @@ function fpStackCandidates(pl) {
   return state.fp.unplaced.filter((u) => {
     if (String(u.sizeCode || '').toUpperCase() !== 'LOCKER') return false;
     const fp = sizeFootprint(u.sizeCode, u.sqft);
-    return (fp.w === pl.width && fp.h === pl.height) || (fp.w === pl.height && fp.h === pl.width);
+    return (ftEquals(fp.w, pl.width) && ftEquals(fp.h, pl.height)) || (ftEquals(fp.w, pl.height) && ftEquals(fp.h, pl.width));
   });
 }
 
@@ -1638,95 +3417,242 @@ function fpRender() {
   fpSyncModeUI();
 }
 
-function fpCanvasCellAt(clientX, clientY) {
+// Snapped decimal-ft canvas position for a pointer (top-left anchor of a
+// dragged rect). `ev` (optional) supplies the Alt fine-snap modifier.
+function fpCanvasCellAt(clientX, clientY, ev) {
   const canvas = $('#fpCanvas');
   if (!canvas) return null;
   const rect = canvas.getBoundingClientRect();
   const u = fpPx();
-  const gx = Math.floor((clientX - rect.left) / u);
-  const gy = Math.floor((clientY - rect.top) / u);
+  const rawX = (clientX - rect.left) / u;
+  const rawY = (clientY - rect.top) / u;
   const { w: cw, h: ch } = fpCanvasDims();
-  if (gx < 0 || gy < 0 || gx >= cw || gy >= ch) return null;
-  return { gx, gy };
+  if (rawX < -0.5 || rawY < -0.5 || rawX >= cw || rawY >= ch) return null;
+  const step = fpSnapStep(ev);
+  return { gx: Math.max(0, snapFt(rawX, step)), gy: Math.max(0, snapFt(rawY, step)) };
 }
 
-// Nearest integer grid-ft point for a pointer position, clamped into the
+// Nearest snapped decimal-ft point for a pointer position, clamped into the
 // canvas with edges INCLUSIVE (0..w / 0..h — boundary vertices may sit on the
 // canvas edge, same contract as checkBoundaryPoints in src/core/floorPlans.ts).
-function fpCanvasPointAt(clientX, clientY) {
+function fpCanvasPointAt(clientX, clientY, ev) {
   const canvas = $('#fpCanvas');
   if (!canvas) return null;
   const rect = canvas.getBoundingClientRect();
   const u = fpPx();
   const { w: cw, h: ch } = fpCanvasDims();
+  const step = fpSnapStep(ev);
   return {
-    x: Math.min(Math.max(0, Math.round((clientX - rect.left) / u)), cw),
-    y: Math.min(Math.max(0, Math.round((clientY - rect.top) / u)), ch),
+    x: clampFt(snapFt((clientX - rect.left) / u, step), 0, cw),
+    y: clampFt(snapFt((clientY - rect.top) / u, step), 0, ch),
   };
 }
 
-// Pencil draw interaction (line tool ON): mousedown arms the draft at the
-// snapped grid point, pointermove previews the straight segment, mouseup
-// persists it; Escape cancels mid-draft. Same document-listener drag pattern
-// as fpStartMove/fpBlockStartMove — no new interaction paradigm.
-function fpDrawStart(e) {
-  if (e.button !== 0) return;
-  const start = fpCanvasPointAt(e.clientX, e.clientY);
-  if (!start) return;
-  e.preventDefault();
-  state.fp.selected = null;
-  state.fp.selectedBlock = null;
-  state.fp.selectedMarker = null;
-  state.fp.selectedBoundary = null;
-  fpDraftLine = { x1: start.x, y1: start.y, x2: start.x, y2: start.y };
-  fpRenderCanvas();
-  fpRenderSelInfo();
-  const move = (ev) => {
-    const p = fpCanvasPointAt(ev.clientX, ev.clientY);
-    if (!p || !fpDraftLine) return;
-    fpDraftLine.x2 = p.x;
-    fpDraftLine.y2 = p.y;
-    fpRenderCanvas();
+// ---------- pro line tool (precision Phase 3) ----------
+// Pen: click to add vertices (rubber band with live length / angle), double-
+// click or Enter to finish open, click the first vertex or press C to close,
+// Backspace removes the last vertex, Esc cancels. Typing a number while
+// drawing sets the next segment's LENGTH (Tab switches to ANGLE, CAD
+// convention 0° = east, 90° = north) and Enter places it. Press-and-drag still
+// draws a single straight segment (the original gesture). Shift = 0/45/90°.
+// Every point snaps to objects (line endpoints / midpoints / edges, unit and
+// block corners / edge midpoints / edges) within ~10 px, else to the grid.
+// New lines take the kind from #fpPenKind (Boundary / Wall / Partition /
+// Guide). Selected lines show vertex handles (drag to move, drag a midpoint
+// to insert, Delete removes the selected vertex). The measure tool (M) shows
+// a temporary dimension between two snapped points.
+
+let fpPen = null; // { points: [[x,y]...], cursor: [x,y]|null, len: '', ang: '', field: 'len'|'ang' }
+let fpSnapHint = null; // { x, y, type } — current object-snap indicator
+let fpMeasure = null; // { a: [x,y], b: [x,y], done: boolean }
+const FP_SNAP_RADIUS_PX = 10;
+const FP_LINE_KIND_LABELS = { BOUNDARY: 'Boundary', WALL: 'Wall', PARTITION: 'Partition', GUIDE: 'Guide' };
+
+function fpResetPen() {
+  fpPen = null;
+  fpSnapHint = null;
+}
+
+function fpPenKind() {
+  const k = String(state.fp.penKind || 'BOUNDARY').toUpperCase();
+  return LINE_KINDS.includes(k) ? k : 'BOUNDARY';
+}
+
+function fpLineKindLabel(kind) {
+  const k = String(kind || '').toUpperCase();
+  return FP_LINE_KIND_LABELS[k] || (k === 'PENCIL' ? 'Boundary' : 'Line');
+}
+
+// Unsnapped pointer position in feet, clamped onto the canvas.
+function fpCanvasRawAt(clientX, clientY) {
+  const canvas = $('#fpCanvas');
+  if (!canvas) return null;
+  const rect = canvas.getBoundingClientRect();
+  const u = fpPx();
+  const { w: cw, h: ch } = fpCanvasDims();
+  return [
+    Math.min(Math.max(0, (clientX - rect.left) / u), cw),
+    Math.min(Math.max(0, (clientY - rect.top) / u), ch),
+  ];
+}
+
+/**
+ * Snap a raw feet position: nearest object snap within FP_SNAP_RADIUS_PX
+ * (priority endpoint > corner > midpoint > on-edge, then distance), else the
+ * snap-step grid. `opts.skip` = { boundaryId, index } excludes one vertex (the
+ * one being dragged); `opts.extra` = extra endpoint candidates (pen vertices).
+ */
+function fpObjectSnap(raw, ev, opts = {}) {
+  const { w: cw, h: ch } = fpCanvasDims();
+  const radius = FP_SNAP_RADIUS_PX / fpPx();
+  let best = null;
+  const consider = (x, y, type, prio) => {
+    const d = Math.hypot(raw[0] - x, raw[1] - y);
+    if (d > radius) return;
+    if (!best || prio < best.prio || (prio === best.prio && d < best.d)) best = { x, y, type, prio, d };
   };
-  const cleanup = () => {
-    document.removeEventListener('pointermove', move);
-    document.removeEventListener('pointerup', up);
-    document.removeEventListener('keydown', onKey);
-  };
-  const onKey = (ev) => {
-    if (ev.key !== 'Escape') return;
-    ev.preventDefault();
-    fpDraftLine = null;
-    cleanup();
-    fpRenderCanvas();
-  };
-  const up = () => {
-    cleanup();
-    const d = fpDraftLine;
-    fpDraftLine = null;
-    if (!d) return;
-    // A zero-length click draws nothing — a 2-vertex polyline must be meaningful.
-    if (d.x1 === d.x2 && d.y1 === d.y2) {
-      fpRenderCanvas();
-      return;
+  if (state.fp.objSnap !== false) {
+    for (const [x, y] of opts.extra || []) consider(x, y, 'endpoint', 0);
+    for (const b of fpLayerHidden('lines') ? [] : state.fp.boundaries || []) {
+      const pts = fpBoundaryPoints(b.points);
+      const segs = [];
+      for (let i = 0; i < pts.length; i++) {
+        const skipped = opts.skip && opts.skip.boundaryId === b.id && opts.skip.index === i;
+        if (!skipped) consider(pts[i][0], pts[i][1], 'endpoint', 0);
+        if (i > 0) segs.push([i - 1, i]);
+      }
+      if (b.closed && pts.length > 2) segs.push([pts.length - 1, 0]);
+      for (const [i, j] of segs) {
+        if (opts.skip && opts.skip.boundaryId === b.id && (opts.skip.index === i || opts.skip.index === j)) continue;
+        const a = pts[i];
+        const c = pts[j];
+        consider((a[0] + c[0]) / 2, (a[1] + c[1]) / 2, 'midpoint', 2);
+        const n = nearestOnSegment(raw, a, c);
+        consider(n.x, n.y, 'edge', 3);
+      }
     }
-    fpPersistLine(d.x1, d.y1, d.x2, d.y2);
-  };
-  document.addEventListener('pointermove', move);
-  document.addEventListener('pointerup', up);
-  document.addEventListener('keydown', onKey);
+    for (const r of (fpLayerHidden('units') ? [] : state.fp.placements).concat(fpLayerHidden('blocks') ? [] : state.fp.blocks)) {
+      const x0 = r.x;
+      const y0 = r.y;
+      const x1 = quantizeFt(r.x + r.width);
+      const y1 = quantizeFt(r.y + r.height);
+      const corners = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+      corners.forEach(([x, y]) => consider(x, y, 'corner', 1));
+      for (let i = 0; i < 4; i++) {
+        const a = corners[i];
+        const c = corners[(i + 1) % 4];
+        consider((a[0] + c[0]) / 2, (a[1] + c[1]) / 2, 'midpoint', 2);
+        const n = nearestOnSegment(raw, a, c);
+        consider(n.x, n.y, 'edge', 3);
+      }
+    }
+  }
+  if (best) return { x: clampFt(best.x, 0, cw), y: clampFt(best.y, 0, ch), type: best.type };
+  const step = fpSnapStep(ev);
+  return { x: clampFt(snapFt(raw[0], step), 0, cw), y: clampFt(snapFt(raw[1], step), 0, ch), type: 'grid' };
 }
 
-// Persist a drawn line as an OPEN boundary polyline (kind 'PENCIL') via the
-// existing boundary endpoints — ZERO contract change (label/kind/points/closed
-// are long-standing fields). Persisted lines render SOLID (only the in-flight
-// draft previews dashed). Marked-area rule: >= 3-vertex polylines feed UFA/NLA
-// via chord-close; a 2-vertex segment contributes 0 until extended/closed.
-async function fpPersistLine(x1, y1, x2, y2) {
+// Snapped point for a pen / measure / vertex interaction. Shift constrains to
+// 0/45/90° from `anchor` (grid-snapped length, no object snap).
+function fpSnapPointer(ev, anchor, opts) {
+  const raw = fpCanvasRawAt(ev.clientX, ev.clientY);
+  if (!raw) return null;
+  if (ev.shiftKey && anchor) {
+    const { w: cw, h: ch } = fpCanvasDims();
+    const step = fpSnapStep(ev);
+    const c = fpConstrainLine(anchor[0], anchor[1], snapFt(raw[0], step), snapFt(raw[1], step), step);
+    return { x: clampFt(c.x, 0, cw), y: clampFt(c.y, 0, ch), type: 'ortho' };
+  }
+  return fpObjectSnap(raw, ev, opts);
+}
+
+const fpSamePt = (a, b) => !!a && !!b && ftEquals(a[0], b[0]) && ftEquals(a[1], b[1]);
+
+// Where the next vertex would land: typed length (+ optional typed angle)
+// from the last vertex, else the snapped cursor.
+function fpPenPreviewPoint() {
+  if (!fpPen || !fpPen.points.length) return null;
+  const last = fpPen.points[fpPen.points.length - 1];
+  const len = fpParseLen(fpPen.len);
+  if (len !== null && len > 0) {
+    const typedAng = fpPen.ang.trim() === '' ? null : Number(fpPen.ang);
+    const dir = typedAng !== null && Number.isFinite(typedAng)
+      ? typedAng
+      : fpPen.cursor && !fpSamePt(fpPen.cursor, last) ? angleDeg(last, fpPen.cursor) : 0;
+    const { w: cw, h: ch } = fpCanvasDims();
+    const p = pointAtAngle(last, len, dir);
+    const q = [clampFt(p[0], 0, cw), clampFt(p[1], 0, ch)];
+    fpPen.clamped = !fpSamePt(p, q); // typed segment ran past the canvas edge
+    return q;
+  }
+  fpPen.clamped = false;
+  return fpPen.cursor;
+}
+
+// Place the typed-length vertex; warn when the canvas edge cut it short.
+function fpPenPlaceTyped() {
+  const pt = fpPenPreviewPoint();
+  const clamped = fpPen.clamped;
+  fpPenAdd(pt);
+  if (clamped) {
+    const { w: cw, h: ch } = fpCanvasDims();
+    fpToast(`That segment ran past the ${formatFt(cw)}×${formatFt(ch)} ft canvas — the vertex was stopped at the edge (${formatFt(pt[0])}, ${formatFt(pt[1])}). Enlarge the canvas for the full length.`, false);
+  }
+}
+
+function fpPenReadout() {
+  if (!fpPen) return;
+  const last = fpPen.points[fpPen.points.length - 1];
+  const next = fpPenPreviewPoint();
+  const seg = last && next ? segmentLengthFt(last, next) : 0;
+  const ang = last && next && !fpSamePt(last, next) ? angleDeg(last, next) : null;
+  const total = polylineLengthFt(fpPen.points) + seg;
+  const field = (name, key, unit) => {
+    const val = fpPen[key];
+    return `${name} ${fpPen.field === key ? '[' + (val || '…') + '▌]' : val ? '[' + val + ']' : '—'}${unit}`;
+  };
+  fpSetReadout(
+    `${fpLineKindLabel(fpPenKind())} · ${fpPen.points.length} pt · seg ${formatFt(Math.round(seg * 100) / 100)} ft` +
+      (ang !== null ? ` ∠ ${Math.round(ang * 10) / 10}°` : '') +
+      ` · total ${formatFt(Math.round(total * 100) / 100)} ft · ` +
+      field('Length', 'len', ' ft') + ' ' + field('Angle', 'ang', '°') +
+      (fpSnapHint && fpSnapHint.type !== 'grid' ? ` · snap ${fpSnapHint.type}` : ''),
+  );
+}
+
+// Add a vertex to the pen (ignores a repeat of the last vertex).
+function fpPenAdd(p) {
+  if (!fpPen) fpPen = { points: [], cursor: p, len: '', ang: '', field: 'len' };
+  const last = fpPen.points[fpPen.points.length - 1];
+  if (fpSamePt(last, p)) return;
+  fpPen.points.push([p[0], p[1]]);
+  fpPen.len = '';
+  fpPen.ang = '';
+  fpPen.field = 'len';
+}
+
+// Finish the pen: persist as a new line item (closed loop when requested).
+async function fpFinishPen(closed) {
+  const pen = fpPen;
+  fpResetPen();
+  if (!pen) return;
+  const pts = [];
+  for (const p of pen.points) if (!fpSamePt(pts[pts.length - 1], p)) pts.push(p);
+  if (closed && pts.length > 1 && fpSamePt(pts[0], pts[pts.length - 1])) pts.pop();
+  const distinct = new Set(pts.map(([x, y]) => `${toMilli(x)},${toMilli(y)}`)).size;
+  if (pts.length < 2) {
+    fpRenderCanvas();
+    fpSetReadout('');
+    return;
+  }
+  const close = closed && distinct >= 3;
+  const kind = fpPenKind();
+  const body = { label: fpLineKindLabel(kind), kind, points: pts, closed: close };
+  if (kind === 'WALL') body.thickness = Number(state.fp.wallThickness) || DEFAULT_WALL_THICKNESS_FT;
   try {
     const res = await fpMutate(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/boundaries`, {
       method: 'POST',
-      body: JSON.stringify({ label: 'Line', kind: 'PENCIL', points: [[x1, y1], [x2, y2]], closed: false }),
+      body: JSON.stringify(body),
     });
     const b = res.data;
     // The plan is lazily created server-side when a floor has none yet (same
@@ -1735,16 +3661,435 @@ async function fpPersistLine(x1, y1, x2, y2) {
       state.fp.plan = { width: state.fp.canvasDefaults.width, height: state.fp.canvasDefaults.height };
     }
     fpPushUndo({ kind: 'boundary', boundaryId: b.id, prev: null }); // undo = DELETE the drawn line
-    state.fp.boundaries.push({ id: b.id, label: b.label, kind: b.kind, points: fpBoundaryPoints(b.points), closed: !!b.closed, sortOrder: b.sortOrder || 0 });
+    state.fp.boundaries.push(fpNormalizeBoundary(b));
     state.fp.selectedBoundary = b.id;
+    state.fp.selectedVertex = null;
     state.fp.selected = null;
     state.fp.selectedBlock = null;
     fpRender();
-    notifyMetricsFloorChanged();
-    fpToast(`Line added (solid) — ${Math.round(Math.hypot(x2 - x1, y2 - y1))} ft at ${x1},${y1} → ${x2},${y2}. Select it to close the loop (3+ vertices) so it feeds UFA/NLA.`, true);
+    if (lineFeedsArea(kind)) notifyMetricsFloorChanged();
+    const len = polylineLengthFt(pts, close);
+    fpToast(
+      `${fpLineKindLabel(kind)} added — ${pts.length} vertices, ${formatFt(Math.round(len * 100) / 100)} ft${close ? ', closed loop' : ''}.` +
+        (lineFeedsArea(kind) && !close && pts.length < 3 ? ' Add a 3rd vertex or close the loop so it feeds UFA/NLA.' : ''),
+      true,
+    );
   } catch (err) {
     fpRenderCanvas();
     fpToast('Draw line: ' + describeError(err), false);
+  }
+  fpSetReadout('');
+}
+
+// Canvas pointerdown while the line tool is on.
+function fpPenPointerDown(e) {
+  if (e.button !== 0) return;
+  e.preventDefault();
+  const anchor = fpPen && fpPen.points.length ? fpPen.points[fpPen.points.length - 1] : null;
+  const s = fpSnapPointer(e, anchor, { extra: fpPen ? fpPen.points : [] });
+  if (!s) return;
+  const p = [s.x, s.y];
+  state.fp.selected = null;
+  state.fp.selectedBlock = null;
+  state.fp.selectedMarker = null;
+  state.fp.selectedBoundary = null;
+  state.fp.selectedVertex = null;
+  if (fpPen && fpPen.points.length) {
+    // Typed length pending: a click places the typed point instead.
+    const typed = fpParseLen(fpPen.len);
+    if (typed !== null && typed > 0) {
+      fpPenPlaceTyped();
+    } else if (fpPen.points.length >= 3 && fpSamePt(p, fpPen.points[0])) {
+      fpFinishPen(true);
+      return;
+    } else if (fpSamePt(p, fpPen.points[fpPen.points.length - 1])) {
+      if (e.detail >= 2 && fpPen.points.length >= 2) fpFinishPen(false); // double-click finishes open
+      return;
+    } else {
+      fpPenAdd(p);
+    }
+    fpRenderCanvas();
+    fpPenReadout();
+    return;
+  }
+  // First vertex. A press-and-drag (> 5 px) instead draws one straight segment.
+  fpPenAdd(p);
+  const downX = e.clientX;
+  const downY = e.clientY;
+  const up = (ev) => {
+    document.removeEventListener('pointerup', up);
+    if (!fpPen || fpPen.points.length !== 1) return;
+    if (Math.hypot(ev.clientX - downX, ev.clientY - downY) <= 5) return; // a click: keep drawing
+    const end = fpSnapPointer(ev, fpPen.points[0], { extra: fpPen.points });
+    if (end && !fpSamePt([end.x, end.y], fpPen.points[0])) {
+      fpPen.points.push([end.x, end.y]);
+      fpFinishPen(false);
+    }
+  };
+  document.addEventListener('pointerup', up);
+  fpRenderCanvas();
+  fpPenReadout();
+}
+
+// Hover while the line / measure tool is on: rubber band + snap indicator.
+function fpPenHover(e) {
+  if (state.fp.measureMode) {
+    const s = fpSnapPointer(e, fpMeasure && !fpMeasure.done ? fpMeasure.a : null);
+    if (!s) return;
+    fpSnapHint = s;
+    if (fpMeasure && !fpMeasure.done) fpMeasure.b = [s.x, s.y];
+    fpRenderCanvas();
+    fpMeasureReadout(s);
+    return;
+  }
+  if (!state.fp.drawMode) return;
+  const anchor = fpPen && fpPen.points.length ? fpPen.points[fpPen.points.length - 1] : null;
+  const s = fpSnapPointer(e, anchor, { extra: fpPen ? fpPen.points : [] });
+  if (!s) return;
+  fpSnapHint = s;
+  if (fpPen) {
+    fpPen.cursor = [s.x, s.y];
+    fpRenderCanvas();
+    fpPenReadout();
+  } else {
+    fpRenderCanvas();
+    fpSetReadout(`x ${formatFt(s.x)} · y ${formatFt(s.y)} ft${s.type !== 'grid' ? ` · snap ${s.type}` : ''} · click to start a ${fpLineKindLabel(fpPenKind()).toLowerCase()}`);
+  }
+}
+
+// Keyboard while the pen is active (registered once in fpInitEvents).
+function fpPenKey(e) {
+  if (!fpPen || !state.fp.drawMode || e.metaKey || e.ctrlKey) return;
+  const t = e.target;
+  if (t && typeof t.closest === 'function' && t.closest('input, textarea, select, [contenteditable]')) return;
+  const k = e.key;
+  const buf = fpPen.field === 'ang' ? 'ang' : 'len';
+  if (/^[0-9.]$/.test(k) || (k === '-' && buf === 'ang' && !fpPen.ang)) {
+    fpPen[buf] += k;
+  } else if (k === 'Tab') {
+    fpPen.field = fpPen.field === 'len' ? 'ang' : 'len';
+  } else if (k === 'Backspace') {
+    if (fpPen[buf]) fpPen[buf] = fpPen[buf].slice(0, -1);
+    else if (fpPen.len || fpPen.ang) fpPen[buf === 'len' ? 'ang' : 'len'] = '';
+    else if (fpPen.points.length > 1) fpPen.points.pop();
+    else fpResetPen();
+  } else if (k === 'Enter') {
+    const typed = fpParseLen(fpPen.len);
+    if (typed !== null && typed > 0) fpPenPlaceTyped();
+    else if (fpPen.points.length >= 2) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      fpFinishPen(false);
+      return;
+    }
+  } else if (k === 'Escape') {
+    if (fpPen.len || fpPen.ang) {
+      fpPen.len = '';
+      fpPen.ang = '';
+    } else fpResetPen();
+  } else if ((k === 'c' || k === 'C') && fpPen.points.length >= 3) {
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    fpFinishPen(true);
+    return;
+  } else {
+    return;
+  }
+  e.preventDefault();
+  e.stopImmediatePropagation(); // keep Delete / arrow / tool shortcuts away from the pen
+  fpRenderCanvas();
+  if (fpPen) fpPenReadout();
+  else fpSetReadout('Line cancelled.');
+}
+
+// ---------- measure tool ----------
+
+function fpMeasureReadout(s) {
+  if (!fpMeasure) {
+    fpSetReadout(`Measure · click the first point${s && s.type !== 'grid' ? ` · snap ${s.type}` : ''}`);
+    return;
+  }
+  const { a, b } = fpMeasure;
+  const len = segmentLengthFt(a, b);
+  const ang = fpSamePt(a, b) ? 0 : angleDeg(a, b);
+  fpSetReadout(
+    `Measure ${formatFt(Math.round(len * 100) / 100)} ft ∠ ${Math.round(ang * 10) / 10}° · Δx ${formatFt(Math.round(Math.abs(b[0] - a[0]) * 100) / 100)} · Δy ${formatFt(Math.round(Math.abs(b[1] - a[1]) * 100) / 100)} ft` +
+      (fpMeasure.done ? ' · click to measure again, Esc clears' : ''),
+  );
+}
+
+function fpMeasurePointerDown(e) {
+  if (e.button !== 0) return;
+  e.preventDefault();
+  const s = fpSnapPointer(e, fpMeasure && !fpMeasure.done ? fpMeasure.a : null);
+  if (!s) return;
+  const p = [s.x, s.y];
+  if (!fpMeasure || fpMeasure.done) fpMeasure = { a: p, b: p, done: false };
+  else fpMeasure = { a: fpMeasure.a, b: p, done: true };
+  fpRenderCanvas();
+  fpMeasureReadout(s);
+}
+
+function fpSetMeasureMode(on) {
+  state.fp.measureMode = !!on;
+  fpMeasure = null;
+  fpSnapHint = null;
+  if (on) {
+    state.fp.drawMode = false;
+    fpResetPen();
+    state.fp.armedMarker = null;
+    fpRenderMarkerTools();
+    const pencil = $('#fpBoundaryTool');
+    if (pencil) {
+      pencil.classList.remove('on');
+      pencil.setAttribute('aria-pressed', 'false');
+    }
+  }
+  const btn = $('#fpMeasureTool');
+  if (btn) {
+    btn.classList.toggle('on', !!on);
+    btn.setAttribute('aria-pressed', String(!!on));
+  }
+  state.fp.tool = on ? 'measure' : state.fp.tool === 'measure' ? 'select' : state.fp.tool;
+  fpRenderCanvas();
+  fpSyncModeUI();
+  fpSetReadout(on ? 'Measure · click the first point' : '');
+}
+
+// ---------- vertex editing (selected line) ----------
+
+function fpSelectedBoundary() {
+  return (state.fp.boundaries || []).find((b) => b.id === state.fp.selectedBoundary) || null;
+}
+
+// Vertex / midpoint handle under the pointer for the selected line, or null.
+function fpVertexHitAt(clientX, clientY) {
+  const bnd = fpSelectedBoundary();
+  if (!bnd) return null;
+  const raw = fpCanvasRawAt(clientX, clientY);
+  if (!raw) return null;
+  const tol = 8 / fpPx();
+  const pts = fpBoundaryPoints(bnd.points);
+  for (let i = 0; i < pts.length; i++) {
+    if (Math.hypot(raw[0] - pts[i][0], raw[1] - pts[i][1]) <= tol) return { bnd, type: 'vertex', index: i };
+  }
+  const segs = pts.length > 1 ? pts.slice(1).map((p, i) => [i, i + 1]) : [];
+  if (bnd.closed && pts.length > 2) segs.push([pts.length - 1, 0]);
+  for (const [i, j] of segs) {
+    const mx = (pts[i][0] + pts[j][0]) / 2;
+    const my = (pts[i][1] + pts[j][1]) / 2;
+    if (Math.hypot(raw[0] - mx, raw[1] - my) <= tol) return { bnd, type: 'mid', index: i, insertAt: j === 0 ? pts.length : j };
+  }
+  return null;
+}
+
+// PUT a line patch, adopt the server's row, record undo and re-render.
+async function fpPersistBoundary(bnd, patch, prev, verb) {
+  try {
+    const res = await fpMutate(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/boundaries/${encodeURIComponent(bnd.id)}`, {
+      method: 'PUT',
+      body: JSON.stringify(patch),
+    });
+    Object.assign(bnd, fpNormalizeBoundary(res.data));
+    if (prev) fpPushUndo({ kind: 'boundary', boundaryId: bnd.id, prev });
+    fpRender();
+    notifyMetricsFloorChanged();
+    fpToast(`${verb} ${fpLineKindLabel(bnd.kind).toLowerCase()} "${bnd.label || 'Line'}".`, true);
+    return true;
+  } catch (err) {
+    fpToast(`${verb} line: ${describeError(err)}`, false);
+    await fpFetch();
+    return false;
+  }
+}
+
+function fpBoundaryUndoPrev(bnd) {
+  return { points: fpBoundaryPoints(bnd.points), closed: !!bnd.closed, kind: bnd.kind, label: bnd.label, thickness: bnd.thickness ?? null };
+}
+
+// Drag a vertex (or a midpoint, which inserts a vertex first) of the selected line.
+function fpVertexStartDrag(e, hit) {
+  e.preventDefault();
+  const bnd = hit.bnd;
+  const prev = fpBoundaryUndoPrev(bnd);
+  let pts = fpBoundaryPoints(bnd.points);
+  let index = hit.index;
+  if (hit.type === 'mid') {
+    const a = pts[hit.index];
+    const b = pts[hit.insertAt % pts.length];
+    pts.splice(hit.insertAt, 0, [quantizeFt((a[0] + b[0]) / 2), quantizeFt((a[1] + b[1]) / 2)]);
+    index = hit.insertAt;
+  }
+  bnd.points = pts;
+  state.fp.selectedVertex = index;
+  const downX = e.clientX;
+  const downY = e.clientY;
+  let moved = hit.type === 'mid';
+  const neighbour = () => (index > 0 ? pts[index - 1] : bnd.closed ? pts[pts.length - 1] : pts[index + 1]);
+  fpRenderCanvas();
+  fpRenderSelInfo();
+  const move = (ev) => {
+    if (!moved && Math.hypot(ev.clientX - downX, ev.clientY - downY) <= 3) return;
+    moved = true;
+    const s = fpSnapPointer(ev, neighbour(), { skip: { boundaryId: bnd.id, index } });
+    if (!s) return;
+    fpSnapHint = s;
+    pts[index] = [s.x, s.y];
+    bnd.points = pts;
+    fpRenderCanvas();
+    fpSetReadout(`Vertex ${index + 1} → ${formatFt(s.x)}, ${formatFt(s.y)} ft${s.type !== 'grid' ? ` · snap ${s.type}` : ''}`);
+  };
+  const up = () => {
+    document.removeEventListener('pointermove', move);
+    document.removeEventListener('pointerup', up);
+    fpSnapHint = null;
+    if (!moved) {
+      fpRenderCanvas();
+      fpRenderSelInfo(); // a click just selects the vertex
+      return;
+    }
+    fpPersistBoundary(bnd, { points: pts, closed: !!bnd.closed }, prev, hit.type === 'mid' ? 'Added a vertex to' : 'Moved a vertex of');
+  };
+  document.addEventListener('pointermove', move);
+  document.addEventListener('pointerup', up);
+}
+
+// Delete the selected vertex (keeps >= 2 vertices; a closed loop that would
+// drop below 3 distinct vertices re-opens).
+function fpDeleteSelectedVertex() {
+  const bnd = fpSelectedBoundary();
+  const i = state.fp.selectedVertex;
+  if (!bnd || i == null) return false;
+  const pts = fpBoundaryPoints(bnd.points);
+  if (pts.length <= 2) {
+    fpToast('A line needs at least 2 vertices — remove the whole line instead.', false);
+    return true;
+  }
+  const prev = fpBoundaryUndoPrev(bnd);
+  pts.splice(i, 1);
+  const closed = !!bnd.closed && pts.length >= 3;
+  state.fp.selectedVertex = null;
+  fpPersistBoundary(bnd, { points: pts, closed }, prev, 'Removed a vertex from');
+  return true;
+}
+
+// Inspector edits for the selected line (label / kind / thickness / vertex X·Y).
+function fpCommitLineField(input) {
+  const bnd = fpSelectedBoundary();
+  if (!bnd) return;
+  const prev = fpBoundaryUndoPrev(bnd);
+  const field = input.dataset.fpLine;
+  if (field === 'label') {
+    const label = input.value.trim();
+    if (!label || label === bnd.label) {
+      input.value = bnd.label || '';
+      return;
+    }
+    fpPersistBoundary(bnd, { label: label.slice(0, 80) }, prev, 'Renamed');
+  } else if (field === 'kind') {
+    const kind = String(input.value || 'BOUNDARY').toUpperCase();
+    if (kind === String(bnd.kind || '').toUpperCase()) return;
+    const patch = { kind };
+    if (kind === 'WALL') patch.thickness = bnd.thickness || Number(state.fp.wallThickness) || DEFAULT_WALL_THICKNESS_FT;
+    fpPersistBoundary(bnd, patch, prev, 'Changed');
+  } else if (field === 'thickness') {
+    const v = fpParseLen(input.value);
+    if (v === null || v < MIN_WALL_THICKNESS_FT || v > MAX_WALL_THICKNESS_FT) {
+      fpToast(`Wall thickness must be ${MIN_WALL_THICKNESS_FT}–${MAX_WALL_THICKNESS_FT} ft.`, false);
+      input.value = formatFt(bnd.thickness || DEFAULT_WALL_THICKNESS_FT);
+      return;
+    }
+    if (ftEquals(v, bnd.thickness || 0)) return;
+    state.fp.wallThickness = v; // next walls default to the last thickness used
+    fpPersistBoundary(bnd, { thickness: v }, prev, 'Re-thickened');
+  } else if (field === 'vx' || field === 'vy') {
+    const i = state.fp.selectedVertex;
+    const pts = fpBoundaryPoints(bnd.points);
+    if (i == null || !pts[i]) return;
+    const v = fpParseLen(input.value);
+    const { w: cw, h: ch } = fpCanvasDims();
+    const max = field === 'vx' ? cw : ch;
+    if (v === null || v < 0 || v > max) {
+      fpToast(`Vertex ${field === 'vx' ? 'X' : 'Y'} must be between 0 and ${formatFt(max)} ft.`, false);
+      input.value = formatFt(pts[i][field === 'vx' ? 0 : 1]);
+      return;
+    }
+    if (ftEquals(v, pts[i][field === 'vx' ? 0 : 1])) return;
+    pts[i] = field === 'vx' ? [v, pts[i][1]] : [pts[i][0], v];
+    fpPersistBoundary(bnd, { points: pts, closed: !!bnd.closed }, prev, 'Moved a vertex of');
+  }
+}
+
+// Shared row normaliser for boundary payloads (list + POST/PUT responses).
+function fpNormalizeBoundary(b) {
+  return {
+    id: b.id,
+    label: b.label,
+    kind: b.kind,
+    points: fpBoundaryPoints(b.points),
+    closed: !!b.closed,
+    sortOrder: b.sortOrder || 0,
+    thickness: b.thickness ?? null,
+  };
+}
+
+// Overlay drawn on top of the boundary layer: pen rubber band, snap
+// indicator, measure dimension, selected-line handles.
+function fpRenderPenOverlay(svg, u) {
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+  const el = (tag, attrs, text) => {
+    const n = document.createElementNS(SVG_NS, tag);
+    for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, String(v));
+    if (text !== undefined) n.textContent = text;
+    svg.appendChild(n);
+    return n;
+  };
+  const P = ([x, y]) => `${x * u},${y * u}`;
+  const label = (x, y, text) => el('text', { x: x * u + 6, y: y * u - 6, class: 'fp-dim-label' }, text);
+  // Selected line: vertex + midpoint handles.
+  const bnd = fpSelectedBoundary();
+  if (bnd && !state.fp.drawMode && !state.fp.measureMode) {
+    const pts = fpBoundaryPoints(bnd.points);
+    const segs = pts.length > 1 ? pts.slice(1).map((p, i) => [i, i + 1]) : [];
+    if (bnd.closed && pts.length > 2) segs.push([pts.length - 1, 0]);
+    for (const [i, j] of segs) {
+      const mx = (pts[i][0] + pts[j][0]) / 2;
+      const my = (pts[i][1] + pts[j][1]) / 2;
+      el('rect', { x: mx * u - 3.5, y: my * u - 3.5, width: 7, height: 7, class: 'fp-mid-handle' });
+      const len = segmentLengthFt(pts[i], pts[j]);
+      if (len * u > 40) el('text', { x: mx * u, y: my * u - 8, class: 'fp-dim-label', 'text-anchor': 'middle' }, `${formatFt(Math.round(len * 100) / 100)}′`);
+    }
+    pts.forEach((p, i) => el('circle', { cx: p[0] * u, cy: p[1] * u, r: i === state.fp.selectedVertex ? 6 : 4.5, class: 'fp-vertex-handle' + (i === state.fp.selectedVertex ? ' on' : '') }));
+  }
+  // Pen rubber band.
+  if (fpPen && fpPen.points.length) {
+    const pts = fpPen.points;
+    if (pts.length > 1) el('polyline', { points: pts.map(P).join(' '), class: 'fp-pen-line' });
+    const next = fpPenPreviewPoint();
+    const last = pts[pts.length - 1];
+    if (next && !fpSamePt(next, last)) {
+      el('line', { x1: last[0] * u, y1: last[1] * u, x2: next[0] * u, y2: next[1] * u, class: 'fp-pen-rubber' });
+      const len = segmentLengthFt(last, next);
+      label((last[0] + next[0]) / 2, (last[1] + next[1]) / 2, `${formatFt(Math.round(len * 100) / 100)} ft ∠ ${Math.round(angleDeg(last, next) * 10) / 10}°`);
+    }
+    pts.forEach((p, i) => el('circle', { cx: p[0] * u, cy: p[1] * u, r: i === 0 && pts.length >= 3 ? 6 : 3.5, class: 'fp-pen-vertex' + (i === 0 && pts.length >= 3 ? ' close' : '') }));
+  }
+  // Measure dimension.
+  if (fpMeasure) {
+    const { a, b } = fpMeasure;
+    el('line', { x1: a[0] * u, y1: a[1] * u, x2: b[0] * u, y2: b[1] * u, class: 'fp-measure-line' });
+    [a, b].forEach((p) => el('circle', { cx: p[0] * u, cy: p[1] * u, r: 3, class: 'fp-measure-end' }));
+    if (!fpSamePt(a, b)) label((a[0] + b[0]) / 2, (a[1] + b[1]) / 2, `${formatFt(Math.round(segmentLengthFt(a, b) * 100) / 100)} ft`);
+  }
+  // Snap indicator: square = endpoint/corner, triangle = midpoint, × = on edge.
+  if (fpSnapHint && (state.fp.drawMode || state.fp.measureMode || fpSnapHint.type !== 'grid')) {
+    const x = fpSnapHint.x * u;
+    const y = fpSnapHint.y * u;
+    const t = fpSnapHint.type;
+    if (t === 'endpoint' || t === 'corner') el('rect', { x: x - 5, y: y - 5, width: 10, height: 10, class: 'fp-snap-mark' });
+    else if (t === 'midpoint') el('polygon', { points: `${x},${y - 6} ${x + 6},${y + 5} ${x - 6},${y + 5}`, class: 'fp-snap-mark' });
+    else if (t === 'edge') el('path', { d: `M${x - 5},${y - 5}L${x + 5},${y + 5}M${x + 5},${y - 5}L${x - 5},${y + 5}`, class: 'fp-snap-mark' });
+    else el('circle', { cx: x, cy: y, r: 3, class: 'fp-snap-mark grid' });
   }
 }
 
@@ -1764,11 +4109,13 @@ function fpBoundaryHitAt(clientX, clientY) {
   let bestDist = Infinity;
   for (const b of state.fp.boundaries || []) {
     const pts = fpBoundaryPoints(b.points);
-    for (let i = 1; i < pts.length; i++) {
-      const x1 = pts[i - 1][0] * u;
-      const y1 = pts[i - 1][1] * u;
-      const x2 = pts[i][0] * u;
-      const y2 = pts[i][1] * u;
+    // A closed loop's closing edge (last → first vertex) is clickable too.
+    const ring = b.closed && pts.length > 2 ? pts.concat([pts[0]]) : pts;
+    for (let i = 1; i < ring.length; i++) {
+      const x1 = ring[i - 1][0] * u;
+      const y1 = ring[i - 1][1] * u;
+      const x2 = ring[i][0] * u;
+      const y2 = ring[i][1] * u;
       const dx = x2 - x1;
       const dy = y2 - y1;
       const lenSq = dx * dx + dy * dy;
@@ -1832,8 +4179,8 @@ async function fpPlaceUnit(unit, footprint, gx, gy) {
     fpToast(`${unit.unitCode} (${footprint.w}×${footprint.h} ft) is too large for the ${cw}×${ch} ft canvas — enlarge the canvas first`, false);
     return;
   }
-  let x = Math.min(Math.max(0, gx), cw - footprint.w);
-  let y = Math.min(Math.max(0, gy), ch - footprint.h);
+  let x = clampFt(gx, 0, cw - footprint.w);
+  let y = clampFt(gy, 0, ch - footprint.h);
   const unitIsLocker = String(unit.sizeCode || '').toUpperCase() === 'LOCKER';
   // Snap-to-stack: a dropped locker overlapping a lone ground locker of the
   // identical footprint snaps onto its exact rect so the Stack offer is precise.
@@ -1843,12 +4190,9 @@ async function fpPlaceUnit(unit, footprint, gx, gy) {
         (o.stackTier || 0) === 0 &&
         !fpStackMate(o) &&
         fpIsLockerPlacement(o) &&
-        o.width === footprint.w &&
-        o.height === footprint.h &&
-        x < o.x + o.width &&
-        o.x < x + footprint.w &&
-        y < o.y + o.height &&
-        o.y < y + footprint.h,
+        ftEquals(o.width, footprint.w) &&
+        ftEquals(o.height, footprint.h) &&
+        rectsOverlapExact({ x, y, width: footprint.w, height: footprint.h }, o),
     );
     if (snap) {
       x = snap.x;
@@ -1857,7 +4201,7 @@ async function fpPlaceUnit(unit, footprint, gx, gy) {
   }
   // Exact-rect drop: offer Stack for lone-locker-on-locker, explain otherwise.
   const exact = state.fp.placements.find(
-    (o) => o.x === x && o.y === y && o.width === footprint.w && o.height === footprint.h,
+    (o) => sameRect(o, { x, y, width: footprint.w, height: footprint.h }),
   );
   if (exact) {
     if (fpStackMate(exact)) {
@@ -1965,7 +4309,7 @@ function fpStartPaletteDrag(e, chip) {
     document.removeEventListener('pointerup', up);
     const rect = ghost.getBoundingClientRect();
     ghost.remove();
-    const cell = fpCanvasCellAt(rect.left, rect.top);
+    const cell = fpCanvasCellAt(rect.left, rect.top, ev);
     if (cell) fpPlaceUnit(unit, fp, cell.gx, cell.gy);
   };
   document.addEventListener('pointermove', move);
@@ -2006,15 +4350,21 @@ function fpStartMove(e, el) {
   const { w: cw, h: ch } = fpCanvasDims();
   const orig = pair.map((p) => ({ p, x: p.x, y: p.y }));
   const move = (ev) => {
-    const cell = fpCanvasCellAt(ev.clientX - offsetX, ev.clientY - offsetY);
+    const cell = fpCanvasCellAt(ev.clientX - offsetX, ev.clientY - offsetY, ev);
     if (!cell) return;
-    const nx = Math.min(Math.max(0, cell.gx), Math.max(0, cw - pl.width));
-    const ny = Math.min(Math.max(0, cell.gy), Math.max(0, ch - pl.height));
+    let nx = clampFt(cell.gx, 0, cw - pl.width);
+    let ny = clampFt(cell.gy, 0, ch - pl.height);
+    // Shift = axis lock: keep the move on the dominant axis from the grab point.
+    if (ev.shiftKey) {
+      if (Math.abs(nx - orig[0].x) >= Math.abs(ny - orig[0].y)) ny = orig[0].y;
+      else nx = orig[0].x;
+    }
     for (const p of pair) {
       p.x = nx;
       p.y = ny;
     }
     fpRenderCanvas();
+    fpSetReadout(`${pl.unitCode} → ${formatFt(nx)}, ${formatFt(ny)} ft`);
   };
   const up = async () => {
     document.removeEventListener('pointermove', move);
@@ -2063,18 +4413,18 @@ function fpStartMove(e, el) {
 }
 
 // Lock-to-sqft resize snapping: given the free-dragged size (w0×h0), return
-// the nearest integer rect that preserves area≈sqft while staying on-canvas.
-// Keeps the dragged width, derives h=round(sqft/w); if that overflows the
-// canvas height, pins h and re-derives w the other way round.
-function fpSnapToSqft(w0, h0, sqft, cw, ch, ox, oy) {
+// the decimal rect that preserves area = sqft while staying on-canvas. Keeps
+// the dragged width (snapped to `step`) and derives h = sqft / w at 0.001 ft;
+// if that overflows the canvas height, pins h and re-derives w instead.
+function fpSnapToSqft(w0, h0, sqft, cw, ch, ox, oy, step) {
   void h0;
-  const maxW = Math.max(1, cw - ox);
-  const maxH = Math.max(1, ch - oy);
-  let w = Math.max(1, Math.min(Math.round(w0) || 1, maxW));
-  let h = Math.max(1, Math.min(Math.round(sqft / w), maxH));
-  if (Math.round(sqft / w) > maxH) {
+  const maxW = Math.max(MIN_RECT_SIDE_FT, quantizeFt(cw - ox));
+  const maxH = Math.max(MIN_RECT_SIDE_FT, quantizeFt(ch - oy));
+  let w = clampFt(snapFt(w0, step), MIN_RECT_SIDE_FT, maxW);
+  let h = Math.max(MIN_RECT_SIDE_FT, quantizeFt(sqft / w));
+  if (h > maxH) {
     h = maxH;
-    w = Math.max(1, Math.min(Math.round(sqft / h), maxW));
+    w = clampFt(quantizeFt(sqft / h), MIN_RECT_SIDE_FT, maxW);
   }
   return { w, h };
 }
@@ -2106,14 +4456,13 @@ function fpStartResize(e, pl) {
   const pair = mate ? [pl, mate].slice().sort((a, b) => (a.stackTier || 0) - (b.stackTier || 0)) : [pl];
   const pairIds = pair.map((p) => p.unitId);
   const move = (ev) => {
-    const dx = Math.round((ev.clientX - startX) / u);
-    const dy = Math.round((ev.clientY - startY) / u);
-    const freeW = Math.max(1, Math.min(origW + dx, cw - origX));
-    const freeH = Math.max(1, Math.min(origH + dy, ch - origY));
+    const step = fpSnapStep(ev);
+    const freeW = clampFt(snapFt(origW + (ev.clientX - startX) / u, step), fpMinSide(ev), cw - origX);
+    const freeH = clampFt(snapFt(origH + (ev.clientY - startY) / u, step), fpMinSide(ev), ch - origY);
     let w;
     let h;
     if (state.fp.lockSqft && pl.sqft > 0) {
-      const snapped = fpSnapToSqft(freeW, freeH, pair[0].sqft || pl.sqft, cw, ch, origX, origY);
+      const snapped = fpSnapToSqft(freeW, freeH, pair[0].sqft || pl.sqft, cw, ch, origX, origY, step);
       w = snapped.w;
       h = snapped.h;
     } else {
@@ -2125,6 +4474,7 @@ function fpStartResize(e, pl) {
       p.height = h;
     }
     fpRenderCanvas();
+    fpSetReadout(`${pl.unitCode} ${formatFt(w)} × ${formatFt(h)} ft = ${fpFmtArea(rectAreaSqft({ width: w, height: h }))} sqft (unit ${pl.sqft})`);
   };
   const up = () => {
     document.removeEventListener('pointermove', move);
@@ -2164,8 +4514,8 @@ async function fpRotatePlacement() {
     return;
   }
   const prev = pair.map((p) => ({ p, x: p.x, y: p.y, w: p.width, h: p.height }));
-  const nx = Math.min(pl.x, Math.max(0, cw - w));
-  const ny = Math.min(pl.y, Math.max(0, ch - h));
+  const nx = clampFt(pl.x, 0, cw - w);
+  const ny = clampFt(pl.y, 0, ch - h);
   for (const p of pair) {
     p.width = w;
     p.height = h;
@@ -2212,8 +4562,7 @@ function fpFirstFreeSpot(size) {
   const occupied = state.fp.blocks
     .concat(state.fp.placements)
     .concat((state.fp.markers || []).map((m) => ({ x: m.x, y: m.y, width: 1, height: 1 })));
-  const collides = (x, y) =>
-    occupied.some((o) => x < o.x + o.width && o.x < x + size && y < o.y + o.height && o.y < y + size);
+  const collides = (x, y) => occupied.some((o) => rectsOverlapExact({ x, y, width: size, height: size }, o));
   for (let y = 0; y + size <= ch; y++) {
     for (let x = 0; x + size <= cw; x++) {
       if (!collides(x, y)) return { x, y };
@@ -2232,7 +4581,9 @@ function fpFirstFreeSpot(size) {
 // Point-in-polygon (ray cast), edge-inclusive: a point on an edge or vertex
 // counts as inside so auto-placed units may abut boundary walls.
 function fpPointOnSeg(px, py, ax, ay, bx, by) {
-  if ((bx - ax) * (py - ay) - (by - ay) * (px - ax) !== 0) return false;
+  // Collinearity with a tiny tolerance: decimal-ft vertices make the exact
+  // cross product of an on-edge point a float like 1e-15, not 0.
+  if (Math.abs((bx - ax) * (py - ay) - (by - ay) * (px - ax)) > 1e-9) return false;
   return Math.min(ax, bx) <= px && px <= Math.max(ax, bx) && Math.min(ay, by) <= py && py <= Math.max(ay, by);
 }
 
@@ -2320,6 +4671,7 @@ function fpPolyBBox(pts) {
 // fpView, where editor state may be stale).
 function fpUsablePlaceArea(input) {
   const rows = (input !== undefined ? input : state.fp.boundaries || [])
+    .filter((b) => lineFeedsArea(b.kind)) // only area-marking lines bound placement
     .map((b) => ({ pts: fpBoundaryPoints(b.points), closed: !!b.closed }))
     .filter((b) => b.pts.length >= 2 && b.pts.some(([x, y]) => x !== b.pts[0][0] || y !== b.pts[0][1]));
   if (!rows.length) return null;
@@ -2348,21 +4700,22 @@ function fpUsablePlaceArea(input) {
 function fpRectInUsable(x, y, w, h, usable) {
   if (!usable) return false;
   const { x0, y0, x1, y1 } = usable.bbox;
-  if (x < x0 || y < y0 || x + w > x1 || y + h > y1) return false;
+  if (x < x0 || y < y0 || quantizeFt(x + w) > x1 || quantizeFt(y + h) > y1) return false;
   if (usable.kind === 'bbox') return true;
   return usable.polys.some((poly) => fpRectInPolygon(x, y, w, h, poly));
 }
 
-// Rectangular first-free-spot scan for auto-place (same repack approach as the
-// opt-in scripts/backfill-placement-footprints.ts): top-left → bottom-right
-// over integer foot cells against the live `taken` rect list. Returns {x,y} or
-// null — never a fallback spot: canvas dims are blueprint feet and auto-place
-// must NOT auto-resize the canvas.
+// Rectangular first-free-spot scan for auto-place: top-left → bottom-right
+// against the live `taken` rect list. Candidate coordinates are every whole
+// foot PLUS every taken rect's far edge (x + width / y + height), so decimal
+// footprints pack flush against their neighbours instead of leaving sub-foot
+// gaps. Comparisons are integer-exact (milli-ft). Returns {x,y} or null —
+// never a fallback spot: canvas dims are blueprint feet and auto-place must
+// NOT auto-resize the canvas.
 function fpFirstFreeRect(w, h, taken, usable) {
   const { w: cw, h: ch } = fpCanvasDims();
-  if (w > cw || h > ch) return null;
-  const collides = (x, y) =>
-    taken.some((o) => x < o.x + o.width && o.x < x + w && y < o.y + o.height && o.y < y + h);
+  if (toMilli(w) > toMilli(cw) || toMilli(h) > toMilli(ch)) return null;
+  const collides = (x, y) => taken.some((o) => rectsOverlapExact({ x, y, width: w, height: h }, o));
   // Clamp the scan to the usable boundary area (when known) so candidates
   // outside the Line-tool area are never tried; every surviving candidate is
   // then rect-in-polygon checked (corners inside + no edge straddling walls).
@@ -2377,8 +4730,19 @@ function fpFirstFreeRect(w, h, taken, usable) {
     xTo = Math.min(cw, usable.bbox.x1);
     yTo = Math.min(ch, usable.bbox.y1);
   }
-  for (let y = yFrom; y + h <= yTo; y++) {
-    for (let x = xFrom; x + w <= xTo; x++) {
+  const candidates = (from, to, size, edges) => {
+    const set = new Set([toMilli(from)]);
+    for (let v = Math.ceil(from); v <= to; v++) set.add(toMilli(v));
+    for (const e of edges) if (e >= from) set.add(toMilli(e));
+    return [...set]
+      .filter((m) => m + toMilli(size) <= toMilli(to))
+      .sort((a, b) => a - b)
+      .map((m) => m / 1000);
+  };
+  const ys = candidates(yFrom, yTo, h, taken.map((o) => quantizeFt(o.y + o.height)));
+  const xs = candidates(xFrom, xTo, w, taken.map((o) => quantizeFt(o.x + o.width)));
+  for (const y of ys) {
+    for (const x of xs) {
       if (collides(x, y)) continue;
       if (usable && !fpRectInUsable(x, y, w, h, usable)) continue;
       return { x, y };
@@ -2435,7 +4799,7 @@ function fpHasUsableBoundary() {
 // Auto-place: renders ALL unplaced units of the current floor onto the canvas.
 // One PUT per unit via the existing placement endpoint; footprints come from
 // unitFootprint() (true-size sqftFootprint, ghost-rotated orientation first,
-// swapped orientation as fallback) so the server's 15% area tolerance holds.
+// swapped orientation as fallback) so the server's 2% area tolerance holds.
 // Every candidate spot is rect-in-polygon clipped to the usable boundary area
 // (fpUsablePlaceArea: closed-loop interior, else the open-lines box), so no
 // write ever lands outside the Line-tool area. Units that don't fit — or fail
@@ -2497,7 +4861,7 @@ async function fpAutoPlaceAll() {
     for (const unit of queue) {
       const fp = unitFootprint(unit);
       const orientations = [{ w: fp.w, h: fp.h }];
-      if (fp.w !== fp.h) orientations.push({ w: fp.h, h: fp.w });
+      if (!ftEquals(fp.w, fp.h)) orientations.push({ w: fp.h, h: fp.w });
       let spot = null;
       let geom = null;
       for (const o of orientations) {
@@ -2637,15 +5001,22 @@ function fpBlockStartMove(e, el) {
   state.fp.selectedMarker = null;
   state.fp.selectedBoundary = null;
   blk._undoPrev = { name: blk.name, x: blk.x, y: blk.y, width: blk.width, height: blk.height, color: blk.color || null, doorEdges: blk.doorEdges || null };
+  const origBX = blk.x;
+  const origBY = blk.y;
   fpRenderCanvas();
   fpRenderSelInfo();
   const { w: cw, h: ch } = fpCanvasDims();
   const move = (ev) => {
-    const cell = fpCanvasCellAt(ev.clientX - offsetX, ev.clientY - offsetY);
+    const cell = fpCanvasCellAt(ev.clientX - offsetX, ev.clientY - offsetY, ev);
     if (!cell) return;
-    blk.x = Math.min(Math.max(0, cell.gx), Math.max(0, cw - blk.width));
-    blk.y = Math.min(Math.max(0, cell.gy), Math.max(0, ch - blk.height));
+    blk.x = clampFt(cell.gx, 0, cw - blk.width);
+    blk.y = clampFt(cell.gy, 0, ch - blk.height);
+    if (ev.shiftKey) {
+      if (Math.abs(blk.x - origBX) >= Math.abs(blk.y - origBY)) blk.y = origBY;
+      else blk.x = origBX;
+    }
     fpRenderCanvas();
+    fpSetReadout(`${blk.name || 'Block'} → ${formatFt(blk.x)}, ${formatFt(blk.y)} ft`);
   };
   const up = () => {
     document.removeEventListener('pointermove', move);
@@ -2676,11 +5047,11 @@ function fpBlockStartResize(e, blk) {
   const origH = blk.height;
   const { w: cw, h: ch } = fpCanvasDims();
   const move = (ev) => {
-    const dx = Math.round((ev.clientX - startX) / u);
-    const dy = Math.round((ev.clientY - startY) / u);
-    blk.width = Math.max(1, Math.min(origW + dx, cw - origX));
-    blk.height = Math.max(1, Math.min(origH + dy, ch - origY));
+    const step = fpSnapStep(ev);
+    blk.width = clampFt(snapFt(origW + (ev.clientX - startX) / u, step), fpMinSide(ev), cw - origX);
+    blk.height = clampFt(snapFt(origH + (ev.clientY - startY) / u, step), fpMinSide(ev), ch - origY);
     fpRenderCanvas();
+    fpSetReadout(`${blk.name || 'Block'} ${formatFt(blk.width)} × ${formatFt(blk.height)} ft = ${fpFmtArea(rectAreaSqft(blk))} sqft`);
   };
   const up = () => {
     document.removeEventListener('pointermove', move);
@@ -2838,7 +5209,7 @@ function fpToggleArmedMarker(kind) {
   if (state.fp.armedMarker) {
     // Arming a marker disarms the line tool (one placement mode at a time).
     state.fp.drawMode = false;
-    fpDraftLine = null;
+    fpResetPen();
     const pencilBtn = $('#fpBoundaryTool');
     if (pencilBtn) {
       pencilBtn.classList.remove('on');
@@ -2937,11 +5308,12 @@ function fpMarkerStartMove(e, el) {
   fpRenderSelInfo();
   const { w: cw, h: ch } = fpCanvasDims();
   const move = (ev) => {
-    const p = fpCanvasPointAt(ev.clientX, ev.clientY);
+    const p = fpCanvasPointAt(ev.clientX, ev.clientY, ev);
     if (!p) return;
-    m.x = Math.min(Math.max(0, p.x), cw);
-    m.y = Math.min(Math.max(0, p.y), ch);
+    m.x = clampFt(p.x, 0, cw);
+    m.y = clampFt(p.y, 0, ch);
     fpRenderCanvas();
+    fpSetReadout(`${fpMarkerLabel(m)} → ${formatFt(m.x)}, ${formatFt(m.y)} ft`);
   };
   const up = () => {
     document.removeEventListener('pointermove', move);
@@ -3100,7 +5472,20 @@ function fpRenderPlanStatus() {
 // drag/resize/drop. Reads keep using get(); Publish uses request() directly
 // (the server sets ACTIVE, then fpFetch reloads).
 async function fpMutate(url, opts) {
-  const res = await request(url, opts);
+  fpSaving += 1;
+  fpRenderSaveStatus();
+  let res;
+  try {
+    res = await request(url, opts);
+    fpSaveFailed = false;
+    fpLastSavedAt = new Date();
+  } catch (err) {
+    fpSaveFailed = true;
+    throw err;
+  } finally {
+    fpSaving -= 1;
+    fpRenderSaveStatus();
+  }
   if (state.fp.plan) state.fp.plan.status = 'DRAFT';
   fpCanvasDirty = true; // every designer write funnels through here — the
   // canvas now differs from the last load/save (Load guards on this)
@@ -3110,10 +5495,10 @@ async function fpMutate(url, opts) {
 
 async function fpSaveCanvas() {
   if (!state.fp.floorId) return;
-  const w = Number($('#fpWidth').value);
-  const h = Number($('#fpHeight').value);
-  if (!Number.isInteger(w) || w < 1 || w > 500 || !Number.isInteger(h) || h < 1 || h > 500) {
-    fpToast('Canvas size must be a whole number between 1 and 500 feet.', false);
+  const w = fpParseDim($('#fpWidth').value);
+  const h = fpParseDim($('#fpHeight').value);
+  if (w === null || h === null) {
+    fpToast('Canvas size must be a number between 1 and 500 feet (decimals allowed).', false);
     return;
   }
   // Operator-entered GFA (sqft): empty clears back to unset (metrics fall back
@@ -3424,7 +5809,7 @@ async function fpLoadDraft(draftId) {
     state.fp.selectedBoundary = null;
     state.fp.selectedMarker = null;
     state.fp.armedMarker = null;
-    fpDraftLine = null;
+    fpResetPen();
     fpClearUndo(); // inverse ops captured against the live rows no longer apply
     fpCanvasDirty = false;
     fpSetLoadedDraft({ id: d.id, version: d.version });
@@ -3447,10 +5832,10 @@ async function fpSaveDraft() {
     fpToast('Pick a facility and floor first.', false);
     return;
   }
-  const w = Number($('#fpWidth').value);
-  const h = Number($('#fpHeight').value);
-  if (!Number.isInteger(w) || w < 1 || w > 500 || !Number.isInteger(h) || h < 1 || h > 500) {
-    fpToast('Canvas size must be a whole number between 1 and 500 feet.', false);
+  const w = fpParseDim($('#fpWidth').value);
+  const h = fpParseDim($('#fpHeight').value);
+  if (w === null || h === null) {
+    fpToast('Canvas size must be a number between 1 and 500 feet (decimals allowed).', false);
     return;
   }
   const gfaEl = $('#fpGfa');
@@ -3675,7 +6060,7 @@ function fpViewRender() {
   canvas.style.backgroundSize = `${u}px ${u}px`;
   canvas.innerHTML = '';
   fpRenderStructure(canvas, u, fpView.structure);
-  fpRenderBoundaryLayer(canvas, u, fpView.dims, fpView.boundaries || [], null, null);
+  fpRenderBoundaryLayer(canvas, u, fpView.dims, fpView.boundaries || [], false, null);
   for (const blk of fpView.blocks) {
     const el = document.createElement('div');
     el.className = 'fp-block';
@@ -3771,7 +6156,7 @@ function fpOnCanvasWheel(e) {
 // Editor Delete/Backspace shortcut: removes the current selection through the
 // existing select → confirmDialog → DELETE → refresh flows. Registered ONCE in
 // fpInitEvents() (never per-render); the transient drag Escape handlers
-// (fpDrawStart) live on document too but only react to Escape, so there is no
+// (pen / vertex drags) live on document too but only react to Escape, so there is no
 // conflict. Guards: typing (inputs/selects/contenteditable — covers the
 // block-name, marker-label, canvas-dims and structure-JSON fields), the read-only
 // #fpViewModal preview (editor-only shortcut), and an open #confirmModal (a
@@ -3779,6 +6164,39 @@ function fpOnCanvasWheel(e) {
 // fpRenderSelInfo: boundary line, then marker, then decoration block, then
 // unit placement.
 // fpDeletePlan (whole-plan delete) is NEVER bound here.
+// Tool shortcuts: L toggles the line tool, M the measure tool; Esc clears a
+// measurement (then leaves the measure tool). Same guards as Delete.
+function fpOnToolKey(e) {
+  if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey) return;
+  const t = e.target;
+  if (t && typeof t.closest === 'function' && t.closest('input, textarea, select, [contenteditable]')) return;
+  const designer = document.querySelector('#facility-floorplans');
+  if (!designer || designer.offsetParent === null) return;
+  const viewModal = $('#fpViewModal');
+  if (viewModal && !viewModal.hidden) return;
+  const confirmModal = $('#confirmModal');
+  if (confirmModal && !confirmModal.hidden) return;
+  if (e.key === 'Escape' && state.fp.underlayMode) {
+    e.preventDefault();
+    fpSetUnderlayMode(null);
+    return;
+  }
+  if (e.key === 'Escape' && state.fp.measureMode) {
+    e.preventDefault();
+    if (fpMeasure) {
+      fpMeasure = null;
+      fpRenderCanvas();
+      fpMeasureReadout(null);
+    } else fpSetMeasureMode(false);
+  } else if (e.key === 'l' || e.key === 'L') {
+    e.preventDefault();
+    $('#fpBoundaryTool')?.click();
+  } else if (e.key === 'm' || e.key === 'M') {
+    e.preventDefault();
+    fpSetMeasureMode(!state.fp.measureMode);
+  }
+}
+
 function fpOnDeleteKey(e) {
   if (e.key !== 'Delete' && e.key !== 'Backspace') return;
   if (e.defaultPrevented) return;
@@ -3793,7 +6211,13 @@ function fpOnDeleteKey(e) {
   if (viewModal && !viewModal.hidden) return;
   const confirmModal = $('#confirmModal');
   if (confirmModal && !confirmModal.hidden) return;
-  if (state.fp.selectedBoundary) {
+  if (state.fp.multi && state.fp.multi.length > 1) {
+    e.preventDefault();
+    fpDeleteMulti();
+  } else if (state.fp.selectedBoundary && state.fp.selectedVertex != null) {
+    e.preventDefault();
+    fpDeleteSelectedVertex();
+  } else if (state.fp.selectedBoundary) {
     e.preventDefault();
     fpRemoveBoundary();
   } else if (state.fp.selectedMarker) {
@@ -3834,8 +6258,11 @@ function fpStudioToast(msg, ok) {
 // modes (armed marker, line tool) win over the sticky tool so the badge is
 // always truthful; block mode sticks while its form is open.
 function fpEffectiveMode() {
+  if (state.fp.underlayMode === 'calibrate') return 'calibrate';
+  if (state.fp.underlayMode === 'move') return 'underlay';
   if (state.fp.armedMarker) return 'marker';
   if (state.fp.drawMode) return 'draw';
+  if (state.fp.measureMode) return 'measure';
   if (state.fp.tool === 'add') return 'add';
   if (state.fp.tool === 'block') return 'block';
   return 'select';
@@ -3848,10 +6275,16 @@ function fpSyncModeUI() {
   const badge = $('#fpModeIndicator');
   if (badge) {
     badge.textContent =
-      mode === 'marker'
+      mode === 'calibrate'
+        ? 'MODE: CALIBRATE UNDERLAY'
+        : mode === 'underlay'
+          ? 'MODE: MOVE UNDERLAY'
+          : mode === 'marker'
         ? 'MODE: MARKER'
-        : mode === 'draw'
-          ? 'MODE: DRAW'
+        : mode === 'measure'
+          ? 'MODE: MEASURE'
+          : mode === 'draw'
+          ? `MODE: DRAW ${fpLineKindLabel(fpPenKind()).toUpperCase()}`
           : mode === 'add'
             ? 'MODE: ADD UNIT'
             : mode === 'block'
@@ -3892,12 +6325,14 @@ export function fpInitEvents() {
   // FP_TOOLBAR_GROUPS): units → mode → markers → canvas → plan → view → info.
   // --- Group: header (branch/floor scope + save/delete plan actions, delete last) ---
   $('#fpBranch').addEventListener('change', (e) => {
+    fpFlushNudge(); // a pending nudge persists against the floor it was made on
     state.fp.branchCode = e.target.value;
     state.fp.floorId = null;
     fpPopulateFloorSelect();
     if (state.fp.floorId) fpFetch().catch(() => {});
   });
   $('#fpFloor').addEventListener('change', (e) => {
+    fpFlushNudge(); // a pending nudge persists against the floor it was made on
     state.fp.floorId = e.target.value;
     fpFetch().catch(() => {});
   });
@@ -3923,7 +6358,7 @@ export function fpInitEvents() {
     });
   }
   // Lock-to-sqft resize (default ON). OFF is the ops override: free resize,
-  // with a warning that the server rejects writes deviating >15% from sqft.
+  // with a warning that the server rejects new/resized units deviating >2% from sqft.
   const lockBtn = $('#fpLockSqft');
   const syncLockBtn = () => {
     if (!lockBtn) return;
@@ -3938,7 +6373,7 @@ export function fpInitEvents() {
       syncLockBtn();
       fpRenderSelInfo();
       if (!state.fp.lockSqft) {
-        fpToast('Sqft lock OFF — free resize enabled, but the server rejects placements deviating more than 15% from the unit sqft.', false);
+        fpToast(`Sqft lock OFF — free resize enabled, but the server rejects new or resized units deviating more than ${Math.round(AREA_TOLERANCE * 100)}% from the unit sqft.`, false);
       } else {
         fpToast('Sqft lock ON — resize snaps to the nearest rect preserving area ≈ sqft.', true);
       }
@@ -3961,7 +6396,8 @@ export function fpInitEvents() {
     syncPencilBtn();
     pencilBtn.addEventListener('click', () => {
       state.fp.drawMode = !state.fp.drawMode;
-      fpDraftLine = null;
+      fpResetPen();
+      if (state.fp.drawMode && state.fp.measureMode) fpSetMeasureMode(false);
       if (state.fp.drawMode && state.fp.armedMarker) {
         // One placement mode at a time — arming the line tool disarms markers.
         state.fp.armedMarker = null;
@@ -3974,7 +6410,7 @@ export function fpInitEvents() {
       fpSyncModeUI();
       fpToast(
         state.fp.drawMode
-          ? 'Line tool ON — press and drag on the canvas to draw a line, release to save. Click a drawn line to select it.'
+          ? `Line tool ON (${fpLineKindLabel(fpPenKind())}) — click to add vertices, double-click or Enter to finish, click the first vertex or C to close. Type a length (Tab = angle) + Enter for exact segments; Shift = 0/45/90°; Esc cancels.`
           : 'Line tool OFF — unit and block interactions restored.',
         true,
       );
@@ -4003,7 +6439,21 @@ export function fpInitEvents() {
   // Modifier-gated canvas zoom (see fpOnCanvasWheel) + editor Delete shortcut
   // (see fpOnDeleteKey) — both attached once here, never per-render.
   $('#fpCanvasWrap').addEventListener('wheel', fpOnCanvasWheel, { passive: false });
+  // Pen + tool shortcuts first: fpPenKey stops propagation for the keys it
+  // consumes (Backspace / Enter / Esc / digits) so Delete / arrows never fire.
+  document.addEventListener('keydown', fpPenKey);
+  document.addEventListener('keydown', fpOnToolKey);
+  document.addEventListener('keydown', fpOnEditKey);
+  // Never lose a pending write (debounced nudge, in-flight save) on unload.
+  window.addEventListener('beforeunload', (e) => {
+    if (!fpHasPendingWrites()) return;
+    fpFlushNudge();
+    fpFlushGroupNudge();
+    e.preventDefault();
+    e.returnValue = '';
+  });
   document.addEventListener('keydown', fpOnDeleteKey);
+  document.addEventListener('keydown', fpOnArrowKey);
   // Escape cancels an armed marker (the line tool owns its own mid-draft Escape).
   document.addEventListener('keydown', fpOnEscapeTool);
   // --- Group: units (palette drag, palette toggle, auto-place) + blocks (block form) ---
@@ -4032,6 +6482,55 @@ export function fpInitEvents() {
   // Undo: replays the last draw/move/delete inverse op via DELETE/PUT.
   const fpUndoBtn = $('#fpUndoBtn');
   if (fpUndoBtn) fpUndoBtn.addEventListener('click', () => fpUndo().catch(() => {}));
+  $('#fpRedoBtn')?.addEventListener('click', () => fpRedo().catch(() => {}));
+  fpSyncUndoButtons();
+  // Layers menu (show / lock per layer, remembered per browser) + shortcut sheet.
+  fpLoadLayers();
+  fpRenderLayersMenu();
+  $('#fpLayersBtn')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const menu = $('#fpLayersMenu');
+    if (!menu) return;
+    menu.hidden = !menu.hidden;
+    $('#fpLayersBtn').setAttribute('aria-expanded', String(!menu.hidden));
+  });
+  $('#fpLayersMenu')?.addEventListener('click', (e) => e.stopPropagation());
+  $('#fpLayersMenu')?.addEventListener('change', (e) => {
+    const box = e.target;
+    if (!box || !box.dataset || !box.dataset.fpLayer) return;
+    const prop = box.dataset.fpLayerProp;
+    fpSetLayerProp(box.dataset.fpLayer, prop, prop === 'hidden' ? !box.checked : box.checked);
+  });
+  document.addEventListener('pointerdown', () => {
+    const menu = $('#fpLayersMenu');
+    if (menu && !menu.hidden) {
+      menu.hidden = true;
+      $('#fpLayersBtn')?.setAttribute('aria-expanded', 'false');
+    }
+  });
+  $('#fpShortcutsBtn')?.addEventListener('click', () => fpToggleShortcutSheet());
+  // 🗺 Underlay + ⤓ Export dropdowns (same open/close pattern as Layers).
+  fpWireUnderlayPanel();
+  fpRenderUnderlayMenu();
+  for (const [btnId, menuId] of [['#fpUnderlayBtn', '#fpUnderlayMenu'], ['#fpExportBtn', '#fpExportMenu']]) {
+    $(btnId)?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const menu = $(menuId);
+      if (!menu) return;
+      menu.hidden = !menu.hidden;
+      $(btnId).setAttribute('aria-expanded', String(!menu.hidden));
+      if (!menu.hidden && menuId === '#fpUnderlayMenu') fpRenderUnderlayMenu();
+    });
+    $(menuId)?.addEventListener('pointerdown', (e) => e.stopPropagation());
+    document.addEventListener('pointerdown', () => {
+      const menu = $(menuId);
+      if (menu && !menu.hidden) {
+        menu.hidden = true;
+        $(btnId)?.setAttribute('aria-expanded', 'false');
+      }
+    });
+  }
+  $('#fpExportGo')?.addEventListener('click', () => fpExport());
   document.addEventListener('keydown', (e) => {
     // Ctrl/Cmd+Z undoes the last designer draw/move/delete (not while typing
     // in an input, and not when the block-name field owns Enter/Escape).
@@ -4087,15 +6586,22 @@ export function fpInitEvents() {
   });
   // --- Group: info (Labels) — canvas selection/drag dispatch + selection strip ---
   $('#fpCanvasWrap').addEventListener('pointerdown', (e) => {
+    fpFlushNudge(); // land any debounced nudge before a new drag captures undo state
     // Armed marker (Markers/Safety group): the next canvas click places the
     // armed kind and disarms — same mode-gated pattern as the line tool below
     // (placement/block/line interactions stay off until placed or cancelled).
     if (state.fp.armedMarker) {
       const canvas = $('#fpCanvas');
       if (canvas && canvas.contains(e.target)) {
-        const p = fpCanvasPointAt(e.clientX, e.clientY);
+        const p = fpCanvasPointAt(e.clientX, e.clientY, e);
         if (p) fpPlaceMarker(state.fp.armedMarker, p.x, p.y);
       }
+      return;
+    }
+    // Underlay calibrate / move modes own the canvas while active.
+    if (state.fp.underlayMode) {
+      const canvas = $('#fpCanvas');
+      if (canvas && canvas.contains(e.target)) fpUnderlayPointerDown(e);
       return;
     }
     // Line tool active: canvas press-drag draws a straight line and the
@@ -4103,29 +6609,64 @@ export function fpInitEvents() {
     // toggles off. Only canvas surfaces start a line (wrap padding is inert).
     if (state.fp.drawMode) {
       const canvas = $('#fpCanvas');
-      if (canvas && canvas.contains(e.target)) fpDrawStart(e);
+      if (canvas && canvas.contains(e.target)) fpPenPointerDown(e);
       return;
     }
-    const placed = e.target.closest('.fp-placed');
+    // Measure tool: two snapped clicks show a temporary dimension.
+    if (state.fp.measureMode) {
+      const canvas = $('#fpCanvas');
+      if (canvas && canvas.contains(e.target)) fpMeasurePointerDown(e);
+      return;
+    }
+    // Selected line: its vertex / midpoint handles win over everything below
+    // (handles can sit on top of units and blocks).
+    const vHit = fpLayerLocked('lines') ? null : fpVertexHitAt(e.clientX, e.clientY);
+    if (vHit) {
+      fpVertexStartDrag(e, vHit);
+      return;
+    }
+    state.fp.selectedVertex = null;
+    state.fp.arrayOpen = false;
+    // Locked / hidden layers (Layers menu) ignore pointer input.
+    const placed = fpLayerLocked('units') ? null : e.target.closest('.fp-placed');
+    const marker = fpLayerLocked('markers') ? null : e.target.closest('.fp-marker');
+    const blk = fpLayerLocked('blocks') ? null : e.target.closest('.fp-block');
+    // Marker badges render topmost, so they hit-test before blocks.
+    const hitRef = placed
+      ? { type: 'placement', id: placed.dataset.unitId }
+      : marker
+        ? { type: 'marker', id: marker.dataset.markerId }
+        : blk
+          ? { type: 'block', id: blk.dataset.blockId }
+          : null;
+    // Shift-click toggles multi-selection; dragging a member moves the group.
+    if (hitRef && e.shiftKey) {
+      e.preventDefault();
+      fpToggleMulti(hitRef.type, hitRef.id);
+      return;
+    }
+    if (hitRef && state.fp.multi && state.fp.multi.length > 1 && fpInMulti(hitRef.type, hitRef.id) && !e.target.classList.contains('fp-resize')) {
+      fpGroupStartMove(e);
+      return;
+    }
+    if (hitRef) state.fp.multi = [];
     if (placed) {
       fpStartMove(e, placed);
       return;
     }
-    // Marker badges render topmost, so they hit-test before blocks.
-    const marker = e.target.closest('.fp-marker');
     if (marker) {
       fpMarkerStartMove(e, marker);
       return;
     }
-    const blk = e.target.closest('.fp-block');
     if (blk) {
       fpBlockStartMove(e, blk);
       return;
     }
     // click near a drawn boundary line → select it (the SVG layer is
     // pointer-events:none, so the segment hit-test runs here)
-    const bndHit = fpBoundaryHitAt(e.clientX, e.clientY);
+    const bndHit = fpLayerLocked('lines') ? null : fpBoundaryHitAt(e.clientX, e.clientY);
     if (bndHit) {
+      state.fp.multi = [];
       state.fp.selectedBoundary = bndHit;
       state.fp.selected = null;
       state.fp.selectedBlock = null;
@@ -4134,15 +6675,27 @@ export function fpInitEvents() {
       fpRenderSelInfo();
       return;
     }
-    // click on empty canvas → deselect
-    state.fp.selected = null;
-    state.fp.selectedBlock = null;
-    state.fp.selectedMarker = null;
-    state.fp.selectedBoundary = null;
-    fpRenderCanvas();
-    fpRenderSelInfo();
+    // Empty canvas: drag = marquee select (Shift adds); a plain click deselects.
+    if (e.button === 0) fpMarqueeStart(e);
   });
   $('#fpSelInfo').addEventListener('click', (e) => {
+    const alignBtn = e.target && e.target.closest ? e.target.closest('[data-fp-align]') : null;
+    if (alignBtn) {
+      fpAlignMulti(alignBtn.dataset.fpAlign);
+      return;
+    }
+    const id = e.target && e.target.id;
+    if (id === 'fpMultiRemoveBtn') return void fpDeleteMulti();
+    if (id === 'fpDupBtn') return void fpDuplicateSelection();
+    if (id === 'fpArrayBtn' || id === 'fpArrayCancel') {
+      state.fp.arrayOpen = id === 'fpArrayBtn';
+      fpRenderSelInfo();
+      if (state.fp.arrayOpen) $('#fpSelInfo [data-fp-arr="count"]')?.select();
+      return;
+    }
+    if (id === 'fpArrayApply') return void fpApplyArray();
+    if (id === 'fpCalibApply') return void fpApplyCalibration();
+    if (id === 'fpCalibCancel') return void fpSetUnderlayMode(null);
     if (e.target && e.target.id === 'fpRemoveBtn') fpRemovePlacement();
     else if (e.target && e.target.id === 'fpRotateBtn') fpRotatePlacement();
     else if (e.target && e.target.id === 'fpStackBtn') fpStackSelected();
@@ -4163,6 +6716,66 @@ export function fpInitEvents() {
     else if (e.target && e.target.dataset && e.target.dataset.door) fpToggleDoor(e.target.dataset.door);
   });
   $('#fpSelInfo').addEventListener('keydown', (e) => {
+    // Numeric inspector: Enter applies, Esc reverts, ↑/↓ step by the snap step.
+    const num = e.target && e.target.dataset ? e.target.dataset.fpNum : null;
+    if (num) {
+      const target = fpSelectionTarget();
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        fpCommitNumField(e.target);
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        if (target) e.target.value = formatFt(target.item[num]);
+        e.target.blur();
+      } else if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && target) {
+        e.preventDefault();
+        const cur = fpParseLen(e.target.value);
+        const base = cur === null ? target.item[num] : cur;
+        const step = fpSnapStep(e) * (e.shiftKey ? 10 : 1) * (e.key === 'ArrowUp' ? 1 : -1);
+        const v = quantizeFt(base + step);
+        const verb = num === 'width' || num === 'height' ? 'Resized' : 'Moved';
+        if (fpApplySelectionGeom({ [num]: v }, verb, { debounce: true })) {
+          const again = document.querySelector(`#fpSelInfo [data-fp-num="${num}"]`);
+          if (again) {
+            again.focus();
+            again.select();
+          }
+        }
+      }
+      return;
+    }
+    if (e.target && e.target.dataset && e.target.dataset.fpCalib) {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        fpApplyCalibration();
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        fpSetUnderlayMode(null);
+      }
+      return;
+    }
+    if (e.target && e.target.dataset && e.target.dataset.fpArr) {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        fpApplyArray();
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        state.fp.arrayOpen = false;
+        fpRenderSelInfo();
+      }
+      return;
+    }
+    const lineField = e.target && e.target.dataset ? e.target.dataset.fpLine : null;
+    if (lineField) {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        fpCommitLineField(e.target);
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        fpRenderSelInfo();
+      }
+      return;
+    }
     if (e.key === 'Enter' && e.target && e.target.id === 'fpBlockRename') {
       e.preventDefault();
       fpRenameBlock();
@@ -4174,6 +6787,14 @@ export function fpInitEvents() {
   // Native colour pickers commit via `change` (not click), so the selection
   // strip's custom fill input is wired here rather than in the click delegate.
   $('#fpSelInfo').addEventListener('change', (e) => {
+    if (e.target && e.target.dataset && e.target.dataset.fpNum) {
+      fpCommitNumField(e.target);
+      return;
+    }
+    if (e.target && e.target.dataset && e.target.dataset.fpLine) {
+      fpCommitLineField(e.target);
+      return;
+    }
     if (e.target && e.target.id === 'fpBlockColorPick') {
       const cblk = state.fp.blocks.find((b) => b.id === state.fp.selectedBlock);
       if (cblk) fpSetBlockColor(cblk, e.target.value);
@@ -4202,9 +6823,10 @@ export function fpInitEvents() {
   // Draw Wall + Add Block reuse #fpBoundaryTool / #fpAddBlock above, so the
   // segmented control has one handler per tool and the audit stays green.
   $('#fpModeSelect')?.addEventListener('click', () => {
+    if (state.fp.measureMode) fpSetMeasureMode(false);
     state.fp.tool = 'select';
     state.fp.drawMode = false;
-    fpDraftLine = null;
+    fpResetPen();
     state.fp.armedMarker = null;
     const pencilBtn = $('#fpBoundaryTool');
     if (pencilBtn) {
@@ -4219,7 +6841,7 @@ export function fpInitEvents() {
   $('#fpModeAddUnit')?.addEventListener('click', () => {
     state.fp.tool = 'add';
     state.fp.drawMode = false;
-    fpDraftLine = null;
+    fpResetPen();
     state.fp.armedMarker = null;
     fpSetPaletteCollapsed(false);
     fpRenderMarkerTools();
@@ -4250,6 +6872,29 @@ export function fpInitEvents() {
       }
     }
   });
+  // Snap step selector (View group) + live cursor readout.
+  fpLoadSnapStep();
+  if ($('#fpSnapStep')) $('#fpSnapStep').value = String(fpSnapStep());
+  $('#fpSnapStep')?.addEventListener('change', (e) => fpSetSnapStep(e.target.value));
+  // Line kind for NEW lines, measure tool, object-snap toggle (Phase 3).
+  $('#fpPenKind')?.addEventListener('change', (e) => {
+    state.fp.penKind = String(e.target.value || 'BOUNDARY').toUpperCase();
+    fpSyncModeUI();
+    if (fpPen) fpPenReadout();
+  });
+  $('#fpMeasureTool')?.addEventListener('click', () => fpSetMeasureMode(!state.fp.measureMode));
+  $('#fpObjSnap')?.addEventListener('click', () => {
+    state.fp.objSnap = state.fp.objSnap === false;
+    const b = $('#fpObjSnap');
+    if (b) {
+      b.classList.toggle('on', state.fp.objSnap !== false);
+      b.setAttribute('aria-pressed', String(state.fp.objSnap !== false));
+    }
+    fpSnapHint = null;
+    fpRenderCanvas();
+  });
+  $('#fpCanvasWrap')?.addEventListener('pointermove', fpOnCanvasHover);
+  $('#fpCanvasWrap')?.addEventListener('pointerleave', () => fpSetReadout(''));
   $('#fpGridToggle')?.addEventListener('click', () => {
     const btn = $('#fpGridToggle');
     state.fp.showGrid = state.fp.showGrid === false;

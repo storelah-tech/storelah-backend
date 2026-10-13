@@ -9,6 +9,18 @@ import {
   normalizeDoorEdges,
   publishFloorPlan,
 } from './floorPlans';
+import {
+  DEFAULT_WALL_THICKNESS_FT,
+  MAX_WALL_THICKNESS_FT,
+  MIN_RECT_SIDE_FT,
+  MIN_WALL_THICKNESS_FT,
+  clampFt,
+  isPlanNumber,
+  pointOnCanvas,
+  quantizeFt,
+  quantizeRect,
+  rectFitsCanvas,
+} from './planGeometry';
 
 // Floor-plan draft versions (see docs/FLOOR_PLAN_MODEL.md "Draft versions").
 //
@@ -72,6 +84,7 @@ export interface DraftBoundarySnapshot {
   points: Array<[number, number]>;
   closed: boolean;
   sortOrder: number;
+  thickness?: number | null; // WALL thickness in ft (absent in pre-Phase-3 snapshots)
 }
 
 export interface DraftMarkerSnapshot {
@@ -124,6 +137,7 @@ export interface DraftBoundaryInput {
   points: unknown;
   closed?: boolean;
   sortOrder?: number | null;
+  thickness?: number | null;
 }
 
 export interface DraftMarkerInput {
@@ -141,19 +155,22 @@ export interface DraftMarkerInput {
 // interactive editor already enforces those on the live canvas. Publish
 // re-checks membership + fit (units may have moved on since the save).
 
+// Geometry is decimal feet quantized to 0.001 ft (src/core/planGeometry.ts);
+// callers persist the RETURNED (quantized) values.
 function checkDraftDim(v: number, axis: 'width' | 'height'): number {
-  if (!Number.isInteger(v) || v < 1 || v > MAX_CANVAS) {
-    throw new AppError(400, 'VALIDATION', `Canvas ${axis} must be an integer between 1 and ${MAX_CANVAS}`);
+  if (!isPlanNumber(v) || quantizeFt(v) < 1 || quantizeFt(v) > MAX_CANVAS) {
+    throw new AppError(400, 'VALIDATION', `Canvas ${axis} must be a number of feet between 1 and ${MAX_CANVAS}`);
   }
-  return v;
+  return quantizeFt(v);
 }
 
-function checkDraftRect(g: { x: number; y: number; width: number; height: number }, what: string): void {
-  for (const [v, name, min] of [[g.x, 'x', 0], [g.y, 'y', 0], [g.width, 'width', 1], [g.height, 'height', 1]] as const) {
-    if (!Number.isInteger(v) || (v as number) < min) {
-      throw new AppError(400, 'VALIDATION', `Draft ${what} ${name} must be an integer >= ${min}`);
+function checkDraftRect<T extends { x: number; y: number; width: number; height: number }>(g: T, what: string): T {
+  for (const [v, name, min] of [[g.x, 'x', 0], [g.y, 'y', 0], [g.width, 'width', MIN_RECT_SIDE_FT], [g.height, 'height', MIN_RECT_SIDE_FT]] as const) {
+    if (!isPlanNumber(v) || quantizeFt(v) < min) {
+      throw new AppError(400, 'VALIDATION', `Draft ${what} ${name} must be a number of feet >= ${min}`);
     }
   }
+  return quantizeRect(g);
 }
 
 function checkDraftFit(
@@ -161,13 +178,21 @@ function checkDraftFit(
   plan: { width: number; height: number },
   what: string,
 ): void {
-  if (g.x + g.width > plan.width || g.y + g.height > plan.height) {
+  if (!rectFitsCanvas(g, plan)) {
     throw new AppError(
       400,
       'VALIDATION',
       `Draft ${what} ${g.x},${g.y} ${g.width}×${g.height} exceeds the ${plan.width}×${plan.height} ft draft canvas — enlarge the canvas first`,
     );
   }
+}
+
+// WALL thickness for snapshots: quantized ft within range, default when unset;
+// null for every other kind (mirrors resolveThickness in floorPlans.ts).
+function draftThickness(kind: string, v: number | null | undefined): number | null {
+  if (kind.toUpperCase() !== 'WALL') return null;
+  if (!isPlanNumber(v) || v <= 0) return DEFAULT_WALL_THICKNESS_FT;
+  return clampFt(v, MIN_WALL_THICKNESS_FT, MAX_WALL_THICKNESS_FT);
 }
 
 function checkDraftGfa(v: number): number {
@@ -267,8 +292,8 @@ export async function saveDraft(floorId: string, input: SaveDraftInput = {}) {
   if (input.placements !== undefined) {
     if (!Array.isArray(input.placements)) throw new AppError(400, 'VALIDATION', 'Draft placements must be an array');
     placements = [];
-    for (const p of input.placements) {
-      checkDraftRect(p, 'placement');
+    for (const raw of input.placements) {
+      const p = checkDraftRect(raw, 'placement');
       checkDraftFit(p, canvas, 'placement');
       const tier = p.stackTier === undefined ? 0 : p.stackTier;
       if (tier !== 0 && tier !== 1) {
@@ -335,15 +360,15 @@ export async function saveDraft(floorId: string, input: SaveDraftInput = {}) {
       if (!name || name.length > 80) {
         throw new AppError(400, 'VALIDATION', 'Draft block name must be a non-empty string of at most 80 characters');
       }
-      checkDraftRect(b, 'block');
-      checkDraftFit(b, canvas, 'block');
+      const r = checkDraftRect(b, 'block');
+      checkDraftFit(r, canvas, 'block');
       const blockDoorCsv = normalizeDoorEdges(b.doorEdges);
       return {
         name,
-        x: b.x,
-        y: b.y,
-        width: b.width,
-        height: b.height,
+        x: r.x,
+        y: r.y,
+        width: r.width,
+        height: r.height,
         color: b.color === undefined || b.color === null ? null : String(b.color),
         doorEdges: (blockDoorCsv == null ? null : String(blockDoorCsv).split(',')) as string[] | null,
       };
@@ -366,12 +391,12 @@ export async function saveDraft(floorId: string, input: SaveDraftInput = {}) {
     if (!Array.isArray(input.boundaries)) throw new AppError(400, 'VALIDATION', 'Draft boundaries must be an array');
     boundaries = input.boundaries.map((b) => {
       const closed = b.closed ?? false;
-      const points = boundaryPointsOf(b.points);
+      const points = boundaryPointsOf(b.points).map(([x, y]) => [quantizeFt(x), quantizeFt(y)] as [number, number]);
       if (points.length < 2) {
         throw new AppError(400, 'VALIDATION', 'Draft boundary points must list at least 2 vertices');
       }
       for (const [x, y] of points) {
-        if (x < 0 || y < 0 || x > canvas.width || y > canvas.height) {
+        if (!pointOnCanvas(x, y, canvas)) {
           throw new AppError(
             400,
             'VALIDATION',
@@ -385,6 +410,7 @@ export async function saveDraft(floorId: string, input: SaveDraftInput = {}) {
         points,
         closed,
         sortOrder: b.sortOrder ?? 0,
+        thickness: draftThickness(b.kind == null ? 'BOUNDARY' : String(b.kind).trim(), b.thickness),
       };
     });
   } else {
@@ -395,6 +421,7 @@ export async function saveDraft(floorId: string, input: SaveDraftInput = {}) {
       points: boundaryPointsOf(b.points),
       closed: b.closed,
       sortOrder: b.sortOrder,
+      thickness: b.thickness ?? null,
     }));
   }
 
@@ -409,14 +436,14 @@ export async function saveDraft(floorId: string, input: SaveDraftInput = {}) {
           `Draft marker kind must be one of ${FP_MARKER_KINDS.join(', ')} — got ${JSON.stringify(m.kind)}`,
         );
       }
-      if (!Number.isInteger(m.x) || !Number.isInteger(m.y) || m.x < 0 || m.y < 0 || m.x > canvas.width || m.y > canvas.height) {
+      if (!isPlanNumber(m.x) || !isPlanNumber(m.y) || !pointOnCanvas(m.x, m.y, canvas)) {
         throw new AppError(
           400,
           'VALIDATION',
           `Draft marker point ${m.x},${m.y} sits outside the ${canvas.width}×${canvas.height} ft draft canvas`,
         );
       }
-      return { kind: m.kind, label: m.label == null || !String(m.label).trim() ? null : String(m.label).trim(), x: m.x, y: m.y };
+      return { kind: m.kind, label: m.label == null || !String(m.label).trim() ? null : String(m.label).trim(), x: quantizeFt(m.x), y: quantizeFt(m.y) };
     });
   } else {
     markers = (live?.markers ?? []).map((m) => ({ id: m.id, kind: m.kind, label: m.label, x: m.x, y: m.y }));
@@ -530,21 +557,22 @@ export async function publishDraft(draftId: string, opts?: { actorId?: string })
         skippedPlacements.push(label);
         continue;
       }
-      if (!Number.isInteger(p.x) || !Number.isInteger(p.y) || !Number.isInteger(p.width) || !Number.isInteger(p.height)) {
+      if (!isPlanNumber(p.x) || !isPlanNumber(p.y) || !isPlanNumber(p.width) || !isPlanNumber(p.height)) {
         skippedPlacements.push(label);
         continue;
       }
-      if (p.x + p.width > canvas.width || p.y + p.height > canvas.height) {
+      const r = quantizeRect(p);
+      if (r.width <= 0 || r.height <= 0 || !rectFitsCanvas(r, canvas)) {
         skippedPlacements.push(label);
         continue;
       }
       placementRows.push({
         floorPlanId: '', // stamped after the canvas upsert below
         unitId,
-        x: p.x,
-        y: p.y,
-        width: p.width,
-        height: p.height,
+        x: r.x,
+        y: r.y,
+        width: r.width,
+        height: r.height,
         stackTier: p.stackTier === 1 ? 1 : 0,
         doorEdges: (normalizeDoorEdges(p.doorEdges) ?? null) as string | null,
       });
@@ -552,8 +580,9 @@ export async function publishDraft(draftId: string, opts?: { actorId?: string })
   }
 
   const blockRows = snapshotBlocks
-    .filter((b) => b && Number.isInteger(b.x) && Number.isInteger(b.y) && Number.isInteger(b.width) && Number.isInteger(b.height))
-    .filter((b) => b.x + b.width <= canvas.width && b.y + b.height <= canvas.height)
+    .filter((b) => b && isPlanNumber(b.x) && isPlanNumber(b.y) && isPlanNumber(b.width) && isPlanNumber(b.height))
+    .map((b) => ({ ...b, ...quantizeRect(b) }))
+    .filter((b) => b.width > 0 && b.height > 0 && rectFitsCanvas(b, canvas))
     .map((b) => ({
       floorPlanId: '',
       name: String(b.name ?? '').trim().slice(0, 80) || 'Block',
@@ -571,20 +600,21 @@ export async function publishDraft(draftId: string, opts?: { actorId?: string })
       floorPlanId: '',
       label: String(b.label ?? '').trim().slice(0, 80) || 'Boundary',
       kind: String(b.kind ?? '').trim().slice(0, 24) || 'BOUNDARY',
-      points: boundaryPointsOf(b.points) as unknown as Prisma.InputJsonValue,
+      points: boundaryPointsOf(b.points).map(([x, y]) => [quantizeFt(x), quantizeFt(y)]) as unknown as Prisma.InputJsonValue,
       closed: !!b.closed,
       sortOrder: Number.isInteger(b.sortOrder) ? (b.sortOrder as number) : 0,
+      thickness: draftThickness(String(b.kind ?? ''), b.thickness),
     }));
 
   const markerRows = snapshotMarkers
     .filter((m) => m && (FP_MARKER_KINDS as readonly string[]).includes(m.kind))
-    .filter((m) => Number.isInteger(m.x) && Number.isInteger(m.y) && m.x >= 0 && m.y >= 0 && m.x <= canvas.width && m.y <= canvas.height)
+    .filter((m) => isPlanNumber(m.x) && isPlanNumber(m.y) && pointOnCanvas(m.x, m.y, canvas))
     .map((m) => ({
       floorPlanId: '',
       kind: m.kind,
       label: m.label ?? null,
-      x: m.x,
-      y: m.y,
+      x: quantizeFt(m.x),
+      y: quantizeFt(m.y),
     }));
 
   await prisma.$transaction(async (tx) => {

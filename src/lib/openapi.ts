@@ -25,7 +25,7 @@ export const openapiSpec = {
   openapi: '3.0.3',
   info: {
     title: 'StoreLah Booking API',
-    version: '1.9.2',
+    version: '1.9.6',
     description: [
       'Customer-facing booking API for the StoreLah self-storage business.',
       '',
@@ -299,6 +299,28 @@ export const openapiSpec = {
         'read-only and are never re-opened; unknown key is 404). `GET /cms/leads/stats` ' +
         'gains `uniqueEmails`, `repeatEnquiryRate` and `avgEnquiriesPerEmail` (additive). ' +
         '`GET /cms/leads` (grouped-by-stage) is unchanged.',
+      'v1.9.3 widens floor-plan geometry from integer feet to DECIMAL feet: every placement / ' +
+        'block / marker coordinate, canvas and snapshot width/height, and boundary vertex is now ' +
+        'a JSON number (quantized server-side to 0.001 ft; rect sides >= 0.1 ft). Shapes and ' +
+        'field names are unchanged and integer-foot payloads stay valid — clients must simply ' +
+        'not assume integers (CMS + `GET /public/floor-plans/{branchCode}/{level}`).',
+      'v1.9.4 is ADDITIVE over 1.9.3: floor-plan line kinds — boundary line items gain a nullable ' +
+        '`thickness` (feet, kind WALL only, default 0.5). Only BOUNDARY / legacy PENCIL lines feed ' +
+        '`boundaryMetrics`; WALL, PARTITION and GUIDE lines do not, and GUIDE lines are omitted from ' +
+        '`GET /public/floor-plans/{branchCode}/{level}`.',
+      'v1.9.5 is ADDITIVE over 1.9.4: `POST /cms/floor-plans/{floorId}/batch` (Bearer JWT) — one ' +
+        'transactional multi-element edit `{ upsert: { placements, blocks, markers, boundaries }, ' +
+        'delete: { placements (unitIds), blocks, markers, boundaries } }` (max 2000 items). Validated ' +
+        'against the FINAL layout (overlap, stacking, canvas fit, 2% area tolerance with move/rotate ' +
+        'grandfathering, occupied lock on live plans) and applied atomically; upserts are keyed by ' +
+        'unitId / row id (missing ids are created with that id). Returns the full CMS plan read. Public ' +
+        'shapes unchanged.',
+      'v1.9.6 is ADDITIVE over 1.9.5: CMS-only floor-plan tracing underlay (Bearer JWT) — ' +
+        '`GET|POST|PUT|DELETE /cms/floor-plans/{floorId}/underlay` (POST body `{ name?, contentType ' +
+        '(image/png|jpeg|webp), dataBase64, widthPx, heightPx }`, ≤ 3.5 MB, bytes sniffed; PUT ' +
+        'calibration `{ ftPerPx, offsetX, offsetY, rotation, opacity, visible, locked }`) and ' +
+        '`GET /cms/floor-plans/{floorId}/underlay/image` → `{ mime, dataBase64 }`. The CMS plan read ' +
+        'gains `underlay` metadata; the public read never includes it.',
     ].join('\n'),
   },
   servers: [
@@ -5249,10 +5271,10 @@ export const openapiSpec = {
         description:
           'Payload for placing (upserting) a unit on a floor plan. Geometry is in feet (1 grid unit = 1 ft); the drawn area must be within ±15% of the unit\'s sqft.',
         properties: {
-          x: { type: 'integer', minimum: 0 },
-          y: { type: 'integer', minimum: 0 },
-          width: { type: 'integer', minimum: 1 },
-          height: { type: 'integer', minimum: 1 },
+          x: { type: 'number', minimum: 0, description: 'Decimal feet (quantized to 0.001 ft).' },
+          y: { type: 'number', minimum: 0, description: 'Decimal feet (quantized to 0.001 ft).' },
+          width: { type: 'number', minimum: 0.1, description: 'Decimal feet (quantized to 0.001 ft).' },
+          height: { type: 'number', minimum: 0.1, description: 'Decimal feet (quantized to 0.001 ft).' },
           stackTier: {
             type: 'integer',
             minimum: 0,
@@ -5276,10 +5298,10 @@ export const openapiSpec = {
           'A unit placed on a floor plan with its grid geometry. Two LOCKER placements may share the exact same rect as a stacked upper/lower pair (stackTier 0 + 1), rendered as one block split by a divider line.',
         properties: {
           id: { type: 'string', description: 'UnitPlacement row id (cuid).' },
-          x: { type: 'integer', description: 'Top-left grid-unit x coordinate.' },
-          y: { type: 'integer', description: 'Top-left grid-unit y coordinate.' },
-          width: { type: 'integer', description: 'Bounding box width in feet (1 grid unit = 1 ft).' },
-          height: { type: 'integer', description: 'Bounding box height in feet (1 grid unit = 1 ft).' },
+          x: { type: 'number', description: 'Top-left decimal-ft x coordinate (0.001 ft precision).' },
+          y: { type: 'number', description: 'Top-left decimal-ft y coordinate (0.001 ft precision).' },
+          width: { type: 'number', description: 'Bounding box width in decimal feet (0.001 ft precision).' },
+          height: { type: 'number', description: 'Bounding box height in decimal feet (0.001 ft precision).' },
           stackTier: {
             type: 'integer',
             minimum: 0,
@@ -5324,11 +5346,11 @@ export const openapiSpec = {
             type: 'string',
             description: 'Operator-given label (e.g. "Lift", "Stair", "Walking area").',
           },
-          x: { type: 'integer', description: 'Top-left grid-unit x coordinate.' },
-          y: { type: 'integer', description: 'Top-left grid-unit y coordinate.' },
-          width: { type: 'integer', description: 'Bounding box width in feet (1 grid unit = 1 ft).' },
-          height: { type: 'integer', description: 'Bounding box height in feet (1 grid unit = 1 ft).' },
-          areaSqft: { type: 'integer', description: 'Derived decoration area in sqft (width × height, 1 grid unit = 1 ft) — computed, never stored; the loop-clipped total feeds boundaryMetrics.blockAreaSqft.' },
+          x: { type: 'number', description: 'Top-left decimal-ft x coordinate (0.001 ft precision).' },
+          y: { type: 'number', description: 'Top-left decimal-ft y coordinate (0.001 ft precision).' },
+          width: { type: 'number', description: 'Bounding box width in decimal feet (0.001 ft precision).' },
+          height: { type: 'number', description: 'Bounding box height in decimal feet (0.001 ft precision).' },
+          areaSqft: { type: 'number', description: 'Derived decoration area in sqft (width × height, 1 grid unit = 1 ft) — computed, never stored; the loop-clipped total feeds boundaryMetrics.blockAreaSqft.' },
           color: {
             type: ['string', 'null'],
             description: 'Block fill colour — hex #RGB/#RRGGBB (stored uppercased) or null for the default tone (#E6E0D7).',
@@ -5347,10 +5369,10 @@ export const openapiSpec = {
         description: 'Payload for creating/upserting a plan block.',
         properties: {
           name: { type: 'string', minLength: 1, maxLength: 80 },
-          x: { type: 'integer', minimum: 0 },
-          y: { type: 'integer', minimum: 0 },
-          width: { type: 'integer', minimum: 1 },
-          height: { type: 'integer', minimum: 1 },
+          x: { type: 'number', minimum: 0, description: 'Decimal feet (quantized to 0.001 ft).' },
+          y: { type: 'number', minimum: 0, description: 'Decimal feet (quantized to 0.001 ft).' },
+          width: { type: 'number', minimum: 0.1, description: 'Decimal feet (quantized to 0.001 ft).' },
+          height: { type: 'number', minimum: 0.1, description: 'Decimal feet (quantized to 0.001 ft).' },
           color: { type: ['string', 'null'] },
           doorEdges: {
             type: 'array',
@@ -5374,7 +5396,7 @@ export const openapiSpec = {
           },
           kind: {
             type: 'string',
-            description: 'Line-kind tag (BOUNDARY today; additive for future kinds).',
+            description: 'Line kind (free string, max 24): BOUNDARY (and legacy PENCIL) mark facility area and feed boundaryMetrics; WALL (drawn with `thickness`), PARTITION and GUIDE do not. GUIDE lines are CMS-only and never appear in the public read.',
           },
           points: {
             type: 'array',
@@ -5383,7 +5405,7 @@ export const openapiSpec = {
               type: 'array',
               minItems: 2,
               maxItems: 2,
-              items: { type: 'integer' },
+              items: { type: 'number' },
             },
           },
           closed: {
@@ -5391,6 +5413,11 @@ export const openapiSpec = {
             description: 'True once the loop is closed. Marked-area rule: closed loops AND open 3+-vertex polylines (chord-closed) feed boundaryMetrics; open 2-vertex segments contribute 0 until extended/closed.',
           },
           sortOrder: { type: 'integer', description: 'Stable editor ordering (lowest first).' },
+          thickness: {
+            type: 'number',
+            nullable: true,
+            description: 'Wall thickness in decimal feet for kind WALL (default 0.5); null for every other kind.',
+          },
         },
       },
       BoundaryInput: {
@@ -5407,11 +5434,12 @@ export const openapiSpec = {
               type: 'array',
               minItems: 2,
               maxItems: 2,
-              items: { type: 'integer' },
+              items: { type: 'number' },
             },
           },
           closed: { type: 'boolean' },
           sortOrder: { type: 'integer', minimum: 0, maximum: 100000 },
+          thickness: { type: 'number', minimum: 0.05, maximum: 10, nullable: true, description: 'WALL thickness in feet; null clears to the default; ignored (stored null) for other kinds.' },
         },
       },
       PlanMarker: {
@@ -5430,8 +5458,8 @@ export const openapiSpec = {
             type: ['string', 'null'],
             description: 'Optional operator label override (renderers fall back to the kind display label when null).',
           },
-          x: { type: 'integer', description: 'Grid-ft point x (0..canvas width, edge-inclusive).' },
-          y: { type: 'integer', description: 'Grid-ft point y (0..canvas height, edge-inclusive).' },
+          x: { type: 'number', description: 'Decimal-ft point x (0..canvas width, edge-inclusive).' },
+          y: { type: 'number', description: 'Decimal-ft point y (0..canvas height, edge-inclusive).' },
         },
       },
       BoundaryMetrics: {
@@ -5461,8 +5489,8 @@ export const openapiSpec = {
           floorId: { type: 'string', description: 'Floor row id.' },
           version: { type: 'integer', description: 'Per-floor version number (1, 2, ...).' },
           status: { type: 'string', enum: ['DRAFT', 'ACTIVE'] },
-          width: { type: 'integer', description: 'Snapshot canvas width in feet.' },
-          height: { type: 'integer', description: 'Snapshot canvas height in feet.' },
+          width: { type: 'number', description: 'Snapshot canvas width in feet.' },
+          height: { type: 'number', description: 'Snapshot canvas height in feet.' },
           gfaSqft: { type: 'number', nullable: true, description: 'Snapshot operator-entered GFA (sqft); null when unset at save time.' },
           counts: {
             type: 'object',
@@ -5488,8 +5516,8 @@ export const openapiSpec = {
           floorId: { type: 'string' },
           version: { type: 'integer' },
           status: { type: 'string', enum: ['DRAFT', 'ACTIVE'] },
-          width: { type: 'integer' },
-          height: { type: 'integer' },
+          width: { type: 'number' },
+          height: { type: 'number' },
           structure: { description: 'Legacy free-form decorations snapshot (same shape as the live plan structure).' },
           gfaSqft: { type: 'number', nullable: true },
           placements: { type: 'array', items: { type: 'object' }, description: 'Snapshot placements (editor normalized shape: unitId/unitCode/name/size/sqft/status/hasAC/hasPillar/x/y/width/height/stackTier/doorEdges).' },
@@ -5507,8 +5535,8 @@ export const openapiSpec = {
         type: 'object',
         description: 'Draft-save payload (all fields optional — omitted fields fall back to the live plan; explicit arrays replace wholesale).',
         properties: {
-          width: { type: 'integer', minimum: 1, maximum: 500 },
-          height: { type: 'integer', minimum: 1, maximum: 500 },
+          width: { type: 'number', minimum: 1, maximum: 500 },
+          height: { type: 'number', minimum: 1, maximum: 500 },
           structure: { description: 'Legacy structure JSON (null clears).' },
           gfaSqft: { type: 'number', description: 'Operator-entered GFA in sqft (null clears, omitted keeps).' },
           placements: { type: 'array', items: { $ref: openapiSchemaRef('PlacementInput') }, description: 'Full replacement placement set (each needs unitId + int rect; stackTier/doorEdges optional).' },

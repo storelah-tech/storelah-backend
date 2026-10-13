@@ -158,6 +158,7 @@ import {
   removeFloorPlanBlock,
   listFloorPlanBoundaries,
   createFloorPlanBoundary,
+  applyFloorPlanBatch,
   updateFloorPlanBoundary,
   removeFloorPlanBoundary,
   FP_MARKER_KINDS,
@@ -166,6 +167,7 @@ import {
   updateFloorPlanMarker,
   removeFloorPlanMarker,
 } from '../core/floorPlans';
+import { getUnderlay, getUnderlayImage, removeUnderlay, setUnderlay, updateUnderlay } from '../core/floorPlanUnderlay';
 import {
   getFloorMetrics,
   getFacilityMetrics,
@@ -337,8 +339,10 @@ const createPromotionSchema = z.object({
 const updatePromotionSchema = createPromotionSchema.partial();
 
 const floorPlanCanvasSchema = z.object({
-  width: z.number().int().min(1).max(500).optional(),
-  height: z.number().int().min(1).max(500).optional(),
+  // All floor-plan geometry is decimal feet, quantized server-side to 0.001 ft
+  // (src/core/planGeometry.ts); integer-foot payloads remain valid.
+  width: z.number().min(1).max(500).optional(),
+  height: z.number().min(1).max(500).optional(),
   structure: z.unknown().nullable().optional(), // arbitrary JSONB decorations
   // Operator-entered GFA (sqft): positive, capped server-side at 10M; null
   // clears back to unset (metrics fall back to the canvas rect); omitted keeps.
@@ -351,10 +355,10 @@ const floorPlanListQuerySchema = z.object({
 });
 
 const floorPlanPlacementSchema = z.object({
-  x: z.number().int().min(0),
-  y: z.number().int().min(0),
-  width: z.number().int().min(1),
-  height: z.number().int().min(1),
+  x: z.number().min(0),
+  y: z.number().min(0),
+  width: z.number().positive(),
+  height: z.number().positive(),
   // Stacking tier: 0 = ground/sole tier (default), 1 = upper tier of a
   // same-rect locker pair. Anything else is 400; omitted keeps the tier on update.
   stackTier: z.number().int().min(0).max(1).optional(),
@@ -366,10 +370,10 @@ const floorPlanPlacementSchema = z.object({
 
 const floorPlanBlockSchema = z.object({
   name: z.string().trim().min(1).max(80), // operator label: "Lift", "Stair", "Walking area", ...
-  x: z.number().int().min(0),
-  y: z.number().int().min(0),
-  width: z.number().int().min(1),
-  height: z.number().int().min(1),
+  x: z.number().min(0),
+  y: z.number().min(0),
+  width: z.number().positive(),
+  height: z.number().positive(),
   color: z.string().trim().max(20).nullish(), // optional render tint (hex)
   // Authored door edges round-trip per region (same keep/clear/replace
   // semantics as placements; blocks are non-leasable so metrics ignores them).
@@ -383,27 +387,28 @@ const floorPlanBlockSchema = z.object({
 const floorPlanMarkerSchema = z.object({
   kind: z.enum(FP_MARKER_KINDS),
   label: z.string().trim().max(80).nullish(), // optional override; null/empty clears back to the kind label
-  x: z.number().int().min(0),
-  y: z.number().int().min(0),
+  x: z.number().min(0),
+  y: z.number().min(0),
 });
 
 const floorPlanMarkerPatchSchema = z.object({
   kind: z.enum(FP_MARKER_KINDS).optional(),
   label: z.string().trim().max(80).nullish(),
-  x: z.number().int().min(0).optional(),
-  y: z.number().int().min(0).optional(),
+  x: z.number().min(0).optional(),
+  y: z.number().min(0).optional(),
 });
 
 // Facility-boundary line items: polylines in grid-ft units marking the
 // facility boundary for NLA / GLA / UFA measurement. `points` is the full
-// vertex list ([[x,y],...], integers); `closed` marks a finished loop — only
+// vertex list ([[x,y],...], decimal feet); `closed` marks a finished loop — only
 // closed loops feed `boundaryMetrics` on plan reads.
 const floorPlanBoundarySchema = z.object({
   label: z.string().trim().min(1).max(80).optional(), // operator line name; defaults to "Boundary" on create
   kind: z.string().trim().min(1).max(24).nullish(), // line-kind tag; defaults to "BOUNDARY" on create
-  points: z.array(z.tuple([z.number().int(), z.number().int()])).min(2).max(500).optional(),
+  points: z.array(z.tuple([z.number(), z.number()])).min(2).max(500).optional(),
   closed: z.boolean().optional(), // true once the loop is closed (3+ distinct vertices required)
   sortOrder: z.number().int().min(0).max(100000).nullish(), // stable editor ordering
+  thickness: z.number().positive().max(10).nullish(), // WALL thickness in ft (Phase 3); stored for kind WALL only
 });
 
 router.get('/config', (req: Request, res: Response) => {
@@ -1442,6 +1447,92 @@ router.post('/floor-plans/:floorId/boundaries', requireAuth, async (req: Request
   created(res, await createFloorPlanBoundary(String(req.params.floorId), parsed.data));
 });
 
+// Transactional multi-element edit (precision Phase 4): group moves, align /
+// distribute, arrays, duplicate / paste, undo / redo. Validated against the
+// FINAL layout and applied atomically; returns the full plan read (same shape
+// as GET /floor-plans/:floorId). Upserts keyed by unitId / row id (missing ids
+// are created with that id).
+const batchIdList = z.array(z.string().min(1).max(64)).max(2000).optional();
+const floorPlanBatchSchema = z.object({
+  upsert: z
+    .object({
+      placements: z.array(floorPlanPlacementSchema.extend({ unitId: z.string().min(1).max(64) })).max(2000).optional(),
+      blocks: z.array(floorPlanBlockSchema.extend({ id: z.string().min(1).max(64) })).max(2000).optional(),
+      markers: z.array(floorPlanMarkerSchema.extend({ id: z.string().min(1).max(64) })).max(2000).optional(),
+      boundaries: z
+        .array(floorPlanBoundarySchema.extend({ id: z.string().min(1).max(64), points: z.array(z.tuple([z.number(), z.number()])).min(2).max(500) }))
+        .max(500)
+        .optional(),
+    })
+    .optional(),
+  delete: z
+    .object({ placements: batchIdList, blocks: batchIdList, markers: batchIdList, boundaries: batchIdList })
+    .optional(),
+});
+
+// --- Floor-plan tracing underlay (precision Phase 5) ---
+// CMS-only architect drawing under the editor canvas, stored in Postgres (not
+// the public content bucket) and served as JSON base64 behind requireAuth.
+// Upload body { name?, contentType, dataBase64, widthPx, heightPx } with a
+// route-scoped 6 MB JSON limit (the image is capped at 3.5 MB server-side).
+const floorPlanUnderlayUploadSchema = z.object({
+  name: z.string().trim().max(120).nullish(),
+  contentType: z.string().trim().min(1).max(40),
+  dataBase64: z.string().min(1).max(5_000_000),
+  widthPx: z.number().int().min(1).max(20000),
+  heightPx: z.number().int().min(1).max(20000),
+});
+const floorPlanUnderlayPatchSchema = z.object({
+  name: z.string().trim().max(120).nullish(),
+  ftPerPx: z.number().positive().max(100).optional(),
+  offsetX: z.number().min(-5000).max(5000).optional(),
+  offsetY: z.number().min(-5000).max(5000).optional(),
+  rotation: z.number().min(-3600).max(3600).optional(),
+  opacity: z.number().min(0.05).max(1).optional(),
+  visible: z.boolean().optional(),
+  locked: z.boolean().optional(),
+});
+
+router.get('/floor-plans/:floorId/underlay', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await getUnderlay(String(req.params.floorId)));
+});
+
+router.get('/floor-plans/:floorId/underlay/image', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await getUnderlayImage(String(req.params.floorId)));
+});
+
+router.post('/floor-plans/:floorId/underlay', requireAuth, jsonBody({ limit: '6mb' }), async (req: Request, res: Response) => {
+  const parsed = floorPlanUnderlayUploadSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Underlay payload must be { name?, contentType, dataBase64, widthPx, heightPx }', parsed.error.flatten());
+    return;
+  }
+  const bytes = Buffer.from(parsed.data.dataBase64, 'base64');
+  ok(res, await setUnderlay(String(req.params.floorId), { ...parsed.data, bytes }));
+});
+
+router.put('/floor-plans/:floorId/underlay', requireAuth, async (req: Request, res: Response) => {
+  const parsed = floorPlanUnderlayPatchSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid underlay settings', parsed.error.flatten());
+    return;
+  }
+  ok(res, await updateUnderlay(String(req.params.floorId), parsed.data));
+});
+
+router.delete('/floor-plans/:floorId/underlay', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await removeUnderlay(String(req.params.floorId)));
+});
+
+router.post('/floor-plans/:floorId/batch', requireAuth, async (req: Request, res: Response) => {
+  const parsed = floorPlanBatchSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid floor-plan batch payload', parsed.error.flatten());
+    return;
+  }
+  ok(res, await applyFloorPlanBatch(String(req.params.floorId), parsed.data));
+});
+
 // Update a boundary line item scoped to the plan: vertex drag / close-loop /
 // rename persistence. Omitted fields keep their values. Cross-plan ids 404.
 router.put('/floor-plans/:floorId/boundaries/:boundaryId', requireAuth, async (req: Request, res: Response) => {
@@ -1520,20 +1611,20 @@ router.post('/floor-plans/:floorId/publish', requireAuth, async (req: Request, r
 
 const floorPlanDraftPlacementSchema = z.object({
   unitId: z.string().min(1),
-  x: z.number().int().min(0),
-  y: z.number().int().min(0),
-  width: z.number().int().min(1),
-  height: z.number().int().min(1),
+  x: z.number().min(0),
+  y: z.number().min(0),
+  width: z.number().positive(),
+  height: z.number().positive(),
   stackTier: z.number().int().min(0).max(1).optional(),
   doorEdges: z.array(z.enum(['N', 'S', 'E', 'W'])).max(4).nullish(),
 });
 
 const floorPlanDraftBlockSchema = z.object({
   name: z.string().trim().min(1).max(80),
-  x: z.number().int().min(0),
-  y: z.number().int().min(0),
-  width: z.number().int().min(1),
-  height: z.number().int().min(1),
+  x: z.number().min(0),
+  y: z.number().min(0),
+  width: z.number().positive(),
+  height: z.number().positive(),
   color: z.string().trim().max(20).nullish(),
   doorEdges: z.array(z.enum(['N', 'S', 'E', 'W'])).max(4).nullish(),
 });
@@ -1541,21 +1632,22 @@ const floorPlanDraftBlockSchema = z.object({
 const floorPlanDraftBoundarySchema = z.object({
   label: z.string().trim().min(1).max(80).optional(),
   kind: z.string().trim().min(1).max(24).nullish(),
-  points: z.array(z.tuple([z.number().int(), z.number().int()])).min(2).max(500),
+  points: z.array(z.tuple([z.number(), z.number()])).min(2).max(500),
   closed: z.boolean().optional(),
   sortOrder: z.number().int().min(0).max(100000).nullish(),
+  thickness: z.number().positive().max(10).nullish(),
 });
 
 const floorPlanDraftMarkerSchema = z.object({
   kind: z.enum(FP_MARKER_KINDS),
   label: z.string().trim().max(80).nullish(),
-  x: z.number().int().min(0),
-  y: z.number().int().min(0),
+  x: z.number().min(0),
+  y: z.number().min(0),
 });
 
 const floorPlanDraftPayloadSchema = z.object({
-  width: z.number().int().min(1).max(500).optional(),
-  height: z.number().int().min(1).max(500).optional(),
+  width: z.number().min(1).max(500).optional(),
+  height: z.number().min(1).max(500).optional(),
   structure: z.unknown().nullable().optional(),
   gfaSqft: z.number().positive().max(10000000).nullish(),
   placements: z.array(floorPlanDraftPlacementSchema).max(2000).optional(),

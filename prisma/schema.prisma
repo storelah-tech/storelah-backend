@@ -33,6 +33,10 @@ enum UnitStatus {
   // P1: unit is physically held out of inventory (fit-out, damage, audit hold).
   // Not rentable, not browseable, counts toward totals but never toward leased.
   BLOCKED
+  // Floor-plan unit sync (docs/FLOOR_PLAN_UNIT_SYNC_PLAN.md D7): a unit drawn on
+  // the CMS floor-plan canvas that has not been published yet. Excluded from every
+  // browse/rent path; publish promotes it (default AVAILABLE).
+  DRAFT
 }
 
 enum TenantStatus {
@@ -490,6 +494,7 @@ model Unit {
 
   tenant         Tenant?       @relation("CurrentTenant")
   rateHistory    RateChange[]
+  areaHistory    UnitAreaChange[]
   bookings       Booking[]
   invoices       Invoice[]
   notices        Notice[]
@@ -545,6 +550,11 @@ model UnitPlacement {
   // "E,S"); NULL means unauthored — the metrics bridge falls back to
   // AUTO_ALL_EDGES for that unit. Additive, nullable, no backfill needed.
   doorEdges   String?
+  // Floor-plan unit sync (docs/FLOOR_PLAN_UNIT_SYNC_PLAN.md D2): true when the
+  // drawn area changed since the last publish AND round(width × height) no
+  // longer equals Unit.sqft — publish syncs Unit.sqft/size/rate from geometry and
+  // clears it. Defaults false so grandfathered placements never auto-sync.
+  areaDirty   Boolean   @default(false)
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 
@@ -819,6 +829,28 @@ model ConversationNote {
   createdAt      DateTime     @default(now())
 
   @@index([conversationId])
+}
+
+// Audit trail for a unit's size changes (mirrors RateChange). Written when a
+// floor-plan publish (or reconcile / manual edit) changes Unit.sqft or its size
+// tier — see docs/FLOOR_PLAN_UNIT_SYNC_PLAN.md. widthFt/heightFt record the
+// drawn rect that produced the new sqft (null for MANUAL changes).
+model UnitAreaChange {
+  id          String   @id @default(cuid())
+  unitId      String
+  unit        Unit     @relation(fields: [unitId], references: [id])
+  previous    Int // sqft before
+  current     Int // sqft after
+  prevSizeId  String
+  newSizeId   String
+  widthFt     Float?
+  heightFt    Float?
+  source      String // FLOOR_PLAN_PUBLISH | RECONCILE | MANUAL
+  floorPlanId String?
+  appliedBy   String
+  createdAt   DateTime @default(now())
+
+  @@index([unitId])
 }
 
 model RateChange {

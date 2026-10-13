@@ -151,13 +151,16 @@ describe('floor-plan decimal geometry (DB)', () => {
     await expectAppError(setUnitPlacement(world.floorId, b, { x: 3.299, y: 30, width: 2.2, height: 22.727 }), 409, 'PLACEMENT_OVERLAP');
   });
 
-  it('still enforces area tolerance with decimal sides', async () => {
-    const id = await unitId(PIN.rentableUnit);
-    await expectAppError(setUnitPlacement(world.floorId, id, { x: 40, y: 30, width: 4.5, height: 8.5 }), 400, 'VALIDATION'); // 38.25 vs 50
+  // Since the floor-plan unit sync (docs/FLOOR_PLAN_UNIT_SYNC_PLAN.md) the 2%
+  // rule only binds CONTRACTED units (here: the OCCUPIED unit on a draft plan);
+  // other units resize freely — see floor-plan-unit-sync.test.ts.
+  it('still enforces area tolerance with decimal sides (contracted unit)', async () => {
+    const id = await unitId(PIN.occupiedUnit);
+    await expectAppError(setUnitPlacement(world.floorId, id, { x: 40, y: 30, width: 4.5, height: 8.5 }), 409, 'UNIT_CONTRACTED'); // 38.25 vs 50
   });
 
-  it('2% tolerance applies to new/resized placements; moves of legacy rects are grandfathered', async () => {
-    const id = await unitId(PIN.rentableUnit); // 50 sqft
+  it('2% tolerance applies to new/resized contracted placements; moves of legacy rects are grandfathered', async () => {
+    const id = await unitId(PIN.occupiedUnit); // 50 sqft
     // Legacy row drawn under the old 15% band: 5 × 11 = 55 sqft (+10%).
     await prisma.unitPlacement.update({ where: { unitId: id }, data: { width: 5, height: 11 } });
     // Pure move (same area) → allowed.
@@ -165,15 +168,15 @@ describe('floor-plan decimal geometry (DB)', () => {
     // 90° rotation (same area) → allowed.
     await expect(setUnitPlacement(world.floorId, id, { x: 40, y: 30, width: 11, height: 5 })).resolves.toMatchObject({ width: 11 });
     // Resize to 52.5 sqft (+5%) → rejected under the 2% band.
-    await expectAppError(setUnitPlacement(world.floorId, id, { x: 40, y: 30, width: 5, height: 10.5 }), 400, 'VALIDATION');
+    await expectAppError(setUnitPlacement(world.floorId, id, { x: 40, y: 30, width: 5, height: 10.5 }), 409, 'UNIT_CONTRACTED');
     // Resize to 50.96 sqft (+1.9%) → allowed.
     await expect(setUnitPlacement(world.floorId, id, { x: 40, y: 30, width: 4.9, height: 10.4 })).resolves.toMatchObject({ width: 4.9 });
   });
 
-  it('rejects a NEW placement more than 2% off its sqft', async () => {
-    const id = await unitId(PIN.rentableUnit);
+  it('rejects a NEW contracted placement more than 2% off its sqft', async () => {
+    const id = await unitId(PIN.occupiedUnit);
     await prisma.unitPlacement.delete({ where: { unitId: id } });
-    await expectAppError(setUnitPlacement(world.floorId, id, { x: 40, y: 30, width: 5, height: 10.25 }), 400, 'VALIDATION'); // +2.5%
+    await expectAppError(setUnitPlacement(world.floorId, id, { x: 40, y: 30, width: 5, height: 10.25 }), 409, 'UNIT_CONTRACTED'); // +2.5%
     await expect(setUnitPlacement(world.floorId, id, { x: 40, y: 30, width: 5, height: 10.05 })).resolves.toMatchObject({ height: 10.05 }); // +0.5%
   });
 
@@ -284,12 +287,13 @@ describe('floor-plan decimal geometry (DB)', () => {
     expect(res2.plan!.boundaries.find((b) => b.id === 'bd-test-1')).toMatchObject({ thickness: 0.75 });
   });
 
-  it('batch: keeps the occupied lock on a live plan and the 2% rule for resizes', async () => {
+  it('batch: keeps the occupied lock on a live plan and the 2% rule for contracted resizes', async () => {
     await publishFloorPlan(world.floorId);
     const occ = await prisma.unitPlacement.findFirst({ where: { unit: { unitCode: PIN.occupiedUnit } } });
     await expectAppError(applyFloorPlanBatch(world.floorId, { upsert: { placements: [{ unitId: occ!.unitId, x: occ!.x, y: 40, width: occ!.width, height: occ!.height }] } }), 409, 'CONFLICT');
     const id = await unitId(PIN.rentableUnit);
-    await expectAppError(applyFloorPlanBatch(world.floorId, { upsert: { placements: [{ unitId: id, x: 40, y: 40, width: 5, height: 10.5 }] } }), 400, 'VALIDATION');
+    await prisma.unit.update({ where: { id }, data: { status: 'RESERVED' } }); // contracted, not live-locked
+    await expectAppError(applyFloorPlanBatch(world.floorId, { upsert: { placements: [{ unitId: id, x: 40, y: 40, width: 5, height: 10.5 }] } }), 409, 'UNIT_CONTRACTED');
     const plan = await prisma.floorPlan.findUnique({ where: { floorId: world.floorId } });
     expect(plan!.status).toBe('ACTIVE'); // rejected batches never demote
   });

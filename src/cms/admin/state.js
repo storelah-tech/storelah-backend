@@ -92,7 +92,7 @@ export const state = {
     selectedBlock: null, // selected block id
     canvasDefaults: { width: 70, height: 80 },
     liveDims: null, // live-typed canvas size from the W/H inputs (local, unsaved); null = use plan/server size
-    lockSqft: true, // resize snaps to the decimal rect preserving area = sqft (ops can toggle off; server enforces ±2% on new/resized units)
+    lockSqft: false, // ON = resize keeps area ≈ sqft; OFF (default) = resize changes the unit's size on publish (docs/FLOOR_PLAN_UNIT_SYNC_PLAN.md). Contracted units are always locked.
     penKind: 'BOUNDARY', // new lines are always BOUNDARY (shown as "Wall" in the UI)
     wallThickness: 0.5, // default thickness (ft) for new WALL lines (follows the last thickness typed)
     objSnap: true, // snap to line endpoints/midpoints/edges and unit/block corners (toolbar #fpObjSnap)

@@ -6,7 +6,6 @@ import {
   DEFAULT_WALL_THICKNESS_FT,
   MAX_WALL_THICKNESS_FT,
   MIN_WALL_THICKNESS_FT,
-  areaDeviation,
   fitSqftFootprint,
   isGuideLine,
   lineFeedsArea,
@@ -21,6 +20,7 @@ import {
   toMilli,
 } from './planGeometry';
 import { serializeUnderlay } from './floorPlanUnderlay';
+import { assertStackedLockerBand, checkPlacementArea, loadContractedUnits, loadLockerBand } from './unitSizing';
 import { Prisma } from '@prisma/client';
 
 // Floor-plan layout aggregate (see docs/FLOOR_PLAN_MODEL.md).
@@ -44,10 +44,12 @@ import { Prisma } from '@prisma/client';
 //     extinguisher, do-not-enter, exit sign, ...) — one grid-ft point each,
 //     draggable, display only, no behaviour and no area (metrics ignores them).
 //
-// Footprints: a unit's drawn rect must approximate its real area —
-// `sqftFootprint()` resolves UnitSize.widthFt/heightFt when present and falls
-// back to a documented per-size aspect formula otherwise. Writes validate
-// area-vs-sqft within AREA_TOLERANCE (P3) and reject overlaps (409).
+// Footprints: the plan OWNS a placed unit's size (docs/FLOOR_PLAN_UNIT_SYNC_PLAN.md).
+// `sqftFootprint()` proposes a rect for a unit's sqft (UnitSize.widthFt/heightFt
+// when present, else a documented per-size aspect formula). A resize may change
+// the area freely — it flags the placement `areaDirty` and publish syncs
+// Unit.sqft — except for contracted units, which keep the ±AREA_TOLERANCE rule
+// (checkPlacementArea in ./unitSizing.ts). Overlaps reject (409).
 //
 // Soft-delete + INACTIVE rule: every plan read joins placements → unit and
 // filters out placements whose unit has deletedAt != null OR status INACTIVE.
@@ -56,12 +58,11 @@ import { Prisma } from '@prisma/client';
 export const CANVAS_DEFAULTS = { width: 70, height: 80 } as const;
 const MAX_CANVAS = 500; // feet per axis, sanity cap
 
-// P3: a placement's drawn area (w×h, square feet) must be within ±2%
-// (AREA_TOLERANCE, src/core/planGeometry.ts — owner decision 2026-10-13, was
-// 15% under the integer-foot grid) of the unit's sqft. Enforced only when a
-// placement is NEW or its AREA CHANGES (resize): moves and 90° rotations of an
-// existing placement keep its stored area and are grandfathered, so plans
-// drawn under the old 15% band stay editable. Rejected with 400 VALIDATION.
+// P3 (superseded for non-contracted units by the floor-plan unit sync, see
+// ./unitSizing.ts): a CONTRACTED unit's drawn area (w×h, square feet) must stay
+// within ±2% (AREA_TOLERANCE, src/core/planGeometry.ts — owner decision
+// 2026-10-13) of its sqft when NEW or RESIZED; moves and 90° rotations keep the
+// stored area and are grandfathered. Rejected with 409 UNIT_CONTRACTED.
 export { AREA_TOLERANCE };
 
 // Per-size width/height aspect (w/h) used ONLY when a UnitSize row has no
@@ -158,7 +159,7 @@ function serializeUnitSummary(u: PlacementUnit) {
   };
 }
 
-function serializePlacement(p: { id: string; x: number; y: number; width: number; height: number; stackTier: number; doorEdges: string | null; unit: PlacementUnit }) {
+function serializePlacement(p: { id: string; x: number; y: number; width: number; height: number; stackTier: number; doorEdges: string | null; areaDirty?: boolean; unit: PlacementUnit }) {
   return {
     id: p.id,
     x: p.x,
@@ -170,6 +171,8 @@ function serializePlacement(p: { id: string; x: number; y: number; width: number
     // Authored door compass edges (N/S/E/W toggles); null = unauthored
     // (metrics bridge falls back to AUTO_ALL_EDGES for this unit).
     doorEdges: doorEdgesToArray(p.doorEdges),
+    // Floor-plan unit sync: drawn area differs from Unit.sqft and will sync on publish.
+    areaDirty: p.areaDirty === true,
     unit: serializeUnitSummary(p.unit),
   };
 }
@@ -1215,24 +1218,24 @@ export async function setUnitPlacement(floorId: string, unitId: string, input: P
     );
   }
 
-  // P3: drawn area (square feet, 1 unit = 1 ft) must approximate the unit's
-  // real sqft. Grandfathered rows only hit this when re-saved — the editor's
-  // lock-to-sqft resize and true-size ghost keep new writes inside the band.
-  // Runs after the stacking/overlap rules so stack attempts report their
-  // specific error first.
-  // Grandfathering: an existing placement whose area is unchanged (pure move or
-  // 90° rotation) skips the check — only new or resized placements must fit.
-  const area = rectAreaSqft(geom);
-  const deviation = areaDeviation(geom, unit.sqft);
-  const areaChanged = !existing || rectAreaSqft(existing) !== area;
-  if (areaChanged && deviation > AREA_TOLERANCE) {
-    const pct = Math.round(deviation * 100);
-    const fp = sqftFootprint(unit.sqft, unit.size.code, unit.size.widthFt, unit.size.heightFt);
-    throw new AppError(
-      400,
-      'VALIDATION',
-      `Placement ${formatFt(geom.width)}×${formatFt(geom.height)} (= ${Math.round(area * 100) / 100} sq ft) deviates ${pct}% from unit ${unit.unitCode}'s ${unit.sqft} sqft (tolerance ${Math.round(AREA_TOLERANCE * 100)}%) — use ~${fp.w}×${fp.h} ft`,
-    );
+  // Area rule (docs/FLOOR_PLAN_UNIT_SYNC_PLAN.md): a resize changes the unit's
+  // size — flagged areaDirty for the next publish — unless the unit is
+  // contracted (legacy ±AREA_TOLERANCE, 409 UNIT_CONTRACTED). Runs after the
+  // stacking/overlap rules so stack attempts report their specific error first.
+  const contracted = await loadContractedUnits([unitId]);
+  const areaDirty = checkPlacementArea({ unit, geom, existing, contractedReason: contracted.get(unitId) });
+  // D4: a stacked locker pair stays inside the LOCKER band. Stacked = this write
+  // is an upper tier, sits under an upper tier, or moves a ground tier whose
+  // upper mate follows onto the new rect.
+  const areaChanged = !existing || rectAreaSqft(existing) !== rectAreaSqft(geom);
+  const movingWithMate =
+    tier === 0 &&
+    !!existing &&
+    existing.floorPlanId === plan.id &&
+    existing.stackTier === 0 &&
+    siblings.some((s) => s.stackTier === 1 && sameFtRect(s, existing));
+  if (areaChanged && selfIsLocker && (tier === 1 || sameRect.some((s) => s.stackTier === 1) || movingWithMate)) {
+    assertStackedLockerBand(unit.unitCode, geom, await loadLockerBand());
   }
 
   if (!rectFitsCanvas(geom, plan)) {
@@ -1253,6 +1256,7 @@ export async function setUnitPlacement(floorId: string, unitId: string, input: P
       width: geom.width,
       height: geom.height,
       stackTier: tier,
+      areaDirty,
       ...(doorEdges !== undefined ? { doorEdges } : {}),
     },
     update: {
@@ -1261,6 +1265,7 @@ export async function setUnitPlacement(floorId: string, unitId: string, input: P
       width: geom.width,
       height: geom.height,
       stackTier: tier,
+      areaDirty,
       ...(doorEdges !== undefined ? { doorEdges } : {}),
     },
     include: { unit: { include: { size: true } } },
@@ -1837,12 +1842,15 @@ export async function applyFloorPlanBatch(floorId: string, input: FloorPlanBatch
     lockCheck(cur.unit, 'removing this placement');
     final.delete(unitId);
   }
-  const placementWrites: Array<{ unitId: string; x: number; y: number; width: number; height: number; stackTier: 0 | 1; doorEdges: string | null | undefined }> = [];
+  // areaDirty undefined = leave the stored flag (demoted uppers keep their rect).
+  const placementWrites: Array<{ unitId: string; x: number; y: number; width: number; height: number; stackTier: 0 | 1; doorEdges: string | null | undefined; areaDirty?: boolean }> = [];
   const upUnitIds = (up.placements ?? []).map((p) => p.unitId);
   const units = upUnitIds.length
     ? await prisma.unit.findMany({ where: { id: { in: upUnitIds } }, include: { size: true } })
     : [];
   const unitById = new Map(units.map((u) => [u.id, u]));
+  const contracted = await loadContractedUnits(upUnitIds);
+  const resized = new Set<string>(); // unit ids whose drawn area changes in this batch (D4 band check below)
   for (const raw of up.placements ?? []) {
     const geom = { ...raw, ...checkGeometry(raw) };
     const unit = unitById.get(raw.unitId);
@@ -1857,16 +1865,13 @@ export async function applyFloorPlanBatch(floorId: string, input: FloorPlanBatch
     if (!rectFitsCanvas(geom, plan)) {
       throw new AppError(400, 'VALIDATION', `Placement ${unit.unitCode} ${formatFt(geom.x)},${formatFt(geom.y)} ${formatFt(geom.width)}×${formatFt(geom.height)} exceeds the ${formatFt(plan.width)}×${formatFt(plan.height)} ft canvas — enlarge the canvas first`);
     }
-    const area = rectAreaSqft(geom);
-    const areaChanged = !existing || rectAreaSqft(existing) !== area;
-    if (areaChanged && areaDeviation(geom, unit.sqft) > AREA_TOLERANCE) {
-      const fp = sqftFootprint(unit.sqft, unit.size.code, unit.size.widthFt, unit.size.heightFt);
-      throw new AppError(400, 'VALIDATION', `Placement ${formatFt(geom.width)}×${formatFt(geom.height)} (= ${Math.round(area * 100) / 100} sq ft) deviates ${Math.round(areaDeviation(geom, unit.sqft) * 100)}% from unit ${unit.unitCode}'s ${unit.sqft} sqft (tolerance ${Math.round(AREA_TOLERANCE * 100)}%) — use ~${fp.w}×${fp.h} ft`);
-    }
+    // Area rule (./unitSizing.ts): resize → areaDirty, contracted → ±tolerance.
+    const areaDirty = checkPlacementArea({ unit, geom, existing, contractedReason: contracted.get(unit.id) });
+    if (!existing || rectAreaSqft(existing) !== rectAreaSqft(geom)) resized.add(unit.id);
     const explicitTier = geom.stackTier !== undefined;
     const tier = explicitTier ? checkStackTier(geom.stackTier as number) : ((existing?.stackTier ?? 0) === 1 ? 1 : 0);
     final.set(unit.id, { unitId: unit.id, unitCode: unit.unitCode, sizeCode: unit.size.code, x: geom.x, y: geom.y, width: geom.width, height: geom.height, stackTier: tier, explicitTier });
-    placementWrites.push({ unitId: unit.id, x: geom.x, y: geom.y, width: geom.width, height: geom.height, stackTier: tier, doorEdges: normalizeDoorEdges(geom.doorEdges) });
+    placementWrites.push({ unitId: unit.id, x: geom.x, y: geom.y, width: geom.width, height: geom.height, stackTier: tier, doorEdges: normalizeDoorEdges(geom.doorEdges), areaDirty });
   }
   // Stacking + overlap over the FINAL layout (only pairs touching a changed unit).
   const changed = new Set([...placementWrites.map((w) => w.unitId)]);
@@ -1897,6 +1902,16 @@ export async function applyFloorPlanBatch(floorId: string, input: FloorPlanBatch
         throw new AppError(409, 'PLACEMENT_OVERLAP', `Placement ${f.unitCode} (${formatFt(f.x)},${formatFt(f.y)} ${formatFt(f.width)}×${formatFt(f.height)}) overlaps ${o.unitCode} (${formatFt(o.x)},${formatFt(o.y)} ${formatFt(o.width)}×${formatFt(o.height)}) — move to a free spot`);
       }
     }
+  }
+
+  // D4: a resized locker that ends up in a stacked pair stays in the LOCKER band.
+  const stackedResized = [...resized].filter((id) => {
+    const f = final.get(id);
+    return !!f && isLockerSize(f.sizeCode) && finals.some((o) => o.unitId !== id && sameFtRect(o, f));
+  });
+  if (stackedResized.length) {
+    const band = await loadLockerBand();
+    for (const id of stackedResized) assertStackedLockerBand(final.get(id)!.unitCode, final.get(id)!, band);
   }
 
   // ---- blocks / markers / boundaries ----
@@ -1945,11 +1960,11 @@ export async function applyFloorPlanBatch(floorId: string, input: FloorPlanBatch
     if (del.markers?.length) await tx.floorPlanMarker.deleteMany({ where: { floorPlanId: plan.id, id: { in: del.markers } } });
     if (del.boundaries?.length) await tx.floorPlanBoundary.deleteMany({ where: { floorPlanId: plan.id, id: { in: del.boundaries } } });
     for (const w of placementWrites) {
-      const { doorEdges, ...g } = w;
+      const { doorEdges, areaDirty, ...g } = w;
       await tx.unitPlacement.upsert({
         where: { unitId: w.unitId },
-        create: { floorPlanId: plan.id, ...g, ...(doorEdges !== undefined ? { doorEdges } : {}) },
-        update: { floorPlanId: plan.id, ...g, ...(doorEdges !== undefined ? { doorEdges } : {}) },
+        create: { floorPlanId: plan.id, ...g, ...(doorEdges !== undefined ? { doorEdges } : {}), ...(areaDirty !== undefined ? { areaDirty } : {}) },
+        update: { floorPlanId: plan.id, ...g, ...(doorEdges !== undefined ? { doorEdges } : {}), ...(areaDirty !== undefined ? { areaDirty } : {}) },
       });
     }
     for (const { id, doorEdges, ...b } of blockWrites) {

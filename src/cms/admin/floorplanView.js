@@ -430,6 +430,8 @@ function fpNormalizePlacements(plan) {
     // Authored door compass edges (editor N/S/E/W toggles); null = unauthored
     // (metrics falls back to AUTO_ALL_EDGES for this unit).
     doorEdges: Array.isArray(p.doorEdges) && p.doorEdges.length ? p.doorEdges.slice() : null,
+    // Unit sync: drawn area ≠ unit sqft — the unit's size updates on publish.
+    areaDirty: p.areaDirty === true,
   }));
 }
 
@@ -2908,14 +2910,29 @@ function fpNumFieldsHTML(vals) {
   );
 }
 
-// Area readout for a unit rect vs its sqft: "29.99 sqft · −0.03%" (flags > tolerance).
-function fpAreaNoteHTML(rect, sqft) {
+// Floor-plan unit sync (docs/FLOOR_PLAN_UNIT_SYNC_PLAN.md): the plan owns a
+// placed unit's size — resizing changes the unit's sqft on publish — except
+// for contracted units (rented / reserved), which keep the ±AREA_TOLERANCE
+// rule. The server also locks units with a tenant or a pending booking.
+const FP_CONTRACTED_STATUSES = ['OCCUPIED', 'OVERDUE', 'RESERVED'];
+function fpIsContracted(it) {
+  return FP_CONTRACTED_STATUSES.includes(String((it && it.status) || '').toUpperCase());
+}
+
+// Area readout for a unit rect vs its sqft. Contracted: "29.99 sqft · −0.03%"
+// (flags > tolerance). Otherwise: "48 sqft (unit 40 → 48 on publish)".
+function fpAreaNoteHTML(rect, sqft, it) {
   const area = rectAreaSqft(rect);
   if (!(sqft > 0)) return `<span class="t-type">${fpFmtArea(area)} sqft</span>`;
+  if (!fpIsContracted(it)) {
+    const next = Math.round(area);
+    const changes = next !== sqft;
+    return `<span class="t-type" style="${changes ? 'color:var(--terra,#C1664C);font-weight:700;' : ''}" title="The floor plan sets this unit's size: its sqft becomes the rounded drawn area when the plan is published">${fpFmtArea(area)} sqft${changes ? ` · unit ${sqft} → ${next} on publish` : ''}</span>`;
+  }
   const dev = (area - sqft) / sqft;
   const pct = (Math.round(dev * 10000) / 100).toLocaleString('en-SG', { maximumFractionDigits: 2, signDisplay: 'exceptZero' });
   const bad = Math.abs(dev) > AREA_TOLERANCE + 1e-9;
-  return `<span class="t-type" style="${bad ? 'color:var(--terra,#C1664C);font-weight:700;' : ''}" title="Drawn area vs the unit's ${sqft} sqft (new or resized units must stay within ${Math.round(AREA_TOLERANCE * 100)}%)">${fpFmtArea(area)} sqft · ${pct}%</span>`;
+  return `<span class="t-type" style="${bad ? 'color:var(--terra,#C1664C);font-weight:700;' : ''}" title="Rented/reserved unit — its ${sqft} sqft is contracted; reshape within ${Math.round(AREA_TOLERANCE * 100)}% only">${fpFmtArea(area)} sqft · ${pct}%</span>`;
 }
 
 // What the selection strip is editing right now: { kind, item, pair? }.
@@ -2982,7 +2999,7 @@ function fpApplySelectionGeom(patch, verb, opts = {}) {
     let width = patch.width !== undefined ? patch.width : it.width;
     let height = patch.height !== undefined ? patch.height : it.height;
     // Sqft lock: typing one side derives the other so area stays = sqft.
-    if (target.kind === 'unit' && state.fp.lockSqft && it.sqft > 0) {
+    if (target.kind === 'unit' && (state.fp.lockSqft || fpIsContracted(it)) && it.sqft > 0) {
       if (patch.width !== undefined && patch.height === undefined) height = quantizeFt(it.sqft / width);
       else if (patch.height !== undefined && patch.width === undefined) width = quantizeFt(it.sqft / height);
     }
@@ -3011,8 +3028,8 @@ function fpApplySelectionGeom(patch, verb, opts = {}) {
         return false;
       }
       const areaChanged = rectAreaSqft(next) !== rectAreaSqft(it);
-      if (areaChanged && it.sqft > 0 && areaDeviation(next, it.sqft) > AREA_TOLERANCE) {
-        fpToast(`${formatFt(next.width)}×${formatFt(next.height)} ft = ${fpFmtArea(rectAreaSqft(next))} sqft is more than ${Math.round(AREA_TOLERANCE * 100)}% off ${it.unitCode}'s ${it.sqft} sqft — turn on 🔒 sqft or adjust the other side.`, false);
+      if (areaChanged && fpIsContracted(it) && it.sqft > 0 && areaDeviation(next, it.sqft) > AREA_TOLERANCE) {
+        fpToast(`${it.unitCode} is ${it.status.toLowerCase()} — its ${it.sqft} sqft can't change; ${formatFt(next.width)}×${formatFt(next.height)} ft = ${fpFmtArea(rectAreaSqft(next))} sqft is more than ${Math.round(AREA_TOLERANCE * 100)}% off.`, false);
         return false;
       }
       for (const p of target.pair) {
@@ -3211,7 +3228,7 @@ function fpRenderSelInfo() {
     info.innerHTML =
       `<span class="t-type">⧉ Stacked pair · ${escapeHtml(upper.unitCode)} (upper) over ${escapeHtml(lower.unitCode)} (lower)${lockNote}</span>` +
       fpNumFieldsHTML(pl) +
-      fpAreaNoteHTML(pl, lower.sqft) +
+      fpAreaNoteHTML(pl, lower.sqft, lower) +
       `<span class="t-type">doors auto (ghost ticks = all edges)</span>` +
       `<button class="act-btn" id="fpRotateBtn" style="padding:2px 9px;font-size:10px;" title="Swap width/height (90° rotation) for both tiers">⟳ Rotate</button>` +
       `<button class="act-btn" id="fpUnstackBtn" style="padding:2px 9px;font-size:10px;" title="Remove the upper tier — the lower tier stays as a single">Unstack</button>` +
@@ -3232,7 +3249,7 @@ function fpRenderSelInfo() {
   info.innerHTML =
     `<span class="t-type">${escapeHtml(pl.unitCode)} · ${pl.sqft} sqft${lockNote}</span>` +
     fpNumFieldsHTML(pl) +
-    fpAreaNoteHTML(pl, pl.sqft) +
+    fpAreaNoteHTML(pl, pl.sqft, pl) +
     `<button class="act-btn" id="fpRotateBtn" style="padding:2px 9px;font-size:10px;" title="Swap width/height (90° rotation)">⟳ Rotate</button>` +
     (stackable.length === 1
       ? `<button class="act-btn" id="fpStackBtn" style="padding:2px 9px;font-size:10px;" title="Stack ${escapeHtml(stackable[0].unitCode)} (upper) onto this block">⧉ Stack ${escapeHtml(stackable[0].unitCode)}</button>`
@@ -4480,7 +4497,7 @@ function fpStartResize(e, pl) {
     const freeH = clampFt(snapFt(origH + (ev.clientY - startY) / u, step), fpMinSide(ev), ch - origY);
     let w;
     let h;
-    if (state.fp.lockSqft && pl.sqft > 0) {
+    if ((state.fp.lockSqft || pair.some(fpIsContracted)) && pl.sqft > 0) {
       const snapped = fpSnapToSqft(freeW, freeH, pair[0].sqft || pl.sqft, cw, ch, origX, origY, step);
       w = snapped.w;
       h = snapped.h;
@@ -4493,7 +4510,9 @@ function fpStartResize(e, pl) {
       p.height = h;
     }
     fpRenderCanvas();
-    fpSetReadout(`${pl.unitCode} ${formatFt(w)} × ${formatFt(h)} ft = ${fpFmtArea(rectAreaSqft({ width: w, height: h }))} sqft (unit ${pl.sqft})`);
+    const nextSqft = Math.round(rectAreaSqft({ width: w, height: h }));
+    const sizeNote = nextSqft !== pl.sqft && !pair.some(fpIsContracted) ? ` → unit ${pl.sqft} → ${nextSqft} sqft on publish` : ` (unit ${pl.sqft})`;
+    fpSetReadout(`${pl.unitCode} ${formatFt(w)} × ${formatFt(h)} ft = ${fpFmtArea(rectAreaSqft({ width: w, height: h }))} sqft${sizeNote}`);
   };
   const up = () => {
     document.removeEventListener('pointermove', move);
@@ -6376,8 +6395,9 @@ export function fpInitEvents() {
       fpToast(state.fp.ghostRotated ? 'Ghost rotated — palette units place swapped (H×W).' : 'Ghost orientation reset (W×H).', true);
     });
   }
-  // Lock-to-sqft resize (default ON). OFF is the ops override: free resize,
-  // with a warning that the server rejects new/resized units deviating >2% from sqft.
+  // Lock-to-sqft resize (default OFF since the floor-plan unit sync: a resize
+  // changes the unit's size on publish). ON reshapes while keeping area ≈ sqft;
+  // contracted units are always locked regardless.
   const lockBtn = $('#fpLockSqft');
   const syncLockBtn = () => {
     if (!lockBtn) return;
@@ -6392,9 +6412,9 @@ export function fpInitEvents() {
       syncLockBtn();
       fpRenderSelInfo();
       if (!state.fp.lockSqft) {
-        fpToast(`Sqft lock OFF — free resize enabled, but the server rejects new or resized units deviating more than ${Math.round(AREA_TOLERANCE * 100)}% from the unit sqft.`, false);
+        fpToast('Sqft lock OFF — resizing changes the unit\'s size (synced on publish). Rented/reserved units stay locked to their sqft.', true);
       } else {
-        fpToast('Sqft lock ON — resize snaps to the nearest rect preserving area ≈ sqft.', true);
+        fpToast('Sqft lock ON — resize reshapes the unit while keeping its area ≈ sqft.', true);
       }
     });
   }

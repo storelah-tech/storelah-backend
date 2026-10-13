@@ -166,6 +166,7 @@ import {
   updateFloorPlanMarker,
   removeFloorPlanMarker,
 } from '../core/floorPlans';
+import { getUnderlay, getUnderlayImage, removeUnderlay, setUnderlay, updateUnderlay } from '../core/floorPlanUnderlay';
 import {
   getFloorMetrics,
   getFacilityMetrics,
@@ -1409,6 +1410,60 @@ const floorPlanBatchSchema = z.object({
   delete: z
     .object({ placements: batchIdList, blocks: batchIdList, markers: batchIdList, boundaries: batchIdList })
     .optional(),
+});
+
+// --- Floor-plan tracing underlay (precision Phase 5) ---
+// CMS-only architect drawing under the editor canvas, stored in Postgres (not
+// the public content bucket) and served as JSON base64 behind requireAuth.
+// Upload body { name?, contentType, dataBase64, widthPx, heightPx } with a
+// route-scoped 6 MB JSON limit (the image is capped at 3.5 MB server-side).
+const floorPlanUnderlayUploadSchema = z.object({
+  name: z.string().trim().max(120).nullish(),
+  contentType: z.string().trim().min(1).max(40),
+  dataBase64: z.string().min(1).max(5_000_000),
+  widthPx: z.number().int().min(1).max(20000),
+  heightPx: z.number().int().min(1).max(20000),
+});
+const floorPlanUnderlayPatchSchema = z.object({
+  name: z.string().trim().max(120).nullish(),
+  ftPerPx: z.number().positive().max(100).optional(),
+  offsetX: z.number().min(-5000).max(5000).optional(),
+  offsetY: z.number().min(-5000).max(5000).optional(),
+  rotation: z.number().min(-3600).max(3600).optional(),
+  opacity: z.number().min(0.05).max(1).optional(),
+  visible: z.boolean().optional(),
+  locked: z.boolean().optional(),
+});
+
+router.get('/floor-plans/:floorId/underlay', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await getUnderlay(String(req.params.floorId)));
+});
+
+router.get('/floor-plans/:floorId/underlay/image', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await getUnderlayImage(String(req.params.floorId)));
+});
+
+router.post('/floor-plans/:floorId/underlay', requireAuth, jsonBody({ limit: '6mb' }), async (req: Request, res: Response) => {
+  const parsed = floorPlanUnderlayUploadSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Underlay payload must be { name?, contentType, dataBase64, widthPx, heightPx }', parsed.error.flatten());
+    return;
+  }
+  const bytes = Buffer.from(parsed.data.dataBase64, 'base64');
+  ok(res, await setUnderlay(String(req.params.floorId), { ...parsed.data, bytes }));
+});
+
+router.put('/floor-plans/:floorId/underlay', requireAuth, async (req: Request, res: Response) => {
+  const parsed = floorPlanUnderlayPatchSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid underlay settings', parsed.error.flatten());
+    return;
+  }
+  ok(res, await updateUnderlay(String(req.params.floorId), parsed.data));
+});
+
+router.delete('/floor-plans/:floorId/underlay', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await removeUnderlay(String(req.params.floorId)));
 });
 
 router.post('/floor-plans/:floorId/batch', requireAuth, async (req: Request, res: Response) => {

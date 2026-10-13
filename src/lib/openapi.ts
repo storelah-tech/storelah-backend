@@ -25,7 +25,7 @@ export const openapiSpec = {
   openapi: '3.0.3',
   info: {
     title: 'StoreLah Booking API',
-    version: '1.9.4',
+    version: '1.9.5',
     description: [
       'Customer-facing booking API for the StoreLah self-storage business.',
       '',
@@ -300,6 +300,12 @@ export const openapiSpec = {
         'grandfathering, occupied lock on live plans) and applied atomically; upserts are keyed by ' +
         'unitId / row id (missing ids are created with that id). Returns the full CMS plan read. Public ' +
         'shapes unchanged.',
+      'v1.9.5 is ADDITIVE over 1.9.4: CMS-only floor-plan tracing underlay (Bearer JWT) — ' +
+        '`GET|POST|PUT|DELETE /cms/floor-plans/{floorId}/underlay` (POST body `{ name?, contentType ' +
+        '(image/png|jpeg|webp), dataBase64, widthPx, heightPx }`, ≤ 3.5 MB, bytes sniffed; PUT ' +
+        'calibration `{ ftPerPx, offsetX, offsetY, rotation, opacity, visible, locked }`) and ' +
+        '`GET /cms/floor-plans/{floorId}/underlay/image` → `{ mime, dataBase64 }`. The CMS plan read ' +
+        'gains `underlay` metadata; the public read never includes it.',
     ].join('\n'),
   },
   servers: [

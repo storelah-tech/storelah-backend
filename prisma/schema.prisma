@@ -257,6 +257,7 @@ model FloorPlan {
   blocks     FloorPlanBlock[]
   boundaries FloorPlanBoundary[]
   markers    FloorPlanMarker[]
+  underlay   FloorPlanUnderlay? // CMS-only tracing image (precision Phase 5)
 
   @@index([status])
 }
@@ -332,6 +333,34 @@ model FloorPlanBoundary {
   updatedAt   DateTime  @updatedAt
 
   @@index([floorPlanId])
+}
+
+// CMS-only tracing underlay for a floor plan (precision Phase 5): the
+// architect's drawing (image; PDFs are rasterised client-side) shown under
+// the editor canvas, calibrated so its pixels map onto plan feet:
+//   canvasFt = (offsetX, offsetY) + rotate(rotation°) · (imagePx · ftPerPx)
+// Stored IN the database (bytea, capped ~3.5 MB) rather than the public
+// content bucket — floor layouts are security-sensitive and must never be
+// reachable without a CMS login. Never part of the public read or of draft
+// snapshots. Deleting the plan cascades.
+model FloorPlanUnderlay {
+  id          String    @id @default(cuid())
+  floorPlanId String    @unique
+  floorPlan   FloorPlan @relation(fields: [floorPlanId], references: [id], onDelete: Cascade)
+  name        String?
+  mime        String // image/png | image/jpeg | image/webp
+  bytes       Bytes
+  widthPx     Int
+  heightPx    Int
+  ftPerPx     Float // calibration: plan feet per image pixel
+  offsetX     Float     @default(0) // canvas feet of the image's top-left corner
+  offsetY     Float     @default(0)
+  rotation    Float     @default(0) // degrees, clockwise on screen
+  opacity     Float     @default(0.5)
+  visible     Boolean   @default(true)
+  locked      Boolean   @default(false)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
 }
 
 model FloorPlanMarker {

@@ -19,6 +19,7 @@ import {
   MAX_WALL_THICKNESS_FT,
   MIN_WALL_THICKNESS_FT,
   angleDeg,
+  calibrateUnderlay,
   lineFeedsArea,
   nearestOnSegment,
   pointAtAngle,
@@ -73,7 +74,7 @@ const FP_TOOLBAR_GROUPS = [
   { id: 'markers', label: 'Markers/Safety', tools: ['fpMarkersBtn', 'fpMarkerTools'] },
   { id: 'canvas', label: 'Canvas', tools: ['fpWidth', 'fpHeight'] },
   { id: 'plan', label: 'Plan', tools: ['fpGfa', 'fpBoundaryMetrics'] },
-  { id: 'view', label: 'View', tools: ['fpZoomOut', 'fpZoomIn', 'fpZoomPreset', 'fpGridToggle', 'fpSnapStep', 'fpObjSnap', 'fpLayersBtn', 'fpShortcutsBtn'] },
+  { id: 'view', label: 'View', tools: ['fpZoomOut', 'fpZoomIn', 'fpZoomPreset', 'fpGridToggle', 'fpSnapStep', 'fpObjSnap', 'fpLayersBtn', 'fpUnderlayBtn', 'fpUnderlayCalib', 'fpUnderlayMove', 'fpUnderlayRot', 'fpUnderlayRemove', 'fpExportBtn', 'fpExportGo', 'fpShortcutsBtn'] },
   { id: 'info', label: 'Labels', tools: ['fpSelInfo'] },
 ];
 
@@ -1253,7 +1254,10 @@ function fpRenderBoundaryLayer(canvas, u, dims, boundaries, withOverlay, selecte
       svg.appendChild(label);
     }
   }
-  if (withOverlay) fpRenderPenOverlay(svg, u);
+  if (withOverlay) {
+    fpRenderPenOverlay(svg, u);
+    fpRenderCalibOverlay(svg, u);
+  }
   canvas.appendChild(svg);
 }
 
@@ -1285,6 +1289,7 @@ function fpRenderCanvas() {
     canvas.style.backgroundSize = sizes.join(',');
   }
   canvas.innerHTML = '';
+  fpRenderUnderlay(canvas, u); // tracing image sits under everything (first child)
   fpRenderStructure(canvas, u);
   fpRenderBoundaryLayer(canvas, u, fpCanvasDims(), fpLayerHidden('lines') ? [] : state.fp.boundaries || [], true, state.fp.selectedBoundary);
   // Decoration blocks — BELOW units in z-order (blocks z-index 1, units 2).
@@ -1361,7 +1366,7 @@ function fpRenderCanvas() {
   // placement/block drags only run when the tool is toggled off). An armed
   // marker (Markers/Safety group) behaves the same — the next canvas click
   // places it, so the crosshair applies there too.
-  canvas.style.cursor = state.fp.drawMode || state.fp.armedMarker || state.fp.measureMode ? 'crosshair' : '';
+  canvas.style.cursor = state.fp.underlayMode === 'move' ? 'move' : state.fp.drawMode || state.fp.armedMarker || state.fp.measureMode || state.fp.underlayMode ? 'crosshair' : '';
   // Safety/facility point icons render LAST (top of the z-order) so a marker
   // never hides under a placement.
   fpRenderMarkerLayer(canvas, u, fpLayerHidden('markers') ? [] : state.fp.markers || [], true, state.fp.selectedMarker);
@@ -1401,6 +1406,614 @@ function fpRenderMarkerLayer(canvas, u, markers, interactive, selectedId) {
     if (isSel) el.style.boxShadow = `0 0 0 2px ${def.tone}`;
     el.textContent = def.icon;
     canvas.appendChild(el);
+  }
+}
+
+// ---------- tracing underlay + export (precision Phase 5) ----------
+// Underlay: one CMS-only image per plan (the architect's drawing) under the
+// canvas. PNG / JPEG / WebP upload as-is (downsized to ≤ 4000 px and ≤ 3.5 MB);
+// PDFs are rasterised client-side from page 1 with pdf.js (lazy-loaded from
+// cdnjs, like chart.js). Calibrate = click two features of known distance and
+// type it; Move = drag the image; rotation / offset / opacity / show / lock in
+// the 🗺 panel. Bytes are served only by the authenticated image route.
+// Export: SVG (vector, mm-sized at the chosen scale), PNG (raster of that
+// SVG) or PDF (jsPDF, lazy-loaded; page = the drawing's exact mm size so a
+// 100% print is to scale) with title block, scale bar, north arrow, legend.
+
+const FP_PDFJS_URL = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+const FP_PDFJS_WORKER_URL = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+const FP_JSPDF_URL = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';
+const FP_UNDERLAY_MAX_PX = 4000;
+const FP_UNDERLAY_MAX_BYTES = 3.5 * 1024 * 1024;
+let fpUnderlayImg = null; // { key, url } — object URL of the loaded image
+let fpCalib = null; // { a: [x,y], b: [x,y]|null } while calibrating
+const fpScriptCache = new Map();
+
+function fpLoadScript(url) {
+  if (fpScriptCache.has(url)) return fpScriptCache.get(url);
+  const p = new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = url;
+    s.async = true;
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error(`Could not load ${url} — check the network connection.`));
+    document.head.appendChild(s);
+  });
+  fpScriptCache.set(url, p);
+  p.catch(() => fpScriptCache.delete(url));
+  return p;
+}
+
+// Load (or reuse) the underlay image for the current plan; re-renders when ready.
+async function fpEnsureUnderlayImage() {
+  const u = state.fp.underlay;
+  if (!u) {
+    if (fpUnderlayImg) URL.revokeObjectURL(fpUnderlayImg.url);
+    fpUnderlayImg = null;
+    return;
+  }
+  // Settings-only updates (calibration, opacity) keep the same bytes, so the
+  // cache keys on image identity; a replace clears the cache explicitly.
+  const key = `${state.fp.floorId}:${u.id}:${u.widthPx}x${u.heightPx}:${u.mime}`;
+  if (fpUnderlayImg && fpUnderlayImg.key === key) return;
+  try {
+    const img = await get(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/underlay/image`);
+    const bin = atob(img.dataBase64);
+    const buf = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+    if (fpUnderlayImg) URL.revokeObjectURL(fpUnderlayImg.url);
+    fpUnderlayImg = { key, url: URL.createObjectURL(new Blob([buf], { type: img.mime })) };
+    fpRenderCanvas();
+  } catch (err) {
+    fpToast('Underlay image: ' + describeError(err), false);
+  }
+}
+
+function fpRenderUnderlay(canvas, u) {
+  const ul = state.fp.underlay;
+  if (!ul || !ul.visible || !fpUnderlayImg) return;
+  const img = document.createElement('img');
+  img.className = 'fp-underlay';
+  img.src = fpUnderlayImg.url;
+  img.alt = '';
+  img.draggable = false;
+  img.style.left = ul.offsetX * u + 'px';
+  img.style.top = ul.offsetY * u + 'px';
+  img.style.width = ul.widthPx * ul.ftPerPx * u + 'px';
+  img.style.height = ul.heightPx * ul.ftPerPx * u + 'px';
+  img.style.opacity = String(ul.opacity);
+  img.style.transform = `rotate(${ul.rotation}deg)`;
+  canvas.appendChild(img);
+}
+
+// ---- upload ----
+function fpCanvasToBlob(c, type, quality) {
+  return new Promise((resolve) => c.toBlob((b) => resolve(b), type, quality));
+}
+
+function fpBlobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result).replace(/^data:[^,]*,/, ''));
+    r.onerror = () => reject(r.error);
+    r.readAsDataURL(blob);
+  });
+}
+
+// File → canvas (PDF page 1 via pdf.js; images via createImageBitmap), ≤ 4000 px.
+async function fpFileToCanvas(file) {
+  const c = document.createElement('canvas');
+  const ctx = c.getContext('2d');
+  if (file.type === 'application/pdf' || /\.pdf$/i.test(file.name || '')) {
+    await fpLoadScript(FP_PDFJS_URL);
+    const pdfjs = window.pdfjsLib;
+    if (!pdfjs) throw new Error('pdf.js did not load');
+    pdfjs.GlobalWorkerOptions.workerSrc = FP_PDFJS_WORKER_URL;
+    const doc = await pdfjs.getDocument({ data: await file.arrayBuffer() }).promise;
+    const page = await doc.getPage(1);
+    const vp1 = page.getViewport({ scale: 1 });
+    const vp = page.getViewport({ scale: Math.min(6, FP_UNDERLAY_MAX_PX / Math.max(vp1.width, vp1.height)) });
+    c.width = Math.round(vp.width);
+    c.height = Math.round(vp.height);
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, c.width, c.height);
+    await page.render({ canvasContext: ctx, viewport: vp }).promise;
+    return { canvas: c, pages: doc.numPages };
+  }
+  const bmp = await createImageBitmap(file);
+  const k = Math.min(1, FP_UNDERLAY_MAX_PX / Math.max(bmp.width, bmp.height));
+  c.width = Math.max(1, Math.round(bmp.width * k));
+  c.height = Math.max(1, Math.round(bmp.height * k));
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, c.width, c.height);
+  ctx.drawImage(bmp, 0, 0, c.width, c.height);
+  return { canvas: c, pages: 1 };
+}
+
+// PNG when it fits the cap (crisp line work), else JPEG, downscaling until it fits.
+async function fpEncodeUnderlay(canvas) {
+  let c = canvas;
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const png = await fpCanvasToBlob(c, 'image/png');
+    if (png && png.size <= FP_UNDERLAY_MAX_BYTES) return { blob: png, mime: 'image/png', w: c.width, h: c.height };
+    for (const q of [0.88, 0.75]) {
+      const jpg = await fpCanvasToBlob(c, 'image/jpeg', q);
+      if (jpg && jpg.size <= FP_UNDERLAY_MAX_BYTES) return { blob: jpg, mime: 'image/jpeg', w: c.width, h: c.height };
+    }
+    const next = document.createElement('canvas');
+    next.width = Math.max(1, Math.round(c.width * 0.8));
+    next.height = Math.max(1, Math.round(c.height * 0.8));
+    next.getContext('2d').drawImage(c, 0, 0, next.width, next.height);
+    c = next;
+  }
+  throw new Error('The drawing is too detailed to fit 3.5 MB — export a smaller image or a simpler PDF page.');
+}
+
+async function fpUploadUnderlay(file) {
+  if (!file || !state.fp.floorId) return;
+  try {
+    fpToast(`Preparing "${file.name}"…`, true);
+    const { canvas, pages } = await fpFileToCanvas(file);
+    const enc = await fpEncodeUnderlay(canvas);
+    const res = await fpMutate(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/underlay`, {
+      method: 'POST',
+      body: JSON.stringify({ name: file.name, contentType: enc.mime, dataBase64: await fpBlobToBase64(enc.blob), widthPx: enc.w, heightPx: enc.h }),
+    });
+    state.fp.underlay = res.data;
+    fpUnderlayImg = null;
+    await fpEnsureUnderlayImage();
+    fpRenderUnderlayMenu();
+    fpRenderCanvas();
+    fpToast(
+      `Underlay "${file.name}" uploaded (${enc.w}×${enc.h} px${pages > 1 ? `, page 1 of ${pages}` : ''}) — now 📐 Calibrate it: click two points of a known distance.`,
+      true,
+    );
+  } catch (err) {
+    fpToast('Underlay upload: ' + describeError(err), false);
+  }
+}
+
+async function fpPatchUnderlay(patch, verb) {
+  try {
+    const res = await fpMutate(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/underlay`, { method: 'PUT', body: JSON.stringify(patch) });
+    state.fp.underlay = res.data;
+    fpRenderUnderlayMenu();
+    fpRenderCanvas();
+    if (verb) fpToast(verb, true);
+    return true;
+  } catch (err) {
+    fpToast('Underlay: ' + describeError(err), false);
+    return false;
+  }
+}
+
+async function fpRemoveUnderlay() {
+  const ok = await confirmDialog({ title: 'Remove the underlay image?', message: 'The tracing image is deleted. Drawn units, blocks and lines are not affected.', confirmLabel: 'Remove', danger: true });
+  if (!ok) return;
+  try {
+    await fpMutate(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/underlay`, { method: 'DELETE' });
+    state.fp.underlay = null;
+    await fpEnsureUnderlayImage();
+    fpSetUnderlayMode(null);
+    fpRenderUnderlayMenu();
+    fpRenderCanvas();
+    fpToast('Underlay removed.', true);
+  } catch (err) {
+    fpToast('Remove underlay: ' + describeError(err), false);
+  }
+}
+
+// ---- calibrate / move modes ----
+// state.fp.underlayMode: null | 'calibrate' | 'move'
+function fpSetUnderlayMode(mode) {
+  state.fp.underlayMode = mode;
+  fpCalib = null;
+  if (mode) {
+    state.fp.drawMode = false;
+    fpResetPen();
+    if (state.fp.measureMode) fpSetMeasureMode(false);
+    state.fp.armedMarker = null;
+    fpClearSingles();
+    state.fp.multi = [];
+  }
+  fpRenderUnderlayMenu();
+  fpRenderCanvas();
+  fpRenderSelInfo();
+  fpSyncModeUI();
+  fpSetReadout(
+    mode === 'calibrate'
+      ? 'Calibrate · click the first point of a known dimension on the drawing (Esc cancels)'
+      : mode === 'move'
+        ? 'Move underlay · drag the drawing into place (Esc ends)'
+        : '',
+  );
+}
+
+function fpCalibRaw(e) {
+  const raw = fpCanvasRawAt(e.clientX, e.clientY);
+  return raw ? [quantizeFt(raw[0]), quantizeFt(raw[1])] : null;
+}
+
+function fpUnderlayPointerDown(e) {
+  if (e.button !== 0) return;
+  const ul = state.fp.underlay;
+  if (!ul) return;
+  e.preventDefault();
+  if (state.fp.underlayMode === 'calibrate') {
+    const p = fpCalibRaw(e);
+    if (!p) return;
+    if (!fpCalib || fpCalib.b) fpCalib = { a: p, b: null };
+    else fpCalib.b = p;
+    fpRenderCanvas();
+    fpRenderSelInfo();
+    if (fpCalib.b) {
+      const len = segmentLengthFt(fpCalib.a, fpCalib.b);
+      fpSetReadout(`Calibrate · currently ${formatFt(Math.round(len * 100) / 100)} ft on the plan — type the REAL distance below`);
+      $('#fpSelInfo [data-fp-calib="dist"]')?.focus();
+    } else fpSetReadout('Calibrate · now click the second point');
+    return;
+  }
+  // Move: drag the image by the pointer delta (raw, unsnapped).
+  const raw0 = fpCanvasRawAt(e.clientX, e.clientY);
+  const ox = ul.offsetX;
+  const oy = ul.offsetY;
+  let moved = false;
+  const move = (ev) => {
+    const raw = fpCanvasRawAt(ev.clientX, ev.clientY);
+    if (!raw || !raw0) return;
+    moved = true;
+    ul.offsetX = quantizeFt(ox + raw[0] - raw0[0]);
+    ul.offsetY = quantizeFt(oy + raw[1] - raw0[1]);
+    fpRenderCanvas();
+    fpSetReadout(`Underlay offset ${formatFt(ul.offsetX)}, ${formatFt(ul.offsetY)} ft`);
+  };
+  const up = () => {
+    document.removeEventListener('pointermove', move);
+    document.removeEventListener('pointerup', up);
+    if (moved) fpPatchUnderlay({ offsetX: ul.offsetX, offsetY: ul.offsetY }, 'Underlay moved.');
+  };
+  document.addEventListener('pointermove', move);
+  document.addEventListener('pointerup', up);
+}
+
+async function fpApplyCalibration() {
+  const ul = state.fp.underlay;
+  if (!ul || !fpCalib || !fpCalib.b) return;
+  const real = fpParseLen(($('#fpSelInfo [data-fp-calib="dist"]') || {}).value);
+  if (real === null || real <= 0) {
+    fpToast('Type the real distance between the two points in feet (e.g. 75 or 24.5).', false);
+    return;
+  }
+  const t = calibrateUnderlay(ul, fpCalib.a, fpCalib.b, real);
+  const before = ul.ftPerPx;
+  const ok = await fpPatchUnderlay({ ftPerPx: t.ftPerPx, offsetX: quantizeFt(t.offsetX), offsetY: quantizeFt(t.offsetY) });
+  if (ok) {
+    const ulNow = state.fp.underlay;
+    fpToast(`Calibrated — the drawing is now ${formatFt(ulNow.widthFt)} × ${formatFt(ulNow.heightFt)} ft (scale ×${Math.round((t.ftPerPx / before) * 1000) / 1000}). Check a second known dimension with 📏 Measure.`, true);
+    fpSetUnderlayMode(null);
+  }
+}
+
+function fpCalibInfoHTML() {
+  if (!fpCalib || !fpCalib.b) return `<span class="t-type">📐 Calibrate underlay — click ${fpCalib ? 'the second' : 'the first'} point of a known dimension · Esc cancels</span>`;
+  const len = segmentLengthFt(fpCalib.a, fpCalib.b);
+  return (
+    `<span class="t-type">📐 Plan distance ${formatFt(Math.round(len * 1000) / 1000)} ft · real distance</span>` +
+    `<input type="text" inputmode="decimal" class="tbl-search fp-num" data-fp-calib="dist" aria-label="Real distance in feet" placeholder="ft" autocomplete="off">` +
+    `<span class="t-type">ft</span><button class="act-btn primary" id="fpCalibApply" style="padding:2px 9px;font-size:10px;">Apply</button>` +
+    `<button class="act-btn" id="fpCalibCancel" style="padding:2px 9px;font-size:10px;">Cancel</button>`
+  );
+}
+
+function fpRenderCalibOverlay(svg, u) {
+  if (state.fp.underlayMode !== 'calibrate' || !fpCalib) return;
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+  const mk = (tag, attrs) => {
+    const n = document.createElementNS(SVG_NS, tag);
+    for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, String(v));
+    svg.appendChild(n);
+  };
+  const { a, b } = fpCalib;
+  if (b) mk('line', { x1: a[0] * u, y1: a[1] * u, x2: b[0] * u, y2: b[1] * u, class: 'fp-measure-line' });
+  [a, b].filter(Boolean).forEach((p) => {
+    mk('circle', { cx: p[0] * u, cy: p[1] * u, r: 6, class: 'fp-calib-mark' });
+    mk('path', { d: `M${p[0] * u - 9},${p[1] * u}H${p[0] * u + 9}M${p[0] * u},${p[1] * u - 9}V${p[1] * u + 9}`, class: 'fp-calib-cross' });
+  });
+}
+
+// ---- 🗺 panel ----
+function fpRenderUnderlayMenu() {
+  const el = $('#fpUnderlayPanel');
+  if (!el) return;
+  const ul = state.fp.underlay;
+  const btn = $('#fpUnderlayBtn');
+  if (btn) btn.classList.toggle('on', !!ul && ul.visible);
+  const file = `<label class="act-btn" style="padding:3px 9px;font-size:11px;cursor:pointer;">${ul ? 'Replace…' : '⤒ Upload drawing…'}<input type="file" id="fpUnderlayFile" accept="image/png,image/jpeg,image/webp,application/pdf,.pdf" hidden></label>`;
+  if (!ul) {
+    el.innerHTML = `<div class="t-type" style="max-width:260px;white-space:normal;margin-bottom:6px;">Trace over the architect's plan: upload a PNG / JPEG / WebP or a PDF (page 1). It stays CMS-only — never shown to customers.</div>${file}`;
+    return;
+  }
+  const row = (inner) => `<div style="display:flex;gap:6px;align-items:center;margin:4px 0;white-space:nowrap;">${inner}</div>`;
+  const num = (key, label, v, title) => `<span class="fp-num-lbl">${label}</span><input type="text" inputmode="decimal" class="tbl-search fp-num" data-fp-ul="${key}" value="${escapeHtml(formatFt(v))}" title="${title}" aria-label="${title}" autocomplete="off">`;
+  el.innerHTML =
+    row(`<span class="t-type" style="font-weight:700;max-width:220px;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(ul.name || 'Underlay')}</span>`) +
+    row(`<span class="t-type">${formatFt(ul.widthFt)} × ${formatFt(ul.heightFt)} ft · ${ul.widthPx}×${ul.heightPx} px · 1 px = ${Math.round(ul.ftPerPx * 100000) / 100000} ft</span>`) +
+    row(
+      `<label class="t-type"><input type="checkbox" data-fp-ul="visible"${ul.visible ? ' checked' : ''}> show</label>` +
+        `<label class="t-type"><input type="checkbox" data-fp-ul="locked"${ul.locked ? ' checked' : ''}> lock</label>` +
+        `<span class="fp-num-lbl">opacity</span><input type="range" min="5" max="100" step="5" data-fp-ul="opacity" value="${Math.round(ul.opacity * 100)}" aria-label="Underlay opacity" style="width:90px;">`,
+    ) +
+    row(
+      `<button class="act-btn${state.fp.underlayMode === 'calibrate' ? ' primary' : ''}" id="fpUnderlayCalib" style="padding:2px 9px;font-size:11px;"${ul.locked ? ' disabled' : ''} title="Click two features of a known distance on the drawing, then type that distance">📐 Calibrate</button>` +
+        `<button class="act-btn${state.fp.underlayMode === 'move' ? ' primary' : ''}" id="fpUnderlayMove" style="padding:2px 9px;font-size:11px;"${ul.locked ? ' disabled' : ''} title="Drag the drawing into place">✥ Move</button>` +
+        `<button class="act-btn" id="fpUnderlayRot" style="padding:2px 9px;font-size:11px;"${ul.locked ? ' disabled' : ''} title="Rotate 90° clockwise">↻ 90°</button>`,
+    ) +
+    row(num('offsetX', 'X', ul.offsetX, 'Underlay left edge, feet') + num('offsetY', 'Y', ul.offsetY, 'Underlay top edge, feet') + num('rotation', '∠', ul.rotation, 'Rotation in degrees (clockwise)')) +
+    row(file + `<button class="act-btn danger" id="fpUnderlayRemove" style="padding:2px 9px;font-size:11px;">Remove</button>`);
+}
+
+function fpWireUnderlayPanel() {
+  const panel = $('#fpUnderlayPanel');
+  if (!panel) return;
+  panel.addEventListener('change', (e) => {
+    const t = e.target;
+    if (!t) return;
+    if (t.id === 'fpUnderlayFile') {
+      const f = t.files && t.files[0];
+      if (f) fpUploadUnderlay(f);
+      t.value = '';
+      return;
+    }
+    const key = t.dataset && t.dataset.fpUl;
+    if (!key || !state.fp.underlay) return;
+    if (key === 'visible' || key === 'locked') {
+      fpPatchUnderlay({ [key]: t.checked });
+      if (key === 'locked' && t.checked) fpSetUnderlayMode(null);
+    } else if (key === 'opacity') fpPatchUnderlay({ opacity: Math.max(0.05, Math.min(1, Number(t.value) / 100)) });
+    else {
+      const v = key === 'rotation' ? Number(t.value) : fpParseLen(t.value);
+      if (v === null || !Number.isFinite(v)) {
+        fpToast('Enter a number.', false);
+        fpRenderUnderlayMenu();
+        return;
+      }
+      fpPatchUnderlay({ [key]: key === 'rotation' ? v : quantizeFt(v) });
+    }
+  });
+  panel.addEventListener('input', (e) => {
+    const t = e.target;
+    if (t && t.dataset && t.dataset.fpUl === 'opacity' && state.fp.underlay) {
+      state.fp.underlay.opacity = Number(t.value) / 100; // live preview; `change` persists
+      fpRenderCanvas();
+    }
+  });
+  panel.addEventListener('click', (e) => {
+    const id = e.target && e.target.id;
+    if (id === 'fpUnderlayCalib') fpSetUnderlayMode(state.fp.underlayMode === 'calibrate' ? null : 'calibrate');
+    else if (id === 'fpUnderlayMove') fpSetUnderlayMode(state.fp.underlayMode === 'move' ? null : 'move');
+    else if (id === 'fpUnderlayRot' && state.fp.underlay) fpPatchUnderlay({ rotation: (state.fp.underlay.rotation + 90) % 360 }, 'Underlay rotated 90°.');
+    else if (id === 'fpUnderlayRemove') fpRemoveUnderlay();
+  });
+}
+
+// ---- export ----
+const FP_EXPORT_SCALES = [20, 25, 50, 75, 100, 125, 150, 200, 250, 300, 400, 500, 750, 1000, 1250, 1500, 2000];
+const FP_PAPER = { A4: [297, 210], A3: [420, 297], A2: [594, 420], A1: [841, 594] };
+const FP_EXPORT_FILL = { AVAILABLE: ['#DCEAD9', '#2E6B46'], RESERVED: ['#FFF8E1', '#F57F17'], OCCUPIED: ['#ECEFF1', '#332B24'] };
+const FP_EXPORT_MARGIN = 12;
+const FP_EXPORT_TITLE_H = 30;
+
+function fpExportFill(status) {
+  const s = String(status || '').toUpperCase();
+  return FP_EXPORT_FILL[s] || (s === 'AVAILABLE' ? FP_EXPORT_FILL.AVAILABLE : FP_EXPORT_FILL.OCCUPIED);
+}
+
+function fpXml(s) {
+  return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+// Resolve the sheet: fixed 1:n (sheet sized to the drawing) or "fit A3/A4…"
+// (largest standard scale whose drawing fits the paper, landscape or portrait).
+function fpExportLayout(scaleOpt) {
+  const { w, h } = fpCanvasDims();
+  const ftMm = 304.8;
+  const fit = /^fit-(A\d)$/.exec(scaleOpt || '');
+  if (fit) {
+    const [pw, ph] = FP_PAPER[fit[1]];
+    let best = null;
+    for (const [sw, sh] of [[pw, ph], [ph, pw]]) {
+      const availW = sw - 2 * FP_EXPORT_MARGIN;
+      const availH = sh - 2 * FP_EXPORT_MARGIN - FP_EXPORT_TITLE_H;
+      const n = FP_EXPORT_SCALES.find((k) => (w * ftMm) / k <= availW && (h * ftMm) / k <= availH);
+      if (n && (!best || n < best.n)) best = { n, sheetW: sw, sheetH: sh, paper: fit[1] };
+    }
+    if (!best) best = { n: FP_EXPORT_SCALES[FP_EXPORT_SCALES.length - 1], sheetW: pw, sheetH: ph, paper: fit[1] };
+    return { ...best, mmPerFt: ftMm / best.n, drawW: (w * ftMm) / best.n, drawH: (h * ftMm) / best.n };
+  }
+  const n = Number(String(scaleOpt || '100').replace(/^1:/, '')) || 100;
+  const drawW = (w * ftMm) / n;
+  const drawH = (h * ftMm) / n;
+  return { n, mmPerFt: ftMm / n, drawW, drawH, sheetW: Math.max(drawW + 2 * FP_EXPORT_MARGIN, 160), sheetH: drawH + 2 * FP_EXPORT_MARGIN + FP_EXPORT_TITLE_H, paper: 'custom' };
+}
+
+// A "nice" scale-bar length in feet (~1/4 of the drawing width).
+function fpScaleBarFt(planW) {
+  const target = planW / 4;
+  const steps = [1, 2, 5, 10, 20, 25, 50, 100, 200, 500];
+  return steps.reduce((best, s) => (Math.abs(s - target) < Math.abs(best - target) ? s : best), steps[0]);
+}
+
+/** Standalone SVG of the plan at a real print scale (all coordinates in mm). */
+function fpBuildExportSVG(opts) {
+  const L = fpExportLayout(opts.scale);
+  const k = L.mmPerFt;
+  const { w: cw, h: ch } = fpCanvasDims();
+  const ox = (L.sheetW - L.drawW) / 2;
+  const oy = FP_EXPORT_MARGIN;
+  const X = (ft) => (ox + ft * k).toFixed(3);
+  const Y = (ft) => (oy + ft * k).toFixed(3);
+  const out = [];
+  out.push(`<svg xmlns="http://www.w3.org/2000/svg" width="${L.sheetW.toFixed(2)}mm" height="${L.sheetH.toFixed(2)}mm" viewBox="0 0 ${L.sheetW.toFixed(3)} ${L.sheetH.toFixed(3)}" font-family="Helvetica, Arial, sans-serif">`);
+  out.push(`<rect x="0" y="0" width="${L.sheetW}" height="${L.sheetH}" fill="#ffffff"/>`);
+  // Optional underlay (embedded data URL) — off by default.
+  const ul = state.fp.underlay;
+  if (opts.underlay && ul && ul.visible && opts.underlayDataUrl) {
+    out.push(`<image href="${opts.underlayDataUrl}" x="${X(ul.offsetX)}" y="${Y(ul.offsetY)}" width="${(ul.widthPx * ul.ftPerPx * k).toFixed(3)}" height="${(ul.heightPx * ul.ftPerPx * k).toFixed(3)}" opacity="${ul.opacity}" transform="rotate(${ul.rotation} ${X(ul.offsetX)} ${Y(ul.offsetY)})" preserveAspectRatio="none"/>`);
+  }
+  out.push(`<rect x="${X(0)}" y="${Y(0)}" width="${(cw * k).toFixed(3)}" height="${(ch * k).toFixed(3)}" fill="none" stroke="#B8B0A4" stroke-width="0.25"/>`);
+  if (opts.grid) {
+    const g = [];
+    for (let x = 1; x < cw; x++) g.push(`M${X(x)},${Y(0)}V${Y(ch)}`);
+    for (let y = 1; y < ch; y++) g.push(`M${X(0)},${Y(y)}H${X(cw)}`);
+    out.push(`<path d="${g.join('')}" stroke="#ECE6DC" stroke-width="0.12" fill="none"/>`);
+  }
+  // Lines by kind (GUIDE lines never print).
+  for (const b of fpLayerHidden('lines') ? [] : state.fp.boundaries || []) {
+    const kind = String(b.kind || '').toUpperCase();
+    if (kind === 'GUIDE') continue;
+    const pts = fpBoundaryPoints(b.points);
+    if (pts.length < 2) continue;
+    const d = 'M' + pts.map(([x, y]) => `${X(x)},${Y(y)}`).join('L') + (b.closed ? 'Z' : '');
+    if (kind === 'WALL') out.push(`<path d="${d}" fill="none" stroke="#3A322B" stroke-width="${((b.thickness || DEFAULT_WALL_THICKNESS_FT) * k).toFixed(3)}" stroke-linejoin="miter" stroke-linecap="square"/>`);
+    else if (kind === 'PARTITION') out.push(`<path d="${d}" fill="none" stroke="#6B5F55" stroke-width="0.25" stroke-dasharray="1.5 1"/>`);
+    else out.push(`<path d="${d}" fill="${b.closed || pts.length >= 3 ? 'rgba(11,79,94,0.05)' : 'none'}" stroke="#0B4F5E" stroke-width="0.5" stroke-linejoin="round"/>`);
+  }
+  // Blocks.
+  for (const blk of fpLayerHidden('blocks') ? [] : state.fp.blocks) {
+    out.push(`<rect x="${X(blk.x)}" y="${Y(blk.y)}" width="${(blk.width * k).toFixed(3)}" height="${(blk.height * k).toFixed(3)}" fill="${fpXml(fpBlockFill(blk))}" stroke="#9C9284" stroke-width="0.2"/>`);
+    const fs = Math.min(blk.height * k * 0.35, (blk.width * k) / Math.max(4, String(blk.name || '').length * 0.62), 3.2);
+    if (fs >= 0.9) out.push(`<text x="${X(blk.x + blk.width / 2)}" y="${Y(blk.y + blk.height / 2)}" font-size="${fs.toFixed(2)}" text-anchor="middle" dominant-baseline="central" fill="#5A5048">${fpXml(blk.name)}</text>`);
+  }
+  // Units (stacked pairs print once with both codes).
+  for (const group of fpLayerHidden('units') ? [] : fpGroupByRect(state.fp.placements)) {
+    const r = group.rect;
+    const lower = group.members[0];
+    const [fill, ink] = fpExportFill(lower.status);
+    out.push(`<rect x="${X(r.x)}" y="${Y(r.y)}" width="${(r.width * k).toFixed(3)}" height="${(r.height * k).toFixed(3)}" fill="${fill}" stroke="${ink}" stroke-width="0.25"/>`);
+    if (opts.labels !== false) {
+      const code = group.members.map((m) => m.unitCode).join(' / ');
+      const sq = group.members.map((m) => `${m.sqft}`).join('/') + ' sqft';
+      const wmm = r.width * k;
+      const hmm = r.height * k;
+      const fs = Math.min(hmm * 0.3, wmm / Math.max(3, code.length * 0.62), 3.4);
+      if (fs >= 0.8) {
+        out.push(`<text x="${X(r.x + r.width / 2)}" y="${(oy + (r.y + r.height / 2) * k - fs * 0.15).toFixed(3)}" font-size="${fs.toFixed(2)}" font-weight="700" text-anchor="middle" fill="${ink}">${fpXml(code)}</text>`);
+        if (hmm > fs * 2.6) out.push(`<text x="${X(r.x + r.width / 2)}" y="${(oy + (r.y + r.height / 2) * k + fs * 1.05).toFixed(3)}" font-size="${(fs * 0.75).toFixed(2)}" text-anchor="middle" fill="${ink}">${fpXml(sq)}</text>`);
+      }
+    }
+  }
+  // Markers.
+  for (const m of fpLayerHidden('markers') ? [] : state.fp.markers || []) {
+    const def = fpMarkerDef(m.kind);
+    const rr = Math.max(1.2, Math.min(2.4, 1.2 * k));
+    out.push(`<circle cx="${X(m.x)}" cy="${Y(m.y)}" r="${rr.toFixed(2)}" fill="#fff" stroke="${def.tone}" stroke-width="0.35"/>`);
+    out.push(`<text x="${X(m.x)}" y="${Y(m.y)}" font-size="${(rr * 1.1).toFixed(2)}" text-anchor="middle" dominant-baseline="central">${fpXml(def.icon)}</text>`);
+  }
+  // North arrow (plan up = north) at the drawing's top-right.
+  const nx = ox + L.drawW - 6;
+  const ny = oy + 8;
+  out.push(`<g><path d="M${nx},${ny - 6}L${nx + 2.6},${ny + 2}L${nx},${ny}L${nx - 2.6},${ny + 2}Z" fill="#332B24"/><text x="${nx}" y="${ny + 6}" font-size="3" font-weight="700" text-anchor="middle" fill="#332B24">N</text></g>`);
+  // Title block.
+  const ty = L.sheetH - FP_EXPORT_MARGIN - FP_EXPORT_TITLE_H + 4;
+  const tx = FP_EXPORT_MARGIN;
+  const tw = L.sheetW - 2 * FP_EXPORT_MARGIN;
+  out.push(`<rect x="${tx}" y="${ty}" width="${tw}" height="${FP_EXPORT_TITLE_H - 4}" fill="none" stroke="#332B24" stroke-width="0.3"/>`);
+  const m = fpBoundaryMetricsLocal();
+  const title = `StoreLah — ${state.fp.branchName || ''} · ${state.fp.floorName || ''}`;
+  const dateStr = new Date().toLocaleDateString('en-SG', { year: 'numeric', month: 'short', day: 'numeric' });
+  out.push(`<text x="${tx + 4}" y="${ty + 7}" font-size="4" font-weight="700" fill="#332B24">${fpXml(title)}</text>`);
+  out.push(`<text x="${tx + 4}" y="${ty + 13}" font-size="2.6" fill="#5A5048">Floor plan · ${fpXml(formatFt(cw))} × ${fpXml(formatFt(ch))} ft canvas · ${state.fp.placements.length} units placed${m.boundaryClosed ? ` · UFA ${fpFmtArea(m.ufa)} sqft · NLA ${fpFmtArea(m.nla)} sqft` : ''}</text>`);
+  out.push(`<text x="${tx + 4}" y="${ty + 19}" font-size="2.6" fill="#5A5048">Printed ${fpXml(dateStr)} · status ${fpXml(String(state.fp.plan && state.fp.plan.status || 'DRAFT'))}</text>`);
+  // Scale bar.
+  const barFt = fpScaleBarFt(cw);
+  const barMm = barFt * k;
+  const bx = tx + tw / 2 - barMm / 2;
+  const by = ty + 9;
+  for (let i = 0; i < 4; i++) out.push(`<rect x="${(bx + (i * barMm) / 4).toFixed(3)}" y="${by}" width="${(barMm / 4).toFixed(3)}" height="1.6" fill="${i % 2 ? '#fff' : '#332B24'}" stroke="#332B24" stroke-width="0.2"/>`);
+  out.push(`<text x="${bx.toFixed(3)}" y="${by + 5}" font-size="2.4" text-anchor="middle" fill="#332B24">0</text><text x="${(bx + barMm).toFixed(3)}" y="${by + 5}" font-size="2.4" text-anchor="middle" fill="#332B24">${barFt} ft</text>`);
+  out.push(`<text x="${(bx + barMm / 2).toFixed(3)}" y="${by + 11}" font-size="3" font-weight="700" text-anchor="middle" fill="#332B24">Scale 1:${L.n}${L.paper !== 'custom' ? ` @ ${L.paper}` : ''} · sheet ${Math.round(L.sheetW)}×${Math.round(L.sheetH)} mm</text>`);
+  // Legend.
+  const lx = tx + tw - 58;
+  [['Available', 'AVAILABLE'], ['Reserved', 'RESERVED'], ['Occupied / other', 'OCCUPIED']].forEach(([label, s], i) => {
+    const [fill, ink] = fpExportFill(s);
+    out.push(`<rect x="${lx}" y="${ty + 4 + i * 6}" width="5" height="3.6" fill="${fill}" stroke="${ink}" stroke-width="0.25"/><text x="${lx + 7}" y="${ty + 6.9 + i * 6}" font-size="2.6" fill="#332B24">${label}</text>`);
+  });
+  out.push('</svg>');
+  return { svg: out.join(''), layout: L };
+}
+
+function fpDownload(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 30000);
+}
+
+async function fpSvgToPngBlob(svg, layout, dpiWanted) {
+  const maxPx = 9000;
+  const dpi = Math.max(72, Math.min(dpiWanted, (maxPx * 25.4) / Math.max(layout.sheetW, layout.sheetH)));
+  const wpx = Math.round((layout.sheetW / 25.4) * dpi);
+  const hpx = Math.round((layout.sheetH / 25.4) * dpi);
+  const img = new Image();
+  const url = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' }));
+  try {
+    await new Promise((resolve, reject) => {
+      img.onload = resolve;
+      img.onerror = () => reject(new Error('Could not rasterise the plan'));
+      img.src = url;
+    });
+    const c = document.createElement('canvas');
+    c.width = wpx;
+    c.height = hpx;
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, wpx, hpx);
+    ctx.drawImage(img, 0, 0, wpx, hpx);
+    return { blob: await fpCanvasToBlob(c, 'image/png'), dpi: Math.round(dpi), wpx, hpx };
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+async function fpExport() {
+  const fmt = (($('#fpExportFormat') || {}).value || 'pdf').toLowerCase();
+  const scale = ($('#fpExportScale') || {}).value || 'fit-A3';
+  const grid = !!($('#fpExportGrid') || {}).checked;
+  const withUnderlay = !!($('#fpExportUnderlay') || {}).checked;
+  try {
+    let underlayDataUrl = null;
+    if (withUnderlay && state.fp.underlay && fpUnderlayImg) {
+      const blob = await (await fetch(fpUnderlayImg.url)).blob();
+      underlayDataUrl = `data:${blob.type};base64,${await fpBlobToBase64(blob)}`;
+    }
+    const { svg, layout } = fpBuildExportSVG({ scale, grid, underlay: withUnderlay, underlayDataUrl, labels: true });
+    const base = `StoreLah-${String(state.fp.branchName || 'plan').replace(/[^A-Za-z0-9]+/g, '-')}-${String(state.fp.floorName || '').replace(/[^A-Za-z0-9]+/g, '')}-1to${layout.n}`;
+    if (fmt === 'svg') {
+      fpDownload(new Blob([svg], { type: 'image/svg+xml' }), `${base}.svg`);
+    } else if (fmt === 'png') {
+      const png = await fpSvgToPngBlob(svg, layout, 200);
+      fpDownload(png.blob, `${base}.png`);
+    } else {
+      await fpLoadScript(FP_JSPDF_URL);
+      const jsPDF = window.jspdf && window.jspdf.jsPDF;
+      if (!jsPDF) throw new Error('jsPDF did not load');
+      const png = await fpSvgToPngBlob(svg, layout, 220);
+      const dataUrl = `data:image/png;base64,${await fpBlobToBase64(png.blob)}`;
+      const landscape = layout.sheetW > layout.sheetH;
+      const doc = new jsPDF({ unit: 'mm', format: [layout.sheetW, layout.sheetH], orientation: landscape ? 'landscape' : 'portrait', compress: true });
+      doc.addImage(dataUrl, 'PNG', 0, 0, layout.sheetW, layout.sheetH, undefined, 'FAST');
+      doc.setProperties({ title: `${base} (scale 1:${layout.n})`, creator: 'StoreLah CMS' });
+      fpDownload(doc.output('blob'), `${base}.pdf`);
+    }
+    fpToast(`Exported ${fmt.toUpperCase()} at 1:${layout.n} — sheet ${Math.round(layout.sheetW)} × ${Math.round(layout.sheetH)} mm${fmt === 'pdf' ? '. Print at 100% / "Actual size" to keep the scale.' : '.'}`, true);
+    const menu = $('#fpExportMenu');
+    if (menu) menu.hidden = true;
+  } catch (err) {
+    fpToast('Export: ' + describeError(err), false);
   }
 }
 
@@ -1537,6 +2150,8 @@ function fpBatchBody(items) {
 // reload (fpFetch).
 function fpApplyPlanPayload(body, keep) {
   state.fp.plan = body.plan;
+  state.fp.underlay = body.underlay || null; // CMS-only tracing image metadata
+  fpEnsureUnderlayImage().catch(() => {});
   state.fp.canvasDefaults = body.canvasDefaults || { width: 70, height: 80 };
   state.fp.structure = body.plan ? body.plan.structure : null;
   state.fp.placements = fpNormalizePlacements(body.plan);
@@ -2457,6 +3072,10 @@ function fpOnArrowKey(e) {
 function fpRenderSelInfo() {
   const info = $('#fpSelInfo');
   if (!info) return;
+  if (state.fp.underlayMode === 'calibrate') {
+    info.innerHTML = fpCalibInfoHTML();
+    return;
+  }
   if (state.fp.multi && state.fp.multi.length > 1) {
     fpRenderMultiInfo(info);
     return;
@@ -5507,6 +6126,11 @@ function fpOnToolKey(e) {
   if (viewModal && !viewModal.hidden) return;
   const confirmModal = $('#confirmModal');
   if (confirmModal && !confirmModal.hidden) return;
+  if (e.key === 'Escape' && state.fp.underlayMode) {
+    e.preventDefault();
+    fpSetUnderlayMode(null);
+    return;
+  }
   if (e.key === 'Escape' && state.fp.measureMode) {
     e.preventDefault();
     if (fpMeasure) {
@@ -5584,6 +6208,8 @@ function fpStudioToast(msg, ok) {
 // modes (armed marker, line tool) win over the sticky tool so the badge is
 // always truthful; block mode sticks while its form is open.
 function fpEffectiveMode() {
+  if (state.fp.underlayMode === 'calibrate') return 'calibrate';
+  if (state.fp.underlayMode === 'move') return 'underlay';
   if (state.fp.armedMarker) return 'marker';
   if (state.fp.drawMode) return 'draw';
   if (state.fp.measureMode) return 'measure';
@@ -5599,7 +6225,11 @@ function fpSyncModeUI() {
   const badge = $('#fpModeIndicator');
   if (badge) {
     badge.textContent =
-      mode === 'marker'
+      mode === 'calibrate'
+        ? 'MODE: CALIBRATE UNDERLAY'
+        : mode === 'underlay'
+          ? 'MODE: MOVE UNDERLAY'
+          : mode === 'marker'
         ? 'MODE: MARKER'
         : mode === 'measure'
           ? 'MODE: MEASURE'
@@ -5829,6 +6459,28 @@ export function fpInitEvents() {
     }
   });
   $('#fpShortcutsBtn')?.addEventListener('click', () => fpToggleShortcutSheet());
+  // 🗺 Underlay + ⤓ Export dropdowns (same open/close pattern as Layers).
+  fpWireUnderlayPanel();
+  fpRenderUnderlayMenu();
+  for (const [btnId, menuId] of [['#fpUnderlayBtn', '#fpUnderlayMenu'], ['#fpExportBtn', '#fpExportMenu']]) {
+    $(btnId)?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const menu = $(menuId);
+      if (!menu) return;
+      menu.hidden = !menu.hidden;
+      $(btnId).setAttribute('aria-expanded', String(!menu.hidden));
+      if (!menu.hidden && menuId === '#fpUnderlayMenu') fpRenderUnderlayMenu();
+    });
+    $(menuId)?.addEventListener('pointerdown', (e) => e.stopPropagation());
+    document.addEventListener('pointerdown', () => {
+      const menu = $(menuId);
+      if (menu && !menu.hidden) {
+        menu.hidden = true;
+        $(btnId)?.setAttribute('aria-expanded', 'false');
+      }
+    });
+  }
+  $('#fpExportGo')?.addEventListener('click', () => fpExport());
   document.addEventListener('keydown', (e) => {
     // Ctrl/Cmd+Z undoes the last designer draw/move/delete (not while typing
     // in an input, and not when the block-name field owns Enter/Escape).
@@ -5894,6 +6546,12 @@ export function fpInitEvents() {
         const p = fpCanvasPointAt(e.clientX, e.clientY, e);
         if (p) fpPlaceMarker(state.fp.armedMarker, p.x, p.y);
       }
+      return;
+    }
+    // Underlay calibrate / move modes own the canvas while active.
+    if (state.fp.underlayMode) {
+      const canvas = $('#fpCanvas');
+      if (canvas && canvas.contains(e.target)) fpUnderlayPointerDown(e);
       return;
     }
     // Line tool active: canvas press-drag draws a straight line and the
@@ -5986,6 +6644,8 @@ export function fpInitEvents() {
       return;
     }
     if (id === 'fpArrayApply') return void fpApplyArray();
+    if (id === 'fpCalibApply') return void fpApplyCalibration();
+    if (id === 'fpCalibCancel') return void fpSetUnderlayMode(null);
     if (e.target && e.target.id === 'fpRemoveBtn') fpRemovePlacement();
     else if (e.target && e.target.id === 'fpRotateBtn') fpRotatePlacement();
     else if (e.target && e.target.id === 'fpStackBtn') fpStackSelected();
@@ -6031,6 +6691,16 @@ export function fpInitEvents() {
             again.select();
           }
         }
+      }
+      return;
+    }
+    if (e.target && e.target.dataset && e.target.dataset.fpCalib) {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        fpApplyCalibration();
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        fpSetUnderlayMode(null);
       }
       return;
     }

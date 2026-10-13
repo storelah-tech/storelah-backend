@@ -20,6 +20,7 @@ import {
   sameRect as sameFtRect,
   toMilli,
 } from './planGeometry';
+import { serializeUnderlay } from './floorPlanUnderlay';
 import { Prisma } from '@prisma/client';
 
 // Floor-plan layout aggregate (see docs/FLOOR_PLAN_MODEL.md).
@@ -897,8 +898,15 @@ export async function getFloorPlan(floorId: string) {
     orderBy: { unitCode: 'asc' },
   });
 
+  // CMS-only tracing underlay metadata (precision Phase 5) — never in the
+  // public read; the image itself is GET /floor-plans/:floorId/underlay/image.
+  const underlay = plan ? await prisma.floorPlanUnderlay.findUnique({
+    where: { floorPlanId: plan.id },
+    select: { id: true, name: true, mime: true, widthPx: true, heightPx: true, ftPerPx: true, offsetX: true, offsetY: true, rotation: true, opacity: true, visible: true, locked: true, updatedAt: true },
+  }) : null;
   return {
     plan: plan ? serializePlan(plan) : null,
+    underlay: underlay ? serializeUnderlay(underlay) : null,
     canvasDefaults: CANVAS_DEFAULTS,
     floor: { id: floor.id, level: floor.level, name: floor.name },
     branch: { id: floor.branchId, code: floor.branch.code, name: floor.branch.name },
@@ -979,7 +987,7 @@ async function demoteOrphanedUppers(
 // always has a surface to land on (the editor snap-clamps; the canvas can be
 // resized afterwards via POST /floor-plans/:floorId). Also promotes a plan whose
 // canvas is still at the zero-size schema default to a renderable size.
-async function ensureCanvasPlan(floorId: string) {
+export async function ensureCanvasPlan(floorId: string) {
   await assertFloor(floorId);
   let plan = await prisma.floorPlan.findUnique({ where: { floorId } });
   if (!plan) {

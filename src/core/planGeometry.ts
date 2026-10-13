@@ -233,3 +233,51 @@ export function nearestOnSegment(
   const y = a[1] + t * dy;
   return { x, y, dist: Math.hypot(p[0] - x, p[1] - y) };
 }
+
+// ---------- underlay calibration (precision Phase 5) ----------
+
+/** Underlay image → plan transform: canvasFt = offset + rotate(rotation°, clockwise on screen) · (px · ftPerPx). */
+export interface UnderlayTransform {
+  ftPerPx: number;
+  offsetX: number;
+  offsetY: number;
+  rotation: number;
+}
+
+/** Image pixel → plan feet. */
+export function underlayPxToFt(t: UnderlayTransform, p: readonly [number, number]): [number, number] {
+  const r = (t.rotation * Math.PI) / 180;
+  const x = p[0] * t.ftPerPx;
+  const y = p[1] * t.ftPerPx;
+  return [t.offsetX + x * Math.cos(r) - y * Math.sin(r), t.offsetY + x * Math.sin(r) + y * Math.cos(r)];
+}
+
+/** Plan feet → image pixel (inverse of underlayPxToFt). */
+export function underlayFtToPx(t: UnderlayTransform, f: readonly [number, number]): [number, number] {
+  const r = (t.rotation * Math.PI) / 180;
+  const dx = f[0] - t.offsetX;
+  const dy = f[1] - t.offsetY;
+  return [(dx * Math.cos(r) + dy * Math.sin(r)) / t.ftPerPx, (-dx * Math.sin(r) + dy * Math.cos(r)) / t.ftPerPx];
+}
+
+/**
+ * Two-point calibration: the operator clicked plan points `a` and `b` on two
+ * features of the drawing and says they are `realFt` apart. Returns the new
+ * transform: scale so |b − a| becomes realFt, keeping the image feature under
+ * `a` exactly where it is (rotation unchanged).
+ */
+export function calibrateUnderlay(
+  t: UnderlayTransform,
+  a: readonly [number, number],
+  b: readonly [number, number],
+  realFt: number,
+): UnderlayTransform {
+  const pa = underlayFtToPx(t, a);
+  const pb = underlayFtToPx(t, b);
+  const dPx = Math.hypot(pb[0] - pa[0], pb[1] - pa[1]);
+  if (!(dPx > 0) || !(realFt > 0)) return t;
+  const ftPerPx = realFt / dPx;
+  const scaled = { ...t, ftPerPx, offsetX: 0, offsetY: 0 };
+  const moved = underlayPxToFt(scaled, pa);
+  return { ...scaled, offsetX: a[0] - moved[0], offsetY: a[1] - moved[1] };
+}

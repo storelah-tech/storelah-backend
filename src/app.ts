@@ -19,6 +19,11 @@ app.use(cors());
 // req._body is set, so the webhook path keeps its Buffer body while every
 // other route still gets parsed JSON).
 app.use('/api/v1/customer/stripe/webhook', express.raw({ type: 'application/json' }));
+// Large JSON bodies (floor-plan tracing underlay upload, image ≤ 3.5 MB as
+// base64) need their limit applied HERE, before the global parser — its 100 KB
+// default would otherwise reject the body first (same skip-once-parsed rule as
+// the webhook mount above).
+app.use(/^\/api\/v1\/cms\/floor-plans\/[^/]+\/underlay$/, express.json({ limit: '6mb' }));
 app.use(express.json());
 app.use(cookieParser());
 

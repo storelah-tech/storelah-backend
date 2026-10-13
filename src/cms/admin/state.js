@@ -88,6 +88,8 @@ export const state = {
     multi: [], // multi-selection [{ type: 'placement'|'block'|'marker', id }] (Shift-click / marquee / Cmd+A); 0–1 items = single selection
     layers: null, // { units|blocks|lines|markers: { hidden, locked } } — Layers menu, remembered per browser
     arrayOpen: false, // ⇶ Array form open in the selection strip
+    underlay: null, // CMS-only tracing image metadata (GET /floor-plans/:floorId → underlay); bytes via /underlay/image
+    underlayMode: null, // null | 'calibrate' (two clicks + real distance) | 'move' (drag the image)
     selectedVertex: null, // index of the selected vertex on the selected line (inspector X/Y, Delete removes)
     snapStep: 0.1, // decimal-ft snap step for drags/resizes/lines/nudges (toolbar #fpSnapStep, remembered per browser; Alt = 0.01 ft)
     ghostRotated: false, // palette drag ghost orientation toggle (swaps W/H for rectangular footprints)

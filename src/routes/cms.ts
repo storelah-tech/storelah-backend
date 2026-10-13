@@ -336,8 +336,10 @@ const createPromotionSchema = z.object({
 const updatePromotionSchema = createPromotionSchema.partial();
 
 const floorPlanCanvasSchema = z.object({
-  width: z.number().int().min(1).max(500).optional(),
-  height: z.number().int().min(1).max(500).optional(),
+  // All floor-plan geometry is decimal feet, quantized server-side to 0.001 ft
+  // (src/core/planGeometry.ts); integer-foot payloads remain valid.
+  width: z.number().min(1).max(500).optional(),
+  height: z.number().min(1).max(500).optional(),
   structure: z.unknown().nullable().optional(), // arbitrary JSONB decorations
   // Operator-entered GFA (sqft): positive, capped server-side at 10M; null
   // clears back to unset (metrics fall back to the canvas rect); omitted keeps.
@@ -350,10 +352,10 @@ const floorPlanListQuerySchema = z.object({
 });
 
 const floorPlanPlacementSchema = z.object({
-  x: z.number().int().min(0),
-  y: z.number().int().min(0),
-  width: z.number().int().min(1),
-  height: z.number().int().min(1),
+  x: z.number().min(0),
+  y: z.number().min(0),
+  width: z.number().positive(),
+  height: z.number().positive(),
   // Stacking tier: 0 = ground/sole tier (default), 1 = upper tier of a
   // same-rect locker pair. Anything else is 400; omitted keeps the tier on update.
   stackTier: z.number().int().min(0).max(1).optional(),
@@ -365,10 +367,10 @@ const floorPlanPlacementSchema = z.object({
 
 const floorPlanBlockSchema = z.object({
   name: z.string().trim().min(1).max(80), // operator label: "Lift", "Stair", "Walking area", ...
-  x: z.number().int().min(0),
-  y: z.number().int().min(0),
-  width: z.number().int().min(1),
-  height: z.number().int().min(1),
+  x: z.number().min(0),
+  y: z.number().min(0),
+  width: z.number().positive(),
+  height: z.number().positive(),
   color: z.string().trim().max(20).nullish(), // optional render tint (hex)
   // Authored door edges round-trip per region (same keep/clear/replace
   // semantics as placements; blocks are non-leasable so metrics ignores them).
@@ -382,25 +384,25 @@ const floorPlanBlockSchema = z.object({
 const floorPlanMarkerSchema = z.object({
   kind: z.enum(FP_MARKER_KINDS),
   label: z.string().trim().max(80).nullish(), // optional override; null/empty clears back to the kind label
-  x: z.number().int().min(0),
-  y: z.number().int().min(0),
+  x: z.number().min(0),
+  y: z.number().min(0),
 });
 
 const floorPlanMarkerPatchSchema = z.object({
   kind: z.enum(FP_MARKER_KINDS).optional(),
   label: z.string().trim().max(80).nullish(),
-  x: z.number().int().min(0).optional(),
-  y: z.number().int().min(0).optional(),
+  x: z.number().min(0).optional(),
+  y: z.number().min(0).optional(),
 });
 
 // Facility-boundary line items: polylines in grid-ft units marking the
 // facility boundary for NLA / GLA / UFA measurement. `points` is the full
-// vertex list ([[x,y],...], integers); `closed` marks a finished loop — only
+// vertex list ([[x,y],...], decimal feet); `closed` marks a finished loop — only
 // closed loops feed `boundaryMetrics` on plan reads.
 const floorPlanBoundarySchema = z.object({
   label: z.string().trim().min(1).max(80).optional(), // operator line name; defaults to "Boundary" on create
   kind: z.string().trim().min(1).max(24).nullish(), // line-kind tag; defaults to "BOUNDARY" on create
-  points: z.array(z.tuple([z.number().int(), z.number().int()])).min(2).max(500).optional(),
+  points: z.array(z.tuple([z.number(), z.number()])).min(2).max(500).optional(),
   closed: z.boolean().optional(), // true once the loop is closed (3+ distinct vertices required)
   sortOrder: z.number().int().min(0).max(100000).nullish(), // stable editor ordering
 });
@@ -1462,20 +1464,20 @@ router.post('/floor-plans/:floorId/publish', requireAuth, async (req: Request, r
 
 const floorPlanDraftPlacementSchema = z.object({
   unitId: z.string().min(1),
-  x: z.number().int().min(0),
-  y: z.number().int().min(0),
-  width: z.number().int().min(1),
-  height: z.number().int().min(1),
+  x: z.number().min(0),
+  y: z.number().min(0),
+  width: z.number().positive(),
+  height: z.number().positive(),
   stackTier: z.number().int().min(0).max(1).optional(),
   doorEdges: z.array(z.enum(['N', 'S', 'E', 'W'])).max(4).nullish(),
 });
 
 const floorPlanDraftBlockSchema = z.object({
   name: z.string().trim().min(1).max(80),
-  x: z.number().int().min(0),
-  y: z.number().int().min(0),
-  width: z.number().int().min(1),
-  height: z.number().int().min(1),
+  x: z.number().min(0),
+  y: z.number().min(0),
+  width: z.number().positive(),
+  height: z.number().positive(),
   color: z.string().trim().max(20).nullish(),
   doorEdges: z.array(z.enum(['N', 'S', 'E', 'W'])).max(4).nullish(),
 });
@@ -1483,7 +1485,7 @@ const floorPlanDraftBlockSchema = z.object({
 const floorPlanDraftBoundarySchema = z.object({
   label: z.string().trim().min(1).max(80).optional(),
   kind: z.string().trim().min(1).max(24).nullish(),
-  points: z.array(z.tuple([z.number().int(), z.number().int()])).min(2).max(500),
+  points: z.array(z.tuple([z.number(), z.number()])).min(2).max(500),
   closed: z.boolean().optional(),
   sortOrder: z.number().int().min(0).max(100000).nullish(),
 });
@@ -1491,13 +1493,13 @@ const floorPlanDraftBoundarySchema = z.object({
 const floorPlanDraftMarkerSchema = z.object({
   kind: z.enum(FP_MARKER_KINDS),
   label: z.string().trim().max(80).nullish(),
-  x: z.number().int().min(0),
-  y: z.number().int().min(0),
+  x: z.number().min(0),
+  y: z.number().min(0),
 });
 
 const floorPlanDraftPayloadSchema = z.object({
-  width: z.number().int().min(1).max(500).optional(),
-  height: z.number().int().min(1).max(500).optional(),
+  width: z.number().min(1).max(500).optional(),
+  height: z.number().min(1).max(500).optional(),
   structure: z.unknown().nullable().optional(),
   gfaSqft: z.number().positive().max(10000000).nullish(),
   placements: z.array(floorPlanDraftPlacementSchema).max(2000).optional(),

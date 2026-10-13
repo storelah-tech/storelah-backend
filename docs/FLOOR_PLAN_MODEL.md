@@ -8,9 +8,13 @@ editor; the CMS editor UI and CRUD routes land in later dispatches.
 
 All canvas geometry (plan `width`/`height`, placement/block `x`/`y`,
 `width`/`height`) is in **feet**: canvas W/H are the building's real dimensions
-in feet, and every placement/block rect is an integer foot rect in the same
-space. Columns stay `Int` (1 grid unit maps 1:1 to 1 ft — no fractional feet).
-The editor snaps to the grid and the renderer scales ft → px at whatever zoom
+in feet, and every placement/block rect is a **decimal-foot** rect in the same
+space. Since 2026-10-13 (migration `20261013000000_floor_plan_decimal_feet`)
+columns are `Float`; every write is quantized to **0.001 ft** and all
+comparisons (overlap, canvas fit, same-rect stacking, touching edges) run in
+integer milli-feet via `src/core/planGeometry.ts`, so `1.1 + 2.2` meets `3.3`
+exactly. Integer-foot rows are a valid subset. Rect sides must be >= 0.1 ft.
+See `docs/FLOOR_PLAN_PRECISION_PLAN.md`. The editor snaps to the grid and the renderer scales ft → px at whatever zoom
 it wants (editor: 24 px/ft at zoom 1), so a layout is both blueprint-accurate
 and resolution-independent.
 

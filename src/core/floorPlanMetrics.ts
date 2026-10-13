@@ -69,6 +69,16 @@ export function isOnInchGrid(base: number): boolean {
   return base % INCH_SNAP === 0;
 }
 
+/**
+ * True when a base-unit coordinate is a whole number of 0.01 ft (the editor's
+ * decimal-feet grid, 30.48 base units — not integral, so tested by rounding:
+ * ingress `feetToBase` lands within 0.5 base of the exact value).
+ */
+export function isOnHundredthFootGrid(base: number): boolean {
+  const hundredths = Math.round((base * 100) / BASE_PER_FOOT);
+  return Math.abs(base - (hundredths * BASE_PER_FOOT) / 100) <= 0.5;
+}
+
 /** Exact rect area in Q (quarter-base-units^2) from base-unit side lengths. */
 export function rectAreaQ(wBase: number, dBase: number): bigint {
   return 4n * BigInt(wBase) * BigInt(dBase);
@@ -563,12 +573,12 @@ export function computeFloorMetrics(input: FloorMetricsInput): FloorMetrics {
       });
     }
     const coords = [g.x0, g.y0, g.x1, g.y1];
-    if (!coords.every(isOnInchGrid)) {
+    if (!coords.every((c) => isOnInchGrid(c) || isOnHundredthFootGrid(c))) {
       validations.push({
         code: 'OFF_GRID',
         severity: 'warn',
         region_ids: [g.id],
-        message: `Region ${g.label}: coordinates are not on the 1-inch (254 base unit) grid; geometry stays exact but is unsnapped`,
+        message: `Region ${g.label}: coordinates are not on the 1-inch or 0.01-ft grid; geometry stays exact but is unsnapped`,
       });
     }
   }

@@ -135,7 +135,8 @@ function sqftFootprint(sqft, sizeCode) {
 function sizeFootprint(sizeCode, sqft) {
   const code = String(sizeCode || '').toUpperCase();
   const live = (state.sizes || []).find((s) => String(s.code || '').toUpperCase() === code);
-  if (live && Number.isInteger(live.widthFt) && live.widthFt > 0 && Number.isInteger(live.heightFt) && live.heightFt > 0) {
+  // Size dims are decimal feet since the precision migration (src/core/planGeometry.ts).
+  if (live && Number.isFinite(live.widthFt) && live.widthFt > 0 && Number.isFinite(live.heightFt) && live.heightFt > 0) {
     return { w: live.widthFt, h: live.heightFt };
   }
   const d = FP_SIZE_DIMS[code];
@@ -364,7 +365,8 @@ function fpBoundaryPoints(points) {
     if (!Array.isArray(p) || p.length < 2) continue;
     const x = Number(p[0]);
     const y = Number(p[1]);
-    if (!Number.isInteger(x) || !Number.isInteger(y)) continue;
+    // Decimal-ft vertices are valid (0.001 ft precision) — never drop them on read.
+    if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
     out.push([x, y]);
   }
   return out;

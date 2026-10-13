@@ -591,7 +591,7 @@ export async function getFloorMetrics(floorId: string): Promise<FloorMetricsRepo
   // area — never the whole-canvas rect. `sqft` echoes the 1dp boundaryMetrics
   // numbers exactly; `q` is derived from them (BigInt would throw via JSON).
   const boundaryMetrics: BoundaryMetrics = computeBoundaryMetrics({
-    boundaries: (plan.boundaries ?? []).map((b) => ({ points: b.points, closed: b.closed })),
+    boundaries: (plan.boundaries ?? []).map((b) => ({ points: b.points, closed: b.closed, kind: b.kind })),
     blocks: plan.blocks.map((b) => ({ x: b.x, y: b.y, width: b.width, height: b.height })),
     structure: (plan as { structure?: unknown }).structure ?? null,
     placements: placed.map((p) => ({ x: p.x, y: p.y, width: p.width, height: p.height })),

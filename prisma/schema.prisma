@@ -322,6 +322,12 @@ model FloorPlanBoundary {
                                         // polylines (chord-closed) feed boundaryMetrics; open 2-vertex segments
                                         // contribute 0 until extended/closed (see docs/FLOOR_PLAN_MODEL.md)
   sortOrder   Int       @default(0) // stable editor ordering (lowest first)
+  // Wall thickness in decimal FEET (precision Phase 3). Set for kind WALL
+  // (rendered as a band of this width); NULL for every other kind. Additive,
+  // nullable, no backfill. Line kinds: BOUNDARY (+ legacy PENCIL) mark area;
+  // WALL / PARTITION / GUIDE do not; GUIDE is CMS-only (hidden from the
+  // public read). See src/core/planGeometry.ts LINE_KINDS.
+  thickness   Float?
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 

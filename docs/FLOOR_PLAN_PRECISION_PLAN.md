@@ -252,13 +252,21 @@ the billed `sqft`.
 | **1. Precision core** ✅ implemented (see §3a) | `planGeometry.ts` + 12 tests; in-place Int→Float migration; validation/routes/drafts/metrics accept + quantize decimals; OpenAPI 1.9.2; editor read guards tolerate decimals (editor input still integer → behaviour unchanged). | backend | All existing tests green; integer plans byte-identical in public read; new decimal API tests pass. |
 | **2a. Decimal editing** ✅ implemented (2026-10-13) | Shared `planGeometry` bundled to the editor (`pnpm build:admin-geometry`, drift-tested); snap-step selector (1 / 0.5 / 0.25 / **0.1** / 0.05 / 0.01 ft, remembered per browser) + Alt = 0.01 ft, Shift = axis lock / 0–45–90° lines; numeric inspector X/Y/W/H (+ simple arithmetic, ↑/↓ steps) with live area deviation; arrow-key nudge (Shift ×10, one save per burst); adaptive grid (10-ft majors, snap-step minors when ≥ 6 px); live readout; decimal canvas dims; exact lock-to-sqft; decimal footprints; edge-candidate auto-place; integer-exact client overlap; 2% tolerance with grandfathering. | backend (CMS) | ✅ Verified in browser on a cloned dev DB: 4.73 × 6.342 ft unit by typing (29.998 sqft), flush neighbour at 10.93 accepted / 10.92 rejected, nudge 5.9 → 6.2, Shift line snapped horizontal, Alt line at 0.01 ft. |
 | **2b. Editor structure** | Split `floorplanView.js` into modules; SVG renderer; rulers. Deferred until the uncommitted lead-dedup edits to `floorplanView.js` land (avoids a large merge conflict). | backend (CMS) | No visual regression on existing plans (screenshot diff). |
-| **3. Pro line tool** (4–5 days) | Click-click polyline, typed length/angle, constraints, object snaps, vertex editing, line kinds incl. WALL thickness, measure tool. | backend (CMS) | Trace a real non-rectilinear boundary from dimensions alone; metrics UFA/NLA match a hand calculation to ±0.1 sqft. |
+| **3. Pro line tool** ✅ implemented (2026-10-13) | Click-click pen (rubber band, live length/angle, double-click / Enter finishes, first-vertex / C closes, Backspace, Esc; press-drag = one segment); typed length + Tab angle (CAD 0° = east, 90° = north) with canvas-edge clamp warning; Shift 0/45/90°; object snaps (endpoint > corner > midpoint > edge, ~10 px, ⌖ toggle); vertex handles (drag, midpoint-insert, click → X/Y inspector, Delete); line kinds BOUNDARY / WALL (+ `thickness`, migration `20261013010000_floor_plan_line_thickness`) / PARTITION / GUIDE — only BOUNDARY (+ legacy PENCIL) mark area, GUIDE hidden from the public read; 📏 measure tool (M); L toggles the line tool. Also fixed: a closed loop's closing edge was not clickable. | backend (CMS) | ✅ Browser-verified on the cloned dev DB: 30 × 25.5 ft loop typed from dimensions = 765 sqft (server + editor agree); 45° shape matched shoelace; midpoint insert + typed vertex Y = 840 sqft (765 + 75 triangle); WALL kind drops out of UFA; measure snapped unit corners (Δx 10.73, Δy 10). |
 | **4. Productivity** (4–6 days) | Command stack + redo, batch save + autosave indicator + concurrency, multi-select, align/distribute, duplicate/copy-paste, array, layers/lock, shortcut sheet. | backend (CMS) | Lay out a 20-locker row in < 1 min; undo/redo across 50 ops; no lost edits on refresh. |
 | **5. Underlay + export** (3–4 days) | Upload + 2-point calibration, opacity/lock; PDF/SVG/PNG export with scale bar. | backend (+devops for S3 check) | Calibrated underlay within 0.1% on a known dimension; exported PDF prints at stated scale. |
 | **6. Booking verification + contract** (1–2 days) | Booking renders decimal plans; schema contract (drop old Int columns). | frontend → backend → devops | Booking visual parity on decimal + legacy plans; old columns dropped after one release. |
 
 Estimates are engineering days for one developer/agent; phases 2–4 are the bulk.
 Each phase is its own `feature/<n>-floorplan-…` branch from `develop`.
+
+### Booking follow-ups found in Phase 3 (Phase 6 scope, frontend lane)
+- `boundaryOutline()` in `storelah-booking/web/src/lib/floor-plan.ts` takes the
+  first closed loop of ANY kind as the facility outline — it should prefer
+  BOUNDARY / PENCIL loops so a closed WALL loop never becomes the outline.
+- Booking draws every line at one stroke width; WALL lines could use
+  `thickness` (ft × scale), PARTITION a thinner dash. GUIDE lines never reach
+  booking (filtered server-side).
 
 ## 10. Risks & mitigations
 

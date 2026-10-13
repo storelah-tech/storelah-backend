@@ -133,3 +133,64 @@ export function fitSqftFootprint(sqft, opts = {}) {
     const h = Math.max(MIN_RECT_SIDE_FT, quantizeFt(safe / w));
     return { w, h };
 }
+// ---------- line kinds (precision Phase 3) ----------
+/**
+ * Line kinds the editor authors (FloorPlanBoundary.kind stays a free string
+ * for compatibility). Legacy 'PENCIL' rows are drawn boundary lines.
+ *  - BOUNDARY  marks facility area → feeds UFA/NLA (marked-area rule)
+ *  - WALL      drawn with `thickness` (ft); does NOT mark area
+ *  - PARTITION thin internal divider; does NOT mark area
+ *  - GUIDE     construction line — CMS-only, hidden from the public read
+ */
+export const LINE_KINDS = ['BOUNDARY', 'WALL', 'PARTITION', 'GUIDE'];
+const NON_AREA_LINE_KINDS = new Set(['WALL', 'PARTITION', 'GUIDE']);
+/** Default wall thickness for new WALL lines, in feet (≈ 150 mm block wall). */
+export const DEFAULT_WALL_THICKNESS_FT = 0.5;
+/** Accepted wall thickness range, in feet. */
+export const MIN_WALL_THICKNESS_FT = 0.05;
+export const MAX_WALL_THICKNESS_FT = 10;
+/** True when lines of this kind mark facility area (BOUNDARY, legacy PENCIL, unknown kinds). */
+export function lineFeedsArea(kind) {
+    return !NON_AREA_LINE_KINDS.has(String(kind ?? '').toUpperCase());
+}
+/** True for CMS-only construction lines that must never reach the public read. */
+export function isGuideLine(kind) {
+    return String(kind ?? '').toUpperCase() === 'GUIDE';
+}
+// ---------- segment helpers ----------
+/** Euclidean length of a segment, in feet. */
+export function segmentLengthFt(a, b) {
+    return Math.hypot(b[0] - a[0], b[1] - a[1]);
+}
+/** Total polyline length (closed adds the closing segment), in feet. */
+export function polylineLengthFt(points, closed = false) {
+    let len = 0;
+    for (let i = 1; i < points.length; i++)
+        len += segmentLengthFt(points[i - 1], points[i]);
+    if (closed && points.length > 2)
+        len += segmentLengthFt(points[points.length - 1], points[0]);
+    return len;
+}
+/**
+ * Plan angle of a→b in degrees, CAD convention: 0° = +x (east), 90° = north
+ * (up the screen, i.e. −y), counter-clockwise positive, range [0, 360).
+ */
+export function angleDeg(a, b) {
+    const deg = (Math.atan2(-(b[1] - a[1]), b[0] - a[0]) * 180) / Math.PI;
+    return ((deg % 360) + 360) % 360;
+}
+/** Point at `length` ft from `a` along plan angle `deg` (inverse of angleDeg), quantized. */
+export function pointAtAngle(a, length, deg) {
+    const r = (deg * Math.PI) / 180;
+    return [quantizeFt(a[0] + length * Math.cos(r)), quantizeFt(a[1] - length * Math.sin(r))];
+}
+/** Nearest point to p on segment a–b, plus its distance (feet). */
+export function nearestOnSegment(p, a, b) {
+    const dx = b[0] - a[0];
+    const dy = b[1] - a[1];
+    const lenSq = dx * dx + dy * dy;
+    const t = lenSq ? Math.min(1, Math.max(0, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / lenSq)) : 0;
+    const x = a[0] + t * dx;
+    const y = a[1] + t * dy;
+    return { x, y, dist: Math.hypot(p[0] - x, p[1] - y) };
+}

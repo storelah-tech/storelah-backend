@@ -405,6 +405,7 @@ const floorPlanBoundarySchema = z.object({
   points: z.array(z.tuple([z.number(), z.number()])).min(2).max(500).optional(),
   closed: z.boolean().optional(), // true once the loop is closed (3+ distinct vertices required)
   sortOrder: z.number().int().min(0).max(100000).nullish(), // stable editor ordering
+  thickness: z.number().positive().max(10).nullish(), // WALL thickness in ft (Phase 3); stored for kind WALL only
 });
 
 router.get('/config', (req: Request, res: Response) => {
@@ -1488,6 +1489,7 @@ const floorPlanDraftBoundarySchema = z.object({
   points: z.array(z.tuple([z.number(), z.number()])).min(2).max(500),
   closed: z.boolean().optional(),
   sortOrder: z.number().int().min(0).max(100000).nullish(),
+  thickness: z.number().positive().max(10).nullish(),
 });
 
 const floorPlanDraftMarkerSchema = z.object({

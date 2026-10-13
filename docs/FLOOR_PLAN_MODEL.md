@@ -280,6 +280,23 @@ after `fpSaveDoors` succeeds, and markers round-trip through the existing
 | Soft-delete a `Unit`      | Placement row persists; visible reads filter it out                       |
 | Hard-delete a `Unit` (future) | Blocked (`Restrict`) until its placement is removed (or the decision is revisited) |
 
+## Line kinds (precision Phase 3)
+
+`FloorPlanBoundary.kind` stays a free string (≤ 24 chars, additive), but the
+editor authors four kinds (`LINE_KINDS` in `src/core/planGeometry.ts`):
+
+| Kind | Marks area (UFA/NLA)? | Rendering | Public read |
+| --- | --- | --- | --- |
+| `BOUNDARY` (+ legacy `PENCIL`, unknown kinds) | yes — marked-area rule below | solid, loop shaded | yes |
+| `WALL` | no | band of `thickness` ft (nullable column, default 0.5, 0.05–10) | yes |
+| `PARTITION` | no | thin dashed | yes |
+| `GUIDE` | no | dotted construction line | **no** (CMS-only) |
+
+`thickness` is stored only for `WALL` (forced `null` for other kinds; changing
+a wall to another kind clears it). Drafts snapshot it. Only area-marking kinds
+reach `computeBoundaryMetrics`, the editor's local mirror, and auto-place's
+usable area.
+
 ## Operator-entered GFA + line-area UFA/NLA (marked facility area)
 
 GFA is **given by the operator** (typed per floor plan in the editor's "GFA

@@ -3,8 +3,13 @@ import { AppError } from '../lib/http';
 import {
   AREA_TOLERANCE,
   MIN_RECT_SIDE_FT,
+  DEFAULT_WALL_THICKNESS_FT,
+  MAX_WALL_THICKNESS_FT,
+  MIN_WALL_THICKNESS_FT,
   areaDeviation,
   fitSqftFootprint,
+  isGuideLine,
+  lineFeedsArea,
   formatFt,
   isPlanNumber,
   pointOnCanvas,
@@ -176,9 +181,10 @@ type BoundaryRow = {
   id: string;
   label: string;
   kind: string;
-  points: unknown; // JSONB [[x,y],...] polyline vertices in grid-ft units
+  points: unknown; // JSONB [[x,y],...] polyline vertices in decimal ft
   closed: boolean;
   sortOrder: number;
+  thickness?: number | null; // WALL thickness in ft (null for other kinds)
 };
 
 // Boundary points as validated [x, y] finite decimal-ft pairs. Rows that fail
@@ -208,6 +214,8 @@ function serializeBoundary(b: BoundaryRow) {
     // segments contribute 0 until extended/closed.
     closed: b.closed,
     sortOrder: b.sortOrder,
+    // Wall thickness in feet (kind WALL); null for every other kind. Additive.
+    thickness: b.thickness ?? null,
   };
 }
 
@@ -501,14 +509,17 @@ export function pillarRectsOf(
  * UFA is untouched). Omit it and the report is byte-identical to before.
  */
 export function computeBoundaryMetrics(input: {
-  boundaries: Array<{ points: unknown; closed: boolean }>;
+  boundaries: Array<{ points: unknown; closed: boolean; kind?: string | null }>;
   blocks: FootRect[];
   structure: unknown;
   placements: FootRect[];
   gfaSqft?: number | null;
   pillarRects?: FootRect[];
 }): BoundaryMetrics {
+  // Only area-marking lines (BOUNDARY, legacy PENCIL, unknown kinds) feed the
+  // marked-area rule — WALL / PARTITION / GUIDE lines never do (Phase 3).
   const validated = input.boundaries
+    .filter((b) => lineFeedsArea(b.kind))
     .map((b) => boundaryPointsOf(b.points))
     .filter((pts) => pts.length >= 2 && pts.some(([x, y]) => x !== pts[0][0] || y !== pts[0][1]));
   const direct = validated.filter((pts) => pts.length >= 3 && polygonArea(pts) > 0);
@@ -567,7 +578,9 @@ export function computeBoundaryMetrics(input: {
 // published): the CMS designer renders the draft pill from it, and public
 // readers ignore it (a draft-only floor reads as plan: null, never as a
 // draft payload).
-function serializePlan(p: PlanPayload) {
+// `publicView` (the booking read) drops CMS-only GUIDE construction lines.
+function serializePlan(p: PlanPayload, opts: { publicView?: boolean } = {}) {
+  const boundaries = opts.publicView ? p.boundaries.filter((b) => !isGuideLine(b.kind)) : p.boundaries;
   return {
     id: p.id,
     floorId: p.floorId,
@@ -585,7 +598,7 @@ function serializePlan(p: PlanPayload) {
     // Safety/facility point icons (grid-ft points) in authored order.
     markers: p.markers.map(serializeMarker),
     // Facility-boundary line items (grid-ft polylines) in editor sort order.
-    boundaries: p.boundaries.map(serializeBoundary),
+    boundaries: boundaries.map(serializeBoundary),
     // Operator-entered gross floor area (sqft); null when unset — the metrics
     // report then falls back to the canvas-derived rect (gfaSource 'CANVAS').
     gfaSqft: p.gfaSqft ?? null,
@@ -594,7 +607,7 @@ function serializePlan(p: PlanPayload) {
     // marked-area rule). All-zero with boundaryClosed: false when no marked
     // line contributes area — never fabricated.
     boundaryMetrics: computeBoundaryMetrics({
-      boundaries: p.boundaries,
+      boundaries: p.boundaries, // GUIDE lines are filtered by kind inside
       blocks: p.blocks,
       structure: p.structure,
       placements: p.placements,
@@ -862,7 +875,7 @@ export async function listFloorPlans(query: ListFloorPlansQuery = {}) {
     include: planInclude,
     orderBy: [{ floor: { branch: { code: 'asc' } } }, { floor: { level: 'asc' } }],
   });
-  return plans.map(serializePlan);
+  return plans.map((p) => serializePlan(p));
 }
 
 /**
@@ -1478,6 +1491,25 @@ export interface BoundaryInput {
   points?: unknown;
   closed?: boolean;
   sortOrder?: number | null;
+  // WALL thickness in feet; null clears; omitted keeps (WALL defaults to
+  // DEFAULT_WALL_THICKNESS_FT). Stored only for kind WALL.
+  thickness?: number | null;
+}
+
+// Wall thickness: decimal feet in [MIN, MAX], quantized; null/undefined → null.
+function checkBoundaryThickness(v: number | null | undefined): number | null {
+  if (v == null) return null;
+  if (!isPlanNumber(v) || quantizeFt(v) < MIN_WALL_THICKNESS_FT || quantizeFt(v) > MAX_WALL_THICKNESS_FT) {
+    throw new AppError(400, 'VALIDATION', `Wall thickness must be a number of feet between ${MIN_WALL_THICKNESS_FT} and ${MAX_WALL_THICKNESS_FT}`);
+  }
+  return quantizeFt(v);
+}
+
+// Only WALL lines carry a thickness (default when unset); other kinds store null.
+function resolveThickness(kind: string, requested: number | null | undefined, current: number | null): number | null {
+  if (String(kind).toUpperCase() !== 'WALL') return null;
+  if (requested !== undefined) return checkBoundaryThickness(requested) ?? DEFAULT_WALL_THICKNESS_FT;
+  return current ?? DEFAULT_WALL_THICKNESS_FT;
 }
 
 /** List a floor's boundary line items (editor sort order). Empty when no plan exists yet. */
@@ -1507,8 +1539,9 @@ export async function createFloorPlanBoundary(floorId: string, input: BoundaryIn
   }
   const points = checkBoundaryPoints(input.points, closed, plan);
   const sortOrder = checkBoundarySortOrder(input.sortOrder) ?? 0;
+  const thickness = resolveThickness(kind, input.thickness, null);
   const boundary = await prisma.floorPlanBoundary.create({
-    data: { floorPlanId: plan.id, label, kind, points, closed, sortOrder },
+    data: { floorPlanId: plan.id, label, kind, points, closed, sortOrder, thickness },
   });
   // Boundary writes never auto-promote — the plan returns to DRAFT.
   await markDraft(plan.id);
@@ -1542,6 +1575,8 @@ export async function updateFloorPlanBoundary(floorId: string, boundaryId: strin
     checkBoundaryPoints(boundaryPointsOf(existing.points), true, plan);
   }
   data.closed = closed;
+  const nextKind = (data.kind as string | undefined) ?? existing.kind;
+  data.thickness = resolveThickness(nextKind, input.thickness, existing.thickness ?? null);
   const boundary = await prisma.floorPlanBoundary.update({ where: { id: boundaryId }, data });
   // Boundary writes never auto-promote — the plan returns to DRAFT.
   await markDraft(plan.id);
@@ -1732,6 +1767,6 @@ export async function getPublicFloorPlan(branchCode: string, level: number) {
   return {
     branch: { id: floor.branchId, code: floor.branch.code, name: floor.branch.name },
     floor: { id: floor.id, level: floor.level, name: floor.name },
-    plan: plan ? serializePlan(plan) : null,
+    plan: plan ? serializePlan(plan, { publicView: true }) : null,
   };
 }

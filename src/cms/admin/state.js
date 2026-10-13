@@ -81,6 +81,11 @@ export const state = {
     canvasDefaults: { width: 70, height: 80 },
     liveDims: null, // live-typed canvas size from the W/H inputs (local, unsaved); null = use plan/server size
     lockSqft: true, // resize snaps to the decimal rect preserving area = sqft (ops can toggle off; server enforces ±2% on new/resized units)
+    penKind: 'BOUNDARY', // kind for NEW lines (toolbar #fpPenKind): BOUNDARY | WALL | PARTITION | GUIDE
+    wallThickness: 0.5, // default thickness (ft) for new WALL lines (follows the last thickness typed)
+    objSnap: true, // snap to line endpoints/midpoints/edges and unit/block corners (toolbar #fpObjSnap)
+    measureMode: false, // 📏 measure tool active (two clicks → temporary dimension; Esc clears)
+    selectedVertex: null, // index of the selected vertex on the selected line (inspector X/Y, Delete removes)
     snapStep: 0.1, // decimal-ft snap step for drags/resizes/lines/nudges (toolbar #fpSnapStep, remembered per browser; Alt = 0.01 ft)
     ghostRotated: false, // palette drag ghost orientation toggle (swaps W/H for rectangular footprints)
     boundaries: [], // normalized boundary line items (grid-ft polylines; kind 'PENCIL' = pencil-drawn lines)

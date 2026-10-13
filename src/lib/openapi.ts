@@ -25,7 +25,7 @@ export const openapiSpec = {
   openapi: '3.0.3',
   info: {
     title: 'StoreLah Booking API',
-    version: '1.9.2',
+    version: '1.9.3',
     description: [
       'Customer-facing booking API for the StoreLah self-storage business.',
       '',
@@ -289,6 +289,10 @@ export const openapiSpec = {
         'a JSON number (quantized server-side to 0.001 ft; rect sides >= 0.1 ft). Shapes and ' +
         'field names are unchanged and integer-foot payloads stay valid — clients must simply ' +
         'not assume integers (CMS + `GET /public/floor-plans/{branchCode}/{level}`).',
+      'v1.9.3 is ADDITIVE over 1.9.2: floor-plan line kinds — boundary line items gain a nullable ' +
+        '`thickness` (feet, kind WALL only, default 0.5). Only BOUNDARY / legacy PENCIL lines feed ' +
+        '`boundaryMetrics`; WALL, PARTITION and GUIDE lines do not, and GUIDE lines are omitted from ' +
+        '`GET /public/floor-plans/{branchCode}/{level}`.',
     ].join('\n'),
   },
   servers: [
@@ -5361,7 +5365,7 @@ export const openapiSpec = {
           },
           kind: {
             type: 'string',
-            description: 'Line-kind tag (BOUNDARY today; additive for future kinds).',
+            description: 'Line kind (free string, max 24): BOUNDARY (and legacy PENCIL) mark facility area and feed boundaryMetrics; WALL (drawn with `thickness`), PARTITION and GUIDE do not. GUIDE lines are CMS-only and never appear in the public read.',
           },
           points: {
             type: 'array',
@@ -5378,6 +5382,11 @@ export const openapiSpec = {
             description: 'True once the loop is closed. Marked-area rule: closed loops AND open 3+-vertex polylines (chord-closed) feed boundaryMetrics; open 2-vertex segments contribute 0 until extended/closed.',
           },
           sortOrder: { type: 'integer', description: 'Stable editor ordering (lowest first).' },
+          thickness: {
+            type: 'number',
+            nullable: true,
+            description: 'Wall thickness in decimal feet for kind WALL (default 0.5); null for every other kind.',
+          },
         },
       },
       BoundaryInput: {
@@ -5399,6 +5408,7 @@ export const openapiSpec = {
           },
           closed: { type: 'boolean' },
           sortOrder: { type: 'integer', minimum: 0, maximum: 100000 },
+          thickness: { type: 'number', minimum: 0.05, maximum: 10, nullable: true, description: 'WALL thickness in feet; null clears to the default; ignored (stored null) for other kinds.' },
         },
       },
       PlanMarker: {

@@ -9,7 +9,18 @@ import {
   normalizeDoorEdges,
   publishFloorPlan,
 } from './floorPlans';
-import { MIN_RECT_SIDE_FT, isPlanNumber, pointOnCanvas, quantizeFt, quantizeRect, rectFitsCanvas } from './planGeometry';
+import {
+  DEFAULT_WALL_THICKNESS_FT,
+  MAX_WALL_THICKNESS_FT,
+  MIN_RECT_SIDE_FT,
+  MIN_WALL_THICKNESS_FT,
+  clampFt,
+  isPlanNumber,
+  pointOnCanvas,
+  quantizeFt,
+  quantizeRect,
+  rectFitsCanvas,
+} from './planGeometry';
 
 // Floor-plan draft versions (see docs/FLOOR_PLAN_MODEL.md "Draft versions").
 //
@@ -73,6 +84,7 @@ export interface DraftBoundarySnapshot {
   points: Array<[number, number]>;
   closed: boolean;
   sortOrder: number;
+  thickness?: number | null; // WALL thickness in ft (absent in pre-Phase-3 snapshots)
 }
 
 export interface DraftMarkerSnapshot {
@@ -125,6 +137,7 @@ export interface DraftBoundaryInput {
   points: unknown;
   closed?: boolean;
   sortOrder?: number | null;
+  thickness?: number | null;
 }
 
 export interface DraftMarkerInput {
@@ -172,6 +185,14 @@ function checkDraftFit(
       `Draft ${what} ${g.x},${g.y} ${g.width}×${g.height} exceeds the ${plan.width}×${plan.height} ft draft canvas — enlarge the canvas first`,
     );
   }
+}
+
+// WALL thickness for snapshots: quantized ft within range, default when unset;
+// null for every other kind (mirrors resolveThickness in floorPlans.ts).
+function draftThickness(kind: string, v: number | null | undefined): number | null {
+  if (kind.toUpperCase() !== 'WALL') return null;
+  if (!isPlanNumber(v) || v <= 0) return DEFAULT_WALL_THICKNESS_FT;
+  return clampFt(v, MIN_WALL_THICKNESS_FT, MAX_WALL_THICKNESS_FT);
 }
 
 function checkDraftGfa(v: number): number {
@@ -389,6 +410,7 @@ export async function saveDraft(floorId: string, input: SaveDraftInput = {}) {
         points,
         closed,
         sortOrder: b.sortOrder ?? 0,
+        thickness: draftThickness(b.kind == null ? 'BOUNDARY' : String(b.kind).trim(), b.thickness),
       };
     });
   } else {
@@ -399,6 +421,7 @@ export async function saveDraft(floorId: string, input: SaveDraftInput = {}) {
       points: boundaryPointsOf(b.points),
       closed: b.closed,
       sortOrder: b.sortOrder,
+      thickness: b.thickness ?? null,
     }));
   }
 
@@ -580,6 +603,7 @@ export async function publishDraft(draftId: string, opts?: { actorId?: string })
       points: boundaryPointsOf(b.points).map(([x, y]) => [quantizeFt(x), quantizeFt(y)]) as unknown as Prisma.InputJsonValue,
       closed: !!b.closed,
       sortOrder: Number.isInteger(b.sortOrder) ? (b.sortOrder as number) : 0,
+      thickness: draftThickness(String(b.kind ?? ''), b.thickness),
     }));
 
   const markerRows = snapshotMarkers

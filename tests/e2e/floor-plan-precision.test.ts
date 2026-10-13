@@ -18,6 +18,7 @@ import {
   createFloorPlanBlock,
   createFloorPlanBoundary,
   createFloorPlanMarker,
+  updateFloorPlanBoundary,
   getFloorPlan,
   publishFloorPlan,
   setUnitPlacement,
@@ -27,7 +28,7 @@ import { publishDraft, saveDraft } from '../../src/core/floorPlanDrafts';
 import { readFileSync } from 'node:fs';
 import { ADMIN_GEOMETRY_OUT, renderAdminGeometry } from '../../scripts/build-admin-geometry';
 import { sqftFootprint } from '../../src/core/floorPlans';
-import { AREA_TOLERANCE, areaDeviation, snapFt } from '../../src/core/planGeometry';
+import { AREA_TOLERANCE, angleDeg, areaDeviation, lineFeedsArea, pointAtAngle, snapFt } from '../../src/core/planGeometry';
 import { getFloorMetrics } from '../../src/core/floorPlanMetricsService';
 
 async function unitId(unitCode: string): Promise<string> {
@@ -91,6 +92,21 @@ describe('precision Phase 2 shared rules (pure)', () => {
     }
     const r = sqftFootprint(35, 'SMALL', 5, 6);
     expect(r.w / r.h).toBeCloseTo(5 / 6, 1);
+  });
+});
+
+describe('precision Phase 3 line helpers (pure)', () => {
+  it('uses CAD angles (0° east, 90° north) and inverts with pointAtAngle', () => {
+    expect(angleDeg([0, 0], [10, 0])).toBe(0);
+    expect(angleDeg([0, 10], [0, 0])).toBe(90); // up the screen = north
+    expect(angleDeg([0, 0], [-5, 0])).toBe(180);
+    expect(pointAtAngle([10, 10], 12.5, 90)).toEqual([10, -2.5]);
+    expect(pointAtAngle([1, 1], 3, 0)).toEqual([4, 1]);
+  });
+
+  it('only boundary (and legacy pencil / unknown) lines mark area', () => {
+    for (const k of ['BOUNDARY', 'PENCIL', 'boundary', null, 'CUSTOM']) expect(lineFeedsArea(k)).toBe(true);
+    for (const k of ['WALL', 'PARTITION', 'GUIDE', 'guide']) expect(lineFeedsArea(k)).toBe(false);
   });
 });
 
@@ -192,6 +208,43 @@ describe('floor-plan decimal geometry (DB)', () => {
     const { plan } = await getFloorPlan(world.floorId);
     expect(plan!.boundaryMetrics.boundaryClosed).toBe(true);
     expect(plan!.boundaryMetrics.facilityAreaSqft).toBe(100);
+  });
+
+  it('line kinds: wall thickness, area rule and the public guide filter', async () => {
+    const square = [[0.5, 0.5], [10.5, 0.5], [10.5, 10.5], [0.5, 10.5]];
+    await createFloorPlanBoundary(world.floorId, { points: square, closed: true }); // BOUNDARY → 100 sqft
+    const wall = await createFloorPlanBoundary(world.floorId, { kind: 'WALL', points: [[20, 0], [20, 30], [40, 30], [40, 0]], closed: true });
+    expect(wall.thickness).toBe(0.5); // default
+    const guide = await createFloorPlanBoundary(world.floorId, { kind: 'GUIDE', points: [[0, 50], [60, 50], [60, 70]], closed: false });
+    expect(guide.thickness).toBeNull();
+    await createFloorPlanBoundary(world.floorId, { kind: 'PARTITION', points: [[45, 0], [45, 20], [55, 20]], closed: false, thickness: 2 });
+
+    const { plan } = await getFloorPlan(world.floorId);
+    expect(plan!.boundaryMetrics.facilityAreaSqft).toBe(100); // walls/partitions/guides never mark area
+    expect(plan!.boundaries.find((b) => b.kind === 'PARTITION')!.thickness).toBeNull(); // thickness only for walls
+
+    const thick = await updateFloorPlanBoundary(world.floorId, wall.id, { thickness: 0.6667 });
+    expect(thick.thickness).toBe(0.667);
+    const asBoundary = await updateFloorPlanBoundary(world.floorId, wall.id, { kind: 'BOUNDARY' });
+    expect(asBoundary.thickness).toBeNull();
+    expect((await getFloorPlan(world.floorId)).plan!.boundaryMetrics.facilityAreaSqft).toBe(700); // 100 + 20×30
+    await expectAppError(updateFloorPlanBoundary(world.floorId, wall.id, { kind: 'WALL', thickness: 20 }), 400, 'VALIDATION');
+
+    await publishFloorPlan(world.floorId);
+    const pub = await api.get(`/api/v1/public/floor-plans/${PIN.branchCode}/${PIN.level}`);
+    const kinds = pub.body.data.plan.boundaries.map((b: { kind: string }) => b.kind);
+    expect(kinds).not.toContain('GUIDE');
+    expect(kinds).toContain('PARTITION');
+    expect((await getFloorPlan(world.floorId)).plan!.boundaries.some((b) => b.kind === 'GUIDE')).toBe(true); // CMS still sees it
+  });
+
+  it('drafts keep wall thickness through save + publish', async () => {
+    const draft = await saveDraft(world.floorId, {
+      boundaries: [{ kind: 'WALL', points: [[1, 1], [30.25, 1]], thickness: 0.75 }, { kind: 'WALL', points: [[1, 5], [9, 5]] }],
+    });
+    const { plan } = await publishDraft(draft.id);
+    const t = plan.boundaries.map((b) => b.thickness);
+    expect(t).toEqual([0.75, 0.5]);
   });
 
   it('round-trips decimal geometry through a draft save + publish', async () => {

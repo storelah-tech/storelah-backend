@@ -14,6 +14,16 @@ import { notifyMetricsFloorChanged } from './metricsView.js';
 import {
   AREA_TOLERANCE,
   DEFAULT_SNAP_FT,
+  DEFAULT_WALL_THICKNESS_FT,
+  LINE_KINDS,
+  MAX_WALL_THICKNESS_FT,
+  MIN_WALL_THICKNESS_FT,
+  angleDeg,
+  lineFeedsArea,
+  nearestOnSegment,
+  pointAtAngle,
+  polylineLengthFt,
+  segmentLengthFt,
   FINE_SNAP_FT,
   MIN_RECT_SIDE_FT,
   SNAP_STEPS_FT,
@@ -40,9 +50,6 @@ export function setRefsLoader(fn) {
 // ---------- floor-plan constants & private module state ----------
 const FP_BASE = 24; // px per foot at zoom 1 (BLUEPRINT SCALE: 1 grid unit = 1 ft)
 let fpDimsTimer = null;
-// In-flight pencil draft (line tool ON): { x1, y1, x2, y2 } in grid-ft units.
-// Transient drag state only — persisted lines live in state.fp.boundaries.
-let fpDraftLine = null;
 
 // ---------- toolbar groups (canonical order + audit) ----------
 // The toolbar markup (#fpToolbar in dashboard.html) groups tools as
@@ -62,11 +69,11 @@ const FP_TOOLBAR_GROUPS = [
   // Studio ribbon: the Select/Add-Unit/Draw-Wall/Add-Block segmented control.
   // fpBoundaryTool (line tool) + fpAddBlock (block form) are the Draw/Block
   // segments — no duplicate buttons, one handler each.
-  { id: 'mode', label: 'Mode', tools: ['fpModeSelect', 'fpModeAddUnit', 'fpBoundaryTool', 'fpAddBlock'] },
+  { id: 'mode', label: 'Mode', tools: ['fpModeSelect', 'fpModeAddUnit', 'fpBoundaryTool', 'fpPenKind', 'fpMeasureTool', 'fpAddBlock'] },
   { id: 'markers', label: 'Markers/Safety', tools: ['fpMarkersBtn', 'fpMarkerTools'] },
   { id: 'canvas', label: 'Canvas', tools: ['fpWidth', 'fpHeight'] },
   { id: 'plan', label: 'Plan', tools: ['fpGfa', 'fpBoundaryMetrics'] },
-  { id: 'view', label: 'View', tools: ['fpZoomOut', 'fpZoomIn', 'fpZoomPreset', 'fpGridToggle', 'fpSnapStep'] },
+  { id: 'view', label: 'View', tools: ['fpZoomOut', 'fpZoomIn', 'fpZoomPreset', 'fpGridToggle', 'fpSnapStep', 'fpObjSnap'] },
   { id: 'info', label: 'Labels', tools: ['fpSelInfo'] },
 ];
 
@@ -354,6 +361,10 @@ function fpSetReadout(text) {
 function fpOnCanvasHover(e) {
   const canvas = $('#fpCanvas');
   if (!canvas || !canvas.contains(e.target)) return;
+  if (state.fp.drawMode || state.fp.measureMode) {
+    fpPenHover(e); // rubber band / measure / snap indicator own the readout
+    return;
+  }
   const p = fpCanvasPointAt(e.clientX, e.clientY, e);
   if (!p) return;
   fpSetReadout(`x ${formatFt(p.x)} · y ${formatFt(p.y)} ft · snap ${formatFt(fpSnapStep(e))} ft`);
@@ -464,14 +475,7 @@ function fpBoundaryPoints(points) {
 }
 
 function fpNormalizeBoundaries(plan) {
-  return (plan && plan.boundaries ? plan.boundaries : []).map((b) => ({
-    id: b.id,
-    label: b.label,
-    kind: b.kind,
-    points: fpBoundaryPoints(b.points),
-    closed: !!b.closed,
-    sortOrder: b.sortOrder || 0,
-  }));
+  return (plan && plan.boundaries ? plan.boundaries : []).map(fpNormalizeBoundary);
 }
 
 // ---------- marked-area metrics parity (client mirror of computeBoundaryMetrics) ----------
@@ -575,6 +579,7 @@ function fpChainBoundarySegments(segments) {
 
 function fpBoundaryMetricsLocal() {
   const validated = (state.fp.boundaries || [])
+    .filter((b) => lineFeedsArea(b.kind)) // WALL / PARTITION / GUIDE never mark area
     .map((b) => fpBoundaryPoints(b.points))
     .filter((pts) => pts.length >= 2 && pts.some(([x, y]) => x !== pts[0][0] || y !== pts[0][1]));
   const direct = validated.filter((pts) => pts.length >= 3 && fpPolygonArea(pts) > 0);
@@ -1247,7 +1252,7 @@ function fpRenderStructure(canvas, u, structure) {
 // lines" means before pressing auto-place: units will only ever land in the
 // washed region, and the amber box says "close the loop for exact interior
 // placement" without a toast round-trip.
-function fpRenderBoundaryLayer(canvas, u, dims, boundaries, draft, selectedId) {
+function fpRenderBoundaryLayer(canvas, u, dims, boundaries, withOverlay, selectedId) {
   const SVG_NS = 'http://www.w3.org/2000/svg';
   const svg = document.createElementNS(SVG_NS, 'svg');
   svg.setAttribute('class', 'fp-boundary-layer');
@@ -1283,7 +1288,12 @@ function fpRenderBoundaryLayer(canvas, u, dims, boundaries, draft, selectedId) {
   for (const b of boundaries || []) {
     const pts = fpBoundaryPoints(b.points);
     if (pts.length < 2) continue;
-    addShape(pts, b.closed, 'fp-boundary' + (b.closed ? '' : ' open') + (b.id && b.id === selectedId ? ' selected' : ''));
+    // Line kinds (Phase 3): WALL = band of `thickness` ft, PARTITION = thin
+    // dashed, GUIDE = dotted construction line; BOUNDARY/PENCIL = marked area.
+    const kind = String(b.kind || '').toUpperCase();
+    const kindCls = kind === 'WALL' ? ' wall' : kind === 'PARTITION' ? ' partition' : kind === 'GUIDE' ? ' guide' : '';
+    addShape(pts, b.closed, 'fp-boundary' + kindCls + (b.closed && !kindCls ? '' : ' open') + (b.id && b.id === selectedId ? ' selected' : ''));
+    if (kind === 'WALL') svg.lastChild.style.strokeWidth = Math.max(2, (b.thickness || DEFAULT_WALL_THICKNESS_FT) * u) + 'px';
     if (String(b.kind || '').toUpperCase() !== 'PENCIL' || b.id === selectedId) {
       const [lx, ly] = pts[0];
       const label = document.createElementNS(SVG_NS, 'text');
@@ -1294,9 +1304,7 @@ function fpRenderBoundaryLayer(canvas, u, dims, boundaries, draft, selectedId) {
       svg.appendChild(label);
     }
   }
-  if (draft && (draft.x1 !== draft.x2 || draft.y1 !== draft.y2)) {
-    addShape([[draft.x1, draft.y1], [draft.x2, draft.y2]], false, 'fp-boundary draft');
-  }
+  if (withOverlay) fpRenderPenOverlay(svg, u);
   canvas.appendChild(svg);
 }
 
@@ -1329,7 +1337,7 @@ function fpRenderCanvas() {
   }
   canvas.innerHTML = '';
   fpRenderStructure(canvas, u);
-  fpRenderBoundaryLayer(canvas, u, fpCanvasDims(), state.fp.boundaries || [], fpDraftLine, state.fp.selectedBoundary);
+  fpRenderBoundaryLayer(canvas, u, fpCanvasDims(), state.fp.boundaries || [], true, state.fp.selectedBoundary);
   // Decoration blocks — BELOW units in z-order (blocks z-index 1, units 2).
   // Fill falls back to FP_DEFAULT_BLOCK_COLOR (== the .fp-block CSS tone) when
   // the block has no persisted colour, so unset blocks render exactly as before.
@@ -1404,7 +1412,7 @@ function fpRenderCanvas() {
   // placement/block drags only run when the tool is toggled off). An armed
   // marker (Markers/Safety group) behaves the same — the next canvas click
   // places it, so the crosshair applies there too.
-  canvas.style.cursor = state.fp.drawMode || state.fp.armedMarker ? 'crosshair' : '';
+  canvas.style.cursor = state.fp.drawMode || state.fp.armedMarker || state.fp.measureMode ? 'crosshair' : '';
   // Safety/facility point icons render LAST (top of the z-order) so a marker
   // never hides under a placement.
   fpRenderMarkerLayer(canvas, u, state.fp.markers || [], true, state.fp.selectedMarker);
@@ -1685,23 +1693,44 @@ function fpRenderSelInfo() {
   // segment renders solid but contributes 0 until extended/closed.
   const bnd = (state.fp.boundaries || []).find((b) => b.id === state.fp.selectedBoundary);
   if (bnd) {
+    // Line inspector (Phase 3): label, kind, wall thickness, totals, and the
+    // selected vertex's X / Y. Handles on the canvas: ● vertex (drag / click to
+    // select, Delete removes), ■ midpoint (drag or click to insert a vertex).
     const pts = fpBoundaryPoints(bnd.points);
-    let len = 0;
-    for (let i = 1; i < pts.length; i++) len += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
-    const isPencil = String(bnd.kind || '').toUpperCase() === 'PENCIL';
-    const contributing = pts.length >= 3 && fpPolygonArea(pts) > 0;
-    const distinct = new Set(pts.map(([x, y]) => `${x},${y}`)).size;
+    const kind = String(bnd.kind || '').toUpperCase();
+    const shownKind = kind === 'PENCIL' ? 'BOUNDARY' : kind;
+    const feeds = lineFeedsArea(kind);
+    const len = polylineLengthFt(pts, !!bnd.closed);
+    const contributing = feeds && pts.length >= 3 && fpPolygonArea(pts) > 0;
+    const distinct = new Set(pts.map(([x, y]) => `${toMilli(x)},${toMilli(y)}`)).size;
+    const kindSel =
+      `<select class="fp-zoompreset" data-fp-line="kind" aria-label="Line kind" title="Boundary lines mark facility area (UFA/NLA); walls, partitions and guides do not. Guides are CMS-only.">` +
+      LINE_KINDS.map((k) => `<option value="${k}"${k === shownKind ? ' selected' : ''}>${FP_LINE_KIND_LABELS[k]}</option>`).join('') +
+      (LINE_KINDS.includes(shownKind) ? '' : `<option value="${escapeHtml(kind)}" selected>${escapeHtml(kind)}</option>`) +
+      '</select>';
+    const lineNum = (key, label, v, title) =>
+      `<span class="fp-num-lbl">${label}</span><input type="text" inputmode="decimal" class="tbl-search fp-num" data-fp-line="${key}" value="${escapeHtml(formatFt(v))}" aria-label="${title}" title="${title} — Enter applies, Esc reverts" autocomplete="off" spellcheck="false">`;
+    const vi = state.fp.selectedVertex;
     const meta = [
-      `${pts.length} vertex${pts.length === 1 ? '' : 'es'}`,
-      len ? `${formatFt(Math.round(len * 100) / 100)} ft` : null,
-      contributing ? 'marked area — feeds UFA/NLA' : 'open line segment — needs a 3rd vertex (close the loop) to feed UFA/NLA',
-    ]
-      .filter(Boolean)
-      .join(' · ');
+      `${pts.length} vertices`,
+      `${formatFt(Math.round(len * 100) / 100)} ft`,
+      contributing
+        ? `${fpFmtArea(fpPolygonArea(pts))} sqft marked — feeds UFA/NLA`
+        : feeds
+          ? 'open — needs a 3rd vertex (or close the loop) to feed UFA/NLA'
+          : `${fpLineKindLabel(kind).toLowerCase()} — not counted in UFA/NLA`,
+    ].join(' · ');
     info.innerHTML =
-      `<span class="t-type">${isPencil ? '✎ Line' : '⌒ Boundary'} · ${escapeHtml(bnd.label || 'Line')} · ${meta}</span>` +
+      `<span class="t-type">✎</span>` +
+      `<input type="text" class="tbl-search fp-name-input" data-fp-line="label" maxlength="80" value="${escapeHtml(bnd.label || '')}" aria-label="Line name" title="Line name — Enter applies" autocomplete="off" spellcheck="false" style="width:120px;">` +
+      kindSel +
+      (kind === 'WALL' ? lineNum('thickness', 'T', bnd.thickness || DEFAULT_WALL_THICKNESS_FT, 'Wall thickness in feet') + '<span class="t-type">ft</span>' : '') +
+      `<span class="t-type">${meta}</span>` +
+      (vi != null && pts[vi]
+        ? `<span class="t-type">· vertex ${vi + 1}</span>` + lineNum('vx', 'X', pts[vi][0], 'Vertex X in feet') + lineNum('vy', 'Y', pts[vi][1], 'Vertex Y in feet') + '<span class="t-type">ft</span>'
+        : `<span class="t-type" title="Drag a ● vertex to move it, click it to edit X/Y or press Delete to remove it; drag or click a ■ midpoint to insert a vertex.">● move · ■ insert</span>`) +
       (!bnd.closed && distinct >= 3
-        ? `<button class="act-btn primary" id="fpBoundaryCloseBtn" style="padding:2px 9px;font-size:10px;" title="Close the loop — the marked area starts feeding UFA/NLA">Close loop</button>`
+        ? `<button class="act-btn primary" id="fpBoundaryCloseBtn" style="padding:2px 9px;font-size:10px;" title="Close the loop${feeds ? ' — the marked area starts feeding UFA/NLA' : ''}">Close loop</button>`
         : '') +
       `<button class="act-btn danger" id="fpBoundaryRemoveBtn" style="padding:2px 9px;font-size:10px;">Remove line</button>`;
     return;
@@ -1982,74 +2011,211 @@ function fpCanvasPointAt(clientX, clientY, ev) {
   };
 }
 
-// Pencil draw interaction (line tool ON): mousedown arms the draft at the
-// snapped grid point, pointermove previews the straight segment, mouseup
-// persists it; Escape cancels mid-draft. Same document-listener drag pattern
-// as fpStartMove/fpBlockStartMove — no new interaction paradigm.
-function fpDrawStart(e) {
-  if (e.button !== 0) return;
-  const start = fpCanvasPointAt(e.clientX, e.clientY, e);
-  if (!start) return;
-  e.preventDefault();
-  state.fp.selected = null;
-  state.fp.selectedBlock = null;
-  state.fp.selectedMarker = null;
-  state.fp.selectedBoundary = null;
-  fpDraftLine = { x1: start.x, y1: start.y, x2: start.x, y2: start.y };
-  fpRenderCanvas();
-  fpRenderSelInfo();
-  const move = (ev) => {
-    let p = fpCanvasPointAt(ev.clientX, ev.clientY, ev);
-    if (!p || !fpDraftLine) return;
-    if (ev.shiftKey) {
-      const { w: cw, h: ch } = fpCanvasDims();
-      const c = fpConstrainLine(fpDraftLine.x1, fpDraftLine.y1, p.x, p.y, fpSnapStep(ev));
-      p = { x: clampFt(c.x, 0, cw), y: clampFt(c.y, 0, ch) };
-    }
-    fpDraftLine.x2 = p.x;
-    fpDraftLine.y2 = p.y;
-    fpRenderCanvas();
-    fpSetReadout(`Line ${formatFt(Math.round(Math.hypot(p.x - fpDraftLine.x1, p.y - fpDraftLine.y1) * 100) / 100)} ft`);
-  };
-  const cleanup = () => {
-    document.removeEventListener('pointermove', move);
-    document.removeEventListener('pointerup', up);
-    document.removeEventListener('keydown', onKey);
-  };
-  const onKey = (ev) => {
-    if (ev.key !== 'Escape') return;
-    ev.preventDefault();
-    fpDraftLine = null;
-    cleanup();
-    fpRenderCanvas();
-  };
-  const up = () => {
-    cleanup();
-    const d = fpDraftLine;
-    fpDraftLine = null;
-    if (!d) return;
-    // A zero-length click draws nothing — a 2-vertex polyline must be meaningful.
-    if (ftEquals(d.x1, d.x2) && ftEquals(d.y1, d.y2)) {
-      fpRenderCanvas();
-      return;
-    }
-    fpPersistLine(d.x1, d.y1, d.x2, d.y2);
-  };
-  document.addEventListener('pointermove', move);
-  document.addEventListener('pointerup', up);
-  document.addEventListener('keydown', onKey);
+// ---------- pro line tool (precision Phase 3) ----------
+// Pen: click to add vertices (rubber band with live length / angle), double-
+// click or Enter to finish open, click the first vertex or press C to close,
+// Backspace removes the last vertex, Esc cancels. Typing a number while
+// drawing sets the next segment's LENGTH (Tab switches to ANGLE, CAD
+// convention 0° = east, 90° = north) and Enter places it. Press-and-drag still
+// draws a single straight segment (the original gesture). Shift = 0/45/90°.
+// Every point snaps to objects (line endpoints / midpoints / edges, unit and
+// block corners / edge midpoints / edges) within ~10 px, else to the grid.
+// New lines take the kind from #fpPenKind (Boundary / Wall / Partition /
+// Guide). Selected lines show vertex handles (drag to move, drag a midpoint
+// to insert, Delete removes the selected vertex). The measure tool (M) shows
+// a temporary dimension between two snapped points.
+
+let fpPen = null; // { points: [[x,y]...], cursor: [x,y]|null, len: '', ang: '', field: 'len'|'ang' }
+let fpSnapHint = null; // { x, y, type } — current object-snap indicator
+let fpMeasure = null; // { a: [x,y], b: [x,y], done: boolean }
+const FP_SNAP_RADIUS_PX = 10;
+const FP_LINE_KIND_LABELS = { BOUNDARY: 'Boundary', WALL: 'Wall', PARTITION: 'Partition', GUIDE: 'Guide' };
+
+function fpResetPen() {
+  fpPen = null;
+  fpSnapHint = null;
 }
 
-// Persist a drawn line as an OPEN boundary polyline (kind 'PENCIL') via the
-// existing boundary endpoints — ZERO contract change (label/kind/points/closed
-// are long-standing fields). Persisted lines render SOLID (only the in-flight
-// draft previews dashed). Marked-area rule: >= 3-vertex polylines feed UFA/NLA
-// via chord-close; a 2-vertex segment contributes 0 until extended/closed.
-async function fpPersistLine(x1, y1, x2, y2) {
+function fpPenKind() {
+  const k = String(state.fp.penKind || 'BOUNDARY').toUpperCase();
+  return LINE_KINDS.includes(k) ? k : 'BOUNDARY';
+}
+
+function fpLineKindLabel(kind) {
+  const k = String(kind || '').toUpperCase();
+  return FP_LINE_KIND_LABELS[k] || (k === 'PENCIL' ? 'Boundary' : 'Line');
+}
+
+// Unsnapped pointer position in feet, clamped onto the canvas.
+function fpCanvasRawAt(clientX, clientY) {
+  const canvas = $('#fpCanvas');
+  if (!canvas) return null;
+  const rect = canvas.getBoundingClientRect();
+  const u = fpPx();
+  const { w: cw, h: ch } = fpCanvasDims();
+  return [
+    Math.min(Math.max(0, (clientX - rect.left) / u), cw),
+    Math.min(Math.max(0, (clientY - rect.top) / u), ch),
+  ];
+}
+
+/**
+ * Snap a raw feet position: nearest object snap within FP_SNAP_RADIUS_PX
+ * (priority endpoint > corner > midpoint > on-edge, then distance), else the
+ * snap-step grid. `opts.skip` = { boundaryId, index } excludes one vertex (the
+ * one being dragged); `opts.extra` = extra endpoint candidates (pen vertices).
+ */
+function fpObjectSnap(raw, ev, opts = {}) {
+  const { w: cw, h: ch } = fpCanvasDims();
+  const radius = FP_SNAP_RADIUS_PX / fpPx();
+  let best = null;
+  const consider = (x, y, type, prio) => {
+    const d = Math.hypot(raw[0] - x, raw[1] - y);
+    if (d > radius) return;
+    if (!best || prio < best.prio || (prio === best.prio && d < best.d)) best = { x, y, type, prio, d };
+  };
+  if (state.fp.objSnap !== false) {
+    for (const [x, y] of opts.extra || []) consider(x, y, 'endpoint', 0);
+    for (const b of state.fp.boundaries || []) {
+      const pts = fpBoundaryPoints(b.points);
+      const segs = [];
+      for (let i = 0; i < pts.length; i++) {
+        const skipped = opts.skip && opts.skip.boundaryId === b.id && opts.skip.index === i;
+        if (!skipped) consider(pts[i][0], pts[i][1], 'endpoint', 0);
+        if (i > 0) segs.push([i - 1, i]);
+      }
+      if (b.closed && pts.length > 2) segs.push([pts.length - 1, 0]);
+      for (const [i, j] of segs) {
+        if (opts.skip && opts.skip.boundaryId === b.id && (opts.skip.index === i || opts.skip.index === j)) continue;
+        const a = pts[i];
+        const c = pts[j];
+        consider((a[0] + c[0]) / 2, (a[1] + c[1]) / 2, 'midpoint', 2);
+        const n = nearestOnSegment(raw, a, c);
+        consider(n.x, n.y, 'edge', 3);
+      }
+    }
+    for (const r of state.fp.placements.concat(state.fp.blocks)) {
+      const x0 = r.x;
+      const y0 = r.y;
+      const x1 = quantizeFt(r.x + r.width);
+      const y1 = quantizeFt(r.y + r.height);
+      const corners = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+      corners.forEach(([x, y]) => consider(x, y, 'corner', 1));
+      for (let i = 0; i < 4; i++) {
+        const a = corners[i];
+        const c = corners[(i + 1) % 4];
+        consider((a[0] + c[0]) / 2, (a[1] + c[1]) / 2, 'midpoint', 2);
+        const n = nearestOnSegment(raw, a, c);
+        consider(n.x, n.y, 'edge', 3);
+      }
+    }
+  }
+  if (best) return { x: clampFt(best.x, 0, cw), y: clampFt(best.y, 0, ch), type: best.type };
+  const step = fpSnapStep(ev);
+  return { x: clampFt(snapFt(raw[0], step), 0, cw), y: clampFt(snapFt(raw[1], step), 0, ch), type: 'grid' };
+}
+
+// Snapped point for a pen / measure / vertex interaction. Shift constrains to
+// 0/45/90° from `anchor` (grid-snapped length, no object snap).
+function fpSnapPointer(ev, anchor, opts) {
+  const raw = fpCanvasRawAt(ev.clientX, ev.clientY);
+  if (!raw) return null;
+  if (ev.shiftKey && anchor) {
+    const { w: cw, h: ch } = fpCanvasDims();
+    const step = fpSnapStep(ev);
+    const c = fpConstrainLine(anchor[0], anchor[1], snapFt(raw[0], step), snapFt(raw[1], step), step);
+    return { x: clampFt(c.x, 0, cw), y: clampFt(c.y, 0, ch), type: 'ortho' };
+  }
+  return fpObjectSnap(raw, ev, opts);
+}
+
+const fpSamePt = (a, b) => !!a && !!b && ftEquals(a[0], b[0]) && ftEquals(a[1], b[1]);
+
+// Where the next vertex would land: typed length (+ optional typed angle)
+// from the last vertex, else the snapped cursor.
+function fpPenPreviewPoint() {
+  if (!fpPen || !fpPen.points.length) return null;
+  const last = fpPen.points[fpPen.points.length - 1];
+  const len = fpParseLen(fpPen.len);
+  if (len !== null && len > 0) {
+    const typedAng = fpPen.ang.trim() === '' ? null : Number(fpPen.ang);
+    const dir = typedAng !== null && Number.isFinite(typedAng)
+      ? typedAng
+      : fpPen.cursor && !fpSamePt(fpPen.cursor, last) ? angleDeg(last, fpPen.cursor) : 0;
+    const { w: cw, h: ch } = fpCanvasDims();
+    const p = pointAtAngle(last, len, dir);
+    const q = [clampFt(p[0], 0, cw), clampFt(p[1], 0, ch)];
+    fpPen.clamped = !fpSamePt(p, q); // typed segment ran past the canvas edge
+    return q;
+  }
+  fpPen.clamped = false;
+  return fpPen.cursor;
+}
+
+// Place the typed-length vertex; warn when the canvas edge cut it short.
+function fpPenPlaceTyped() {
+  const pt = fpPenPreviewPoint();
+  const clamped = fpPen.clamped;
+  fpPenAdd(pt);
+  if (clamped) {
+    const { w: cw, h: ch } = fpCanvasDims();
+    fpToast(`That segment ran past the ${formatFt(cw)}×${formatFt(ch)} ft canvas — the vertex was stopped at the edge (${formatFt(pt[0])}, ${formatFt(pt[1])}). Enlarge the canvas for the full length.`, false);
+  }
+}
+
+function fpPenReadout() {
+  if (!fpPen) return;
+  const last = fpPen.points[fpPen.points.length - 1];
+  const next = fpPenPreviewPoint();
+  const seg = last && next ? segmentLengthFt(last, next) : 0;
+  const ang = last && next && !fpSamePt(last, next) ? angleDeg(last, next) : null;
+  const total = polylineLengthFt(fpPen.points) + seg;
+  const field = (name, key, unit) => {
+    const val = fpPen[key];
+    return `${name} ${fpPen.field === key ? '[' + (val || '…') + '▌]' : val ? '[' + val + ']' : '—'}${unit}`;
+  };
+  fpSetReadout(
+    `${fpLineKindLabel(fpPenKind())} · ${fpPen.points.length} pt · seg ${formatFt(Math.round(seg * 100) / 100)} ft` +
+      (ang !== null ? ` ∠ ${Math.round(ang * 10) / 10}°` : '') +
+      ` · total ${formatFt(Math.round(total * 100) / 100)} ft · ` +
+      field('Length', 'len', ' ft') + ' ' + field('Angle', 'ang', '°') +
+      (fpSnapHint && fpSnapHint.type !== 'grid' ? ` · snap ${fpSnapHint.type}` : ''),
+  );
+}
+
+// Add a vertex to the pen (ignores a repeat of the last vertex).
+function fpPenAdd(p) {
+  if (!fpPen) fpPen = { points: [], cursor: p, len: '', ang: '', field: 'len' };
+  const last = fpPen.points[fpPen.points.length - 1];
+  if (fpSamePt(last, p)) return;
+  fpPen.points.push([p[0], p[1]]);
+  fpPen.len = '';
+  fpPen.ang = '';
+  fpPen.field = 'len';
+}
+
+// Finish the pen: persist as a new line item (closed loop when requested).
+async function fpFinishPen(closed) {
+  const pen = fpPen;
+  fpResetPen();
+  if (!pen) return;
+  const pts = [];
+  for (const p of pen.points) if (!fpSamePt(pts[pts.length - 1], p)) pts.push(p);
+  if (closed && pts.length > 1 && fpSamePt(pts[0], pts[pts.length - 1])) pts.pop();
+  const distinct = new Set(pts.map(([x, y]) => `${toMilli(x)},${toMilli(y)}`)).size;
+  if (pts.length < 2) {
+    fpRenderCanvas();
+    fpSetReadout('');
+    return;
+  }
+  const close = closed && distinct >= 3;
+  const kind = fpPenKind();
+  const body = { label: fpLineKindLabel(kind), kind, points: pts, closed: close };
+  if (kind === 'WALL') body.thickness = Number(state.fp.wallThickness) || DEFAULT_WALL_THICKNESS_FT;
   try {
     const res = await fpMutate(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/boundaries`, {
       method: 'POST',
-      body: JSON.stringify({ label: 'Line', kind: 'PENCIL', points: [[x1, y1], [x2, y2]], closed: false }),
+      body: JSON.stringify(body),
     });
     const b = res.data;
     // The plan is lazily created server-side when a floor has none yet (same
@@ -2058,16 +2224,435 @@ async function fpPersistLine(x1, y1, x2, y2) {
       state.fp.plan = { width: state.fp.canvasDefaults.width, height: state.fp.canvasDefaults.height };
     }
     fpPushUndo({ kind: 'boundary', boundaryId: b.id, prev: null }); // undo = DELETE the drawn line
-    state.fp.boundaries.push({ id: b.id, label: b.label, kind: b.kind, points: fpBoundaryPoints(b.points), closed: !!b.closed, sortOrder: b.sortOrder || 0 });
+    state.fp.boundaries.push(fpNormalizeBoundary(b));
     state.fp.selectedBoundary = b.id;
+    state.fp.selectedVertex = null;
     state.fp.selected = null;
     state.fp.selectedBlock = null;
     fpRender();
-    notifyMetricsFloorChanged();
-    fpToast(`Line added (solid) — ${formatFt(Math.round(Math.hypot(x2 - x1, y2 - y1) * 100) / 100)} ft at ${x1},${y1} → ${x2},${y2}. Select it to close the loop (3+ vertices) so it feeds UFA/NLA.`, true);
+    if (lineFeedsArea(kind)) notifyMetricsFloorChanged();
+    const len = polylineLengthFt(pts, close);
+    fpToast(
+      `${fpLineKindLabel(kind)} added — ${pts.length} vertices, ${formatFt(Math.round(len * 100) / 100)} ft${close ? ', closed loop' : ''}.` +
+        (lineFeedsArea(kind) && !close && pts.length < 3 ? ' Add a 3rd vertex or close the loop so it feeds UFA/NLA.' : ''),
+      true,
+    );
   } catch (err) {
     fpRenderCanvas();
     fpToast('Draw line: ' + describeError(err), false);
+  }
+  fpSetReadout('');
+}
+
+// Canvas pointerdown while the line tool is on.
+function fpPenPointerDown(e) {
+  if (e.button !== 0) return;
+  e.preventDefault();
+  const anchor = fpPen && fpPen.points.length ? fpPen.points[fpPen.points.length - 1] : null;
+  const s = fpSnapPointer(e, anchor, { extra: fpPen ? fpPen.points : [] });
+  if (!s) return;
+  const p = [s.x, s.y];
+  state.fp.selected = null;
+  state.fp.selectedBlock = null;
+  state.fp.selectedMarker = null;
+  state.fp.selectedBoundary = null;
+  state.fp.selectedVertex = null;
+  if (fpPen && fpPen.points.length) {
+    // Typed length pending: a click places the typed point instead.
+    const typed = fpParseLen(fpPen.len);
+    if (typed !== null && typed > 0) {
+      fpPenPlaceTyped();
+    } else if (fpPen.points.length >= 3 && fpSamePt(p, fpPen.points[0])) {
+      fpFinishPen(true);
+      return;
+    } else if (fpSamePt(p, fpPen.points[fpPen.points.length - 1])) {
+      if (e.detail >= 2 && fpPen.points.length >= 2) fpFinishPen(false); // double-click finishes open
+      return;
+    } else {
+      fpPenAdd(p);
+    }
+    fpRenderCanvas();
+    fpPenReadout();
+    return;
+  }
+  // First vertex. A press-and-drag (> 5 px) instead draws one straight segment.
+  fpPenAdd(p);
+  const downX = e.clientX;
+  const downY = e.clientY;
+  const up = (ev) => {
+    document.removeEventListener('pointerup', up);
+    if (!fpPen || fpPen.points.length !== 1) return;
+    if (Math.hypot(ev.clientX - downX, ev.clientY - downY) <= 5) return; // a click: keep drawing
+    const end = fpSnapPointer(ev, fpPen.points[0], { extra: fpPen.points });
+    if (end && !fpSamePt([end.x, end.y], fpPen.points[0])) {
+      fpPen.points.push([end.x, end.y]);
+      fpFinishPen(false);
+    }
+  };
+  document.addEventListener('pointerup', up);
+  fpRenderCanvas();
+  fpPenReadout();
+}
+
+// Hover while the line / measure tool is on: rubber band + snap indicator.
+function fpPenHover(e) {
+  if (state.fp.measureMode) {
+    const s = fpSnapPointer(e, fpMeasure && !fpMeasure.done ? fpMeasure.a : null);
+    if (!s) return;
+    fpSnapHint = s;
+    if (fpMeasure && !fpMeasure.done) fpMeasure.b = [s.x, s.y];
+    fpRenderCanvas();
+    fpMeasureReadout(s);
+    return;
+  }
+  if (!state.fp.drawMode) return;
+  const anchor = fpPen && fpPen.points.length ? fpPen.points[fpPen.points.length - 1] : null;
+  const s = fpSnapPointer(e, anchor, { extra: fpPen ? fpPen.points : [] });
+  if (!s) return;
+  fpSnapHint = s;
+  if (fpPen) {
+    fpPen.cursor = [s.x, s.y];
+    fpRenderCanvas();
+    fpPenReadout();
+  } else {
+    fpRenderCanvas();
+    fpSetReadout(`x ${formatFt(s.x)} · y ${formatFt(s.y)} ft${s.type !== 'grid' ? ` · snap ${s.type}` : ''} · click to start a ${fpLineKindLabel(fpPenKind()).toLowerCase()}`);
+  }
+}
+
+// Keyboard while the pen is active (registered once in fpInitEvents).
+function fpPenKey(e) {
+  if (!fpPen || !state.fp.drawMode || e.metaKey || e.ctrlKey) return;
+  const t = e.target;
+  if (t && typeof t.closest === 'function' && t.closest('input, textarea, select, [contenteditable]')) return;
+  const k = e.key;
+  const buf = fpPen.field === 'ang' ? 'ang' : 'len';
+  if (/^[0-9.]$/.test(k) || (k === '-' && buf === 'ang' && !fpPen.ang)) {
+    fpPen[buf] += k;
+  } else if (k === 'Tab') {
+    fpPen.field = fpPen.field === 'len' ? 'ang' : 'len';
+  } else if (k === 'Backspace') {
+    if (fpPen[buf]) fpPen[buf] = fpPen[buf].slice(0, -1);
+    else if (fpPen.len || fpPen.ang) fpPen[buf === 'len' ? 'ang' : 'len'] = '';
+    else if (fpPen.points.length > 1) fpPen.points.pop();
+    else fpResetPen();
+  } else if (k === 'Enter') {
+    const typed = fpParseLen(fpPen.len);
+    if (typed !== null && typed > 0) fpPenPlaceTyped();
+    else if (fpPen.points.length >= 2) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      fpFinishPen(false);
+      return;
+    }
+  } else if (k === 'Escape') {
+    if (fpPen.len || fpPen.ang) {
+      fpPen.len = '';
+      fpPen.ang = '';
+    } else fpResetPen();
+  } else if ((k === 'c' || k === 'C') && fpPen.points.length >= 3) {
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    fpFinishPen(true);
+    return;
+  } else {
+    return;
+  }
+  e.preventDefault();
+  e.stopImmediatePropagation(); // keep Delete / arrow / tool shortcuts away from the pen
+  fpRenderCanvas();
+  if (fpPen) fpPenReadout();
+  else fpSetReadout('Line cancelled.');
+}
+
+// ---------- measure tool ----------
+
+function fpMeasureReadout(s) {
+  if (!fpMeasure) {
+    fpSetReadout(`Measure · click the first point${s && s.type !== 'grid' ? ` · snap ${s.type}` : ''}`);
+    return;
+  }
+  const { a, b } = fpMeasure;
+  const len = segmentLengthFt(a, b);
+  const ang = fpSamePt(a, b) ? 0 : angleDeg(a, b);
+  fpSetReadout(
+    `Measure ${formatFt(Math.round(len * 100) / 100)} ft ∠ ${Math.round(ang * 10) / 10}° · Δx ${formatFt(Math.round(Math.abs(b[0] - a[0]) * 100) / 100)} · Δy ${formatFt(Math.round(Math.abs(b[1] - a[1]) * 100) / 100)} ft` +
+      (fpMeasure.done ? ' · click to measure again, Esc clears' : ''),
+  );
+}
+
+function fpMeasurePointerDown(e) {
+  if (e.button !== 0) return;
+  e.preventDefault();
+  const s = fpSnapPointer(e, fpMeasure && !fpMeasure.done ? fpMeasure.a : null);
+  if (!s) return;
+  const p = [s.x, s.y];
+  if (!fpMeasure || fpMeasure.done) fpMeasure = { a: p, b: p, done: false };
+  else fpMeasure = { a: fpMeasure.a, b: p, done: true };
+  fpRenderCanvas();
+  fpMeasureReadout(s);
+}
+
+function fpSetMeasureMode(on) {
+  state.fp.measureMode = !!on;
+  fpMeasure = null;
+  fpSnapHint = null;
+  if (on) {
+    state.fp.drawMode = false;
+    fpResetPen();
+    state.fp.armedMarker = null;
+    fpRenderMarkerTools();
+    const pencil = $('#fpBoundaryTool');
+    if (pencil) {
+      pencil.classList.remove('on');
+      pencil.setAttribute('aria-pressed', 'false');
+    }
+  }
+  const btn = $('#fpMeasureTool');
+  if (btn) {
+    btn.classList.toggle('on', !!on);
+    btn.setAttribute('aria-pressed', String(!!on));
+  }
+  state.fp.tool = on ? 'measure' : state.fp.tool === 'measure' ? 'select' : state.fp.tool;
+  fpRenderCanvas();
+  fpSyncModeUI();
+  fpSetReadout(on ? 'Measure · click the first point' : '');
+}
+
+// ---------- vertex editing (selected line) ----------
+
+function fpSelectedBoundary() {
+  return (state.fp.boundaries || []).find((b) => b.id === state.fp.selectedBoundary) || null;
+}
+
+// Vertex / midpoint handle under the pointer for the selected line, or null.
+function fpVertexHitAt(clientX, clientY) {
+  const bnd = fpSelectedBoundary();
+  if (!bnd) return null;
+  const raw = fpCanvasRawAt(clientX, clientY);
+  if (!raw) return null;
+  const tol = 8 / fpPx();
+  const pts = fpBoundaryPoints(bnd.points);
+  for (let i = 0; i < pts.length; i++) {
+    if (Math.hypot(raw[0] - pts[i][0], raw[1] - pts[i][1]) <= tol) return { bnd, type: 'vertex', index: i };
+  }
+  const segs = pts.length > 1 ? pts.slice(1).map((p, i) => [i, i + 1]) : [];
+  if (bnd.closed && pts.length > 2) segs.push([pts.length - 1, 0]);
+  for (const [i, j] of segs) {
+    const mx = (pts[i][0] + pts[j][0]) / 2;
+    const my = (pts[i][1] + pts[j][1]) / 2;
+    if (Math.hypot(raw[0] - mx, raw[1] - my) <= tol) return { bnd, type: 'mid', index: i, insertAt: j === 0 ? pts.length : j };
+  }
+  return null;
+}
+
+// PUT a line patch, adopt the server's row, record undo and re-render.
+async function fpPersistBoundary(bnd, patch, prev, verb) {
+  try {
+    const res = await fpMutate(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/boundaries/${encodeURIComponent(bnd.id)}`, {
+      method: 'PUT',
+      body: JSON.stringify(patch),
+    });
+    Object.assign(bnd, fpNormalizeBoundary(res.data));
+    if (prev) fpPushUndo({ kind: 'boundary', boundaryId: bnd.id, prev });
+    fpRender();
+    notifyMetricsFloorChanged();
+    fpToast(`${verb} ${fpLineKindLabel(bnd.kind).toLowerCase()} "${bnd.label || 'Line'}".`, true);
+    return true;
+  } catch (err) {
+    fpToast(`${verb} line: ${describeError(err)}`, false);
+    await fpFetch();
+    return false;
+  }
+}
+
+function fpBoundaryUndoPrev(bnd) {
+  return { points: fpBoundaryPoints(bnd.points), closed: !!bnd.closed, kind: bnd.kind, label: bnd.label, thickness: bnd.thickness ?? null };
+}
+
+// Drag a vertex (or a midpoint, which inserts a vertex first) of the selected line.
+function fpVertexStartDrag(e, hit) {
+  e.preventDefault();
+  const bnd = hit.bnd;
+  const prev = fpBoundaryUndoPrev(bnd);
+  let pts = fpBoundaryPoints(bnd.points);
+  let index = hit.index;
+  if (hit.type === 'mid') {
+    const a = pts[hit.index];
+    const b = pts[hit.insertAt % pts.length];
+    pts.splice(hit.insertAt, 0, [quantizeFt((a[0] + b[0]) / 2), quantizeFt((a[1] + b[1]) / 2)]);
+    index = hit.insertAt;
+  }
+  bnd.points = pts;
+  state.fp.selectedVertex = index;
+  const downX = e.clientX;
+  const downY = e.clientY;
+  let moved = hit.type === 'mid';
+  const neighbour = () => (index > 0 ? pts[index - 1] : bnd.closed ? pts[pts.length - 1] : pts[index + 1]);
+  fpRenderCanvas();
+  fpRenderSelInfo();
+  const move = (ev) => {
+    if (!moved && Math.hypot(ev.clientX - downX, ev.clientY - downY) <= 3) return;
+    moved = true;
+    const s = fpSnapPointer(ev, neighbour(), { skip: { boundaryId: bnd.id, index } });
+    if (!s) return;
+    fpSnapHint = s;
+    pts[index] = [s.x, s.y];
+    bnd.points = pts;
+    fpRenderCanvas();
+    fpSetReadout(`Vertex ${index + 1} → ${formatFt(s.x)}, ${formatFt(s.y)} ft${s.type !== 'grid' ? ` · snap ${s.type}` : ''}`);
+  };
+  const up = () => {
+    document.removeEventListener('pointermove', move);
+    document.removeEventListener('pointerup', up);
+    fpSnapHint = null;
+    if (!moved) {
+      fpRenderCanvas();
+      fpRenderSelInfo(); // a click just selects the vertex
+      return;
+    }
+    fpPersistBoundary(bnd, { points: pts, closed: !!bnd.closed }, prev, hit.type === 'mid' ? 'Added a vertex to' : 'Moved a vertex of');
+  };
+  document.addEventListener('pointermove', move);
+  document.addEventListener('pointerup', up);
+}
+
+// Delete the selected vertex (keeps >= 2 vertices; a closed loop that would
+// drop below 3 distinct vertices re-opens).
+function fpDeleteSelectedVertex() {
+  const bnd = fpSelectedBoundary();
+  const i = state.fp.selectedVertex;
+  if (!bnd || i == null) return false;
+  const pts = fpBoundaryPoints(bnd.points);
+  if (pts.length <= 2) {
+    fpToast('A line needs at least 2 vertices — remove the whole line instead.', false);
+    return true;
+  }
+  const prev = fpBoundaryUndoPrev(bnd);
+  pts.splice(i, 1);
+  const closed = !!bnd.closed && pts.length >= 3;
+  state.fp.selectedVertex = null;
+  fpPersistBoundary(bnd, { points: pts, closed }, prev, 'Removed a vertex from');
+  return true;
+}
+
+// Inspector edits for the selected line (label / kind / thickness / vertex X·Y).
+function fpCommitLineField(input) {
+  const bnd = fpSelectedBoundary();
+  if (!bnd) return;
+  const prev = fpBoundaryUndoPrev(bnd);
+  const field = input.dataset.fpLine;
+  if (field === 'label') {
+    const label = input.value.trim();
+    if (!label || label === bnd.label) {
+      input.value = bnd.label || '';
+      return;
+    }
+    fpPersistBoundary(bnd, { label: label.slice(0, 80) }, prev, 'Renamed');
+  } else if (field === 'kind') {
+    const kind = String(input.value || 'BOUNDARY').toUpperCase();
+    if (kind === String(bnd.kind || '').toUpperCase()) return;
+    const patch = { kind };
+    if (kind === 'WALL') patch.thickness = bnd.thickness || Number(state.fp.wallThickness) || DEFAULT_WALL_THICKNESS_FT;
+    fpPersistBoundary(bnd, patch, prev, 'Changed');
+  } else if (field === 'thickness') {
+    const v = fpParseLen(input.value);
+    if (v === null || v < MIN_WALL_THICKNESS_FT || v > MAX_WALL_THICKNESS_FT) {
+      fpToast(`Wall thickness must be ${MIN_WALL_THICKNESS_FT}–${MAX_WALL_THICKNESS_FT} ft.`, false);
+      input.value = formatFt(bnd.thickness || DEFAULT_WALL_THICKNESS_FT);
+      return;
+    }
+    if (ftEquals(v, bnd.thickness || 0)) return;
+    state.fp.wallThickness = v; // next walls default to the last thickness used
+    fpPersistBoundary(bnd, { thickness: v }, prev, 'Re-thickened');
+  } else if (field === 'vx' || field === 'vy') {
+    const i = state.fp.selectedVertex;
+    const pts = fpBoundaryPoints(bnd.points);
+    if (i == null || !pts[i]) return;
+    const v = fpParseLen(input.value);
+    const { w: cw, h: ch } = fpCanvasDims();
+    const max = field === 'vx' ? cw : ch;
+    if (v === null || v < 0 || v > max) {
+      fpToast(`Vertex ${field === 'vx' ? 'X' : 'Y'} must be between 0 and ${formatFt(max)} ft.`, false);
+      input.value = formatFt(pts[i][field === 'vx' ? 0 : 1]);
+      return;
+    }
+    if (ftEquals(v, pts[i][field === 'vx' ? 0 : 1])) return;
+    pts[i] = field === 'vx' ? [v, pts[i][1]] : [pts[i][0], v];
+    fpPersistBoundary(bnd, { points: pts, closed: !!bnd.closed }, prev, 'Moved a vertex of');
+  }
+}
+
+// Shared row normaliser for boundary payloads (list + POST/PUT responses).
+function fpNormalizeBoundary(b) {
+  return {
+    id: b.id,
+    label: b.label,
+    kind: b.kind,
+    points: fpBoundaryPoints(b.points),
+    closed: !!b.closed,
+    sortOrder: b.sortOrder || 0,
+    thickness: b.thickness ?? null,
+  };
+}
+
+// Overlay drawn on top of the boundary layer: pen rubber band, snap
+// indicator, measure dimension, selected-line handles.
+function fpRenderPenOverlay(svg, u) {
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+  const el = (tag, attrs, text) => {
+    const n = document.createElementNS(SVG_NS, tag);
+    for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, String(v));
+    if (text !== undefined) n.textContent = text;
+    svg.appendChild(n);
+    return n;
+  };
+  const P = ([x, y]) => `${x * u},${y * u}`;
+  const label = (x, y, text) => el('text', { x: x * u + 6, y: y * u - 6, class: 'fp-dim-label' }, text);
+  // Selected line: vertex + midpoint handles.
+  const bnd = fpSelectedBoundary();
+  if (bnd && !state.fp.drawMode && !state.fp.measureMode) {
+    const pts = fpBoundaryPoints(bnd.points);
+    const segs = pts.length > 1 ? pts.slice(1).map((p, i) => [i, i + 1]) : [];
+    if (bnd.closed && pts.length > 2) segs.push([pts.length - 1, 0]);
+    for (const [i, j] of segs) {
+      const mx = (pts[i][0] + pts[j][0]) / 2;
+      const my = (pts[i][1] + pts[j][1]) / 2;
+      el('rect', { x: mx * u - 3.5, y: my * u - 3.5, width: 7, height: 7, class: 'fp-mid-handle' });
+      const len = segmentLengthFt(pts[i], pts[j]);
+      if (len * u > 40) el('text', { x: mx * u, y: my * u - 8, class: 'fp-dim-label', 'text-anchor': 'middle' }, `${formatFt(Math.round(len * 100) / 100)}′`);
+    }
+    pts.forEach((p, i) => el('circle', { cx: p[0] * u, cy: p[1] * u, r: i === state.fp.selectedVertex ? 6 : 4.5, class: 'fp-vertex-handle' + (i === state.fp.selectedVertex ? ' on' : '') }));
+  }
+  // Pen rubber band.
+  if (fpPen && fpPen.points.length) {
+    const pts = fpPen.points;
+    if (pts.length > 1) el('polyline', { points: pts.map(P).join(' '), class: 'fp-pen-line' });
+    const next = fpPenPreviewPoint();
+    const last = pts[pts.length - 1];
+    if (next && !fpSamePt(next, last)) {
+      el('line', { x1: last[0] * u, y1: last[1] * u, x2: next[0] * u, y2: next[1] * u, class: 'fp-pen-rubber' });
+      const len = segmentLengthFt(last, next);
+      label((last[0] + next[0]) / 2, (last[1] + next[1]) / 2, `${formatFt(Math.round(len * 100) / 100)} ft ∠ ${Math.round(angleDeg(last, next) * 10) / 10}°`);
+    }
+    pts.forEach((p, i) => el('circle', { cx: p[0] * u, cy: p[1] * u, r: i === 0 && pts.length >= 3 ? 6 : 3.5, class: 'fp-pen-vertex' + (i === 0 && pts.length >= 3 ? ' close' : '') }));
+  }
+  // Measure dimension.
+  if (fpMeasure) {
+    const { a, b } = fpMeasure;
+    el('line', { x1: a[0] * u, y1: a[1] * u, x2: b[0] * u, y2: b[1] * u, class: 'fp-measure-line' });
+    [a, b].forEach((p) => el('circle', { cx: p[0] * u, cy: p[1] * u, r: 3, class: 'fp-measure-end' }));
+    if (!fpSamePt(a, b)) label((a[0] + b[0]) / 2, (a[1] + b[1]) / 2, `${formatFt(Math.round(segmentLengthFt(a, b) * 100) / 100)} ft`);
+  }
+  // Snap indicator: square = endpoint/corner, triangle = midpoint, × = on edge.
+  if (fpSnapHint && (state.fp.drawMode || state.fp.measureMode || fpSnapHint.type !== 'grid')) {
+    const x = fpSnapHint.x * u;
+    const y = fpSnapHint.y * u;
+    const t = fpSnapHint.type;
+    if (t === 'endpoint' || t === 'corner') el('rect', { x: x - 5, y: y - 5, width: 10, height: 10, class: 'fp-snap-mark' });
+    else if (t === 'midpoint') el('polygon', { points: `${x},${y - 6} ${x + 6},${y + 5} ${x - 6},${y + 5}`, class: 'fp-snap-mark' });
+    else if (t === 'edge') el('path', { d: `M${x - 5},${y - 5}L${x + 5},${y + 5}M${x + 5},${y - 5}L${x - 5},${y + 5}`, class: 'fp-snap-mark' });
+    else el('circle', { cx: x, cy: y, r: 3, class: 'fp-snap-mark grid' });
   }
 }
 
@@ -2087,11 +2672,13 @@ function fpBoundaryHitAt(clientX, clientY) {
   let bestDist = Infinity;
   for (const b of state.fp.boundaries || []) {
     const pts = fpBoundaryPoints(b.points);
-    for (let i = 1; i < pts.length; i++) {
-      const x1 = pts[i - 1][0] * u;
-      const y1 = pts[i - 1][1] * u;
-      const x2 = pts[i][0] * u;
-      const y2 = pts[i][1] * u;
+    // A closed loop's closing edge (last → first vertex) is clickable too.
+    const ring = b.closed && pts.length > 2 ? pts.concat([pts[0]]) : pts;
+    for (let i = 1; i < ring.length; i++) {
+      const x1 = ring[i - 1][0] * u;
+      const y1 = ring[i - 1][1] * u;
+      const x2 = ring[i][0] * u;
+      const y2 = ring[i][1] * u;
       const dx = x2 - x1;
       const dy = y2 - y1;
       const lenSq = dx * dx + dy * dy;
@@ -2647,6 +3234,7 @@ function fpPolyBBox(pts) {
 // fpView, where editor state may be stale).
 function fpUsablePlaceArea(input) {
   const rows = (input !== undefined ? input : state.fp.boundaries || [])
+    .filter((b) => lineFeedsArea(b.kind)) // only area-marking lines bound placement
     .map((b) => ({ pts: fpBoundaryPoints(b.points), closed: !!b.closed }))
     .filter((b) => b.pts.length >= 2 && b.pts.some(([x, y]) => x !== b.pts[0][0] || y !== b.pts[0][1]));
   if (!rows.length) return null;
@@ -3184,7 +3772,7 @@ function fpToggleArmedMarker(kind) {
   if (state.fp.armedMarker) {
     // Arming a marker disarms the line tool (one placement mode at a time).
     state.fp.drawMode = false;
-    fpDraftLine = null;
+    fpResetPen();
     const pencilBtn = $('#fpBoundaryTool');
     if (pencilBtn) {
       pencilBtn.classList.remove('on');
@@ -3741,7 +4329,7 @@ async function fpLoadDraft(draftId) {
     state.fp.selectedBoundary = null;
     state.fp.selectedMarker = null;
     state.fp.armedMarker = null;
-    fpDraftLine = null;
+    fpResetPen();
     fpClearUndo(); // inverse ops captured against the live rows no longer apply
     fpCanvasDirty = false;
     fpSetLoadedDraft({ id: d.id, version: d.version });
@@ -3988,7 +4576,7 @@ function fpViewRender() {
   canvas.style.backgroundSize = `${u}px ${u}px`;
   canvas.innerHTML = '';
   fpRenderStructure(canvas, u, fpView.structure);
-  fpRenderBoundaryLayer(canvas, u, fpView.dims, fpView.boundaries || [], null, null);
+  fpRenderBoundaryLayer(canvas, u, fpView.dims, fpView.boundaries || [], false, null);
   for (const blk of fpView.blocks) {
     const el = document.createElement('div');
     el.className = 'fp-block';
@@ -4084,7 +4672,7 @@ function fpOnCanvasWheel(e) {
 // Editor Delete/Backspace shortcut: removes the current selection through the
 // existing select → confirmDialog → DELETE → refresh flows. Registered ONCE in
 // fpInitEvents() (never per-render); the transient drag Escape handlers
-// (fpDrawStart) live on document too but only react to Escape, so there is no
+// (pen / vertex drags) live on document too but only react to Escape, so there is no
 // conflict. Guards: typing (inputs/selects/contenteditable — covers the
 // block-name, marker-label, canvas-dims and structure-JSON fields), the read-only
 // #fpViewModal preview (editor-only shortcut), and an open #confirmModal (a
@@ -4092,6 +4680,34 @@ function fpOnCanvasWheel(e) {
 // fpRenderSelInfo: boundary line, then marker, then decoration block, then
 // unit placement.
 // fpDeletePlan (whole-plan delete) is NEVER bound here.
+// Tool shortcuts: L toggles the line tool, M the measure tool; Esc clears a
+// measurement (then leaves the measure tool). Same guards as Delete.
+function fpOnToolKey(e) {
+  if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey) return;
+  const t = e.target;
+  if (t && typeof t.closest === 'function' && t.closest('input, textarea, select, [contenteditable]')) return;
+  const designer = document.querySelector('#facility-floorplans');
+  if (!designer || designer.offsetParent === null) return;
+  const viewModal = $('#fpViewModal');
+  if (viewModal && !viewModal.hidden) return;
+  const confirmModal = $('#confirmModal');
+  if (confirmModal && !confirmModal.hidden) return;
+  if (e.key === 'Escape' && state.fp.measureMode) {
+    e.preventDefault();
+    if (fpMeasure) {
+      fpMeasure = null;
+      fpRenderCanvas();
+      fpMeasureReadout(null);
+    } else fpSetMeasureMode(false);
+  } else if (e.key === 'l' || e.key === 'L') {
+    e.preventDefault();
+    $('#fpBoundaryTool')?.click();
+  } else if (e.key === 'm' || e.key === 'M') {
+    e.preventDefault();
+    fpSetMeasureMode(!state.fp.measureMode);
+  }
+}
+
 function fpOnDeleteKey(e) {
   if (e.key !== 'Delete' && e.key !== 'Backspace') return;
   if (e.defaultPrevented) return;
@@ -4106,7 +4722,10 @@ function fpOnDeleteKey(e) {
   if (viewModal && !viewModal.hidden) return;
   const confirmModal = $('#confirmModal');
   if (confirmModal && !confirmModal.hidden) return;
-  if (state.fp.selectedBoundary) {
+  if (state.fp.selectedBoundary && state.fp.selectedVertex != null) {
+    e.preventDefault();
+    fpDeleteSelectedVertex();
+  } else if (state.fp.selectedBoundary) {
     e.preventDefault();
     fpRemoveBoundary();
   } else if (state.fp.selectedMarker) {
@@ -4149,6 +4768,7 @@ function fpStudioToast(msg, ok) {
 function fpEffectiveMode() {
   if (state.fp.armedMarker) return 'marker';
   if (state.fp.drawMode) return 'draw';
+  if (state.fp.measureMode) return 'measure';
   if (state.fp.tool === 'add') return 'add';
   if (state.fp.tool === 'block') return 'block';
   return 'select';
@@ -4163,8 +4783,10 @@ function fpSyncModeUI() {
     badge.textContent =
       mode === 'marker'
         ? 'MODE: MARKER'
-        : mode === 'draw'
-          ? 'MODE: DRAW'
+        : mode === 'measure'
+          ? 'MODE: MEASURE'
+          : mode === 'draw'
+          ? `MODE: DRAW ${fpLineKindLabel(fpPenKind()).toUpperCase()}`
           : mode === 'add'
             ? 'MODE: ADD UNIT'
             : mode === 'block'
@@ -4276,7 +4898,8 @@ export function fpInitEvents() {
     syncPencilBtn();
     pencilBtn.addEventListener('click', () => {
       state.fp.drawMode = !state.fp.drawMode;
-      fpDraftLine = null;
+      fpResetPen();
+      if (state.fp.drawMode && state.fp.measureMode) fpSetMeasureMode(false);
       if (state.fp.drawMode && state.fp.armedMarker) {
         // One placement mode at a time — arming the line tool disarms markers.
         state.fp.armedMarker = null;
@@ -4289,7 +4912,7 @@ export function fpInitEvents() {
       fpSyncModeUI();
       fpToast(
         state.fp.drawMode
-          ? 'Line tool ON — press and drag on the canvas to draw a line, release to save. Click a drawn line to select it.'
+          ? `Line tool ON (${fpLineKindLabel(fpPenKind())}) — click to add vertices, double-click or Enter to finish, click the first vertex or C to close. Type a length (Tab = angle) + Enter for exact segments; Shift = 0/45/90°; Esc cancels.`
           : 'Line tool OFF — unit and block interactions restored.',
         true,
       );
@@ -4318,6 +4941,10 @@ export function fpInitEvents() {
   // Modifier-gated canvas zoom (see fpOnCanvasWheel) + editor Delete shortcut
   // (see fpOnDeleteKey) — both attached once here, never per-render.
   $('#fpCanvasWrap').addEventListener('wheel', fpOnCanvasWheel, { passive: false });
+  // Pen + tool shortcuts first: fpPenKey stops propagation for the keys it
+  // consumes (Backspace / Enter / Esc / digits) so Delete / arrows never fire.
+  document.addEventListener('keydown', fpPenKey);
+  document.addEventListener('keydown', fpOnToolKey);
   document.addEventListener('keydown', fpOnDeleteKey);
   document.addEventListener('keydown', fpOnArrowKey);
   // Escape cancels an armed marker (the line tool owns its own mid-draft Escape).
@@ -4420,9 +5047,23 @@ export function fpInitEvents() {
     // toggles off. Only canvas surfaces start a line (wrap padding is inert).
     if (state.fp.drawMode) {
       const canvas = $('#fpCanvas');
-      if (canvas && canvas.contains(e.target)) fpDrawStart(e);
+      if (canvas && canvas.contains(e.target)) fpPenPointerDown(e);
       return;
     }
+    // Measure tool: two snapped clicks show a temporary dimension.
+    if (state.fp.measureMode) {
+      const canvas = $('#fpCanvas');
+      if (canvas && canvas.contains(e.target)) fpMeasurePointerDown(e);
+      return;
+    }
+    // Selected line: its vertex / midpoint handles win over everything below
+    // (handles can sit on top of units and blocks).
+    const vHit = fpVertexHitAt(e.clientX, e.clientY);
+    if (vHit) {
+      fpVertexStartDrag(e, vHit);
+      return;
+    }
+    state.fp.selectedVertex = null;
     const placed = e.target.closest('.fp-placed');
     if (placed) {
       fpStartMove(e, placed);
@@ -4508,6 +5149,17 @@ export function fpInitEvents() {
       }
       return;
     }
+    const lineField = e.target && e.target.dataset ? e.target.dataset.fpLine : null;
+    if (lineField) {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        fpCommitLineField(e.target);
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        fpRenderSelInfo();
+      }
+      return;
+    }
     if (e.key === 'Enter' && e.target && e.target.id === 'fpBlockRename') {
       e.preventDefault();
       fpRenameBlock();
@@ -4521,6 +5173,10 @@ export function fpInitEvents() {
   $('#fpSelInfo').addEventListener('change', (e) => {
     if (e.target && e.target.dataset && e.target.dataset.fpNum) {
       fpCommitNumField(e.target);
+      return;
+    }
+    if (e.target && e.target.dataset && e.target.dataset.fpLine) {
+      fpCommitLineField(e.target);
       return;
     }
     if (e.target && e.target.id === 'fpBlockColorPick') {
@@ -4546,9 +5202,10 @@ export function fpInitEvents() {
   // Draw Wall + Add Block reuse #fpBoundaryTool / #fpAddBlock above, so the
   // segmented control has one handler per tool and the audit stays green.
   $('#fpModeSelect')?.addEventListener('click', () => {
+    if (state.fp.measureMode) fpSetMeasureMode(false);
     state.fp.tool = 'select';
     state.fp.drawMode = false;
-    fpDraftLine = null;
+    fpResetPen();
     state.fp.armedMarker = null;
     const pencilBtn = $('#fpBoundaryTool');
     if (pencilBtn) {
@@ -4563,7 +5220,7 @@ export function fpInitEvents() {
   $('#fpModeAddUnit')?.addEventListener('click', () => {
     state.fp.tool = 'add';
     state.fp.drawMode = false;
-    fpDraftLine = null;
+    fpResetPen();
     state.fp.armedMarker = null;
     fpSetPaletteCollapsed(false);
     fpRenderMarkerTools();
@@ -4598,6 +5255,23 @@ export function fpInitEvents() {
   fpLoadSnapStep();
   if ($('#fpSnapStep')) $('#fpSnapStep').value = String(fpSnapStep());
   $('#fpSnapStep')?.addEventListener('change', (e) => fpSetSnapStep(e.target.value));
+  // Line kind for NEW lines, measure tool, object-snap toggle (Phase 3).
+  $('#fpPenKind')?.addEventListener('change', (e) => {
+    state.fp.penKind = String(e.target.value || 'BOUNDARY').toUpperCase();
+    fpSyncModeUI();
+    if (fpPen) fpPenReadout();
+  });
+  $('#fpMeasureTool')?.addEventListener('click', () => fpSetMeasureMode(!state.fp.measureMode));
+  $('#fpObjSnap')?.addEventListener('click', () => {
+    state.fp.objSnap = state.fp.objSnap === false;
+    const b = $('#fpObjSnap');
+    if (b) {
+      b.classList.toggle('on', state.fp.objSnap !== false);
+      b.setAttribute('aria-pressed', String(state.fp.objSnap !== false));
+    }
+    fpSnapHint = null;
+    fpRenderCanvas();
+  });
   $('#fpCanvasWrap')?.addEventListener('pointermove', fpOnCanvasHover);
   $('#fpCanvasWrap')?.addEventListener('pointerleave', () => fpSetReadout(''));
   $('#fpGridToggle')?.addEventListener('click', () => {

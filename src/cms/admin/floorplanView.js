@@ -9,6 +9,26 @@ import { confirmDialog } from './confirmDialog.js';
 import { get, request, describeError } from './api.js';
 import { state, branchByCode, branchFloors, selectedFacilityName } from './state.js';
 import { notifyMetricsFloorChanged } from './metricsView.js';
+// Shared decimal-feet geometry (generated from src/core/planGeometry.ts — the
+// API runs the same code; regenerate with `pnpm build:admin-geometry`).
+import {
+  AREA_TOLERANCE,
+  DEFAULT_SNAP_FT,
+  FINE_SNAP_FT,
+  MIN_RECT_SIDE_FT,
+  SNAP_STEPS_FT,
+  areaDeviation,
+  clampFt,
+  fitSqftFootprint,
+  formatFt,
+  ftEquals,
+  quantizeFt,
+  rectAreaSqft,
+  rectsOverlapExact,
+  sameRect,
+  snapFt,
+  toMilli,
+} from './planGeometry.js';
 
 // Ref-data retry hook — the entry hands its loadRefs() down here so fpOpen()'s
 // lazy guard keeps working without importing the entry.
@@ -46,7 +66,7 @@ const FP_TOOLBAR_GROUPS = [
   { id: 'markers', label: 'Markers/Safety', tools: ['fpMarkersBtn', 'fpMarkerTools'] },
   { id: 'canvas', label: 'Canvas', tools: ['fpWidth', 'fpHeight'] },
   { id: 'plan', label: 'Plan', tools: ['fpGfa', 'fpBoundaryMetrics'] },
-  { id: 'view', label: 'View', tools: ['fpZoomOut', 'fpZoomIn', 'fpZoomPreset', 'fpGridToggle'] },
+  { id: 'view', label: 'View', tools: ['fpZoomOut', 'fpZoomIn', 'fpZoomPreset', 'fpGridToggle', 'fpSnapStep'] },
   { id: 'info', label: 'Labels', tools: ['fpSelInfo'] },
 ];
 
@@ -123,25 +143,23 @@ const FP_SIZE_DIMS = {
 const FP_SIZE_ASPECT = { LOCKER: 3 / 4, SMALL: 5 / 6, MEDIUM: 6 / 10, LARGE: 10 / 12 };
 const FP_DEFAULT_ASPECT = 3 / 4;
 
-// Documented fallback: w = round(sqrt(sqft·aspect)), h = ceil(sqft/w).
-// Mirrors sqftFootprint() in src/core/floorPlans.ts — keep the two in sync.
-function sqftFootprint(sqft, sizeCode) {
-  const aspect = FP_SIZE_ASPECT[String(sizeCode || '').toUpperCase()] || FP_DEFAULT_ASPECT;
-  const safe = Math.max(1, Number(sqft) || 1);
-  const w = Math.max(1, Math.round(Math.sqrt(safe * aspect)));
-  return { w, h: Math.max(1, Math.ceil(safe / w)) };
-}
-
+// Decimal-foot footprint for a unit (fitSqftFootprint, shared with the API's
+// sqftFootprint): live /sizes dims (widthFt/heightFt) → FP_SIZE_DIMS → the
+// per-size aspect, scaled to the unit's exact sqft when the catalogue dims'
+// area is off by more than AREA_TOLERANCE.
 function sizeFootprint(sizeCode, sqft) {
   const code = String(sizeCode || '').toUpperCase();
   const live = (state.sizes || []).find((s) => String(s.code || '').toUpperCase() === code);
   // Size dims are decimal feet since the precision migration (src/core/planGeometry.ts).
-  if (live && Number.isFinite(live.widthFt) && live.widthFt > 0 && Number.isFinite(live.heightFt) && live.heightFt > 0) {
-    return { w: live.widthFt, h: live.heightFt };
-  }
-  const d = FP_SIZE_DIMS[code];
-  if (d) return { w: d.w, h: d.h };
-  return sqftFootprint(sqft, code);
+  const dims =
+    live && Number.isFinite(live.widthFt) && live.widthFt > 0 && Number.isFinite(live.heightFt) && live.heightFt > 0
+      ? { w: live.widthFt, h: live.heightFt }
+      : FP_SIZE_DIMS[code] || null;
+  return fitSqftFootprint(Number(sqft) || 0, {
+    widthFt: dims ? dims.w : null,
+    heightFt: dims ? dims.h : null,
+    fallbackAspect: FP_SIZE_ASPECT[code] || FP_DEFAULT_ASPECT,
+  });
 }
 
 function unitFootprint(u) {
@@ -164,9 +182,9 @@ function fpOverlapAt(x, y, w, h, ignore, tier) {
   return (
     state.fp.placements.find((o) => {
       if (ignored.has(o.unitId)) return false;
-      if (!(x < o.x + o.width && o.x < x + w && y < o.y + o.height && o.y < y + h)) return false;
-      const sameRect = x === o.x && y === o.y && w === o.width && h === o.height;
-      if (sameRect && (o.stackTier || 0) !== t) return false; // stacked pair shares one rect
+      const r = { x, y, width: w, height: h };
+      if (!rectsOverlapExact(r, o)) return false; // integer-exact (milli-ft): touching decimal edges never collide
+      if (sameRect(r, o) && (o.stackTier || 0) !== t) return false; // stacked pair shares one rect
       return true;
     }) || null
   );
@@ -176,7 +194,7 @@ function fpOverlapAt(x, y, w, h, ignore, tier) {
 // with tiers 0 (lower/ground) + 1 (upper). Rendered as ONE block split by a
 // middle divider line (upper code above, lower code below).
 function fpSameRect(a, b) {
-  return a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height;
+  return sameRect(a, b);
 }
 
 function fpIsLockerPlacement(p) {
@@ -254,7 +272,7 @@ async function fpStackMovedOn(pl, hit, orig) {
 function fpGroupByRect(list) {
   const groups = new Map();
   for (const pl of list || []) {
-    const k = `${pl.x},${pl.y},${pl.width},${pl.height}`;
+    const k = [pl.x, pl.y, pl.width, pl.height].map(toMilli).join(',');
     if (!groups.has(k)) groups.set(k, []);
     groups.get(k).push(pl);
   }
@@ -266,6 +284,79 @@ function fpGroupByRect(list) {
 
 function fpPx() {
   return Math.max(8, Math.round(FP_BASE * state.fp.scale));
+}
+
+// ---------- decimal-feet snapping (precision Phase 2) ----------
+// Every pointer→feet mapping snaps to the operator's snap step (toolbar
+// #fpSnapStep, default 0.1 ft, remembered per browser). Holding Alt during a
+// drag snaps to the fine 0.01 ft step instead. Values stay quantized to
+// 0.001 ft (src/core/planGeometry.ts), so equality/overlap checks are exact.
+const FP_SNAP_STORAGE_KEY = 'storelah.fp.snapStep';
+
+function fpSnapStep(ev) {
+  if (ev && ev.altKey) return FINE_SNAP_FT;
+  const s = Number(state.fp.snapStep);
+  return SNAP_STEPS_FT.includes(s) ? s : DEFAULT_SNAP_FT;
+}
+
+// Smallest side a resize may produce: the snap step, never below 0.1 ft.
+function fpMinSide(ev) {
+  return Math.max(MIN_RECT_SIDE_FT, fpSnapStep(ev));
+}
+
+function fpLoadSnapStep() {
+  try {
+    const v = Number(window.localStorage.getItem(FP_SNAP_STORAGE_KEY));
+    if (SNAP_STEPS_FT.includes(v)) state.fp.snapStep = v;
+  } catch (_) {
+    // Storage blocked (private window) — keep the default step.
+  }
+}
+
+function fpSetSnapStep(v) {
+  const n = Number(v);
+  state.fp.snapStep = SNAP_STEPS_FT.includes(n) ? n : DEFAULT_SNAP_FT;
+  try {
+    window.localStorage.setItem(FP_SNAP_STORAGE_KEY, String(state.fp.snapStep));
+  } catch (_) {
+    // Storage blocked — the choice still applies for this session.
+  }
+  const sel = $('#fpSnapStep');
+  if (sel) sel.value = String(state.fp.snapStep);
+  fpRenderCanvas(); // the minor grid follows the snap step
+}
+
+// Shift-constrained line end: 0°, 45° or 90° from the start point.
+function fpConstrainLine(x1, y1, x2, y2, step) {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const ax = Math.abs(dx);
+  const ay = Math.abs(dy);
+  if (ax > 2 * ay) return { x: x2, y: y1 };
+  if (ay > 2 * ax) return { x: x1, y: y2 };
+  const d = snapFt((ax + ay) / 2, step);
+  return { x: quantizeFt(x1 + Math.sign(dx) * d), y: quantizeFt(y1 + Math.sign(dy) * d) };
+}
+
+// Square feet for display: at most 2 decimals, no float noise.
+function fpFmtArea(sqft) {
+  return (Math.round(Number(sqft || 0) * 100) / 100).toLocaleString('en-SG', { maximumFractionDigits: 2 });
+}
+
+// Live status readout at the right of the selection strip: cursor position
+// while hovering, live position / size / length while dragging or drawing.
+function fpSetReadout(text) {
+  const el = $('#fpReadout');
+  if (el) el.textContent = text || '';
+}
+
+// Hover readout: snapped cursor position + the active snap step.
+function fpOnCanvasHover(e) {
+  const canvas = $('#fpCanvas');
+  if (!canvas || !canvas.contains(e.target)) return;
+  const p = fpCanvasPointAt(e.clientX, e.clientY, e);
+  if (!p) return;
+  fpSetReadout(`x ${formatFt(p.x)} · y ${formatFt(p.y)} ft · snap ${formatFt(fpSnapStep(e))} ft`);
 }
 
 // Door-edge markers (UI-visibility for authored doorEdges). Effective-edges
@@ -559,9 +650,15 @@ function fpCanvasDims() {
   return { w: state.fp.canvasDefaults.width, h: state.fp.canvasDefaults.height };
 }
 
+// Canvas dims are decimal feet in [1, 500], quantized to 0.001 ft (same
+// contract as checkCanvasDim in src/core/floorPlans.ts).
 function fpParseDim(v) {
-  const n = Number(v);
-  return Number.isInteger(n) && n >= 1 && n <= 500 ? n : null;
+  const t = String(v == null ? '' : v).trim();
+  if (!t) return null;
+  const n = Number(t);
+  if (!Number.isFinite(n)) return null;
+  const q = quantizeFt(n);
+  return q >= 1 && q <= 500 ? q : null;
 }
 
 function fpReadInputDims() {
@@ -603,27 +700,24 @@ function fpParseGfa(v) {
 
 function fpClampCanvasContent(w, h) {
   const clampItem = (item) => {
-    item.width = Math.max(1, Math.min(item.width, w));
-    item.height = Math.max(1, Math.min(item.height, h));
-    item.x = Math.min(Math.max(0, item.x), Math.max(0, w - item.width));
-    item.y = Math.min(Math.max(0, item.y), Math.max(0, h - item.height));
+    item.width = clampFt(item.width, MIN_RECT_SIDE_FT, w);
+    item.height = clampFt(item.height, MIN_RECT_SIDE_FT, h);
+    item.x = clampFt(item.x, 0, w - item.width);
+    item.y = clampFt(item.y, 0, h - item.height);
   };
   state.fp.placements.forEach(clampItem);
   state.fp.blocks.forEach(clampItem);
   // Marker points clamp edge-INCLUSIVE (0..w / 0..h — the same contract as
   // checkMarkerPoint in src/core/floorPlans.ts).
   (state.fp.markers || []).forEach((m) => {
-    m.x = Math.min(Math.max(0, m.x), w);
-    m.y = Math.min(Math.max(0, m.y), h);
+    m.x = clampFt(m.x, 0, w);
+    m.y = clampFt(m.y, 0, h);
   });
   // Boundary vertices clamp edge-INCLUSIVE (0..w / 0..h — the same contract as
   // checkBoundaryPoints in src/core/floorPlans.ts) so drawn lines never render
   // off-grid after a canvas shrink.
   (state.fp.boundaries || []).forEach((b) => {
-    b.points = fpBoundaryPoints(b.points).map(([x, y]) => [
-      Math.min(Math.max(0, x), w),
-      Math.min(Math.max(0, y), h),
-    ]);
+    b.points = fpBoundaryPoints(b.points).map(([x, y]) => [clampFt(x, 0, w), clampFt(y, 0, h)]);
   });
 }
 
@@ -660,7 +754,7 @@ function fpOnDimCommit() {
   fpApplyLiveDims();
   if (wEl) wEl.value = w;
   if (hEl) hEl.value = h;
-  fpToast('Canvas size must be a whole number between 1 and 500 feet.', false);
+  fpToast('Canvas size must be a number between 1 and 500 feet (decimals allowed).', false);
 }
 
 function fpOnDimEnter(e) {
@@ -1213,10 +1307,26 @@ function fpRenderCanvas() {
   const u = fpPx();
   canvas.style.width = w * u + 'px';
   canvas.style.height = h * u + 'px';
-  canvas.style.backgroundSize = `${u}px ${u}px`;
-  // Studio grid toggle: off removes the 1-ft grid overlay (state.fp.showGrid,
-  // default true) without touching dims, zoom or content.
-  canvas.style.backgroundImage = state.fp.showGrid === false ? 'none' : '';
+  // Adaptive grid (decimal-feet Phase 2): 1-ft lines (the original grid),
+  // darker 10-ft majors, and faint snap-step minors once they are >= 6px apart
+  // so sub-foot snapping is visible when zoomed in. Studio grid toggle off
+  // removes every layer (state.fp.showGrid, default true).
+  if (state.fp.showGrid === false) {
+    canvas.style.backgroundImage = 'none';
+  } else {
+    const layers = [];
+    const sizes = [];
+    const line = (color, px) => {
+      layers.push(`linear-gradient(${color} 1px,transparent 1px)`, `linear-gradient(90deg,${color} 1px,transparent 1px)`);
+      sizes.push(`${px}px ${px}px`, `${px}px ${px}px`);
+    };
+    line('rgba(51,43,36,0.22)', u * 10);
+    line('var(--line)', u);
+    const minor = fpSnapStep() * u;
+    if (fpSnapStep() < 1 && minor >= 6) line('rgba(51,43,36,0.06)', minor);
+    canvas.style.backgroundImage = layers.join(',');
+    canvas.style.backgroundSize = sizes.join(',');
+  }
   canvas.innerHTML = '';
   fpRenderStructure(canvas, u);
   fpRenderBoundaryLayer(canvas, u, fpCanvasDims(), state.fp.boundaries || [], fpDraftLine, state.fp.selectedBoundary);
@@ -1336,6 +1446,215 @@ function fpRenderMarkerLayer(canvas, u, markers, interactive, selectedId) {
   }
 }
 
+// ---------- numeric inspector + arrow-key nudge (precision Phase 2) ----------
+// The selection strip carries editable X / Y / W / H fields (decimal feet) for
+// the selected unit, stacked pair or block, and X / Y for a marker. Typed
+// values and arrow-key nudges both funnel through fpApplySelectionGeom, which
+// runs the same guards as a drag (occupied lock, canvas fit, unit overlap,
+// 2% area tolerance) and persists through the existing fpPersist* paths, so
+// undo and server validation are unchanged.
+
+// Parse a typed length: "4.73", "4.73 ft", "4.73'", or one simple operation
+// ("12/2", "3.5*2", "10+0.25", "10-0.5"). Returns quantized feet or null.
+function fpParseLen(raw) {
+  const t = String(raw == null ? '' : raw).trim().replace(/\s*(ft|feet|')$/i, '');
+  if (!t) return null;
+  const m = /^(-?\d*\.?\d+)\s*([+\-*/])\s*(-?\d*\.?\d+)$/.exec(t);
+  let n;
+  if (m) {
+    const a = Number(m[1]);
+    const b = Number(m[3]);
+    n = m[2] === '+' ? a + b : m[2] === '-' ? a - b : m[2] === '*' ? a * b : b !== 0 ? a / b : NaN;
+  } else {
+    n = /^-?\d*\.?\d+$/.test(t) ? Number(t) : NaN;
+  }
+  return Number.isFinite(n) ? quantizeFt(n) : null;
+}
+
+// Editable decimal-ft fields for the selection strip. `vals` = { x, y, width?, height? }.
+function fpNumFieldsHTML(vals) {
+  const field = (key, label, v) =>
+    `<span class="fp-num-lbl">${label}</span><input type="text" inputmode="decimal" class="tbl-search fp-num" data-fp-num="${key}" value="${escapeHtml(formatFt(v))}" aria-label="${label} in feet" title="${label} in feet — Enter applies, Esc reverts, ↑/↓ steps by the snap step (Shift ×10)" autocomplete="off" spellcheck="false">`;
+  return (
+    field('x', 'X', vals.x) +
+    field('y', 'Y', vals.y) +
+    (vals.width !== undefined ? field('width', 'W', vals.width) + field('height', 'H', vals.height) : '') +
+    '<span class="t-type">ft</span>'
+  );
+}
+
+// Area readout for a unit rect vs its sqft: "29.99 sqft · −0.03%" (flags > tolerance).
+function fpAreaNoteHTML(rect, sqft) {
+  const area = rectAreaSqft(rect);
+  if (!(sqft > 0)) return `<span class="t-type">${fpFmtArea(area)} sqft</span>`;
+  const dev = (area - sqft) / sqft;
+  const pct = (Math.round(dev * 10000) / 100).toLocaleString('en-SG', { maximumFractionDigits: 2, signDisplay: 'exceptZero' });
+  const bad = Math.abs(dev) > AREA_TOLERANCE + 1e-9;
+  return `<span class="t-type" style="${bad ? 'color:var(--terra,#C1664C);font-weight:700;' : ''}" title="Drawn area vs the unit's ${sqft} sqft (new or resized units must stay within ${Math.round(AREA_TOLERANCE * 100)}%)">${fpFmtArea(area)} sqft · ${pct}%</span>`;
+}
+
+// What the selection strip is editing right now: { kind, item, pair? }.
+function fpSelectionTarget() {
+  const blk = state.fp.blocks.find((b) => b.id === state.fp.selectedBlock);
+  if (blk) return { kind: 'block', item: blk };
+  const mk = (state.fp.markers || []).find((m) => m.id === state.fp.selectedMarker);
+  if (mk) return { kind: 'marker', item: mk };
+  const pl = state.fp.placements.find((p) => p.unitId === state.fp.selected);
+  if (pl) {
+    const mate = fpStackMate(pl);
+    const pair = mate ? [pl, mate].slice().sort((a, b) => (a.stackTier || 0) - (b.stackTier || 0)) : [pl];
+    return { kind: 'unit', item: pl, pair };
+  }
+  return null;
+}
+
+let fpNudgeTimer = null;
+let fpNudgePending = null; // { target, verb } awaiting a debounced persist
+
+function fpFlushNudge() {
+  clearTimeout(fpNudgeTimer);
+  fpNudgeTimer = null;
+  const pending = fpNudgePending;
+  fpNudgePending = null;
+  if (pending) fpPersistTarget(pending.target, pending.verb);
+}
+
+function fpPersistTarget(target, verb) {
+  if (target.kind === 'block') return fpPersistBlock(target.item, verb);
+  if (target.kind === 'marker') return fpPersistMarker(target.item, verb);
+  if (target.pair.length > 1) return fpPersistPair(target.pair[0], target.pair[1], verb);
+  return fpPersist(target.item, verb);
+}
+
+/**
+ * Apply a geometry patch ({x?, y?, width?, height?} in feet) to the current
+ * selection. `opts.clamp` keeps the result on-canvas (nudges) instead of
+ * rejecting it (typed values); `opts.debounce` coalesces a burst of nudges
+ * into one persist + one undo step. Returns true when the change applied.
+ */
+function fpApplySelectionGeom(patch, verb, opts = {}) {
+  const target = fpSelectionTarget();
+  if (!target) return false;
+  if (fpNudgePending && fpNudgePending.target.item !== target.item) fpFlushNudge();
+  const { w: cw, h: ch } = fpCanvasDims();
+  const it = target.item;
+  if (target.kind === 'marker') {
+    let x = patch.x !== undefined ? patch.x : it.x;
+    let y = patch.y !== undefined ? patch.y : it.y;
+    if (opts.clamp) {
+      x = clampFt(x, 0, cw);
+      y = clampFt(y, 0, ch);
+    } else if (x < 0 || y < 0 || x > cw || y > ch) {
+      fpToast(`Marker point ${formatFt(x)}, ${formatFt(y)} is outside the ${formatFt(cw)}×${formatFt(ch)} ft canvas.`, false);
+      return false;
+    }
+    if (ftEquals(x, it.x) && ftEquals(y, it.y)) return false;
+    if (!it._undoPrev) it._undoPrev = { kind: it.kind, label: it.label || null, x: it.x, y: it.y };
+    it.x = quantizeFt(x);
+    it.y = quantizeFt(y);
+  } else {
+    if (target.kind === 'unit' && fpGuardLocked(it)) return false;
+    let width = patch.width !== undefined ? patch.width : it.width;
+    let height = patch.height !== undefined ? patch.height : it.height;
+    // Sqft lock: typing one side derives the other so area stays = sqft.
+    if (target.kind === 'unit' && state.fp.lockSqft && it.sqft > 0) {
+      if (patch.width !== undefined && patch.height === undefined) height = quantizeFt(it.sqft / width);
+      else if (patch.height !== undefined && patch.width === undefined) width = quantizeFt(it.sqft / height);
+    }
+    if (!(width >= MIN_RECT_SIDE_FT) || !(height >= MIN_RECT_SIDE_FT)) {
+      fpToast(`Width and height must be at least ${MIN_RECT_SIDE_FT} ft.`, false);
+      return false;
+    }
+    let x = patch.x !== undefined ? patch.x : it.x;
+    let y = patch.y !== undefined ? patch.y : it.y;
+    if (opts.clamp) {
+      x = clampFt(x, 0, cw - width);
+      y = clampFt(y, 0, ch - height);
+    }
+    const next = { x: quantizeFt(x), y: quantizeFt(y), width: quantizeFt(width), height: quantizeFt(height) };
+    if (next.x < 0 || next.y < 0 || toMilli(next.x) + toMilli(next.width) > toMilli(cw) || toMilli(next.y) + toMilli(next.height) > toMilli(ch)) {
+      fpToast(`${formatFt(next.x)}, ${formatFt(next.y)} · ${formatFt(next.width)}×${formatFt(next.height)} ft does not fit the ${formatFt(cw)}×${formatFt(ch)} ft canvas.`, false);
+      return false;
+    }
+    if (sameRect(next, it)) return false;
+    if (target.kind === 'unit') {
+      const ids = target.pair.map((p) => p.unitId);
+      const hit = fpOverlapAt(next.x, next.y, next.width, next.height, ids, 0);
+      if (hit) {
+        const action = { Moved: 'move', Resized: 'resize', Nudged: 'nudge' }[verb] || 'change';
+        fpToast(`Cannot ${action} ${it.unitCode} — ${formatFt(next.width)}×${formatFt(next.height)} ft at ${formatFt(next.x)}, ${formatFt(next.y)} overlaps ${hit.unitCode}.`, false);
+        return false;
+      }
+      const areaChanged = rectAreaSqft(next) !== rectAreaSqft(it);
+      if (areaChanged && it.sqft > 0 && areaDeviation(next, it.sqft) > AREA_TOLERANCE) {
+        fpToast(`${formatFt(next.width)}×${formatFt(next.height)} ft = ${fpFmtArea(rectAreaSqft(next))} sqft is more than ${Math.round(AREA_TOLERANCE * 100)}% off ${it.unitCode}'s ${it.sqft} sqft — turn on 🔒 sqft or adjust the other side.`, false);
+        return false;
+      }
+      for (const p of target.pair) {
+        if (!p._undoPrev) p._undoPrev = { x: p.x, y: p.y, width: p.width, height: p.height, stackTier: p.stackTier || 0 };
+        Object.assign(p, next);
+      }
+    } else {
+      if (!it._undoPrev) it._undoPrev = { name: it.name, x: it.x, y: it.y, width: it.width, height: it.height, color: it.color || null, doorEdges: it.doorEdges || null };
+      Object.assign(it, next);
+    }
+  }
+  fpRenderCanvas();
+  fpRenderSelInfo();
+  if (opts.debounce) {
+    fpNudgePending = { target, verb };
+    clearTimeout(fpNudgeTimer);
+    fpNudgeTimer = setTimeout(fpFlushNudge, 450);
+  } else {
+    fpPersistTarget(target, verb);
+  }
+  return true;
+}
+
+// Commit one inspector field (Enter / change).
+function fpCommitNumField(input) {
+  const key = input.dataset.fpNum;
+  const target = fpSelectionTarget();
+  if (!target) return;
+  const v = fpParseLen(input.value);
+  if (v === null) {
+    fpToast(`"${input.value}" is not a length in feet — try 4.73, 12/2 or 3.5*2.`, false);
+    input.value = formatFt(target.item[key]);
+    return;
+  }
+  if (ftEquals(v, target.item[key])) {
+    input.value = formatFt(v);
+    return;
+  }
+  const verb = key === 'width' || key === 'height' ? 'Resized' : 'Moved';
+  if (!fpApplySelectionGeom({ [key]: v }, verb)) input.value = formatFt(target.item[key]);
+}
+
+// Arrow keys nudge the selection by the snap step (Shift ×10, Alt = 0.01 ft).
+// One debounced persist + undo step per burst. Ignored while typing, while a
+// modal is open, or when the designer is not on screen.
+function fpOnArrowKey(e) {
+  const dir = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[e.key];
+  if (!dir || e.defaultPrevented || e.metaKey || e.ctrlKey) return;
+  const t = e.target;
+  if (t && typeof t.closest === 'function' && t.closest('input, textarea, select, [contenteditable]')) return;
+  const designer = document.querySelector('#facility-floorplans');
+  if (!designer || designer.offsetParent === null) return;
+  const viewModal = $('#fpViewModal');
+  if (viewModal && !viewModal.hidden) return;
+  const confirmModal = $('#confirmModal');
+  if (confirmModal && !confirmModal.hidden) return;
+  const target = fpSelectionTarget();
+  if (!target) return;
+  e.preventDefault();
+  const step = fpSnapStep(e) * (e.shiftKey ? 10 : 1);
+  fpApplySelectionGeom(
+    { x: quantizeFt(target.item.x + dir[0] * step), y: quantizeFt(target.item.y + dir[1] * step) },
+    'Nudged',
+    { clamp: true, debounce: true },
+  );
+}
+
 function fpRenderSelInfo() {
   const info = $('#fpSelInfo');
   if (!info) return;
@@ -1347,7 +1666,9 @@ function fpRenderSelInfo() {
         `<button class="act-btn${(blk.color || '').toUpperCase() === c ? ' primary' : ''}" data-block-color="${c}" style="padding:0;width:18px;height:18px;min-width:18px;border-radius:50%;background:${c};border:1px solid var(--line);" title="Fill ${c}" aria-label="Fill block ${c}"></button>`,
     ).join('');
     info.innerHTML =
-      `<span class="t-type">Block · ${escapeHtml(blk.name)} · ${blk.x},${blk.y} · ${blk.width}×${blk.height}</span>` +
+      `<span class="t-type">Block · ${escapeHtml(blk.name)}</span>` +
+      fpNumFieldsHTML(blk) +
+      `<span class="t-type">${fpFmtArea(rectAreaSqft(blk))} sqft</span>` +
       `<span class="fp-rename-wrap"><label class="fp-sr" for="fpBlockRename">Block name</label>` +
       `<svg class="fp-name-icon" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M2.5 2.5H10l5.5 5.5-7.5 7.5-5.5-5.5V2.5z"/><circle cx="6.6" cy="6.6" r="1.3"/></svg>` +
       `<input type="text" id="fpBlockRename" class="tbl-search fp-name-input" maxlength="80" value="${escapeHtml(blk.name)}" placeholder="Rename block" aria-label="Rename block" autocomplete="off" spellcheck="false"></span>` +
@@ -1372,7 +1693,7 @@ function fpRenderSelInfo() {
     const distinct = new Set(pts.map(([x, y]) => `${x},${y}`)).size;
     const meta = [
       `${pts.length} vertex${pts.length === 1 ? '' : 'es'}`,
-      len ? `${Math.round(len)} ft` : null,
+      len ? `${formatFt(Math.round(len * 100) / 100)} ft` : null,
       contributing ? 'marked area — feeds UFA/NLA' : 'open line segment — needs a 3rd vertex (close the loop) to feed UFA/NLA',
     ]
       .filter(Boolean)
@@ -1392,7 +1713,8 @@ function fpRenderSelInfo() {
   if (mk) {
     const def = fpMarkerDef(mk.kind);
     info.innerHTML =
-      `<span class="t-type">${escapeHtml(def.icon)} ${escapeHtml(def.label)} · ${mk.x},${mk.y} ft</span>` +
+      `<span class="t-type">${escapeHtml(def.icon)} ${escapeHtml(def.label)}</span>` +
+      fpNumFieldsHTML({ x: mk.x, y: mk.y }) +
       `<span class="fp-rename-wrap"><label class="fp-sr" for="fpMarkerRename">Marker label</label>` +
       `<input type="text" id="fpMarkerRename" class="tbl-search fp-name-input" maxlength="80" value="${escapeHtml(mk.label || '')}" placeholder="${escapeHtml(def.label)} (optional)" aria-label="Marker label override" autocomplete="off" spellcheck="false"></span>` +
       `<button class="act-btn" id="fpMarkerRenameBtn" style="padding:2px 9px;font-size:10px;">Set label</button>` +
@@ -1410,7 +1732,7 @@ function fpRenderSelInfo() {
     const lockMate = fpStackMate(pl);
     const who = lockMate ? `⧉ Stacked pair · ${escapeHtml(pl.unitCode)} / ${escapeHtml(lockMate.unitCode)}` : escapeHtml(pl.unitCode);
     info.innerHTML =
-      `<span class="t-type" title="Occupied — uneditable when live">${who} · ${pl.x},${pl.y} · ${pl.width}×${pl.height} ft · ${pl.sqft} sqft · Occupied — uneditable when live</span>`;
+      `<span class="t-type" title="Occupied — uneditable when live">${who} · ${formatFt(pl.x)}, ${formatFt(pl.y)} · ${formatFt(pl.width)}×${formatFt(pl.height)} ft · ${pl.sqft} sqft · Occupied — uneditable when live</span>`;
     return;
   }
   const lockNote = state.fp.lockSqft ? ' · 🔒 sqft' : '';
@@ -1421,7 +1743,10 @@ function fpRenderSelInfo() {
     const upper = (pl.stackTier || 0) === 1 ? pl : mate;
     const lower = upper === pl ? mate : pl;
     info.innerHTML =
-      `<span class="t-type">⧉ Stacked pair · ${escapeHtml(upper.unitCode)} (upper) over ${escapeHtml(lower.unitCode)} (lower) · ${pl.x},${pl.y} · ${pl.width}×${pl.height} ft${lockNote} · doors auto (ghost ticks = all edges)</span>` +
+      `<span class="t-type">⧉ Stacked pair · ${escapeHtml(upper.unitCode)} (upper) over ${escapeHtml(lower.unitCode)} (lower)${lockNote}</span>` +
+      fpNumFieldsHTML(pl) +
+      fpAreaNoteHTML(pl, lower.sqft) +
+      `<span class="t-type">doors auto (ghost ticks = all edges)</span>` +
       `<button class="act-btn" id="fpRotateBtn" style="padding:2px 9px;font-size:10px;" title="Swap width/height (90° rotation) for both tiers">⟳ Rotate</button>` +
       `<button class="act-btn" id="fpUnstackBtn" style="padding:2px 9px;font-size:10px;" title="Remove the upper tier — the lower tier stays as a single">Unstack</button>` +
       `<button class="act-btn danger" id="fpRemoveBtn" style="padding:2px 9px;font-size:10px;">Remove from floor</button>`;
@@ -1439,7 +1764,9 @@ function fpRenderSelInfo() {
     .map((e) => `<button class="act-btn${effDoors.includes(e) ? ' primary' : ''}" data-door="${e}" style="padding:2px 8px;font-size:10px;" title="Toggle ${e} door edge">${e}</button>`)
     .join('');
   info.innerHTML =
-    `<span class="t-type">${escapeHtml(pl.unitCode)} · ${pl.x},${pl.y} · ${pl.width}×${pl.height} ft · ${pl.sqft} sqft${lockNote}</span>` +
+    `<span class="t-type">${escapeHtml(pl.unitCode)} · ${pl.sqft} sqft${lockNote}</span>` +
+    fpNumFieldsHTML(pl) +
+    fpAreaNoteHTML(pl, pl.sqft) +
     `<button class="act-btn" id="fpRotateBtn" style="padding:2px 9px;font-size:10px;" title="Swap width/height (90° rotation)">⟳ Rotate</button>` +
     (stackable.length === 1
       ? `<button class="act-btn" id="fpStackBtn" style="padding:2px 9px;font-size:10px;" title="Stack ${escapeHtml(stackable[0].unitCode)} (upper) onto this block">⧉ Stack ${escapeHtml(stackable[0].unitCode)}</button>`
@@ -1506,7 +1833,7 @@ function fpStackCandidates(pl) {
   return state.fp.unplaced.filter((u) => {
     if (String(u.sizeCode || '').toUpperCase() !== 'LOCKER') return false;
     const fp = sizeFootprint(u.sizeCode, u.sqft);
-    return (fp.w === pl.width && fp.h === pl.height) || (fp.w === pl.height && fp.h === pl.width);
+    return (ftEquals(fp.w, pl.width) && ftEquals(fp.h, pl.height)) || (ftEquals(fp.w, pl.height) && ftEquals(fp.h, pl.width));
   });
 }
 
@@ -1624,30 +1951,34 @@ function fpRender() {
   fpSyncModeUI();
 }
 
-function fpCanvasCellAt(clientX, clientY) {
+// Snapped decimal-ft canvas position for a pointer (top-left anchor of a
+// dragged rect). `ev` (optional) supplies the Alt fine-snap modifier.
+function fpCanvasCellAt(clientX, clientY, ev) {
   const canvas = $('#fpCanvas');
   if (!canvas) return null;
   const rect = canvas.getBoundingClientRect();
   const u = fpPx();
-  const gx = Math.floor((clientX - rect.left) / u);
-  const gy = Math.floor((clientY - rect.top) / u);
+  const rawX = (clientX - rect.left) / u;
+  const rawY = (clientY - rect.top) / u;
   const { w: cw, h: ch } = fpCanvasDims();
-  if (gx < 0 || gy < 0 || gx >= cw || gy >= ch) return null;
-  return { gx, gy };
+  if (rawX < -0.5 || rawY < -0.5 || rawX >= cw || rawY >= ch) return null;
+  const step = fpSnapStep(ev);
+  return { gx: Math.max(0, snapFt(rawX, step)), gy: Math.max(0, snapFt(rawY, step)) };
 }
 
-// Nearest integer grid-ft point for a pointer position, clamped into the
+// Nearest snapped decimal-ft point for a pointer position, clamped into the
 // canvas with edges INCLUSIVE (0..w / 0..h — boundary vertices may sit on the
 // canvas edge, same contract as checkBoundaryPoints in src/core/floorPlans.ts).
-function fpCanvasPointAt(clientX, clientY) {
+function fpCanvasPointAt(clientX, clientY, ev) {
   const canvas = $('#fpCanvas');
   if (!canvas) return null;
   const rect = canvas.getBoundingClientRect();
   const u = fpPx();
   const { w: cw, h: ch } = fpCanvasDims();
+  const step = fpSnapStep(ev);
   return {
-    x: Math.min(Math.max(0, Math.round((clientX - rect.left) / u)), cw),
-    y: Math.min(Math.max(0, Math.round((clientY - rect.top) / u)), ch),
+    x: clampFt(snapFt((clientX - rect.left) / u, step), 0, cw),
+    y: clampFt(snapFt((clientY - rect.top) / u, step), 0, ch),
   };
 }
 
@@ -1657,7 +1988,7 @@ function fpCanvasPointAt(clientX, clientY) {
 // as fpStartMove/fpBlockStartMove — no new interaction paradigm.
 function fpDrawStart(e) {
   if (e.button !== 0) return;
-  const start = fpCanvasPointAt(e.clientX, e.clientY);
+  const start = fpCanvasPointAt(e.clientX, e.clientY, e);
   if (!start) return;
   e.preventDefault();
   state.fp.selected = null;
@@ -1668,11 +1999,17 @@ function fpDrawStart(e) {
   fpRenderCanvas();
   fpRenderSelInfo();
   const move = (ev) => {
-    const p = fpCanvasPointAt(ev.clientX, ev.clientY);
+    let p = fpCanvasPointAt(ev.clientX, ev.clientY, ev);
     if (!p || !fpDraftLine) return;
+    if (ev.shiftKey) {
+      const { w: cw, h: ch } = fpCanvasDims();
+      const c = fpConstrainLine(fpDraftLine.x1, fpDraftLine.y1, p.x, p.y, fpSnapStep(ev));
+      p = { x: clampFt(c.x, 0, cw), y: clampFt(c.y, 0, ch) };
+    }
     fpDraftLine.x2 = p.x;
     fpDraftLine.y2 = p.y;
     fpRenderCanvas();
+    fpSetReadout(`Line ${formatFt(Math.round(Math.hypot(p.x - fpDraftLine.x1, p.y - fpDraftLine.y1) * 100) / 100)} ft`);
   };
   const cleanup = () => {
     document.removeEventListener('pointermove', move);
@@ -1692,7 +2029,7 @@ function fpDrawStart(e) {
     fpDraftLine = null;
     if (!d) return;
     // A zero-length click draws nothing — a 2-vertex polyline must be meaningful.
-    if (d.x1 === d.x2 && d.y1 === d.y2) {
+    if (ftEquals(d.x1, d.x2) && ftEquals(d.y1, d.y2)) {
       fpRenderCanvas();
       return;
     }
@@ -1727,7 +2064,7 @@ async function fpPersistLine(x1, y1, x2, y2) {
     state.fp.selectedBlock = null;
     fpRender();
     notifyMetricsFloorChanged();
-    fpToast(`Line added (solid) — ${Math.round(Math.hypot(x2 - x1, y2 - y1))} ft at ${x1},${y1} → ${x2},${y2}. Select it to close the loop (3+ vertices) so it feeds UFA/NLA.`, true);
+    fpToast(`Line added (solid) — ${formatFt(Math.round(Math.hypot(x2 - x1, y2 - y1) * 100) / 100)} ft at ${x1},${y1} → ${x2},${y2}. Select it to close the loop (3+ vertices) so it feeds UFA/NLA.`, true);
   } catch (err) {
     fpRenderCanvas();
     fpToast('Draw line: ' + describeError(err), false);
@@ -1818,8 +2155,8 @@ async function fpPlaceUnit(unit, footprint, gx, gy) {
     fpToast(`${unit.unitCode} (${footprint.w}×${footprint.h} ft) is too large for the ${cw}×${ch} ft canvas — enlarge the canvas first`, false);
     return;
   }
-  let x = Math.min(Math.max(0, gx), cw - footprint.w);
-  let y = Math.min(Math.max(0, gy), ch - footprint.h);
+  let x = clampFt(gx, 0, cw - footprint.w);
+  let y = clampFt(gy, 0, ch - footprint.h);
   const unitIsLocker = String(unit.sizeCode || '').toUpperCase() === 'LOCKER';
   // Snap-to-stack: a dropped locker overlapping a lone ground locker of the
   // identical footprint snaps onto its exact rect so the Stack offer is precise.
@@ -1829,12 +2166,9 @@ async function fpPlaceUnit(unit, footprint, gx, gy) {
         (o.stackTier || 0) === 0 &&
         !fpStackMate(o) &&
         fpIsLockerPlacement(o) &&
-        o.width === footprint.w &&
-        o.height === footprint.h &&
-        x < o.x + o.width &&
-        o.x < x + footprint.w &&
-        y < o.y + o.height &&
-        o.y < y + footprint.h,
+        ftEquals(o.width, footprint.w) &&
+        ftEquals(o.height, footprint.h) &&
+        rectsOverlapExact({ x, y, width: footprint.w, height: footprint.h }, o),
     );
     if (snap) {
       x = snap.x;
@@ -1843,7 +2177,7 @@ async function fpPlaceUnit(unit, footprint, gx, gy) {
   }
   // Exact-rect drop: offer Stack for lone-locker-on-locker, explain otherwise.
   const exact = state.fp.placements.find(
-    (o) => o.x === x && o.y === y && o.width === footprint.w && o.height === footprint.h,
+    (o) => sameRect(o, { x, y, width: footprint.w, height: footprint.h }),
   );
   if (exact) {
     if (fpStackMate(exact)) {
@@ -1951,7 +2285,7 @@ function fpStartPaletteDrag(e, chip) {
     document.removeEventListener('pointerup', up);
     const rect = ghost.getBoundingClientRect();
     ghost.remove();
-    const cell = fpCanvasCellAt(rect.left, rect.top);
+    const cell = fpCanvasCellAt(rect.left, rect.top, ev);
     if (cell) fpPlaceUnit(unit, fp, cell.gx, cell.gy);
   };
   document.addEventListener('pointermove', move);
@@ -1992,15 +2326,21 @@ function fpStartMove(e, el) {
   const { w: cw, h: ch } = fpCanvasDims();
   const orig = pair.map((p) => ({ p, x: p.x, y: p.y }));
   const move = (ev) => {
-    const cell = fpCanvasCellAt(ev.clientX - offsetX, ev.clientY - offsetY);
+    const cell = fpCanvasCellAt(ev.clientX - offsetX, ev.clientY - offsetY, ev);
     if (!cell) return;
-    const nx = Math.min(Math.max(0, cell.gx), Math.max(0, cw - pl.width));
-    const ny = Math.min(Math.max(0, cell.gy), Math.max(0, ch - pl.height));
+    let nx = clampFt(cell.gx, 0, cw - pl.width);
+    let ny = clampFt(cell.gy, 0, ch - pl.height);
+    // Shift = axis lock: keep the move on the dominant axis from the grab point.
+    if (ev.shiftKey) {
+      if (Math.abs(nx - orig[0].x) >= Math.abs(ny - orig[0].y)) ny = orig[0].y;
+      else nx = orig[0].x;
+    }
     for (const p of pair) {
       p.x = nx;
       p.y = ny;
     }
     fpRenderCanvas();
+    fpSetReadout(`${pl.unitCode} → ${formatFt(nx)}, ${formatFt(ny)} ft`);
   };
   const up = async () => {
     document.removeEventListener('pointermove', move);
@@ -2049,18 +2389,18 @@ function fpStartMove(e, el) {
 }
 
 // Lock-to-sqft resize snapping: given the free-dragged size (w0×h0), return
-// the nearest integer rect that preserves area≈sqft while staying on-canvas.
-// Keeps the dragged width, derives h=round(sqft/w); if that overflows the
-// canvas height, pins h and re-derives w the other way round.
-function fpSnapToSqft(w0, h0, sqft, cw, ch, ox, oy) {
+// the decimal rect that preserves area = sqft while staying on-canvas. Keeps
+// the dragged width (snapped to `step`) and derives h = sqft / w at 0.001 ft;
+// if that overflows the canvas height, pins h and re-derives w instead.
+function fpSnapToSqft(w0, h0, sqft, cw, ch, ox, oy, step) {
   void h0;
-  const maxW = Math.max(1, cw - ox);
-  const maxH = Math.max(1, ch - oy);
-  let w = Math.max(1, Math.min(Math.round(w0) || 1, maxW));
-  let h = Math.max(1, Math.min(Math.round(sqft / w), maxH));
-  if (Math.round(sqft / w) > maxH) {
+  const maxW = Math.max(MIN_RECT_SIDE_FT, quantizeFt(cw - ox));
+  const maxH = Math.max(MIN_RECT_SIDE_FT, quantizeFt(ch - oy));
+  let w = clampFt(snapFt(w0, step), MIN_RECT_SIDE_FT, maxW);
+  let h = Math.max(MIN_RECT_SIDE_FT, quantizeFt(sqft / w));
+  if (h > maxH) {
     h = maxH;
-    w = Math.max(1, Math.min(Math.round(sqft / h), maxW));
+    w = clampFt(quantizeFt(sqft / h), MIN_RECT_SIDE_FT, maxW);
   }
   return { w, h };
 }
@@ -2092,14 +2432,13 @@ function fpStartResize(e, pl) {
   const pair = mate ? [pl, mate].slice().sort((a, b) => (a.stackTier || 0) - (b.stackTier || 0)) : [pl];
   const pairIds = pair.map((p) => p.unitId);
   const move = (ev) => {
-    const dx = Math.round((ev.clientX - startX) / u);
-    const dy = Math.round((ev.clientY - startY) / u);
-    const freeW = Math.max(1, Math.min(origW + dx, cw - origX));
-    const freeH = Math.max(1, Math.min(origH + dy, ch - origY));
+    const step = fpSnapStep(ev);
+    const freeW = clampFt(snapFt(origW + (ev.clientX - startX) / u, step), fpMinSide(ev), cw - origX);
+    const freeH = clampFt(snapFt(origH + (ev.clientY - startY) / u, step), fpMinSide(ev), ch - origY);
     let w;
     let h;
     if (state.fp.lockSqft && pl.sqft > 0) {
-      const snapped = fpSnapToSqft(freeW, freeH, pair[0].sqft || pl.sqft, cw, ch, origX, origY);
+      const snapped = fpSnapToSqft(freeW, freeH, pair[0].sqft || pl.sqft, cw, ch, origX, origY, step);
       w = snapped.w;
       h = snapped.h;
     } else {
@@ -2111,6 +2450,7 @@ function fpStartResize(e, pl) {
       p.height = h;
     }
     fpRenderCanvas();
+    fpSetReadout(`${pl.unitCode} ${formatFt(w)} × ${formatFt(h)} ft = ${fpFmtArea(rectAreaSqft({ width: w, height: h }))} sqft (unit ${pl.sqft})`);
   };
   const up = () => {
     document.removeEventListener('pointermove', move);
@@ -2150,8 +2490,8 @@ async function fpRotatePlacement() {
     return;
   }
   const prev = pair.map((p) => ({ p, x: p.x, y: p.y, w: p.width, h: p.height }));
-  const nx = Math.min(pl.x, Math.max(0, cw - w));
-  const ny = Math.min(pl.y, Math.max(0, ch - h));
+  const nx = clampFt(pl.x, 0, cw - w);
+  const ny = clampFt(pl.y, 0, ch - h);
   for (const p of pair) {
     p.width = w;
     p.height = h;
@@ -2198,8 +2538,7 @@ function fpFirstFreeSpot(size) {
   const occupied = state.fp.blocks
     .concat(state.fp.placements)
     .concat((state.fp.markers || []).map((m) => ({ x: m.x, y: m.y, width: 1, height: 1 })));
-  const collides = (x, y) =>
-    occupied.some((o) => x < o.x + o.width && o.x < x + size && y < o.y + o.height && o.y < y + size);
+  const collides = (x, y) => occupied.some((o) => rectsOverlapExact({ x, y, width: size, height: size }, o));
   for (let y = 0; y + size <= ch; y++) {
     for (let x = 0; x + size <= cw; x++) {
       if (!collides(x, y)) return { x, y };
@@ -2218,7 +2557,9 @@ function fpFirstFreeSpot(size) {
 // Point-in-polygon (ray cast), edge-inclusive: a point on an edge or vertex
 // counts as inside so auto-placed units may abut boundary walls.
 function fpPointOnSeg(px, py, ax, ay, bx, by) {
-  if ((bx - ax) * (py - ay) - (by - ay) * (px - ax) !== 0) return false;
+  // Collinearity with a tiny tolerance: decimal-ft vertices make the exact
+  // cross product of an on-edge point a float like 1e-15, not 0.
+  if (Math.abs((bx - ax) * (py - ay) - (by - ay) * (px - ax)) > 1e-9) return false;
   return Math.min(ax, bx) <= px && px <= Math.max(ax, bx) && Math.min(ay, by) <= py && py <= Math.max(ay, by);
 }
 
@@ -2334,21 +2675,22 @@ function fpUsablePlaceArea(input) {
 function fpRectInUsable(x, y, w, h, usable) {
   if (!usable) return false;
   const { x0, y0, x1, y1 } = usable.bbox;
-  if (x < x0 || y < y0 || x + w > x1 || y + h > y1) return false;
+  if (x < x0 || y < y0 || quantizeFt(x + w) > x1 || quantizeFt(y + h) > y1) return false;
   if (usable.kind === 'bbox') return true;
   return usable.polys.some((poly) => fpRectInPolygon(x, y, w, h, poly));
 }
 
-// Rectangular first-free-spot scan for auto-place (same repack approach as the
-// opt-in scripts/backfill-placement-footprints.ts): top-left → bottom-right
-// over integer foot cells against the live `taken` rect list. Returns {x,y} or
-// null — never a fallback spot: canvas dims are blueprint feet and auto-place
-// must NOT auto-resize the canvas.
+// Rectangular first-free-spot scan for auto-place: top-left → bottom-right
+// against the live `taken` rect list. Candidate coordinates are every whole
+// foot PLUS every taken rect's far edge (x + width / y + height), so decimal
+// footprints pack flush against their neighbours instead of leaving sub-foot
+// gaps. Comparisons are integer-exact (milli-ft). Returns {x,y} or null —
+// never a fallback spot: canvas dims are blueprint feet and auto-place must
+// NOT auto-resize the canvas.
 function fpFirstFreeRect(w, h, taken, usable) {
   const { w: cw, h: ch } = fpCanvasDims();
-  if (w > cw || h > ch) return null;
-  const collides = (x, y) =>
-    taken.some((o) => x < o.x + o.width && o.x < x + w && y < o.y + o.height && o.y < y + h);
+  if (toMilli(w) > toMilli(cw) || toMilli(h) > toMilli(ch)) return null;
+  const collides = (x, y) => taken.some((o) => rectsOverlapExact({ x, y, width: w, height: h }, o));
   // Clamp the scan to the usable boundary area (when known) so candidates
   // outside the Line-tool area are never tried; every surviving candidate is
   // then rect-in-polygon checked (corners inside + no edge straddling walls).
@@ -2363,8 +2705,19 @@ function fpFirstFreeRect(w, h, taken, usable) {
     xTo = Math.min(cw, usable.bbox.x1);
     yTo = Math.min(ch, usable.bbox.y1);
   }
-  for (let y = yFrom; y + h <= yTo; y++) {
-    for (let x = xFrom; x + w <= xTo; x++) {
+  const candidates = (from, to, size, edges) => {
+    const set = new Set([toMilli(from)]);
+    for (let v = Math.ceil(from); v <= to; v++) set.add(toMilli(v));
+    for (const e of edges) if (e >= from) set.add(toMilli(e));
+    return [...set]
+      .filter((m) => m + toMilli(size) <= toMilli(to))
+      .sort((a, b) => a - b)
+      .map((m) => m / 1000);
+  };
+  const ys = candidates(yFrom, yTo, h, taken.map((o) => quantizeFt(o.y + o.height)));
+  const xs = candidates(xFrom, xTo, w, taken.map((o) => quantizeFt(o.x + o.width)));
+  for (const y of ys) {
+    for (const x of xs) {
       if (collides(x, y)) continue;
       if (usable && !fpRectInUsable(x, y, w, h, usable)) continue;
       return { x, y };
@@ -2421,7 +2774,7 @@ function fpHasUsableBoundary() {
 // Auto-place: renders ALL unplaced units of the current floor onto the canvas.
 // One PUT per unit via the existing placement endpoint; footprints come from
 // unitFootprint() (true-size sqftFootprint, ghost-rotated orientation first,
-// swapped orientation as fallback) so the server's 15% area tolerance holds.
+// swapped orientation as fallback) so the server's 2% area tolerance holds.
 // Every candidate spot is rect-in-polygon clipped to the usable boundary area
 // (fpUsablePlaceArea: closed-loop interior, else the open-lines box), so no
 // write ever lands outside the Line-tool area. Units that don't fit — or fail
@@ -2483,7 +2836,7 @@ async function fpAutoPlaceAll() {
     for (const unit of queue) {
       const fp = unitFootprint(unit);
       const orientations = [{ w: fp.w, h: fp.h }];
-      if (fp.w !== fp.h) orientations.push({ w: fp.h, h: fp.w });
+      if (!ftEquals(fp.w, fp.h)) orientations.push({ w: fp.h, h: fp.w });
       let spot = null;
       let geom = null;
       for (const o of orientations) {
@@ -2623,15 +2976,22 @@ function fpBlockStartMove(e, el) {
   state.fp.selectedMarker = null;
   state.fp.selectedBoundary = null;
   blk._undoPrev = { name: blk.name, x: blk.x, y: blk.y, width: blk.width, height: blk.height, color: blk.color || null, doorEdges: blk.doorEdges || null };
+  const origBX = blk.x;
+  const origBY = blk.y;
   fpRenderCanvas();
   fpRenderSelInfo();
   const { w: cw, h: ch } = fpCanvasDims();
   const move = (ev) => {
-    const cell = fpCanvasCellAt(ev.clientX - offsetX, ev.clientY - offsetY);
+    const cell = fpCanvasCellAt(ev.clientX - offsetX, ev.clientY - offsetY, ev);
     if (!cell) return;
-    blk.x = Math.min(Math.max(0, cell.gx), Math.max(0, cw - blk.width));
-    blk.y = Math.min(Math.max(0, cell.gy), Math.max(0, ch - blk.height));
+    blk.x = clampFt(cell.gx, 0, cw - blk.width);
+    blk.y = clampFt(cell.gy, 0, ch - blk.height);
+    if (ev.shiftKey) {
+      if (Math.abs(blk.x - origBX) >= Math.abs(blk.y - origBY)) blk.y = origBY;
+      else blk.x = origBX;
+    }
     fpRenderCanvas();
+    fpSetReadout(`${blk.name || 'Block'} → ${formatFt(blk.x)}, ${formatFt(blk.y)} ft`);
   };
   const up = () => {
     document.removeEventListener('pointermove', move);
@@ -2662,11 +3022,11 @@ function fpBlockStartResize(e, blk) {
   const origH = blk.height;
   const { w: cw, h: ch } = fpCanvasDims();
   const move = (ev) => {
-    const dx = Math.round((ev.clientX - startX) / u);
-    const dy = Math.round((ev.clientY - startY) / u);
-    blk.width = Math.max(1, Math.min(origW + dx, cw - origX));
-    blk.height = Math.max(1, Math.min(origH + dy, ch - origY));
+    const step = fpSnapStep(ev);
+    blk.width = clampFt(snapFt(origW + (ev.clientX - startX) / u, step), fpMinSide(ev), cw - origX);
+    blk.height = clampFt(snapFt(origH + (ev.clientY - startY) / u, step), fpMinSide(ev), ch - origY);
     fpRenderCanvas();
+    fpSetReadout(`${blk.name || 'Block'} ${formatFt(blk.width)} × ${formatFt(blk.height)} ft = ${fpFmtArea(rectAreaSqft(blk))} sqft`);
   };
   const up = () => {
     document.removeEventListener('pointermove', move);
@@ -2923,11 +3283,12 @@ function fpMarkerStartMove(e, el) {
   fpRenderSelInfo();
   const { w: cw, h: ch } = fpCanvasDims();
   const move = (ev) => {
-    const p = fpCanvasPointAt(ev.clientX, ev.clientY);
+    const p = fpCanvasPointAt(ev.clientX, ev.clientY, ev);
     if (!p) return;
-    m.x = Math.min(Math.max(0, p.x), cw);
-    m.y = Math.min(Math.max(0, p.y), ch);
+    m.x = clampFt(p.x, 0, cw);
+    m.y = clampFt(p.y, 0, ch);
     fpRenderCanvas();
+    fpSetReadout(`${fpMarkerLabel(m)} → ${formatFt(m.x)}, ${formatFt(m.y)} ft`);
   };
   const up = () => {
     document.removeEventListener('pointermove', move);
@@ -3096,10 +3457,10 @@ async function fpMutate(url, opts) {
 
 async function fpSaveCanvas() {
   if (!state.fp.floorId) return;
-  const w = Number($('#fpWidth').value);
-  const h = Number($('#fpHeight').value);
-  if (!Number.isInteger(w) || w < 1 || w > 500 || !Number.isInteger(h) || h < 1 || h > 500) {
-    fpToast('Canvas size must be a whole number between 1 and 500 feet.', false);
+  const w = fpParseDim($('#fpWidth').value);
+  const h = fpParseDim($('#fpHeight').value);
+  if (w === null || h === null) {
+    fpToast('Canvas size must be a number between 1 and 500 feet (decimals allowed).', false);
     return;
   }
   // Operator-entered GFA (sqft): empty clears back to unset (metrics fall back
@@ -3399,10 +3760,10 @@ async function fpSaveDraft() {
     fpToast('Pick a facility and floor first.', false);
     return;
   }
-  const w = Number($('#fpWidth').value);
-  const h = Number($('#fpHeight').value);
-  if (!Number.isInteger(w) || w < 1 || w > 500 || !Number.isInteger(h) || h < 1 || h > 500) {
-    fpToast('Canvas size must be a whole number between 1 and 500 feet.', false);
+  const w = fpParseDim($('#fpWidth').value);
+  const h = fpParseDim($('#fpHeight').value);
+  if (w === null || h === null) {
+    fpToast('Canvas size must be a number between 1 and 500 feet (decimals allowed).', false);
     return;
   }
   const gfaEl = $('#fpGfa');
@@ -3844,12 +4205,14 @@ export function fpInitEvents() {
   // FP_TOOLBAR_GROUPS): units → mode → markers → canvas → plan → view → info.
   // --- Group: header (branch/floor scope + save/delete plan actions, delete last) ---
   $('#fpBranch').addEventListener('change', (e) => {
+    fpFlushNudge(); // a pending nudge persists against the floor it was made on
     state.fp.branchCode = e.target.value;
     state.fp.floorId = null;
     fpPopulateFloorSelect();
     if (state.fp.floorId) fpFetch().catch(() => {});
   });
   $('#fpFloor').addEventListener('change', (e) => {
+    fpFlushNudge(); // a pending nudge persists against the floor it was made on
     state.fp.floorId = e.target.value;
     fpFetch().catch(() => {});
   });
@@ -3875,7 +4238,7 @@ export function fpInitEvents() {
     });
   }
   // Lock-to-sqft resize (default ON). OFF is the ops override: free resize,
-  // with a warning that the server rejects writes deviating >15% from sqft.
+  // with a warning that the server rejects new/resized units deviating >2% from sqft.
   const lockBtn = $('#fpLockSqft');
   const syncLockBtn = () => {
     if (!lockBtn) return;
@@ -3890,7 +4253,7 @@ export function fpInitEvents() {
       syncLockBtn();
       fpRenderSelInfo();
       if (!state.fp.lockSqft) {
-        fpToast('Sqft lock OFF — free resize enabled, but the server rejects placements deviating more than 15% from the unit sqft.', false);
+        fpToast(`Sqft lock OFF — free resize enabled, but the server rejects new or resized units deviating more than ${Math.round(AREA_TOLERANCE * 100)}% from the unit sqft.`, false);
       } else {
         fpToast('Sqft lock ON — resize snaps to the nearest rect preserving area ≈ sqft.', true);
       }
@@ -3956,6 +4319,7 @@ export function fpInitEvents() {
   // (see fpOnDeleteKey) — both attached once here, never per-render.
   $('#fpCanvasWrap').addEventListener('wheel', fpOnCanvasWheel, { passive: false });
   document.addEventListener('keydown', fpOnDeleteKey);
+  document.addEventListener('keydown', fpOnArrowKey);
   // Escape cancels an armed marker (the line tool owns its own mid-draft Escape).
   document.addEventListener('keydown', fpOnEscapeTool);
   // --- Group: units (palette drag, palette toggle, auto-place) + blocks (block form) ---
@@ -4039,13 +4403,14 @@ export function fpInitEvents() {
   });
   // --- Group: info (Labels) — canvas selection/drag dispatch + selection strip ---
   $('#fpCanvasWrap').addEventListener('pointerdown', (e) => {
+    fpFlushNudge(); // land any debounced nudge before a new drag captures undo state
     // Armed marker (Markers/Safety group): the next canvas click places the
     // armed kind and disarms — same mode-gated pattern as the line tool below
     // (placement/block/line interactions stay off until placed or cancelled).
     if (state.fp.armedMarker) {
       const canvas = $('#fpCanvas');
       if (canvas && canvas.contains(e.target)) {
-        const p = fpCanvasPointAt(e.clientX, e.clientY);
+        const p = fpCanvasPointAt(e.clientX, e.clientY, e);
         if (p) fpPlaceMarker(state.fp.armedMarker, p.x, p.y);
       }
       return;
@@ -4115,6 +4480,34 @@ export function fpInitEvents() {
     else if (e.target && e.target.dataset && e.target.dataset.door) fpToggleDoor(e.target.dataset.door);
   });
   $('#fpSelInfo').addEventListener('keydown', (e) => {
+    // Numeric inspector: Enter applies, Esc reverts, ↑/↓ step by the snap step.
+    const num = e.target && e.target.dataset ? e.target.dataset.fpNum : null;
+    if (num) {
+      const target = fpSelectionTarget();
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        fpCommitNumField(e.target);
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        if (target) e.target.value = formatFt(target.item[num]);
+        e.target.blur();
+      } else if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && target) {
+        e.preventDefault();
+        const cur = fpParseLen(e.target.value);
+        const base = cur === null ? target.item[num] : cur;
+        const step = fpSnapStep(e) * (e.shiftKey ? 10 : 1) * (e.key === 'ArrowUp' ? 1 : -1);
+        const v = quantizeFt(base + step);
+        const verb = num === 'width' || num === 'height' ? 'Resized' : 'Moved';
+        if (fpApplySelectionGeom({ [num]: v }, verb, { debounce: true })) {
+          const again = document.querySelector(`#fpSelInfo [data-fp-num="${num}"]`);
+          if (again) {
+            again.focus();
+            again.select();
+          }
+        }
+      }
+      return;
+    }
     if (e.key === 'Enter' && e.target && e.target.id === 'fpBlockRename') {
       e.preventDefault();
       fpRenameBlock();
@@ -4126,6 +4519,10 @@ export function fpInitEvents() {
   // Native colour pickers commit via `change` (not click), so the selection
   // strip's custom fill input is wired here rather than in the click delegate.
   $('#fpSelInfo').addEventListener('change', (e) => {
+    if (e.target && e.target.dataset && e.target.dataset.fpNum) {
+      fpCommitNumField(e.target);
+      return;
+    }
     if (e.target && e.target.id === 'fpBlockColorPick') {
       const cblk = state.fp.blocks.find((b) => b.id === state.fp.selectedBlock);
       if (cblk) fpSetBlockColor(cblk, e.target.value);
@@ -4197,6 +4594,12 @@ export function fpInitEvents() {
       }
     }
   });
+  // Snap step selector (View group) + live cursor readout.
+  fpLoadSnapStep();
+  if ($('#fpSnapStep')) $('#fpSnapStep').value = String(fpSnapStep());
+  $('#fpSnapStep')?.addEventListener('change', (e) => fpSetSnapStep(e.target.value));
+  $('#fpCanvasWrap')?.addEventListener('pointermove', fpOnCanvasHover);
+  $('#fpCanvasWrap')?.addEventListener('pointerleave', () => fpSetReadout(''));
   $('#fpGridToggle')?.addEventListener('click', () => {
     const btn = $('#fpGridToggle');
     state.fp.showGrid = state.fp.showGrid === false;

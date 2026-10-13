@@ -80,7 +80,8 @@ export const state = {
     selectedBlock: null, // selected block id
     canvasDefaults: { width: 70, height: 80 },
     liveDims: null, // live-typed canvas size from the W/H inputs (local, unsaved); null = use plan/server size
-    lockSqft: true, // resize snaps to the nearest rect preserving area≈sqft (ops can toggle off; server still enforces ±15%)
+    lockSqft: true, // resize snaps to the decimal rect preserving area = sqft (ops can toggle off; server enforces ±2% on new/resized units)
+    snapStep: 0.1, // decimal-ft snap step for drags/resizes/lines/nudges (toolbar #fpSnapStep, remembered per browser; Alt = 0.01 ft)
     ghostRotated: false, // palette drag ghost orientation toggle (swaps W/H for rectangular footprints)
     boundaries: [], // normalized boundary line items (grid-ft polylines; kind 'PENCIL' = pencil-drawn lines)
     drawMode: false, // ✎ line tool active — canvas press-drag draws a line, placement/block drags gated off

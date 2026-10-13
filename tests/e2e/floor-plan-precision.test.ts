@@ -24,6 +24,10 @@ import {
   upsertFloorPlan,
 } from '../../src/core/floorPlans';
 import { publishDraft, saveDraft } from '../../src/core/floorPlanDrafts';
+import { readFileSync } from 'node:fs';
+import { ADMIN_GEOMETRY_OUT, renderAdminGeometry } from '../../scripts/build-admin-geometry';
+import { sqftFootprint } from '../../src/core/floorPlans';
+import { AREA_TOLERANCE, areaDeviation, snapFt } from '../../src/core/planGeometry';
 import { getFloorMetrics } from '../../src/core/floorPlanMetricsService';
 
 async function unitId(unitCode: string): Promise<string> {
@@ -58,6 +62,35 @@ describe('planGeometry (pure)', () => {
     expect(rectAreaSqft({ width: 4.73, height: 6.34 })).toBe(29.9882);
     expect(formatFt(1.1 + 2.2)).toBe('3.3');
     expect(formatFt(30)).toBe('30');
+  });
+});
+
+describe('precision Phase 2 shared rules (pure)', () => {
+  it('the CMS editor bundle is generated from src/core/planGeometry.ts (no drift)', () => {
+    expect(readFileSync(ADMIN_GEOMETRY_OUT, 'utf8')).toBe(renderAdminGeometry());
+  });
+
+  it('snaps to the operator step exactly', () => {
+    expect(snapFt(4.7349, 0.1)).toBe(4.7);
+    expect(snapFt(4.75, 0.1)).toBe(4.8);
+    expect(snapFt(4.738, 0.01)).toBe(4.74);
+    expect(snapFt(4.6, 0.25)).toBe(4.5);
+  });
+
+  it('decimal footprints match sqft within the 2% tolerance', () => {
+    expect(AREA_TOLERANCE).toBe(0.02);
+    expect(sqftFootprint(50, 'SMALL', 5, 10)).toEqual({ w: 5, h: 10 }); // catalogue dims already exact
+    for (const [sqft, code, w, h] of [
+      [37, 'LOCKER', null, null],
+      [35, 'SMALL', 5, 6], // dims are 30 sqft → rescaled to 35 keeping 5:6
+      [118, 'LARGE', 10, 12],
+      [9.5, 'LOCKER', 3, 4],
+    ] as const) {
+      const fp = sqftFootprint(sqft, code, w, h);
+      expect(areaDeviation({ width: fp.w, height: fp.h }, sqft)).toBeLessThanOrEqual(AREA_TOLERANCE);
+    }
+    const r = sqftFootprint(35, 'SMALL', 5, 6);
+    expect(r.w / r.h).toBeCloseTo(5 / 6, 1);
   });
 });
 
@@ -104,6 +137,27 @@ describe('floor-plan decimal geometry (DB)', () => {
   it('still enforces area tolerance with decimal sides', async () => {
     const id = await unitId(PIN.rentableUnit);
     await expectAppError(setUnitPlacement(world.floorId, id, { x: 40, y: 30, width: 4.5, height: 8.5 }), 400, 'VALIDATION'); // 38.25 vs 50
+  });
+
+  it('2% tolerance applies to new/resized placements; moves of legacy rects are grandfathered', async () => {
+    const id = await unitId(PIN.rentableUnit); // 50 sqft
+    // Legacy row drawn under the old 15% band: 5 × 11 = 55 sqft (+10%).
+    await prisma.unitPlacement.update({ where: { unitId: id }, data: { width: 5, height: 11 } });
+    // Pure move (same area) → allowed.
+    await expect(setUnitPlacement(world.floorId, id, { x: 40, y: 30, width: 5, height: 11 })).resolves.toMatchObject({ x: 40 });
+    // 90° rotation (same area) → allowed.
+    await expect(setUnitPlacement(world.floorId, id, { x: 40, y: 30, width: 11, height: 5 })).resolves.toMatchObject({ width: 11 });
+    // Resize to 52.5 sqft (+5%) → rejected under the 2% band.
+    await expectAppError(setUnitPlacement(world.floorId, id, { x: 40, y: 30, width: 5, height: 10.5 }), 400, 'VALIDATION');
+    // Resize to 50.96 sqft (+1.9%) → allowed.
+    await expect(setUnitPlacement(world.floorId, id, { x: 40, y: 30, width: 4.9, height: 10.4 })).resolves.toMatchObject({ width: 4.9 });
+  });
+
+  it('rejects a NEW placement more than 2% off its sqft', async () => {
+    const id = await unitId(PIN.rentableUnit);
+    await prisma.unitPlacement.delete({ where: { unitId: id } });
+    await expectAppError(setUnitPlacement(world.floorId, id, { x: 40, y: 30, width: 5, height: 10.25 }), 400, 'VALIDATION'); // +2.5%
+    await expect(setUnitPlacement(world.floorId, id, { x: 40, y: 30, width: 5, height: 10.05 })).resolves.toMatchObject({ height: 10.05 }); // +0.5%
   });
 
   it('rejects sides below 0.1 ft', async () => {

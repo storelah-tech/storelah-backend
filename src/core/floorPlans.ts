@@ -1,7 +1,10 @@
 import { prisma } from '../lib/prisma';
 import { AppError } from '../lib/http';
 import {
+  AREA_TOLERANCE,
   MIN_RECT_SIDE_FT,
+  areaDeviation,
+  fitSqftFootprint,
   formatFt,
   isPlanNumber,
   pointOnCanvas,
@@ -47,16 +50,17 @@ import { Prisma } from '@prisma/client';
 export const CANVAS_DEFAULTS = { width: 70, height: 80 } as const;
 const MAX_CANVAS = 500; // feet per axis, sanity cap
 
-// P3: a placement's drawn area (w×h, square feet) must be within ±15% of the
-// unit's sqft. Rejected with 400 VALIDATION; the editor's lock-to-sqft resize
-// keeps operators inside the band, and the ops override warns that breaching
-// it will be rejected here. Grandfathered rows (e.g. seeded uniform 2×3
-// geometry) keep READING fine — this only fires on write.
-export const AREA_TOLERANCE = 0.15;
+// P3: a placement's drawn area (w×h, square feet) must be within ±2%
+// (AREA_TOLERANCE, src/core/planGeometry.ts — owner decision 2026-10-13, was
+// 15% under the integer-foot grid) of the unit's sqft. Enforced only when a
+// placement is NEW or its AREA CHANGES (resize): moves and 90° rotations of an
+// existing placement keep its stored area and are grandfathered, so plans
+// drawn under the old 15% band stay editable. Rejected with 400 VALIDATION.
+export { AREA_TOLERANCE };
 
 // Per-size width/height aspect (w/h) used ONLY when a UnitSize row has no
 // widthFt/heightFt dims. Chosen so the formula reproduces the catalogue
-// footprints exactly: LOCKER 3/4, SMALL 5/6, MEDIUM 6/10, LARGE 10/12.
+// footprints' proportions: LOCKER 3/4, SMALL 5/6, MEDIUM 6/10, LARGE 10/12.
 const SIZE_ASPECT: Record<string, number> = {
   LOCKER: 3 / 4,
   SMALL: 5 / 6,
@@ -66,10 +70,11 @@ const SIZE_ASPECT: Record<string, number> = {
 const DEFAULT_ASPECT = 3 / 4;
 
 /**
- * Integer foot rect for a unit of `sqft` square feet. Prefers explicit
- * UnitSize.widthFt/heightFt dims; otherwise derives from the per-size aspect:
- * w = round(sqrt(sqft·aspect)), h = ceil(sqft/w) (so w·h ≥ sqft and the rect
- * stays integral). Unknown sizes use DEFAULT_ASPECT.
+ * Decimal-foot rect for a unit of `sqft` square feet (fitSqftFootprint in
+ * src/core/planGeometry.ts — the CMS editor runs the same function). Explicit
+ * UnitSize.widthFt/heightFt dims win when their area is within tolerance of
+ * the unit's sqft; otherwise the rect keeps the dims' (or the per-size)
+ * aspect, scaled to the exact sqft (w snapped to 0.1 ft, h = sqft / w).
  */
 export function sqftFootprint(
   sqft: number,
@@ -77,20 +82,8 @@ export function sqftFootprint(
   widthFt?: number | null,
   heightFt?: number | null,
 ): { w: number; h: number } {
-  if (
-    widthFt != null &&
-    heightFt != null &&
-    isPlanNumber(widthFt) &&
-    isPlanNumber(heightFt) &&
-    widthFt > 0 &&
-    heightFt > 0
-  ) {
-    return { w: widthFt, h: heightFt };
-  }
-  const aspect = (sizeCode && SIZE_ASPECT[sizeCode.toUpperCase()]) || DEFAULT_ASPECT;
-  const w = Math.max(1, Math.round(Math.sqrt(Math.max(1, sqft) * aspect)));
-  const h = Math.max(1, Math.ceil(Math.max(1, sqft) / w));
-  return { w, h };
+  const fallbackAspect = (sizeCode && SIZE_ASPECT[sizeCode.toUpperCase()]) || DEFAULT_ASPECT;
+  return fitSqftFootprint(sqft, { widthFt, heightFt, fallbackAspect });
 }
 
 /** True when two decimal-foot rects share any interior area (touching edges are
@@ -1206,9 +1199,12 @@ export async function setUnitPlacement(floorId: string, unitId: string, input: P
   // lock-to-sqft resize and true-size ghost keep new writes inside the band.
   // Runs after the stacking/overlap rules so stack attempts report their
   // specific error first.
+  // Grandfathering: an existing placement whose area is unchanged (pure move or
+  // 90° rotation) skips the check — only new or resized placements must fit.
   const area = rectAreaSqft(geom);
-  const deviation = Math.abs(area - unit.sqft) / Math.max(1, unit.sqft);
-  if (deviation > AREA_TOLERANCE) {
+  const deviation = areaDeviation(geom, unit.sqft);
+  const areaChanged = !existing || rectAreaSqft(existing) !== area;
+  if (areaChanged && deviation > AREA_TOLERANCE) {
     const pct = Math.round(deviation * 100);
     const fp = sqftFootprint(unit.sqft, unit.size.code, unit.size.widthFt, unit.size.heightFt);
     throw new AppError(

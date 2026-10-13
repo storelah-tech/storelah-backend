@@ -101,3 +101,61 @@ export function rectAreaSqft(r: { width: number; height: number }): number {
 export function formatFt(ft: number): string {
   return String(quantizeFt(ft));
 }
+
+// ---------- snapping ----------
+
+/** Snap steps the editor offers, in feet (operator default DEFAULT_SNAP_FT). */
+export const SNAP_STEPS_FT = [1, 0.5, 0.25, 0.1, 0.05, 0.01] as const;
+/** Fine step used while the operator holds Alt during a drag. */
+export const FINE_SNAP_FT = 0.01;
+
+/** Round a foot value to the nearest multiple of `step` (integer-exact in milli-feet). */
+export function snapFt(ft: number, step: number = DEFAULT_SNAP_FT): number {
+  const s = Math.max(1, toMilli(step));
+  return quantizeFt(fromMilli(Math.round(toMilli(ft) / s) * s));
+}
+
+/** Clamp then quantize: keeps lo <= v <= hi (hi wins when the range is empty). */
+export function clampFt(v: number, lo: number, hi: number): number {
+  return quantizeFt(Math.max(Math.min(v, hi), Math.min(lo, hi)));
+}
+
+// ---------- area tolerance + footprints ----------
+
+/**
+ * Max relative deviation between a placement's drawn area and its unit's
+ * sqft for NEW or RESIZED placements (owner decision 2026-10-13: 2%).
+ * Moves/rotations that keep the stored area are grandfathered.
+ */
+export const AREA_TOLERANCE = 0.02;
+
+/** Relative deviation of a rect's area from `sqft` (0 = exact). */
+export function areaDeviation(r: { width: number; height: number }, sqft: number): number {
+  return Math.abs(rectAreaSqft(r) - sqft) / Math.max(1, sqft);
+}
+
+/**
+ * Decimal-foot footprint for a unit of `sqft` square feet.
+ *  - Explicit size dims (widthFt × heightFt) win when their area is within
+ *    AREA_TOLERANCE of sqft.
+ *  - Otherwise the rect keeps the dims' aspect (or `fallbackAspect`, w/h) and
+ *    is scaled to the unit's exact sqft: w = sqrt(sqft·aspect) snapped to
+ *    `step`, h = sqft / w at 0.001 ft — so w·h ≈ sqft within rounding.
+ */
+export function fitSqftFootprint(
+  sqft: number,
+  opts: { widthFt?: number | null; heightFt?: number | null; fallbackAspect?: number; step?: number } = {},
+): { w: number; h: number } {
+  const safe = Math.max(MIN_RECT_SIDE_FT * MIN_RECT_SIDE_FT, isPlanNumber(sqft) && sqft > 0 ? sqft : 1);
+  const step = opts.step ?? DEFAULT_SNAP_FT;
+  const dw = opts.widthFt;
+  const dh = opts.heightFt;
+  const hasDims = isPlanNumber(dw) && isPlanNumber(dh) && dw > 0 && dh > 0;
+  if (hasDims && areaDeviation({ width: dw, height: dh }, safe) <= AREA_TOLERANCE) {
+    return { w: quantizeFt(dw), h: quantizeFt(dh) };
+  }
+  const aspect = hasDims ? dw / dh : opts.fallbackAspect && opts.fallbackAspect > 0 ? opts.fallbackAspect : 3 / 4;
+  const w = Math.max(MIN_RECT_SIDE_FT, snapFt(Math.sqrt(safe * aspect), step));
+  const h = Math.max(MIN_RECT_SIDE_FT, quantizeFt(safe / w));
+  return { w, h };
+}

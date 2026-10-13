@@ -102,9 +102,10 @@ operator can enter, which makes in-place widening possible:
 - The metrics core keeps its 0.1 mm base. Decimal feet convert via
   `feetToBase` (≤ 0.05 mm rounding), and `OFF_GRID` now also accepts the
   0.01-ft grid.
-- `AREA_TOLERANCE` stays **15% in Phase 1**: the editor still snaps to whole
-  feet, and e.g. a 37 sqft unit can't be drawn within 2% on an integer grid.
-  It drops to 2% in Phase 2, together with the decimal editor.
+- `AREA_TOLERANCE` stayed **15% in Phase 1** (integer editor) and is **2% since
+  Phase 2a**. It applies only to new or resized placements; moves and rotations
+  that keep the stored area are grandfathered (otherwise every legacy unit
+  drawn under 15% would fail on its next drag).
 
 #### Phase 1 deploy procedure (must read before prod)
 Verified locally (2026-10-13): the **currently deployed** Prisma client (`Int`
@@ -249,7 +250,8 @@ the billed `sqft`.
 | --- | --- | --- | --- |
 | **0. Decisions** (½ day) | Confirm: base unit (0.1 mm), API in ft ≤4 dp, default snap step, display units, area tolerance 2%, expand/contract migration, `Unit.sqft` deferred. | owner | Signed-off answers to §11. |
 | **1. Precision core** ✅ implemented (see §3a) | `planGeometry.ts` + 12 tests; in-place Int→Float migration; validation/routes/drafts/metrics accept + quantize decimals; OpenAPI 1.9.2; editor read guards tolerate decimals (editor input still integer → behaviour unchanged). | backend | All existing tests green; integer plans byte-identical in public read; new decimal API tests pass. |
-| **2. Editor foundation** (5–7 days) | Split `floorplanView.js`; SVG renderer; adaptive grid, rulers, status bar; snap-step selector + Alt/Shift; numeric inspector; arrow nudge; display-unit preference; exact lock-to-sqft. | backend (CMS) | A 4.73 × 6.34 ft unit can be placed by drag *and* by typing; no visual regression on existing plans (screenshot diff). |
+| **2a. Decimal editing** ✅ implemented (2026-10-13) | Shared `planGeometry` bundled to the editor (`pnpm build:admin-geometry`, drift-tested); snap-step selector (1 / 0.5 / 0.25 / **0.1** / 0.05 / 0.01 ft, remembered per browser) + Alt = 0.01 ft, Shift = axis lock / 0–45–90° lines; numeric inspector X/Y/W/H (+ simple arithmetic, ↑/↓ steps) with live area deviation; arrow-key nudge (Shift ×10, one save per burst); adaptive grid (10-ft majors, snap-step minors when ≥ 6 px); live readout; decimal canvas dims; exact lock-to-sqft; decimal footprints; edge-candidate auto-place; integer-exact client overlap; 2% tolerance with grandfathering. | backend (CMS) | ✅ Verified in browser on a cloned dev DB: 4.73 × 6.342 ft unit by typing (29.998 sqft), flush neighbour at 10.93 accepted / 10.92 rejected, nudge 5.9 → 6.2, Shift line snapped horizontal, Alt line at 0.01 ft. |
+| **2b. Editor structure** | Split `floorplanView.js` into modules; SVG renderer; rulers. Deferred until the uncommitted lead-dedup edits to `floorplanView.js` land (avoids a large merge conflict). | backend (CMS) | No visual regression on existing plans (screenshot diff). |
 | **3. Pro line tool** (4–5 days) | Click-click polyline, typed length/angle, constraints, object snaps, vertex editing, line kinds incl. WALL thickness, measure tool. | backend (CMS) | Trace a real non-rectilinear boundary from dimensions alone; metrics UFA/NLA match a hand calculation to ±0.1 sqft. |
 | **4. Productivity** (4–6 days) | Command stack + redo, batch save + autosave indicator + concurrency, multi-select, align/distribute, duplicate/copy-paste, array, layers/lock, shortcut sheet. | backend (CMS) | Lay out a 20-locker row in < 1 min; undo/redo across 50 ops; no lost edits on refresh. |
 | **5. Underlay + export** (3–4 days) | Upload + 2-point calibration, opacity/lock; PDF/SVG/PNG export with scale bar. | backend (+devops for S3 check) | Calibrated underlay within 0.1% on a known dimension; exported PDF prints at stated scale. |

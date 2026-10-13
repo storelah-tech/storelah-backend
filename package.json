@@ -25,7 +25,8 @@
     "db:backfill-blocks": "tsx scripts/backfill-floor-plan-blocks.ts",
     "db:backfill-footprints": "tsx scripts/backfill-placement-footprints.ts",
     "db:backfill-matrix-sizes": "tsx scripts/backfill-matrix-size-categories.ts",
-    "db:studio": "prisma studio"
+    "db:studio": "prisma studio",
+    "build:admin-geometry": "tsx scripts/build-admin-geometry.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

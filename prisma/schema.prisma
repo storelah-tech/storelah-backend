@@ -659,6 +659,16 @@ model Lead {
   // packed into note) so new rows keep the double-submit guard; legacy rows
   // are still matched via their packed `idempotencyKey: <key>` note line.
   idempotencyKey   String?
+  // Lead identity (email-primary / phone-secondary — see normalizeLeadIdentity
+  // in src/core/leads.ts). emailNorm = trim().toLowerCase() or null;
+  // mobileNorm = digits-only with the SG rule (8 digits starting 3/6/8/9 get
+  // a 65 prefix; 65+8 digits kept; <6 digits -> null); leadGroupKey =
+  // emailNorm ?? ('phone:' + mobileNorm) ?? null. Stamped on every write,
+  // backfilled for legacy rows (see migration lead_identity_norms). No UNIQUE:
+  // many-rows-per-email history is preserved by design — rows link, never merge.
+  emailNorm        String?
+  mobileNorm       String?
+  leadGroupKey     String?
   createdAt     DateTime   @default(now())
   updatedAt     DateTime   @updatedAt
 
@@ -666,6 +676,9 @@ model Lead {
   conversations Conversation[]
 
   @@index([idempotencyKey])
+  @@index([emailNorm])
+  @@index([mobileNorm])
+  @@index([leadGroupKey])
   // Quotation PDFs issued for this lead (PROPOSAL_SENT flow — see Quotation).
   quotations Quotation[]
 }

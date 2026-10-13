@@ -1172,6 +1172,10 @@ export async function submitCustomerRequest(payload: CustomerJwtPayload, input: 
       source: 'WEBSITE',
       stage: 'NEW_ENQUIRY',
       note: parts.join(' | '),
+      // Contact-less request rows stay ungrouped (null identity columns).
+      emailNorm: null,
+      mobileNorm: null,
+      leadGroupKey: null,
     },
   });
 

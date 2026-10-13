@@ -25,7 +25,7 @@ export const openapiSpec = {
   openapi: '3.0.3',
   info: {
     title: 'StoreLah Booking API',
-    version: '1.9.1',
+    version: '1.9.2',
     description: [
       'Customer-facing booking API for the StoreLah self-storage business.',
       '',
@@ -284,6 +284,21 @@ export const openapiSpec = {
         '`meta.skippedPlacements`) then walks DRAFT → ACTIVE via the existing publish ' +
         'path. Drafts are CMS-only (Bearer JWT) — the public floor-plan read resolves ' +
         'the ACTIVE live plan and never touches drafts. All pre-existing shapes are unchanged.',
+      '',
+      'v1.9.2 is ADDITIVE-ONLY over 1.9.1: per-email lead-group reads for the operator ' +
+        'CMS (served on the CMS host under `/api/v1/cms`, Bearer JWT) — ' +
+        '`GET /cms/leads/groups` lists one summary per identity ' +
+        '(`{ email, emailDisplay, groupKey, count, latestAt, stages, phones, names, ' +
+        'leadIds, phoneVariance }`, `latestAt` desc, `meta: { total, page, perPage }`; ' +
+        '`?search=` matches email/emailNorm/name, `?stage=`/`?source=` select groups ' +
+        'having ≥1 matching row while each listed group keeps its FULL content; ' +
+        'phone-only groups list with `email: null` + `groupKey: "phone:…"`; contact-less ' +
+        'rows are excluded by design) and `GET /cms/leads/groups/{key}` returns the ' +
+        'full newest-first timeline for one URL-encoded groupKey (full lead objects ' +
+        'plus per-row `phoneVariance` and `terminalReadOnly` on WON/LOST, which link ' +
+        'read-only and are never re-opened; unknown key is 404). `GET /cms/leads/stats` ' +
+        'gains `uniqueEmails`, `repeatEnquiryRate` and `avgEnquiriesPerEmail` (additive). ' +
+        '`GET /cms/leads` (grouped-by-stage) is unchanged.',
     ].join('\n'),
   },
   servers: [
@@ -629,9 +644,12 @@ export const openapiSpec = {
           '`addons` up to 20 items, `promoCode`/`promoDiscountAmt`, `movingService`, ',
           '`totalDueToday`; `note` carries only the message head) — pre-v2 note-packed ',
           '`key: value` rows keep reading via the legacy parser fallback. `unitCode` is a ',
-          'loose reference only (never an FK, never a 400). Dedupe: a repeat `idempotencyKey` ',
-          '(24h) or the same email+mobile+branch within 10 minutes returns the existing row ',
-          'with 200 instead of a duplicate. No authentication. Envelope `{ data }`.',
+          'loose reference only (never an FK, never a 400). Link-or-create: a repeat `idempotencyKey` ',
+          '(24h) returns the existing row with 200; otherwise a new row is always created and ',
+          'linked into its email-primary / phone-secondary identity group (same email across ',
+          'branches is one identity; phone-only rows group by normalized phone). The response ',
+          'echoes the lead plus additive linkage fields (`deduped`, `linked`, `groupCount`, ',
+          '`phoneVariance`). No authentication. Envelope `{ data }`.',
         ].join('\n'),
         operationId: 'createPublicLead',
         security: [],

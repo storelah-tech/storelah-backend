@@ -29,7 +29,8 @@ import {
 } from '../core/floors';
 import { listTenants, createTenant, updateTenant, deactivateTenant, listMoveOuts, transitionMoveOut } from '../core/tenants';
 import { listVerificationsForCms, setVerificationReview } from '../core/verifications';
-import { listLeads, getLeadById, getLeadStats, getWeeklyAnalytics, createLead, updateLead, deleteLead } from '../core/leads';
+import { listLeads, getLeadById, getLeadStats, getWeeklyAnalytics, listLeadGroups, getLeadGroupTimeline, createLead, updateLead, deleteLead } from '../core/leads';
+import type { LeadStage, LeadSource } from '@prisma/client';
 import {
   listConversations,
   createConversation,
@@ -667,8 +668,65 @@ router.get('/leads', requireAuth, async (req: Request, res: Response) => {
 });
 
 // Lead funnel / source stats for the command centre and pipeline header.
+// Additive Phase-3 fields: uniqueEmails, repeatEnquiryRate,
+// avgEnquiriesPerEmail (see src/core/leads.ts for definitions).
 router.get('/leads/stats', requireAuth, async (_req: Request, res: Response) => {
   ok(res, await getLeadStats());
+});
+
+// --- Per-email lead groups (Phase 3, additive reads) ---
+// NOTE: both routes are registered BEFORE GET /leads/:id so "groups" and a
+// group key are never parsed as a lead id. GET /leads (grouped-by-stage)
+// above is unchanged for compat.
+//   GET /leads/groups — one summary per identity ({ email, emailDisplay,
+//     groupKey, count, latestAt, stages, phones, names, leadIds,
+//     phoneVariance }), latestAt desc, paged via meta { total, page, perPage }.
+//     ?search= matches email/emailNorm/name (case-insensitive); ?stage= /
+//     ?source= select groups having >= 1 matching row while each listed group
+//     still carries its FULL content (see listLeadGroups). Phone-only groups
+//     list with email null and groupKey 'phone:<mobileNorm>'; contact-less
+//     rows (no email/phone) are excluded by design (no identity to group by).
+//   GET /leads/groups/:key — full newest-first timeline for one URL-encoded
+//     groupKey (full lead objects as in the existing detail, plus per-row
+//     phoneVariance and terminalReadOnly on WON/LOST, which link read-only
+//     and are never re-opened). Unknown key → 404.
+const leadGroupListQuerySchema = z.object({
+  search: z.string().trim().max(120).optional(),
+  stage: z
+    .enum(['NEW_ENQUIRY', 'CONTACTED', 'VIEWING_BOOKED', 'PROPOSAL_SENT', 'PENDING_PAYMENT', 'WON', 'LOST'])
+    .optional(),
+  source: z.enum(['WEBSITE', 'WHATSAPP', 'REFERRAL', 'GOOGLE']).optional(),
+  page: z.coerce.number().int().min(1).default(1),
+  perPage: z.coerce.number().int().min(1).max(100).default(10),
+});
+
+router.get('/leads/groups', requireAuth, async (req: Request, res: Response) => {
+  const parsed = leadGroupListQuerySchema.safeParse(req.query);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid lead-group query', parsed.error.flatten());
+    return;
+  }
+  const { rows, meta } = await listLeadGroups({
+    search: parsed.data.search,
+    stage: parsed.data.stage as LeadStage | undefined,
+    source: parsed.data.source as LeadSource | undefined,
+    page: parsed.data.page,
+    perPage: parsed.data.perPage,
+  });
+  ok(res, rows, meta);
+});
+
+router.get('/leads/groups/:key', requireAuth, async (req: Request, res: Response) => {
+  // Express decodes the segment; callers must encodeURIComponent the exact
+  // groupKey from the list endpoint (a key containing a raw '/' cannot
+  // round-trip through a path segment).
+  const key = String(req.params.key ?? '');
+  if (!key.trim()) {
+    fail(res, 400, 'VALIDATION', 'Group key is required');
+    return;
+  }
+  const { group, timeline } = await getLeadGroupTimeline(key);
+  ok(res, { group, timeline }, { count: timeline.length });
 });
 
 // Weekly enquiry/booking series for the analytics chart (?weeks=N, 1..26).
@@ -911,7 +969,7 @@ const createQuoteSchema = z
     preferredBranchId: z.string().min(1).nullable().optional(),
     monthlyRate: z.number().nonnegative().nullable().optional(),
     note: z.string().max(2000).nullable().optional(),
-    email: z.string().email().nullable().optional(),
+  email: z.string().trim().toLowerCase().max(254).email().nullable().optional(),
     mobile: z.string().trim().max(40).nullable().optional(),
     owner: z.string().trim().max(80).nullable().optional(),
     nextActionAt: z.string().datetime().nullable().optional(),

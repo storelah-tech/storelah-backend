@@ -28,7 +28,10 @@ import { bindContentSection, wireContent } from './contentView.js';
 import {
   setRefreshAll as leadDrawerSetRefreshAll, setLeadDrawerActions, openLeadDrawer, wireLeadDrawer,
 } from './leadsDetailDrawer.js';
-import { setRefsLoader as fpSetRefsLoader, fpInitEvents, fpOpen, fpViewClose, getFpViewFloorId } from './floorplanView.js';
+import {
+  ensureLeadGroupControls, renderEmailGroups, wireGroupRowClicks, leadRowHtml,
+} from './leadsGroups.js';
+import { setRefsLoader as fpSetRefsLoader, fpInitEvents, fpOpen, fpOpenLibrary, fpViewClose, getFpViewFloorId } from './floorplanView.js';
 import { setRefreshAll as floorsSetRefreshAll, setRefsLoader as floorsSetRefsLoader, bindFloorsView, wireFloorsView } from './floorsView.js';
 import { wireMetricsPanel, refreshMetricsView } from './metricsView.js';
 import {
@@ -69,7 +72,7 @@ const sideNav = {
     ['Move-ins', 'customers', 'customer-moveins'], ['Quotes', 'customers', 'customer-quotes'],
     ['Move-outs', 'customers', 'customer-moveouts']],
   facilities: [['Units Information', 'facilities', 'facility-map'], ['Units', 'facilities', 'facility-units'],
-    ['Floor Plan Designer', 'facilities', 'facility-floorplans'], ['Maintenance', 'facilities', 'facility-maintenance'],
+    ['Floor Plan Designer', 'facilities', 'facility-floorplans'], ['Floor Plan Library', 'facilities', 'facility-floorplan-library'], ['Maintenance', 'facilities', 'facility-maintenance'],
     ['Assets & vendors', 'facilities', 'facility-assets'], ['Incidents', 'facilities', 'facility-incidents'],
     ['Access control', 'facilities', 'facility-access'], ['Inspections', 'facilities', 'facility-inspections']],
   extras: [['Protection plans', 'extras', 'extras-plans'], ['Addons', 'extras', 'extras-addons']],
@@ -379,7 +382,10 @@ async function importLeadsCsv(file) {
       if (n >= 0) body.monthlyRate = n;
     }
     if (ci.owner >= 0 && cell(ci.owner)) body.owner = cell(ci.owner);
-    if (ci.email >= 0 && cell(ci.email)) body.email = cell(ci.email);
+    // Normalize identity before POST (trim + lowercase email, trim mobile) —
+    // the server recomputes the canonical norms, but sending clean values
+    // keeps the import aligned with the email-primary identity contract.
+    if (ci.email >= 0 && cell(ci.email)) body.email = cell(ci.email).toLowerCase();
     if (ci.mobile >= 0 && cell(ci.mobile)) body.mobile = cell(ci.mobile);
     if (ci.note >= 0 && cell(ci.note)) body.note = cell(ci.note);
     try {
@@ -473,6 +479,13 @@ function getLeadStats(data) {
 async function bindLeadTable() {
   try {
     ensureLeadsDateFilter();
+    ensureLeadGroupControls(() => bindLeadTable().catch(() => {}));
+    // Phase 4 email-group mode: one row per identity from GET /leads/groups
+    // (server-paged); the stage view below is unchanged for compat.
+    if (state.leadViewMode === 'email') {
+      await renderEmailGroups();
+      return;
+    }
     const data = await get(withDateQuery('/leads', state.leadDate));
     const flat = flattenLeads(data);
     state.leadsCache = flat;
@@ -486,28 +499,9 @@ async function bindLeadTable() {
     if (!filtered.length) { tbody.innerHTML = '<tr><td colspan="10"><div class="section-empty">' + escapeHtml(rangeEmptyText('leads', state.leadDate, 'No leads match — adjust your filters.')) + '</div></td></tr>'; return; }
     const start = (state.leadPage - 1) * state.leadPerPage;
     const rows = filtered.slice(start, start + state.leadPerPage);
-    tbody.innerHTML = rows.map((l) => {
-      const initial = (l.name || '?').charAt(0).toUpperCase();
-      const heat = stageLabel[l.stage] || l.stage;
-      // v2 booking-intent tooltip on the size/facility cell — columns stay
-      // intact (Status/Intent/Source/Next-action/Est-value untouched).
-      const intentTip = [
-        l.unitCode ? 'Unit ' + l.unitCode : null,
-        l.moveInDate ? 'Move-in ' + fmtDay(l.moveInDate) : null,
-      ].filter(Boolean).join(' · ');
-      const sameEmail = Array.isArray(l.sameEmailEnquiries) ? l.sameEmailEnquiries : [];
-      const mergeTip = sameEmail.length ? sameEmail.map((g) => (g.name || '') + ' · ' + (stageLabel[g.stage] || g.stage) + ' · ' + fmtDay(g.createdAt)).join('\n') : '';
-      const mergeBadge = sameEmail.length ? ' <span class="pill blue" title="' + escapeHtml(mergeTip) + '">+' + sameEmail.length + ' same email</span>' : '';
-      return '<tr data-lead-id="' + escapeHtml(l.id) + '" tabindex="0"><td><input class="check" type="checkbox"></td><td><div class="contact"><div class="avatar">' + initial + '</div><div><b>' + escapeHtml(l.name) + '</b>' + mergeBadge + '<small>' + (l.type === 'BUSINESS' ? 'Business' : 'Personal') + (l.segment ? ' · ' + escapeHtml(l.segment) : '') + '</small></div></div></td>' +
-        '<td><span class="pill ' + (l.stage === 'NEW_ENQUIRY' ? 'red' : l.stage === 'WON' ? 'green' : l.stage === 'LOST' ? '' : 'amber') + '">' + heat + '</span></td>' +
-        '<td>' + leadHeatHtml(l.stage, l.monthlyRate) + '</td>' +
-        '<td' + (intentTip ? ' title="' + escapeHtml(intentTip) + '"' : '') + '>' + escapeHtml(l.size || '—') + (l.branchCode ? ' · ' + escapeHtml(l.branchCode) : '') + (l.unitCode ? ' · ' + escapeHtml(l.unitCode) : '') + '</td>' +
-        '<td><span class="channel">' + (l.source ? l.source.charAt(0) : 'W') + '</span></td>' +
-        '<td>' + nextActionLabel(l) + '</td>' +
-        '<td><b>' + (l.monthlyRate ? '$' + (l.monthlyRate).toLocaleString() : '—') + '</b></td>' +
-        '<td><small>' + fmtDay(l.createdAt) + '</small></td>' +
-        '<td class="unit-actions"><button class="act-btn" data-act="edit" data-lead-id="' + escapeHtml(l.id) + '">Edit</button> <button class="act-btn danger" data-act="delete" data-lead-id="' + escapeHtml(l.id) + '">Delete</button></td></tr>';
-    }).join('');
+    // Row template lives in leadsGroups.js (shared with expanded group
+    // timelines) — output is identical to the previous inline version.
+    tbody.innerHTML = rows.map((l) => leadRowHtml(l)).join('');
   } catch (e) { showBanner('Leads: ' + describeError(e)); }
 }
 
@@ -3568,6 +3562,7 @@ function wireEvents() {
       else if (panel === 'facility-units') refreshUnitsView();
       else if (panel === 'facility-floors') bindFloorsView().catch((err) => showBanner('Floors: ' + describeError(err)));
       else if (panel === 'facility-floorplans') { fpOpen(); refreshMetricsView().catch((err) => showBanner('Metrics: ' + describeError(err))); }
+      else if (panel === 'facility-floorplan-library') { fpOpenLibrary().catch((err) => showBanner('Floor Plan Library: ' + describeError(err))); }
       else if (panel === 'facility-maintenance') bindMaintenance();
       else if (panel === 'facility-assets') bindAssets();
       else if (panel === 'facility-incidents') bindIncidents();
@@ -3983,11 +3978,23 @@ function wireEvents() {
       }
     }
   });
-  // Leads: filters + pager
-  $('#leadStatusFilter')?.addEventListener('change', (e) => { state.leadStatusFilter = e.target.value; state.leadPage = 1; bindLeadTable().catch(() => {}); });
-  $('#leadSourceFilter')?.addEventListener('change', (e) => { state.leadSourceFilter = e.target.value; state.leadPage = 1; bindLeadTable().catch(() => {}); });
-  $('#leadsPagePrev')?.addEventListener('click', () => { if (state.leadPage > 1) { state.leadPage--; bindLeadTable().catch(() => {}); } });
-  $('#leadsPageNext')?.addEventListener('click', () => { state.leadPage++; bindLeadTable().catch(() => {}); });
+  // Leads: filters + pager (status/source compose in both modes — client-side
+  // in By-stage, server-side via ?stage=/?source= in By-email; paging is
+  // client-side in By-stage and server-side in By-email).
+  $('#leadStatusFilter')?.addEventListener('change', (e) => { state.leadStatusFilter = e.target.value; state.leadPage = 1; state.leadGroupPage = 1; state.leadGroupExpanded = null; bindLeadTable().catch(() => {}); });
+  $('#leadSourceFilter')?.addEventListener('change', (e) => { state.leadSourceFilter = e.target.value; state.leadPage = 1; state.leadGroupPage = 1; state.leadGroupExpanded = null; bindLeadTable().catch(() => {}); });
+  $('#leadsPagePrev')?.addEventListener('click', () => {
+    if (state.leadViewMode === 'email') { if (state.leadGroupPage > 1) { state.leadGroupPage--; bindLeadTable().catch(() => {}); } return; }
+    if (state.leadPage > 1) { state.leadPage--; bindLeadTable().catch(() => {}); }
+  });
+  $('#leadsPageNext')?.addEventListener('click', () => {
+    if (state.leadViewMode === 'email') {
+      const pages = Math.max(1, Math.ceil(state.leadGroupTotal / state.leadGroupPerPage));
+      if (state.leadGroupPage < pages) { state.leadGroupPage++; bindLeadTable().catch(() => {}); }
+      return;
+    }
+    state.leadPage++; bindLeadTable().catch(() => {});
+  });
   $('#leadRows')?.addEventListener('click', (e) => {
     // Checkbox toggles must not open the drawer — only row intent does.
     if (e.target.closest('input[type="checkbox"]')) return;
@@ -4028,6 +4035,10 @@ function wireEvents() {
   // Lead detail drawer (row-click → right sidebar): shell wiring + DI so the
   // view can refresh lists and delegate to the entry-owned modals.
   wireLeadDrawer();
+  // Per-email group mode (Phase 4): toolbar toggle + debounced search and
+  // group-row expand/collapse. Coexists with the drawer handler above (group
+  // rows carry data-group-key, lead rows data-lead-id).
+  wireGroupRowClicks();
   setLeadDrawerActions({ onEditLead: openEditLead, onSchedule: (lead) => openCreateAppointment(lead && lead.id).catch((e) => showBanner('Schedule: ' + describeError(e))) });
   leadDrawerSetRefreshAll(async () => {
     await refreshAll().catch(() => {});

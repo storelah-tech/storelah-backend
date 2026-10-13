@@ -10,7 +10,7 @@ import { randomUUID } from 'node:crypto';
 import { beforeEach, describe, expect, it } from 'vitest';
 import type Stripe from 'stripe';
 import { applyCheckoutCompleted } from '../../src/core/checkout';
-import { updateLead } from '../../src/core/leads';
+import { markLeadWonForBooking, normalizeLeadIdentity, updateLead } from '../../src/core/leads';
 import { PIN, prisma, resetDb, seedMoveInWorld, uniqueEmail } from './fixtures';
 
 function shortId(): string {
@@ -93,6 +93,8 @@ async function makeLead(data: {
   unitCode?: string | null;
   preferredBranchId?: string | null;
 }) {
+  // Direct-row helper stamps the identity columns exactly like the write
+  // paths do (see normalizeLeadIdentity in src/core/leads.ts).
   return prisma.lead.create({
     data: {
       name: data.name,
@@ -101,6 +103,7 @@ async function makeLead(data: {
       stage: data.stage ?? 'NEW_ENQUIRY',
       unitCode: data.unitCode ?? null,
       preferredBranchId: data.preferredBranchId ?? null,
+      ...normalizeLeadIdentity(data.email ?? null, data.mobile ?? null),
     },
   });
 }
@@ -137,12 +140,20 @@ describe('checkout completion marks matching leads WON', () => {
       .toMatchObject({ status: 'OCCUPIED' });
   });
 
-  it('mobile-only contact matches; LOST is never resurrected; other-unit lead is left alone', async () => {
+  it('email-primary identity: same email + different phone still wins; different email never matches even on same phone; LOST never resurrected; other-unit lead left alone', async () => {
     const world = await seedBookingWorld({ email: uniqueEmail(), mobile: '87654321' });
-    const mobileOnly = await makeLead({
-      name: 'Mobile Prospect',
+    // Different email + same phone = a DIFFERENT identity (never flips).
+    const otherEmail = await makeLead({
+      name: 'Other Email Prospect',
       email: 'someone-else@test.local',
       mobile: world.mobile,
+      stage: 'CONTACTED',
+    });
+    // Same email + different phone = auto-linked (phone variance never blocks).
+    const sameEmail = await makeLead({
+      name: 'Same Email Prospect',
+      email: world.email,
+      mobile: '80009999',
       stage: 'CONTACTED',
     });
     const otherUnit = await makeLead({
@@ -165,12 +176,40 @@ describe('checkout completion marks matching leads WON', () => {
     const result = await applyCheckoutCompleted(completedSession(world.sessionId, world.bookingRef, 12000));
 
     expect(result.applied).toBe(true);
-    await expect(prisma.lead.findUnique({ where: { id: mobileOnly.id } })).resolves
+    await expect(prisma.lead.findUnique({ where: { id: sameEmail.id } })).resolves
       .toMatchObject({ stage: 'WON' });
+    await expect(prisma.lead.findUnique({ where: { id: otherEmail.id } })).resolves
+      .toMatchObject({ stage: 'CONTACTED' });
     await expect(prisma.lead.findUnique({ where: { id: otherUnit.id } })).resolves
       .toMatchObject({ stage: 'NEW_ENQUIRY' });
     await expect(prisma.lead.findUnique({ where: { id: lost.id } })).resolves
       .toMatchObject({ stage: 'LOST' });
+  });
+
+  it('phone-only booking matches phone-only leads (email-less identity)', async () => {
+    const phoneOnly = await makeLead({
+      name: 'Phone Only Prospect',
+      email: null,
+      mobile: '8111 2222',
+      stage: 'CONTACTED',
+    });
+    // Same phone but WITH an email = an email-group row, never merged into.
+    const emailRow = await makeLead({
+      name: 'Email Row Same Phone',
+      email: uniqueEmail(),
+      mobile: '81112222',
+      stage: 'CONTACTED',
+    });
+
+    const won = await prisma.$transaction((tx) =>
+      markLeadWonForBooking(tx, { email: null, mobile: '81112222' }),
+    );
+
+    expect(won).toBe(1);
+    await expect(prisma.lead.findUnique({ where: { id: phoneOnly.id } })).resolves
+      .toMatchObject({ stage: 'WON' });
+    await expect(prisma.lead.findUnique({ where: { id: emailRow.id } })).resolves
+      .toMatchObject({ stage: 'CONTACTED' });
   });
 
   it('replaying the same webhook is a safe no-op and leaves WON intact', async () => {

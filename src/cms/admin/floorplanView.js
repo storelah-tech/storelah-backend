@@ -831,6 +831,22 @@ export async function fpOpen() {
   await fpFetch();
 }
 
+// Floor Plan Library tab (facility-floorplan-library): drafts-only view over the
+// same GET /floor-plans/:floorId/drafts summaries the Designer used — no new
+// endpoint, no canvas/live-plan fetch. Reuses the Designer facility/floor
+// selector state (no duplicate selectors); Save-as-draft/Publish/live-plan
+// flows stay on the Designer tab. Lazy-load entry called from the admin.js
+// facility-tab handler on every visit (promo-library pattern).
+export async function fpOpenLibrary() {
+  if (!state.branches.length || !state.floors.length) await loadRefs();
+  if (!state.fp.floorId) {
+    const floors = branchFloors(state.fp.branchCode);
+    state.fp.floorId = floors[0]?.id || null;
+  }
+  fpPopulateSelects();
+  await fpFetchDrafts();
+}
+
 function fpRenderPalette() {
   const list = $('#fpPalette');
   const sub = $('#fpPaletteSub');
@@ -3219,10 +3235,40 @@ async function fpFetchDrafts() {
   }
 }
 
+// Floor Plan Library panel (#facility-floorplan-library) scope line: which
+// Designer facility/floor selector the drafts table is filtered by. The Library
+// owns no selectors of its own — it reuses state.fp.floorId, refreshed on every
+// tab visit via fpOpenLibrary(). textContent-only, no new CSS.
+function fpRenderLibraryScope() {
+  const el = document.getElementById('fpLibraryScope');
+  if (!el) return;
+  if (!state.fp.floorId) {
+    el.textContent = 'Pick a facility and floor in the Designer to list drafts.';
+    return;
+  }
+  const b = branchByCode(state.fp.branchCode);
+  const fl = (state.floors || []).find((f) => f.id === state.fp.floorId);
+  el.textContent = `${b ? b.name : state.fp.branchCode || '—'} · ${fl ? `Level ${fl.level} — ${fl.name}` : 'current floor'} — filtered by the Designer facility/floor selector`;
+}
+
+// Cross-panel switch Library → Designer without a live refetch: toggling the
+// subtab/panel classes directly (clicking the Designer subtab would run the
+// admin.js facility-tab handler → fpOpen() → fpFetch() and wipe a just-loaded
+// snapshot). Mirrors that handler's toggle + activateSide('facilities', …).
+function fpShowDesignerPanel() {
+  document.querySelectorAll('[data-tabs="facility"] [data-tab]').forEach((x) =>
+    x.classList.toggle('active', x.dataset.tab === 'facility-floorplans'));
+  document.querySelectorAll('#facilities > .module-panel').forEach((p) =>
+    p.classList.toggle('active', p.id === 'facility-floorplans'));
+  document.querySelectorAll('.nav-subitem').forEach((b) =>
+    b.classList.toggle('active', b.dataset.sidePage === 'facilities' && b.dataset.sidePanel === 'facility-floorplans'));
+}
+
 function fpRenderDrafts() {
   const tb = $('#fpDraftsBody');
   const sub = $('#fpDraftsSub');
   if (!tb) return;
+  fpRenderLibraryScope();
   if (sub) {
     sub.textContent = fpDrafts.length
       ? `${fpDrafts.length} saved version${fpDrafts.length === 1 ? '' : 's'} — view, load into the editor, or delete`
@@ -3384,6 +3430,10 @@ async function fpLoadDraft(draftId) {
     fpSetLoadedDraft({ id: d.id, version: d.version });
     fpRender();
     fpRenderMarkerTools();
+    // Loading from the Library lands on the Designer canvas: switch panels
+    // without a live refetch (fpShowDesignerPanel never calls fpOpen/fpFetch,
+    // so the just-loaded snapshot survives). Idempotent when already there.
+    fpShowDesignerPanel();
     // Metrics KPIs read the live server plan, so no notifyMetricsFloorChanged
     // here — the toolbar UFA/NLA strip already re-renders from canvas state.
     fpToast(`Draft v${d.version} loaded into the editor — live plan unchanged. Edit, then Save Canvas + Publish to expose it to booking, or Save as draft for a new version.`, true);
@@ -4142,6 +4192,11 @@ export function fpInitEvents() {
     if (act === 'load') fpLoadDraft(id);
     else if (act === 'view') fpViewDraft(id);
     else if (act === 'delete') fpDeleteDraft(id);
+  });
+  // Floor Plan Library → Designer cross-link: plain subtab navigation (the
+  // Designer handler lazy-loads via fpOpen, same as clicking the subtab).
+  $('#fpLibraryOpenDesigner')?.addEventListener('click', () => {
+    document.querySelector('[data-tabs="facility"] [data-tab="facility-floorplans"]')?.click();
   });
   // --- Studio ribbon: Mode segments (Select / Add Unit) ---
   // Draw Wall + Add Block reuse #fpBoundaryTool / #fpAddBlock above, so the

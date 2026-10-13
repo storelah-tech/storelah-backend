@@ -29,6 +29,18 @@ export const state = {
   leadPage: 1,
   leadPerPage: 10,
   leadsCache: [], // flat leads from the last GET /leads (filters/pager/export read this)
+  // per-email group mode (Phase 4): 'stage' (default, compat) | 'email'.
+  // Group rows come from GET /leads/groups (server-paged); the expanded
+  // timeline comes from GET /leads/groups/:key and merges into leadsCache
+  // so the detail drawer keeps working for timeline rows.
+  leadViewMode: 'stage',
+  leadGroupSearch: '', // debounced email/name search sent as ?search=
+  leadGroupPage: 1,
+  leadGroupPerPage: 10, // client pager stays 10/page (mirrors leadPerPage)
+  leadGroups: [], // current page of group summaries from GET /leads/groups
+  leadGroupTotal: 0, // meta.total for the group pager
+  leadGroupExpanded: null, // groupKey currently expanded (one at a time)
+  leadGroupTimelines: {}, // groupKey -> timeline rows (cached per group)
   // date-range filter state per data table ({ from, to } as YYYY-MM-DD or null;
   // server-side via ?from=&to=; pager resets to page 1 on range change)
   leadDate: { from: null, to: null },

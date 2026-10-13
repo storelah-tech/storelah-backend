@@ -2,6 +2,7 @@ import { prisma } from '../lib/prisma';
 import { toNum } from '../lib/format';
 import { AppError } from '../lib/http';
 import { AccountType, LeadSource, LeadStage, Prisma } from '@prisma/client';
+import { normalizeEmail } from './customers';
 
 const COLUMNS: LeadStage[] = ['NEW_ENQUIRY', 'CONTACTED', 'VIEWING_BOOKED', 'PROPOSAL_SENT', 'PENDING_PAYMENT', 'WON', 'LOST'];
 
@@ -26,6 +27,92 @@ export const LOSS_REASONS = [
   'No response',
   'Unspecified',
 ] as const;
+
+export interface LeadIdentity {
+  emailNorm: string | null;
+  mobileNorm: string | null;
+  leadGroupKey: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Lead identity (email-primary / phone-secondary) — the single shared helper
+// for every lead write path (createLead, createPublicLead, quotes new-lead +
+// transition, customer requests, CSV import via POST /leads, and the Stripe
+// webhook attribution in markLeadWonForBooking).
+//
+//   emailNorm  = trim().toLowerCase() or null (via normalizeEmail in
+//     core/customers.ts — the same canonicalizer as Customer.email).
+//   mobileNorm = digits-only with the SG rule: 8 digits starting 3/6/8/9 get
+//     a 65 prefix ("81234567" -> "6581234567"); 65+8 digits kept as-is;
+//     fewer than 6 digits -> null (too weak to identify anyone).
+//   leadGroupKey = emailNorm ?? ('phone:' + mobileNorm) ?? null, so
+//     NULL-email phone-only rows form phone-only groups that never auto-merge
+//     into email groups, and contact-less rows stay ungrouped (null).
+//
+// Global email identity: the branch leg is dropped — the same email across
+// branches is one identity. Same email + different/empty phone auto-links
+// (never blocks). Grouping never widens consent: per-row consentPdpa /
+// consentMarketing are preserved untouched — rows link, never merge.
+// ---------------------------------------------------------------------------
+
+/** Canonical email for lead identity: trim + lowercase, empty -> null. */
+export function normalizeLeadEmail(email: string | null | undefined): string | null {
+  if (email == null) return null;
+  const trimmed = email.trim();
+  return trimmed ? normalizeEmail(trimmed) : null;
+}
+
+/** Canonical phone for lead identity: digits-only + SG rule, weak -> null. */
+export function normalizeLeadMobile(mobile: string | null | undefined): string | null {
+  if (mobile == null) return null;
+  const digits = mobile.replace(/\D/g, '');
+  if (!digits || digits.length < 6) return null;
+  if (digits.length === 8 && /^[3689]/.test(digits)) return `65${digits}`;
+  return digits;
+}
+
+export function normalizeLeadIdentity(
+  email: string | null | undefined,
+  mobile: string | null | undefined,
+): LeadIdentity {
+  const emailNorm = normalizeLeadEmail(email);
+  const mobileNorm = normalizeLeadMobile(mobile);
+  return {
+    emailNorm,
+    mobileNorm,
+    leadGroupKey: emailNorm ?? (mobileNorm ? `phone:${mobileNorm}` : null),
+  };
+}
+
+/** Prisma write fragment stamping the identity columns for a lead row. */
+export function leadIdentityColumns(
+  email: string | null | undefined,
+  mobile: string | null | undefined,
+): LeadIdentity {
+  return normalizeLeadIdentity(email, mobile);
+}
+
+// Group linkage stats for a freshly written row: `linked` when the group
+// already held other rows, `groupCount` including this row, `phoneVariance`
+// when any other group row carries a different normalized phone (auto-link,
+// never block — same email + different/empty phone still links). Terminal
+// WON/LOST rows count: they link read-only (timeline) and are never
+// re-opened by a new enquiry — every capture below always creates a new row.
+async function groupStats(
+  groupKey: string,
+  mobileNorm: string | null,
+  excludeId?: string,
+): Promise<{ linked: boolean; groupCount: number; phoneVariance: boolean }> {
+  const others = await prisma.lead.findMany({
+    where: { leadGroupKey: groupKey, ...(excludeId ? { id: { not: excludeId } } : {}) },
+    select: { mobileNorm: true },
+  });
+  return {
+    linked: others.length > 0,
+    groupCount: others.length + 1,
+    phoneVariance: others.some((r) => (r.mobileNorm ?? null) !== mobileNorm),
+  };
+}
 
 export interface LeadBookingIntent {
   unitCode?: string | null;
@@ -258,6 +345,12 @@ export function serializeLead(l: LeadWithBranch) {
     mobile: l.mobile,
     owner: l.owner,
     nextActionAt: l.nextActionAt,
+    // Identity linkage (additive): the group this row links into. Every
+    // write stamps these columns; the ?? fallback covers any row predating
+    // the identity backfill without a data migration.
+    emailNorm: l.emailNorm ?? normalizeLeadEmail(l.email),
+    mobileNorm: l.mobileNorm ?? normalizeLeadMobile(l.mobile),
+    leadGroupKey: l.leadGroupKey ?? normalizeLeadIdentity(l.email, l.mobile).leadGroupKey,
     lossReason: l.lossReason ?? null,
     lossValue: l.lossValue ? toNum(l.lossValue) : null,
     unitCode: legacyOr(l.unitCode, legacy.unitCode),
@@ -326,6 +419,11 @@ export async function createLead(input: CreateLeadInput) {
   await assertBranch(input.preferredBranchId ?? null);
   assertLossReason(input.lossReason ?? undefined);
   assertIntent(input);
+  // Normalize contact on write (trim + lowercase email, trim mobile) so the
+  // stored row and its identity columns agree.
+  const email = input.email?.trim() ? normalizeLeadEmail(input.email)! : (input.email ?? null);
+  const mobile = input.mobile?.trim() ? input.mobile.trim() : (input.mobile ?? null);
+  const identity = normalizeLeadIdentity(email, mobile);
   const lead = await prisma.lead.create({
     data: {
       name: input.name,
@@ -337,8 +435,8 @@ export async function createLead(input: CreateLeadInput) {
       preferredBranchId: input.preferredBranchId ?? null,
       monthlyRate: input.monthlyRate ?? null,
       note: input.note ?? null,
-      email: input.email ?? null,
-      mobile: input.mobile ?? null,
+      email,
+      mobile,
       owner: input.owner ?? null,
       nextActionAt: input.nextActionAt ?? null,
       // Creating directly into LOST still gets attributed (same default as updateLead).
@@ -360,10 +458,16 @@ export async function createLead(input: CreateLeadInput) {
       promoDiscountAmt: input.promoDiscountAmt ?? null,
       movingService: input.movingService ?? null,
       totalDueToday: input.totalDueToday ?? null,
+      ...leadIdentityColumns(email, mobile),
     },
     include: { branch: true },
   });
-  return serializeLead(lead);
+  // Operator creates never dedupe — the row is always new — but it still
+  // links into its identity group (additive linked/groupCount/phoneVariance).
+  const stats = identity.leadGroupKey
+    ? await groupStats(identity.leadGroupKey, identity.mobileNorm, lead.id)
+    : { linked: false, groupCount: 1, phoneVariance: false };
+  return { ...serializeLead(lead), ...stats };
 }
 
 // ---------------------------------------------------------------------------
@@ -410,6 +514,12 @@ export interface PublicLeadResult {
   lead: ReturnType<typeof serializeLead> & { preferredBranchId: string | null };
   /** true when an existing row was returned instead of creating a duplicate. */
   deduped: boolean;
+  /** true when the row linked into a group that already had rows (additive). */
+  linked: boolean;
+  /** rows in the group including this row (additive). */
+  groupCount: number;
+  /** true when group rows carry a different phone (additive, never blocks). */
+  phoneVariance: boolean;
 }
 
 // Overflow fields packed into `note` (no dedicated column in v1). Stable
@@ -448,23 +558,30 @@ async function resolvePublicBranchId(input: PublicLeadInput): Promise<string | n
   return null;
 }
 
-const PUBLIC_DUPLICATE_WINDOW_MS = 10 * 60 * 1000;
 const IDEMPOTENCY_WINDOW_MS = 24 * 60 * 60 * 1000;
 
+// Minimum normalized-phone length for phone-only identity lookup. Below
+// this a digit string is too weak to identify anyone (mirrors the <6-digit
+// null rule in normalizeLeadMobile, with one extra digit of margin).
+const PHONE_LOOKUP_MIN_LENGTH = 7;
+
 export async function createPublicLead(input: PublicLeadInput): Promise<PublicLeadResult> {
-  const email = input.email?.trim() ? input.email.trim() : null;
+  // Normalize contact first (trim + lowercase email, trim mobile) so
+  // validation and identity agree: Foo@X.com and foo@x.com are one identity.
+  const email = normalizeLeadEmail(input.email);
   const mobile = input.mobile?.trim() ? input.mobile.trim() : null;
   if (!email && !mobile) {
     throw new AppError(400, 'VALIDATION', 'At least one of email or mobile is required');
   }
+  const identity = normalizeLeadIdentity(email, mobile);
 
   const preferredBranchId = await resolvePublicBranchId(input);
 
-  // Dedupe 1: idempotencyKey — a recent Lead with the same key is the same
-  // submission (double-click / retry safe). v2 rows carry the key in the
-  // `idempotencyKey` column; pre-v2 rows carry the packed
-  // `idempotencyKey: <key>` note line — match either. Full-line fragment on
-  // the note side avoids prefix collisions on short keys.
+  // Dedupe 1 (fast path, unchanged): idempotencyKey — a recent Lead with the
+  // same key is the same submission (double-click / retry safe). v2 rows
+  // carry the key in the `idempotencyKey` column; pre-v2 rows carry the
+  // packed `idempotencyKey: <key>` note line — match either. Full-line
+  // fragment on the note side avoids prefix collisions on short keys.
   if (input.idempotencyKey?.trim()) {
     const key = input.idempotencyKey.trim();
     const existing = await prisma.lead.findFirst({
@@ -476,24 +593,39 @@ export async function createPublicLead(input: PublicLeadInput): Promise<PublicLe
       orderBy: { createdAt: 'desc' },
     });
     if (existing) {
-      return { lead: { ...serializeLead(existing), preferredBranchId: existing.preferredBranchId ?? null }, deduped: true };
+      const existingKey =
+        existing.leadGroupKey ?? normalizeLeadIdentity(existing.email, existing.mobile).leadGroupKey;
+      const stats = existingKey
+        ? await groupStats(existingKey, existing.mobileNorm ?? normalizeLeadMobile(existing.mobile), existing.id)
+        : { linked: false, groupCount: 1, phoneVariance: false };
+      return {
+        lead: { ...serializeLead(existing), preferredBranchId: existing.preferredBranchId ?? null },
+        deduped: true,
+        ...stats,
+      };
     }
   }
 
-  // Dedupe 2: same contact + same branch within 10 minutes.
-  const recent = await prisma.lead.findFirst({
-    where: {
-      email: { equals: email },
-      mobile: { equals: mobile },
-      preferredBranchId: { equals: preferredBranchId },
-      createdAt: { gte: new Date(Date.now() - PUBLIC_DUPLICATE_WINDOW_MS) },
-    },
-    include: { branch: true },
-    orderBy: { createdAt: 'desc' },
-  });
-  if (recent) {
-    return { lead: { ...serializeLead(recent), preferredBranchId: recent.preferredBranchId ?? null }, deduped: true };
-  }
+  // Link-or-create (email-primary / phone-secondary, no branch leg): a new
+  // row is ALWAYS created — even for a seen contact, even across branches,
+  // even when an earlier row already went WON/LOST (terminal rows link
+  // read-only and are never re-opened). The row carries its group key so the
+  // timeline can render the whole identity together.
+  //
+  //   - email present  -> group by emailNorm (same email + different/empty
+  //     phone auto-links; a different email is a different group even when
+  //     the phone matches);
+  //   - email absent   -> group by normalized phone only (phone-only groups
+  //     never auto-merge into email groups — the lookup is scoped to rows
+  //     with no emailNorm via the 'phone:' key prefix).
+  const groupKey = identity.leadGroupKey;
+  const linkable =
+    identity.emailNorm != null ||
+    (identity.mobileNorm != null && identity.mobileNorm.length >= PHONE_LOOKUP_MIN_LENGTH);
+  const stats =
+    groupKey && linkable
+      ? await groupStats(groupKey, identity.mobileNorm)
+      : { linked: false, groupCount: 1, phoneVariance: false };
 
   // Loose unitCode check (best-effort existence, never a 400, never an FK):
   // the code is stored on the column either way so nothing blocks capture.
@@ -510,7 +642,9 @@ export async function createPublicLead(input: PublicLeadInput): Promise<PublicLe
 
   // v2: every booking-steps datum lands in a first-class column. `note`
   // carries only the free-text message head (legacy rows keep their packed
-  // lines, which serializeLead parses back on read).
+  // lines, which serializeLead parses back on read). Consent is per-row:
+  // grouping never widens consent, so the new row keeps exactly the consent
+  // it arrived with — nothing is copied from (or to) group rows.
   const moveInDate = input.moveInDate?.trim() ? new Date(input.moveInDate.trim()) : null;
   const lead = await prisma.lead.create({
     data: {
@@ -539,10 +673,19 @@ export async function createPublicLead(input: PublicLeadInput): Promise<PublicLe
       movingService: input.movingService ?? null,
       totalDueToday: input.totalDueToday ?? null,
       idempotencyKey: input.idempotencyKey?.trim() ? input.idempotencyKey.trim() : null,
+      ...leadIdentityColumns(email, mobile),
     },
     include: { branch: true },
   });
-  return { lead: { ...serializeLead(lead), preferredBranchId: lead.preferredBranchId ?? null }, deduped: false };
+  // groupStats ran pre-create over the existing group rows; its groupCount
+  // already includes the new row joining the group.
+  return {
+    lead: { ...serializeLead(lead), preferredBranchId: lead.preferredBranchId ?? null },
+    deduped: false,
+    linked: stats.linked,
+    groupCount: stats.groupCount,
+    phoneVariance: stats.phoneVariance,
+  };
 }
 
 export async function getLeadById(id: string) {
@@ -581,6 +724,25 @@ export async function updateLead(id: string, input: UpdateLeadInput) {
     if (input.lossValue !== undefined) lossPatch.lossValue = input.lossValue;
   }
 
+  // Contact writes are normalized (trim + lowercase email, trim mobile)
+  // and re-stamp the identity columns so an edited email/mobile moves the
+  // row into the right group instead of stranding stale norms.
+  const nextEmail =
+    input.email !== undefined
+      ? (input.email?.trim() ? normalizeLeadEmail(input.email)! : input.email)
+      : undefined;
+  const nextMobile =
+    input.mobile !== undefined
+      ? (input.mobile?.trim() ? input.mobile.trim() : input.mobile)
+      : undefined;
+  const nextIdentity =
+    nextEmail !== undefined || nextMobile !== undefined
+      ? leadIdentityColumns(
+          nextEmail !== undefined ? nextEmail : existing.email,
+          nextMobile !== undefined ? nextMobile : existing.mobile,
+        )
+      : null;
+
   const lead = await prisma.lead.update({
     where: { id },
     data: {
@@ -593,8 +755,9 @@ export async function updateLead(id: string, input: UpdateLeadInput) {
       ...(input.preferredBranchId !== undefined ? { preferredBranchId: input.preferredBranchId } : {}),
       ...(input.monthlyRate !== undefined ? { monthlyRate: input.monthlyRate } : {}),
       ...(input.note !== undefined ? { note: input.note } : {}),
-      ...(input.email !== undefined ? { email: input.email } : {}),
-      ...(input.mobile !== undefined ? { mobile: input.mobile } : {}),
+      ...(nextEmail !== undefined ? { email: nextEmail } : {}),
+      ...(nextMobile !== undefined ? { mobile: nextMobile } : {}),
+      ...(nextIdentity ? { ...nextIdentity } : {}),
       ...(input.owner !== undefined ? { owner: input.owner } : {}),
       ...(input.nextActionAt !== undefined ? { nextActionAt: input.nextActionAt } : {}),
       ...(lossPatch.lossReason !== undefined ? { lossReason: lossPatch.lossReason } : {}),
@@ -810,6 +973,19 @@ export async function getLeadStats() {
     })
     .sort((a, b) => b.assigned - a.assigned);
 
+  // --- Email identity rollup (Phase 3, additive — see the return-note for
+  // definitions). Norms are stamped on every write and backfilled, so the
+  // stored column is authoritative; the ?? fallback covers any row predating
+  // the backfill without a data migration.
+  const emailNormOf = (l: (typeof leads)[number]) => l.emailNorm ?? normalizeLeadEmail(l.email);
+  const emailRows = leads.filter((l) => emailNormOf(l) != null);
+  const uniqueEmails = new Set(emailRows.map((l) => emailNormOf(l) as string)).size;
+  const avgEnquiriesPerEmail =
+    emailRows.length && uniqueEmails ? Math.round((emailRows.length / uniqueEmails) * 100) / 100 : 0;
+  const repeatEnquiryRate = emailRows.length
+    ? Math.round(((emailRows.length - uniqueEmails) / emailRows.length) * 1000) / 10
+    : 0;
+
   return {
     total,
     newToday,
@@ -830,7 +1006,169 @@ export async function getLeadStats() {
     lossReasonBreakdown,
     scorecard,
     lossReasons: [...LOSS_REASONS],
+    // --- Per-email identity rollup (Phase 3, additive): distinct normalized
+    // emails plus repeat behaviour. uniqueEmails counts distinct emailNorm
+    // identities (phone-only and contact-less rows excluded — they have no
+    // email identity). avgEnquiriesPerEmail = email-identified rows ÷ unique
+    // emails (2dp, 0 when no email rows). repeatEnquiryRate = % of
+    // email-identified enquiries beyond the first per email, i.e.
+    // 100*(emailRows-unique)/emailRows (1dp, 0 when none) — 0 means every
+    // email enquired exactly once.
+    uniqueEmails,
+    repeatEnquiryRate,
+    avgEnquiriesPerEmail,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Lead groups — per-email / per-phone read model (Phase 3, additive reads).
+//
+// Groups derive from the stamped `leadGroupKey` column (emailNorm ??
+// 'phone:' + mobileNorm ?? null — see normalizeLeadIdentity). Contact-less
+// rows (leadGroupKey IS NULL) are EXCLUDED from both endpoints by design:
+// with no email and no usable phone there is no identity to group by, and
+// inventing a per-row pseudo-group would fake repeat counts. They stay
+// visible in GET /leads (grouped-by-stage, unchanged) and GET /leads/:id.
+//
+// Filter semantics (documented choice): `search` / `stage` / `source` select
+// GROUPS by existence (a group lists when >= 1 of its rows matches), but
+// every listed group carries its FULL content (count / stages / phones /
+// names / leadIds over ALL rows, newest-first). Rationale: the count badge
+// ("foo@x.com — 4 enquiries") must agree with the expanded timeline; counts
+// over the filtered subset would disagree with the timeline just opened.
+// ---------------------------------------------------------------------------
+
+export interface LeadGroupQuery {
+  search?: string;
+  stage?: LeadStage;
+  source?: LeadSource;
+  page?: number;
+  perPage?: number;
+}
+
+export interface LeadGroupSummary {
+  /** Most recent non-null raw email, or null for phone-only groups. */
+  email: string | null;
+  /** Display identity: email ?? most-recent mobile ?? groupKey. */
+  emailDisplay: string;
+  /** emailNorm for email groups, 'phone:<mobileNorm>' for phone-only groups. */
+  groupKey: string;
+  count: number;
+  latestAt: Date;
+  /** Distinct stages, newest-row-first. */
+  stages: LeadStage[];
+  /** Distinct non-null raw mobiles, newest-row-first. */
+  phones: string[];
+  /** Distinct names, newest-row-first. */
+  names: string[];
+  /** Row ids, newest-first (== timeline order). */
+  leadIds: string[];
+  /** True when group rows carry >1 distinct normalized phone (auto-linked, never blocked). */
+  phoneVariance: boolean;
+}
+
+/** Summarize one group's rows (must arrive newest-first). */
+function summarizeGroup(groupKey: string, rowsDesc: LeadWithBranch[]): LeadGroupSummary {
+  const email = rowsDesc.map((r) => r.email?.trim() || null).find((e) => e != null) ?? null;
+  const topMobile = rowsDesc.map((r) => r.mobile?.trim() || null).find((m) => m != null) ?? null;
+  const stages: LeadStage[] = [];
+  for (const r of rowsDesc) if (!stages.includes(r.stage)) stages.push(r.stage);
+  const phones: string[] = [];
+  for (const r of rowsDesc) {
+    const m = r.mobile?.trim() || null;
+    if (m && !phones.includes(m)) phones.push(m);
+  }
+  const names: string[] = [];
+  for (const r of rowsDesc) if (!names.includes(r.name)) names.push(r.name);
+  const normPhones = new Set(
+    rowsDesc.map((r) => r.mobileNorm ?? normalizeLeadMobile(r.mobile)).filter((n): n is string => n != null),
+  );
+  return {
+    email,
+    emailDisplay: email ?? topMobile ?? groupKey,
+    groupKey,
+    count: rowsDesc.length,
+    latestAt: rowsDesc[0]?.createdAt ?? new Date(0),
+    stages,
+    phones,
+    names,
+    leadIds: rowsDesc.map((r) => r.id),
+    phoneVariance: normPhones.size > 1,
+  };
+}
+
+export async function listLeadGroups(q: LeadGroupQuery): Promise<{
+  rows: LeadGroupSummary[];
+  meta: { total: number; page: number; perPage: number };
+}> {
+  const search = q.search?.trim() || '';
+  const page = Math.max(1, Math.floor(q.page ?? 1) || 1);
+  const perPage = Math.min(100, Math.max(1, Math.floor(q.perPage ?? 10) || 10));
+  // Existence filter: groups having >= 1 row matching search/stage/source.
+  const rowWhere: Prisma.LeadWhereInput = { leadGroupKey: { not: null } };
+  if (search) {
+    rowWhere.OR = [
+      { email: { contains: search, mode: 'insensitive' } },
+      { emailNorm: { contains: search.toLowerCase(), mode: 'insensitive' } },
+      { name: { contains: search, mode: 'insensitive' } },
+    ];
+  }
+  if (q.stage) rowWhere.stage = q.stage;
+  if (q.source) rowWhere.source = q.source;
+  const matched = await prisma.lead.findMany({
+    where: rowWhere,
+    select: { leadGroupKey: true },
+    distinct: ['leadGroupKey'],
+  });
+  const keys = matched.map((r) => r.leadGroupKey).filter((k): k is string => !!k);
+  if (!keys.length) return { rows: [], meta: { total: 0, page, perPage } };
+  // Full timelines for the matched groups (see the filter-semantics note above).
+  const rows = await prisma.lead.findMany({
+    where: { leadGroupKey: { in: keys } },
+    include: { branch: true },
+    orderBy: { createdAt: 'desc' },
+  });
+  const byKey = new Map<string, LeadWithBranch[]>();
+  for (const r of rows) {
+    const k = r.leadGroupKey as string;
+    const list = byKey.get(k);
+    if (list) list.push(r);
+    else byKey.set(k, [r]);
+  }
+  const summaries = [...byKey.entries()].map(([groupKey, rs]) => summarizeGroup(groupKey, rs));
+  summaries.sort((a, b) => b.latestAt.getTime() - a.latestAt.getTime());
+  const total = summaries.length;
+  return { rows: summaries.slice((page - 1) * perPage, page * perPage), meta: { total, page, perPage } };
+}
+
+export interface LeadGroupTimelineRow extends ReturnType<typeof serializeLead> {
+  /** True when this row's normalized phone differs from a group sibling's. */
+  phoneVariance: boolean;
+  /** True for terminal WON/LOST rows: linked read-only, never re-opened. */
+  terminalReadOnly: boolean;
+}
+
+export async function getLeadGroupTimeline(groupKey: string): Promise<{
+  group: LeadGroupSummary;
+  timeline: LeadGroupTimelineRow[];
+}> {
+  const rows = await prisma.lead.findMany({
+    where: { leadGroupKey: groupKey },
+    include: { branch: true },
+    orderBy: { createdAt: 'desc' },
+  });
+  if (!rows.length) throw new AppError(404, 'NOT_FOUND', 'Lead group not found');
+  const norms = rows.map((r) => r.mobileNorm ?? normalizeLeadMobile(r.mobile));
+  const timeline = rows.map((r, i) => ({
+    ...serializeLead(r),
+    // Same variance rule as link-time groupStats: any sibling with a
+    // different normalized phone (null counts as its own value).
+    phoneVariance: norms.some((n, j) => j !== i && (n ?? null) !== (norms[i] ?? null)),
+    // WON/LOST rows link read-only: capture always creates a new row and
+    // never re-opens them (see createPublicLead link-or-create).
+    terminalReadOnly: r.stage === 'WON' || r.stage === 'LOST',
+  }));
+  return { group: summarizeGroup(groupKey, rows), timeline };
 }
 
 // Weekly enquiry/booking series for the analytics chart. Buckets count
@@ -900,10 +1238,16 @@ export async function getWeeklyAnalytics(weeks = 8) {
 // Payment-won attribution (Stripe webhook → Lead WON).
 // Called best-effort from applyCheckoutCompleted (src/core/checkout.ts) — the
 // backend webhook is the single source of truth; the booking frontend never
-// sets lead stage. There is no Lead↔Booking FK, so matching is heuristic:
-//   - CONTACT match is required: tenant email (case-insensitive) OR tenant
-//     mobile (digits-compared, country-prefix tolerant so "+65 8123 4567"
-//     matches "81234567").
+// sets lead stage. There is no Lead↔Booking FK, so matching is by identity:
+// the shared normalizeLeadIdentity() columns (emailNorm / mobileNorm,
+// stamped on every write and backfilled — see lead_identity_norms).
+//
+//   - CONTACT match is by identity: booking email -> emailNorm equality
+//     (global email identity — same email across branches is one identity; a
+//     different email is a different identity even when the phone matches);
+//     email-less bookings fall back to phone-only rows (emailNorm IS NULL +
+//     mobileNorm equality, length >= 7, so phone-only groups never merge into
+//     email groups).
 //   - UNIT/BRANCH narrow only when the lead carries them: a lead with a
 //     different unitCode, or a preferredBranchId different from the booking's
 //     branch, is a different enquiry and is left alone. Leads carrying neither
@@ -923,48 +1267,32 @@ export interface LeadWonMatch {
   branchId?: string | null;
 }
 
-function digitsOnly(value: string): string {
-  return value.replace(/\D/g, '');
-}
-
-function mobilesMatch(a: string, b: string): boolean {
-  if (!a || !b) return false;
-  return a === b || a.endsWith(b) || b.endsWith(a);
-}
-
 export async function markLeadWonForBooking(
   client: Prisma.TransactionClient,
   match: LeadWonMatch,
 ): Promise<number> {
-  const email = match.email?.trim().toLowerCase() || null;
-  const mobileRaw = match.mobile?.trim() || null;
-  const mobileDigits = mobileRaw ? digitsOnly(mobileRaw) : '';
-  if (!email && !mobileDigits) return 0;
+  const { emailNorm, mobileNorm } = normalizeLeadIdentity(match.email, match.mobile);
+  if (!emailNorm && !mobileNorm) return 0;
   const unitCode = match.unitCode?.trim() || null;
   const branchId = match.branchId?.trim() || null;
 
-  // Minimal read: only non-terminal leads matching the contact. The mobile
-  // `contains` on the trailing digits catches format variants (+65 / spaces /
-  // dashes); every candidate is re-verified by digits comparison below, so a
-  // loose index hit can never widen the write set.
+  // Identity prefilter on the indexed norm columns. Email-primary: a booking
+  // email matches emailNorm rows only (never a phone cross-match into a
+  // different email's group). Phone-only bookings match phone-only rows.
   const contactOr: Prisma.LeadWhereInput[] = [];
-  if (email) contactOr.push({ email: { equals: email, mode: 'insensitive' } });
-  if (mobileRaw) {
-    contactOr.push({ mobile: { equals: mobileRaw } });
-    if (mobileDigits && mobileDigits !== mobileRaw) {
-      contactOr.push({ mobile: { equals: mobileDigits } });
-    }
-    if (mobileDigits.length >= 4) {
-      contactOr.push({ mobile: { contains: mobileDigits.slice(-7) } });
-    }
+  if (emailNorm) {
+    contactOr.push({ emailNorm });
+  } else if (mobileNorm && mobileNorm.length >= PHONE_LOOKUP_MIN_LENGTH) {
+    contactOr.push({ emailNorm: null, mobileNorm });
   }
+  if (contactOr.length === 0) return 0;
   const candidates = await client.lead.findMany({
     where: { stage: { notIn: ['WON', 'LOST'] }, OR: contactOr },
     select: {
       id: true,
       stage: true,
-      email: true,
-      mobile: true,
+      emailNorm: true,
+      mobileNorm: true,
       unitCode: true,
       preferredBranchId: true,
       note: true,
@@ -974,10 +1302,15 @@ export async function markLeadWonForBooking(
   const ids: string[] = [];
   for (const c of candidates) {
     if (c.stage === 'WON' || c.stage === 'LOST') continue;
-    const candidateEmail = c.email?.trim().toLowerCase() || null;
-    const candidateDigits = c.mobile?.trim() ? digitsOnly(c.mobile.trim()) : '';
-    const emailOk = !!email && !!candidateEmail && candidateEmail === email;
-    const mobileOk = !!mobileDigits && mobilesMatch(candidateDigits, mobileDigits);
+    // Re-verify in JS so a loose index hit can never widen the write set.
+    // (Norms are stamped on every write and backfilled, so the stored
+    // columns are authoritative — no raw-contact fuzzy fallback.)
+    const emailOk = !!emailNorm && (c.emailNorm ?? null) === emailNorm;
+    const mobileOk =
+      !emailNorm &&
+      !!mobileNorm &&
+      (c.emailNorm ?? null) == null &&
+      (c.mobileNorm ?? null) === mobileNorm;
     if (!emailOk && !mobileOk) continue;
     // Narrow by unit/branch only when the lead carries them (effective
     // unitCode falls back to legacy note-packed lines for pre-v2 rows).

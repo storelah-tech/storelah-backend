@@ -13,7 +13,7 @@ import { Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { toNum } from '../lib/format';
 import { AppError } from '../lib/http';
-import { createLead } from './leads';
+import { createLead, leadIdentityColumns, normalizeLeadIdentity } from './leads';
 import { getSetting } from './settings';
 import { buildQuotationPdfBytes, deriveQuoteNo, quotationFilename, type QuotationPdfData } from './quotationPdf';
 import { sendQuotationEmail } from './emails';
@@ -296,15 +296,16 @@ async function assertQuotationRefs(input: Pick<CreateQuotationInput, 'preferredB
 }
 
 // Create path duplicate guard: an OPEN quotation (PROPOSAL_SENT) already on
-// file for the same contact + facility is the same quotation — resubmitting is
-// a 409, not a second row. Contacts without email/mobile skip the guard.
+// file for the same identity + facility is the same quotation — resubmitting
+// is a 409, not a second row. Contacts without email/mobile skip the guard.
+// Identity is by normalized email (global, no branch leg) else normalized
+// phone, mirroring normalizeLeadIdentity in core/leads.ts.
 async function assertNoOpenQuotation(input: Pick<CreateQuotationInput, 'email' | 'mobile' | 'preferredBranchId'>) {
-  const email = input.email?.trim() ? input.email.trim() : null;
-  const mobile = input.mobile?.trim() ? input.mobile.trim() : null;
-  if (!email && !mobile) return;
+  const { emailNorm, mobileNorm } = normalizeLeadIdentity(input.email, input.mobile);
+  if (!emailNorm && !mobileNorm) return;
   const contactOr = [];
-  if (email) contactOr.push({ email: { equals: email, mode: 'insensitive' as const } });
-  if (mobile) contactOr.push({ mobile: { equals: mobile } });
+  if (emailNorm) contactOr.push({ emailNorm });
+  else contactOr.push({ mobileNorm });
   const existing = await prisma.lead.findFirst({
     where: {
       stage: QUOTE_STAGE,
@@ -349,6 +350,24 @@ export async function createQuotation(input: CreateQuotationInput, opts?: { crea
     }
     await assertQuotationRefs(input);
     const { leadId: _leadId, ...overrides } = input;
+    // Contact overrides are normalized and re-stamp the identity columns so
+    // the transitioned row stays in the right group (same helper as every
+    // other lead write — see normalizeLeadIdentity in core/leads.ts).
+    const nextQuoteEmail =
+      overrides.email !== undefined
+        ? (overrides.email?.trim() ? overrides.email.trim().toLowerCase() : overrides.email)
+        : undefined;
+    const nextQuoteMobile =
+      overrides.mobile !== undefined
+        ? (overrides.mobile?.trim() ? overrides.mobile.trim() : overrides.mobile)
+        : undefined;
+    const nextQuoteIdentity =
+      nextQuoteEmail !== undefined || nextQuoteMobile !== undefined
+        ? leadIdentityColumns(
+            nextQuoteEmail !== undefined ? nextQuoteEmail : lead.email,
+            nextQuoteMobile !== undefined ? nextQuoteMobile : lead.mobile,
+          )
+        : null;
     await prisma.lead.update({
       where: { id: lead.id },
       data: {
@@ -361,8 +380,9 @@ export async function createQuotation(input: CreateQuotationInput, opts?: { crea
         ...(overrides.preferredBranchId !== undefined ? { preferredBranchId: overrides.preferredBranchId } : {}),
         ...(overrides.monthlyRate !== undefined ? { monthlyRate: overrides.monthlyRate } : {}),
         ...(overrides.note !== undefined ? { note: overrides.note } : {}),
-        ...(overrides.email !== undefined ? { email: overrides.email } : {}),
-        ...(overrides.mobile !== undefined ? { mobile: overrides.mobile } : {}),
+        ...(nextQuoteEmail !== undefined ? { email: nextQuoteEmail } : {}),
+        ...(nextQuoteMobile !== undefined ? { mobile: nextQuoteMobile } : {}),
+        ...(nextQuoteIdentity ? { ...nextQuoteIdentity } : {}),
         ...(overrides.owner !== undefined ? { owner: overrides.owner } : {}),
         ...(overrides.nextActionAt !== undefined ? { nextActionAt: overrides.nextActionAt } : {}),
         ...(overrides.unitCode !== undefined ? { unitCode: overrides.unitCode } : {}),

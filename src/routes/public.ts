@@ -216,14 +216,18 @@ router.get('/content/:key/image', async (req: Request, res: Response) => {
 // first-class Lead column (v2 field-sync — see core/leads.ts) and `note`
 // carries only the message head. Pre-v2 note-packed rows still read via the
 // legacy parser fallback in serializeLead.
-// Dedupe: repeat idempotencyKey (24h) or same email+mobile+branch within
-// 10 min returns the existing row with 200 instead of a duplicate.
+// Dedupe: repeat idempotencyKey (24h) returns the existing row with 200.
+// Otherwise link-or-create: a new row is always created and linked into its
+// email-primary / phone-secondary identity group (same email across branches
+// is one identity; phone-only rows group by normalized phone). The response
+// carries additive linkage fields (deduped, linked, groupCount,
+// phoneVariance) alongside the serialized lead.
 const emptyToNull = (v: unknown) => (typeof v === 'string' && v.trim() === '' ? null : v);
 
 const publicLeadSchema = z
   .object({
     name: z.string().trim().min(1).max(120),
-    email: z.preprocess(emptyToNull, z.string().trim().max(254).email().nullable().optional()),
+    email: z.preprocess(emptyToNull, z.string().trim().toLowerCase().max(254).email().nullable().optional()),
     mobile: z.preprocess(emptyToNull, z.string().trim().max(40).nullable().optional()),
     purpose: z.preprocess(emptyToNull, z.enum(['personal', 'business']).nullable().optional()),
     companyName: z.preprocess(emptyToNull, z.string().trim().max(120).nullable().optional()),
@@ -281,7 +285,7 @@ router.post('/leads', publicLeadLimiter, async (req: Request, res: Response) => 
     return;
   }
   const v = parsed.data;
-  const { lead, deduped } = await createPublicLead({
+  const { lead, deduped, linked, groupCount, phoneVariance } = await createPublicLead({
     name: v.name,
     email: v.email ?? null,
     mobile: v.mobile ?? null,
@@ -309,10 +313,10 @@ router.post('/leads', publicLeadLimiter, async (req: Request, res: Response) => 
     idempotencyKey: v.idempotencyKey ?? null,
   });
   if (deduped) {
-    ok(res, lead);
+    ok(res, { ...lead, deduped, linked, groupCount, phoneVariance });
     return;
   }
-  created(res, lead);
+  created(res, { ...lead, deduped, linked, groupCount, phoneVariance });
 });
 
 export default router;

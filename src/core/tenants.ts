@@ -2,6 +2,7 @@ import { prisma } from '../lib/prisma';
 import { toNum } from '../lib/format';
 import { AppError } from '../lib/http';
 import { AccountType, Prisma, TenantStatus } from '@prisma/client';
+import { normalizeEmail } from './customers';
 
 type TenantWithUnit = Prisma.TenantGetPayload<{
   include: { unit: { include: { size: true } } };
@@ -212,7 +213,9 @@ export async function createTenant(input: CreateTenantInput) {
       name: input.name,
       type: input.type ?? 'PERSONAL',
       segment: input.segment,
-      email: input.email,
+      // Reads are case-insensitive; writes store trim()+lowercase so
+      // email-keyed lookups keep matching (same canonicalizer as Customer).
+      email: input.email != null ? normalizeEmail(input.email) : input.email,
       mobile: input.mobile,
       unitId: input.unitId,
       moveInDate: input.moveInDate,
@@ -266,7 +269,7 @@ export async function updateTenant(id: string, input: UpdateTenantInput) {
         name: input.name,
         type: input.type,
         segment: input.segment,
-        email: input.email,
+        email: input.email !== undefined ? (input.email != null ? normalizeEmail(input.email) : null) : undefined,
         mobile: input.mobile,
         monthlyRate: input.monthlyRate,
         unitId: nextUnitId,

@@ -1539,7 +1539,7 @@ export async function listFloorPlanBoundaries(floorId: string) {
  */
 export async function createFloorPlanBoundary(floorId: string, input: BoundaryInput) {
   const plan = await ensureCanvasPlan(floorId);
-  const label = input.label === undefined ? 'Boundary' : checkBoundaryLabel(input.label);
+  const label = input.label === undefined ? 'Wall' : checkBoundaryLabel(input.label);
   const kind = checkBoundaryKind(input.kind);
   const closed = input.closed ?? false;
   if (input.points === undefined) {
@@ -1929,7 +1929,7 @@ export async function applyFloorPlanBatch(floorId: string, input: FloorPlanBatch
     const prev = boundaryRows.get(b.id) as { thickness?: number | null } | undefined;
     return {
       id: b.id,
-      label: b.label === undefined ? 'Boundary' : checkBoundaryLabel(b.label),
+      label: b.label === undefined ? 'Wall' : checkBoundaryLabel(b.label),
       kind,
       points: checkBoundaryPoints(b.points, closed, plan),
       closed,

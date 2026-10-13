@@ -405,7 +405,7 @@ export async function saveDraft(floorId: string, input: SaveDraftInput = {}) {
         }
       }
       return {
-        label: b.label === undefined ? 'Boundary' : String(b.label).trim() || 'Boundary',
+        label: b.label === undefined ? 'Wall' : String(b.label).trim() || 'Wall',
         kind: b.kind == null ? 'BOUNDARY' : String(b.kind).trim() || 'BOUNDARY',
         points,
         closed,
@@ -598,7 +598,7 @@ export async function publishDraft(draftId: string, opts?: { actorId?: string })
     .filter((b) => b && Array.isArray(b.points))
     .map((b) => ({
       floorPlanId: '',
-      label: String(b.label ?? '').trim().slice(0, 80) || 'Boundary',
+      label: String(b.label ?? '').trim().slice(0, 80) || 'Wall',
       kind: String(b.kind ?? '').trim().slice(0, 24) || 'BOUNDARY',
       points: boundaryPointsOf(b.points).map(([x, y]) => [quantizeFt(x), quantizeFt(y)]) as unknown as Prisma.InputJsonValue,
       closed: !!b.closed,

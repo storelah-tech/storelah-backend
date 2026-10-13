@@ -70,7 +70,7 @@ const FP_TOOLBAR_GROUPS = [
   // Studio ribbon: the Select/Add-Unit/Draw-Wall/Add-Block segmented control.
   // fpBoundaryTool (line tool) + fpAddBlock (block form) are the Draw/Block
   // segments — no duplicate buttons, one handler each.
-  { id: 'mode', label: 'Mode', tools: ['fpModeSelect', 'fpModeAddUnit', 'fpBoundaryTool', 'fpPenKind', 'fpMeasureTool', 'fpAddBlock'] },
+  { id: 'mode', label: 'Mode', tools: ['fpModeSelect', 'fpModeAddUnit', 'fpBoundaryTool', 'fpMeasureTool', 'fpAddBlock'] },
   { id: 'markers', label: 'Markers/Safety', tools: ['fpMarkersBtn', 'fpMarkerTools'] },
   { id: 'canvas', label: 'Canvas', tools: ['fpWidth', 'fpHeight'] },
   { id: 'plan', label: 'Plan', tools: ['fpGfa', 'fpBoundaryMetrics'] },
@@ -1254,8 +1254,9 @@ function fpRenderBoundaryLayer(canvas, u, dims, boundaries, withOverlay, selecte
   for (const b of boundaries || []) {
     const pts = fpBoundaryPoints(b.points);
     if (pts.length < 2) continue;
-    // Line kinds (Phase 3): WALL = band of `thickness` ft, PARTITION = thin
-    // dashed, GUIDE = dotted construction line; BOUNDARY/PENCIL = marked area.
+    // Line kinds: BOUNDARY/PENCIL = wall marking area; PARTITION = interior
+    // wall (same line, lighter, no area wash); legacy WALL = band of
+    // `thickness` ft; legacy GUIDE = dotted construction line.
     const kind = String(b.kind || '').toUpperCase();
     const kindCls = kind === 'WALL' ? ' wall' : kind === 'PARTITION' ? ' partition' : kind === 'GUIDE' ? ' guide' : '';
     addShape(pts, b.closed, 'fp-boundary' + kindCls + (b.closed && !kindCls ? '' : ' open') + (b.id && b.id === selectedId ? ' selected' : ''));
@@ -1891,7 +1892,7 @@ function fpBuildExportSVG(opts) {
     if (pts.length < 2) continue;
     const d = 'M' + pts.map(([x, y]) => `${X(x)},${Y(y)}`).join('L') + (b.closed ? 'Z' : '');
     if (kind === 'WALL') out.push(`<path d="${d}" fill="none" stroke="#3A322B" stroke-width="${((b.thickness || DEFAULT_WALL_THICKNESS_FT) * k).toFixed(3)}" stroke-linejoin="miter" stroke-linecap="square"/>`);
-    else if (kind === 'PARTITION') out.push(`<path d="${d}" fill="none" stroke="#6B5F55" stroke-width="0.25" stroke-dasharray="1.5 1"/>`);
+    else if (kind === 'PARTITION') out.push(`<path d="${d}" fill="none" stroke="#0B4F5E" stroke-width="0.5" stroke-linejoin="round"/>`); // interior wall
     else out.push(`<path d="${d}" fill="${b.closed || pts.length >= 3 ? 'rgba(11,79,94,0.05)' : 'none'}" stroke="#0B4F5E" stroke-width="0.5" stroke-linejoin="round"/>`);
   }
   // Blocks.
@@ -2144,7 +2145,7 @@ function fpElemState(type, id) {
   if (type === 'boundary') {
     const b = (state.fp.boundaries || []).find((x) => x.id === id);
     return b
-      ? { id: b.id, label: b.label || 'Boundary', kind: b.kind || 'BOUNDARY', points: fpBoundaryPoints(b.points), closed: !!b.closed, sortOrder: b.sortOrder || 0, thickness: b.thickness ?? null }
+      ? { id: b.id, label: b.label || 'Wall', kind: b.kind || 'BOUNDARY', points: fpBoundaryPoints(b.points), closed: !!b.closed, sortOrder: b.sortOrder || 0, thickness: b.thickness ?? null }
       : null;
   }
   return null;
@@ -3137,11 +3138,11 @@ function fpRenderSelInfo() {
     const len = polylineLengthFt(pts, !!bnd.closed);
     const contributing = feeds && pts.length >= 3 && fpPolygonArea(pts) > 0;
     const distinct = new Set(pts.map(([x, y]) => `${toMilli(x)},${toMilli(y)}`)).size;
+    // "Counts toward floor area": on = BOUNDARY (marks UFA/NLA), off =
+    // PARTITION (interior wall). Legacy WALL / GUIDE rows show it off.
     const kindSel =
-      `<select class="fp-zoompreset" data-fp-line="kind" aria-label="Line kind" title="Boundary lines mark facility area (UFA/NLA); walls, partitions and guides do not. Guides are CMS-only.">` +
-      LINE_KINDS.map((k) => `<option value="${k}"${k === shownKind ? ' selected' : ''}>${FP_LINE_KIND_LABELS[k]}</option>`).join('') +
-      (LINE_KINDS.includes(shownKind) ? '' : `<option value="${escapeHtml(kind)}" selected>${escapeHtml(kind)}</option>`) +
-      '</select>';
+      `<label class="t-type" style="display:inline-flex;align-items:center;gap:4px;white-space:nowrap;" title="On for outer walls that enclose the facility area (UFA/NLA). Turn off for interior walls so they don't add area.">` +
+      `<input type="checkbox" data-fp-line="counts"${shownKind === 'BOUNDARY' || feeds ? ' checked' : ''}> Counts toward floor area</label>`;
     const lineNum = (key, label, v, title) =>
       `<span class="fp-num-lbl">${label}</span><input type="text" inputmode="decimal" class="tbl-search fp-num" data-fp-line="${key}" value="${escapeHtml(formatFt(v))}" aria-label="${title}" title="${title} — Enter applies, Esc reverts" autocomplete="off" spellcheck="false">`;
     const vi = state.fp.selectedVertex;
@@ -3152,7 +3153,9 @@ function fpRenderSelInfo() {
         ? `${fpFmtArea(fpPolygonArea(pts))} sqft marked — feeds UFA/NLA`
         : feeds
           ? 'open — needs a 3rd vertex (or close the loop) to feed UFA/NLA'
-          : `${fpLineKindLabel(kind).toLowerCase()} — not counted in UFA/NLA`,
+          : kind === 'PARTITION'
+            ? 'interior wall — not counted in UFA/NLA'
+            : `${fpLineKindLabel(kind).toLowerCase()} — not counted in UFA/NLA`,
     ].join(' · ');
     info.innerHTML =
       `<span class="t-type">✎</span>` +
@@ -3457,8 +3460,7 @@ function fpCanvasPointAt(clientX, clientY, ev) {
 // draws a single straight segment (the original gesture). Shift = 0/45/90°.
 // Every point snaps to objects (line endpoints / midpoints / edges, unit and
 // block corners / edge midpoints / edges) within ~10 px, else to the grid.
-// New lines take the kind from #fpPenKind (Boundary / Wall / Partition /
-// Guide). Selected lines show vertex handles (drag to move, drag a midpoint
+// New lines are always BOUNDARY (labelled "Wall" in the UI). Selected lines show vertex handles (drag to move, drag a midpoint
 // to insert, Delete removes the selected vertex). The measure tool (M) shows
 // a temporary dimension between two snapped points.
 
@@ -3466,7 +3468,11 @@ let fpPen = null; // { points: [[x,y]...], cursor: [x,y]|null, len: '', ang: '',
 let fpSnapHint = null; // { x, y, type } — current object-snap indicator
 let fpMeasure = null; // { a: [x,y], b: [x,y], done: boolean }
 const FP_SNAP_RADIUS_PX = 10;
-const FP_LINE_KIND_LABELS = { BOUNDARY: 'Boundary', WALL: 'Wall', PARTITION: 'Partition', GUIDE: 'Guide' };
+// The draw tool only makes walls. A wall that counts toward floor area is
+// stored as BOUNDARY; an interior wall ("Counts toward floor area" off in the
+// inspector) is stored as PARTITION, which never feeds UFA/NLA. WALL / GUIDE
+// are legacy kinds kept for display of existing rows.
+const FP_LINE_KIND_LABELS = { BOUNDARY: 'Wall', PARTITION: 'Wall', WALL: 'Thick wall', GUIDE: 'Guide' };
 
 function fpResetPen() {
   fpPen = null;
@@ -3474,13 +3480,12 @@ function fpResetPen() {
 }
 
 function fpPenKind() {
-  const k = String(state.fp.penKind || 'BOUNDARY').toUpperCase();
-  return LINE_KINDS.includes(k) ? k : 'BOUNDARY';
+  return 'BOUNDARY'; // new lines are always walls (marked-area lines)
 }
 
 function fpLineKindLabel(kind) {
   const k = String(kind || '').toUpperCase();
-  return FP_LINE_KIND_LABELS[k] || (k === 'PENCIL' ? 'Boundary' : 'Line');
+  return FP_LINE_KIND_LABELS[k] || (k === 'PENCIL' ? 'Wall' : 'Line');
 }
 
 // Unsnapped pointer position in feet, clamped onto the canvas.
@@ -3986,6 +3991,10 @@ function fpCommitLineField(input) {
       return;
     }
     fpPersistBoundary(bnd, { label: label.slice(0, 80) }, prev, 'Renamed');
+  } else if (field === 'counts') {
+    const kind = input.checked ? 'BOUNDARY' : 'PARTITION';
+    if (kind === String(bnd.kind || '').toUpperCase() || (input.checked && lineFeedsArea(bnd.kind))) return;
+    fpPersistBoundary(bnd, { kind }, prev, input.checked ? 'Counted the area of' : 'Stopped counting the area of');
   } else if (field === 'kind') {
     const kind = String(input.value || 'BOUNDARY').toUpperCase();
     if (kind === String(bnd.kind || '').toUpperCase()) return;
@@ -4024,7 +4033,7 @@ function fpCommitLineField(input) {
 function fpNormalizeBoundary(b) {
   return {
     id: b.id,
-    label: b.label,
+    label: b.label === 'Boundary' ? 'Wall' : b.label, // old default name, now "Wall"
     kind: b.kind,
     points: fpBoundaryPoints(b.points),
     closed: !!b.closed,
@@ -4064,6 +4073,16 @@ function fpRenderPenOverlay(svg, u) {
   // Pen rubber band.
   if (fpPen && fpPen.points.length) {
     const pts = fpPen.points;
+    // Live area preview: an area-feeding in-progress line (BOUNDARY / legacy
+    // PENCIL / unknown kinds) with >= 3 vertices and nonzero chord-closed
+    // area shows its green interior as-you-draw (the same wash class as
+    // persisted loop interiors, under the pen stroke). WALL / PARTITION /
+    // GUIDE never mark area so they get no fill; a 2-vertex stroke encloses
+    // nothing so it shows none (0-area rule). Points stay decimal feet —
+    // fpPolygonArea runs on the raw values, no rounding.
+    if (pts.length >= 3 && lineFeedsArea(fpPenKind()) && fpPolygonArea(pts) > 0) {
+      el('polygon', { points: pts.map(P).join(' '), class: 'fp-usable-fill' });
+    }
     if (pts.length > 1) el('polyline', { points: pts.map(P).join(' '), class: 'fp-pen-line' });
     const next = fpPenPreviewPoint();
     const last = pts[pts.length - 1];
@@ -4818,7 +4837,7 @@ async function fpAutoPlaceAll() {
     return;
   }
   if (!fpHasUsableBoundary()) {
-    fpToast('Cannot place units — there is no boundary. Draw a boundary with the Line tool first.', false);
+    fpToast('Cannot place units — there are no walls. Draw walls with the Draw tool first.', false);
     return;
   }
   // Rect-in-polygon clipping: every auto-placed rect must sit fully inside the
@@ -4827,7 +4846,7 @@ async function fpAutoPlaceAll() {
   // fpUsablePlaceArea() is non-null.
   const usable = fpUsablePlaceArea();
   if (!usable) {
-    fpToast('Cannot place units — there is no usable boundary area. Draw a boundary with the Line tool first.', false);
+    fpToast('Cannot place units — there is no usable area inside the walls. Draw walls with the Draw tool first.', false);
     return;
   }
   const usableSqft = usable.kind === 'loops'
@@ -4836,10 +4855,10 @@ async function fpAutoPlaceAll() {
   const placeOk = await confirmDialog({
     title: `Place ${queue.length} unplaced unit${queue.length === 1 ? '' : 's'}?`,
     message:
-      'Units are placed into the first free space inside the boundary lines. Already-placed units are kept.' +
+      'Units are placed into the first free space inside the walls. Already-placed units are kept.' +
       (usable.kind === 'bbox'
-        ? ' The boundary is open lines, so placement is bounded by the lines\u2019 overall box — close the loop for exact interior placement.'
-        : ` The closed boundary interior covers ~${usableSqft.toLocaleString('en-SG')} sqft across ${usable.polys.length} loop${usable.polys.length === 1 ? '' : 's'} (shaded on the canvas).`),
+        ? ' The walls are open lines, so placement is bounded by the walls\u2019 overall box — close the loop for exact interior placement.'
+        : ` The area inside the closed walls covers ~${usableSqft.toLocaleString('en-SG')} sqft across ${usable.polys.length} loop${usable.polys.length === 1 ? '' : 's'} (shaded on the canvas).`),
     confirmLabel: 'Place units',
   });
   if (!placeOk) return;
@@ -4912,7 +4931,7 @@ async function fpAutoPlaceAll() {
   notifyMetricsFloorChanged();
   if (!placed.length) {
     fpToast(
-      `Auto-place: nothing fits inside the boundary lines on the ${cw}×${ch} ft canvas — enlarge the canvas or extend the boundary first.` +
+      `Auto-place: nothing fits inside the walls on the ${cw}×${ch} ft canvas — enlarge the canvas or extend the walls first.` +
         (unfit.length ? ` Did not fit: ${unfit.join(', ')}.` : '') +
         (failed.length ? ` Errors: ${failed.join('; ')}.` : ''),
       false,
@@ -5126,7 +5145,7 @@ async function fpRemoveBoundary() {
     danger: true,
   });
   if (!removeOk) return;
-  const removedLine = { label: bnd.label || 'Boundary', kind: bnd.kind || 'BOUNDARY', points: fpBoundaryPoints(bnd.points), closed: !!bnd.closed, sortOrder: bnd.sortOrder || 0 };
+  const removedLine = { label: bnd.label || 'Wall', kind: bnd.kind || 'BOUNDARY', points: fpBoundaryPoints(bnd.points), closed: !!bnd.closed, sortOrder: bnd.sortOrder || 0 };
   try {
     await fpMutate(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/boundaries/${encodeURIComponent(bnd.id)}`, {
       method: 'DELETE',
@@ -6410,7 +6429,7 @@ export function fpInitEvents() {
       fpSyncModeUI();
       fpToast(
         state.fp.drawMode
-          ? `Line tool ON (${fpLineKindLabel(fpPenKind())}) — click to add vertices, double-click or Enter to finish, click the first vertex or C to close. Type a length (Tab = angle) + Enter for exact segments; Shift = 0/45/90°; Esc cancels.`
+          ? `Draw tool ON (${fpLineKindLabel(fpPenKind())}) — click to add vertices, double-click or Enter to finish, click the first vertex or C to close. Type a length (Tab = angle) + Enter for exact segments; Shift = 0/45/90°; Esc cancels.`
           : 'Line tool OFF — unit and block interactions restored.',
         true,
       );
@@ -6876,12 +6895,7 @@ export function fpInitEvents() {
   fpLoadSnapStep();
   if ($('#fpSnapStep')) $('#fpSnapStep').value = String(fpSnapStep());
   $('#fpSnapStep')?.addEventListener('change', (e) => fpSetSnapStep(e.target.value));
-  // Line kind for NEW lines, measure tool, object-snap toggle (Phase 3).
-  $('#fpPenKind')?.addEventListener('change', (e) => {
-    state.fp.penKind = String(e.target.value || 'BOUNDARY').toUpperCase();
-    fpSyncModeUI();
-    if (fpPen) fpPenReadout();
-  });
+  // Measure tool, object-snap toggle (Phase 3).
   $('#fpMeasureTool')?.addEventListener('click', () => fpSetMeasureMode(!state.fp.measureMode));
   $('#fpObjSnap')?.addEventListener('click', () => {
     state.fp.objSnap = state.fp.objSnap === false;

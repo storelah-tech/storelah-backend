@@ -403,7 +403,7 @@ const floorPlanMarkerPatchSchema = z.object({
 // vertex list ([[x,y],...], decimal feet); `closed` marks a finished loop — only
 // closed loops feed `boundaryMetrics` on plan reads.
 const floorPlanBoundarySchema = z.object({
-  label: z.string().trim().min(1).max(80).optional(), // operator line name; defaults to "Boundary" on create
+  label: z.string().trim().min(1).max(80).optional(), // operator line name; defaults to "Wall" on create
   kind: z.string().trim().min(1).max(24).nullish(), // line-kind tag; defaults to "BOUNDARY" on create
   points: z.array(z.tuple([z.number(), z.number()])).min(2).max(500).optional(),
   closed: z.boolean().optional(), // true once the loop is closed (3+ distinct vertices required)

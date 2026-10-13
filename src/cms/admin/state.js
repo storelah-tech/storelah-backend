@@ -85,6 +85,9 @@ export const state = {
     wallThickness: 0.5, // default thickness (ft) for new WALL lines (follows the last thickness typed)
     objSnap: true, // snap to line endpoints/midpoints/edges and unit/block corners (toolbar #fpObjSnap)
     measureMode: false, // 📏 measure tool active (two clicks → temporary dimension; Esc clears)
+    multi: [], // multi-selection [{ type: 'placement'|'block'|'marker', id }] (Shift-click / marquee / Cmd+A); 0–1 items = single selection
+    layers: null, // { units|blocks|lines|markers: { hidden, locked } } — Layers menu, remembered per browser
+    arrayOpen: false, // ⇶ Array form open in the selection strip
     selectedVertex: null, // index of the selected vertex on the selected line (inspector X/Y, Delete removes)
     snapStep: 0.1, // decimal-ft snap step for drags/resizes/lines/nudges (toolbar #fpSnapStep, remembered per browser; Alt = 0.01 ft)
     ghostRotated: false, // palette drag ghost orientation toggle (swaps W/H for rectangular footprints)

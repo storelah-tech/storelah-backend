@@ -25,7 +25,7 @@ export const openapiSpec = {
   openapi: '3.0.3',
   info: {
     title: 'StoreLah Booking API',
-    version: '1.9.3',
+    version: '1.9.4',
     description: [
       'Customer-facing booking API for the StoreLah self-storage business.',
       '',
@@ -293,6 +293,13 @@ export const openapiSpec = {
         '`thickness` (feet, kind WALL only, default 0.5). Only BOUNDARY / legacy PENCIL lines feed ' +
         '`boundaryMetrics`; WALL, PARTITION and GUIDE lines do not, and GUIDE lines are omitted from ' +
         '`GET /public/floor-plans/{branchCode}/{level}`.',
+      'v1.9.4 is ADDITIVE over 1.9.3: `POST /cms/floor-plans/{floorId}/batch` (Bearer JWT) — one ' +
+        'transactional multi-element edit `{ upsert: { placements, blocks, markers, boundaries }, ' +
+        'delete: { placements (unitIds), blocks, markers, boundaries } }` (max 2000 items). Validated ' +
+        'against the FINAL layout (overlap, stacking, canvas fit, 2% area tolerance with move/rotate ' +
+        'grandfathering, occupied lock on live plans) and applied atomically; upserts are keyed by ' +
+        'unitId / row id (missing ids are created with that id). Returns the full CMS plan read. Public ' +
+        'shapes unchanged.',
     ].join('\n'),
   },
   servers: [

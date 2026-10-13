@@ -19,6 +19,7 @@ import {
   createFloorPlanBoundary,
   createFloorPlanMarker,
   updateFloorPlanBoundary,
+  applyFloorPlanBatch,
   getFloorPlan,
   publishFloorPlan,
   setUnitPlacement,
@@ -236,6 +237,61 @@ describe('floor-plan decimal geometry (DB)', () => {
     expect(kinds).not.toContain('GUIDE');
     expect(kinds).toContain('PARTITION');
     expect((await getFloorPlan(world.floorId)).plan!.boundaries.some((b) => b.kind === 'GUIDE')).toBe(true); // CMS still sees it
+  });
+
+  it('batch: a whole row shifts into its neighbours\' old spots atomically', async () => {
+    const rows = await prisma.unitPlacement.findMany({ where: { unit: { deletedAt: null } }, orderBy: { x: 'asc' } });
+    expect(rows.length).toBeGreaterThanOrEqual(5);
+    // Move every placed unit 8 ft right: each lands on the next unit's OLD rect
+    // (the draft plan has no occupied lock). Sequential single writes would 409.
+    const moved = rows.map((r) => ({ unitId: r.unitId, x: r.x + 8, y: r.y, width: r.width, height: r.height }));
+    const res = await applyFloorPlanBatch(world.floorId, { upsert: { placements: moved } });
+    for (const m of moved) expect(res.plan!.placements.find((p) => p.unit.id === m.unitId)).toMatchObject({ x: m.x });
+  });
+
+  it('batch: an overlap in the final layout rejects the WHOLE batch', async () => {
+    const [a, b] = await prisma.unitPlacement.findMany({ where: { unit: { status: 'AVAILABLE', deletedAt: null } }, orderBy: { x: 'asc' } });
+    const before = await prisma.unitPlacement.findMany({ orderBy: { unitId: 'asc' } });
+    await expectAppError(
+      applyFloorPlanBatch(world.floorId, {
+        upsert: { placements: [{ unitId: a.unitId, x: 40, y: 40, width: a.width, height: a.height }, { unitId: b.unitId, x: 42, y: 41, width: b.width, height: b.height }] },
+      }),
+      409,
+      'PLACEMENT_OVERLAP',
+    );
+    expect(await prisma.unitPlacement.findMany({ orderBy: { unitId: 'asc' } })).toEqual(before); // nothing applied
+  });
+
+  it('batch: delete then upsert-by-id restores the same block / marker / line ids', async () => {
+    const res1 = await applyFloorPlanBatch(world.floorId, {
+      upsert: {
+        blocks: [{ id: 'blk-test-1', name: 'Pillar', x: 50.5, y: 60.25, width: 1.5, height: 1.5 }],
+        markers: [{ id: 'mk-test-1', kind: 'EXIT_SIGN', x: 1.25, y: 79 }],
+        boundaries: [{ id: 'bd-test-1', kind: 'WALL', points: [[0, 70], [20.5, 70]], thickness: 0.75 }],
+      },
+    });
+    expect(res1.plan!.blocks.map((b) => b.id)).toContain('blk-test-1');
+    await applyFloorPlanBatch(world.floorId, { delete: { blocks: ['blk-test-1'], markers: ['mk-test-1'], boundaries: ['bd-test-1'] } });
+    expect(await prisma.floorPlanBlock.count({ where: { id: 'blk-test-1' } })).toBe(0);
+    const res2 = await applyFloorPlanBatch(world.floorId, {
+      upsert: {
+        blocks: [{ id: 'blk-test-1', name: 'Pillar', x: 50.5, y: 60.25, width: 1.5, height: 1.5 }],
+        markers: [{ id: 'mk-test-1', kind: 'EXIT_SIGN', x: 1.25, y: 79 }],
+        boundaries: [{ id: 'bd-test-1', kind: 'WALL', points: [[0, 70], [20.5, 70]], thickness: 0.75 }],
+      },
+    });
+    expect(res2.plan!.markers.find((m) => m.id === 'mk-test-1')).toMatchObject({ x: 1.25 });
+    expect(res2.plan!.boundaries.find((b) => b.id === 'bd-test-1')).toMatchObject({ thickness: 0.75 });
+  });
+
+  it('batch: keeps the occupied lock on a live plan and the 2% rule for resizes', async () => {
+    await publishFloorPlan(world.floorId);
+    const occ = await prisma.unitPlacement.findFirst({ where: { unit: { unitCode: PIN.occupiedUnit } } });
+    await expectAppError(applyFloorPlanBatch(world.floorId, { upsert: { placements: [{ unitId: occ!.unitId, x: occ!.x, y: 40, width: occ!.width, height: occ!.height }] } }), 409, 'CONFLICT');
+    const id = await unitId(PIN.rentableUnit);
+    await expectAppError(applyFloorPlanBatch(world.floorId, { upsert: { placements: [{ unitId: id, x: 40, y: 40, width: 5, height: 10.5 }] } }), 400, 'VALIDATION');
+    const plan = await prisma.floorPlan.findUnique({ where: { floorId: world.floorId } });
+    expect(plan!.status).toBe('ACTIVE'); // rejected batches never demote
   });
 
   it('drafts keep wall thickness through save + publish', async () => {

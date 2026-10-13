@@ -1770,3 +1770,192 @@ export async function getPublicFloorPlan(branchCode: string, level: number) {
     plan: plan ? serializePlan(plan, { publicView: true }) : null,
   };
 }
+// ---------- batch edits (precision Phase 4) ----------
+//
+// One transactional write for multi-element edits: group moves / nudges,
+// align & distribute, arrays, duplicate / paste, and undo / redo. The batch
+// is validated against the FINAL layout (so a row of units can shift into
+// each other's old positions), then applied atomically. Upserts are keyed by
+// unitId (placements) or row id (blocks / markers / boundaries — a missing id
+// is CREATED with that id, so undo of a delete restores the same row). Every
+// per-element rule still applies: unit membership / INACTIVE / occupied lock,
+// 2% area tolerance with move/rotate grandfathering, canvas fit, unit-vs-unit
+// overlap, locker stacking (orphaned upper tiers demote to ground singles).
+
+export interface FloorPlanBatchInput {
+  upsert?: {
+    placements?: Array<PlacementGeometry & { unitId: string }>;
+    blocks?: Array<BlockInput & { id: string }>;
+    markers?: Array<MarkerInput & { id: string }>;
+    boundaries?: Array<BoundaryInput & { id: string; points: unknown }>;
+  };
+  delete?: { placements?: string[]; blocks?: string[]; markers?: string[]; boundaries?: string[] };
+}
+
+const MAX_BATCH_ITEMS = 2000;
+
+export async function applyFloorPlanBatch(floorId: string, input: FloorPlanBatchInput) {
+  const up = input.upsert ?? {};
+  const del = input.delete ?? {};
+  const count =
+    (up.placements?.length ?? 0) + (up.blocks?.length ?? 0) + (up.markers?.length ?? 0) + (up.boundaries?.length ?? 0) +
+    (del.placements?.length ?? 0) + (del.blocks?.length ?? 0) + (del.markers?.length ?? 0) + (del.boundaries?.length ?? 0);
+  if (count === 0) throw new AppError(400, 'VALIDATION', 'Batch is empty — nothing to apply');
+  if (count > MAX_BATCH_ITEMS) throw new AppError(400, 'VALIDATION', `Batch has ${count} items — at most ${MAX_BATCH_ITEMS} per request`);
+
+  const plan = await ensureCanvasPlan(floorId);
+  const live = plan.status === 'ACTIVE';
+  const current = await prisma.unitPlacement.findMany({
+    where: { floorPlanId: plan.id },
+    include: { unit: { include: { size: true } } },
+  });
+  const currentByUnit = new Map(current.map((p) => [p.unitId, p]));
+
+  // ---- placements: final layout ----
+  type Final = { unitId: string; unitCode: string; sizeCode: string; x: number; y: number; width: number; height: number; stackTier: 0 | 1; explicitTier: boolean };
+  const final = new Map<string, Final>();
+  for (const p of current) {
+    if (p.unit.deletedAt || p.unit.status === 'INACTIVE') continue; // hidden rows never collide (same as reads)
+    final.set(p.unitId, { unitId: p.unitId, unitCode: p.unit.unitCode, sizeCode: p.unit.size.code, x: p.x, y: p.y, width: p.width, height: p.height, stackTier: p.stackTier === 1 ? 1 : 0, explicitTier: false });
+  }
+  const lockCheck = (unit: { unitCode: string; status: string }, action: string) => {
+    if (live && (unit.status === 'OCCUPIED' || unit.status === 'OVERDUE')) {
+      throw new AppError(409, 'CONFLICT', `Unit ${unit.unitCode} is ${unit.status} and the plan is live (ACTIVE) — Occupied, uneditable when live. Unpublish to draft before ${action}.`);
+    }
+  };
+  for (const unitId of del.placements ?? []) {
+    const cur = currentByUnit.get(unitId);
+    if (!cur) continue; // already unplaced — idempotent
+    lockCheck(cur.unit, 'removing this placement');
+    final.delete(unitId);
+  }
+  const placementWrites: Array<{ unitId: string; x: number; y: number; width: number; height: number; stackTier: 0 | 1; doorEdges: string | null | undefined }> = [];
+  const upUnitIds = (up.placements ?? []).map((p) => p.unitId);
+  const units = upUnitIds.length
+    ? await prisma.unit.findMany({ where: { id: { in: upUnitIds } }, include: { size: true } })
+    : [];
+  const unitById = new Map(units.map((u) => [u.id, u]));
+  for (const raw of up.placements ?? []) {
+    const geom = { ...raw, ...checkGeometry(raw) };
+    const unit = unitById.get(raw.unitId);
+    if (!unit) throw new AppError(404, 'NOT_FOUND', `Unit ${raw.unitId} not found`);
+    if (unit.deletedAt) throw new AppError(400, 'VALIDATION', `Unit ${unit.unitCode} is deleted and cannot be placed on a plan`);
+    if (unit.status === 'INACTIVE') throw new AppError(400, 'VALIDATION', `Unit ${unit.unitCode} is INACTIVE and cannot be placed on a plan — reactivate it first`);
+    if (unit.floorId !== floorId) throw new AppError(400, 'VALIDATION', `Unit ${unit.unitCode} does not belong to floor ${floorId}`);
+    const existing = currentByUnit.get(raw.unitId);
+    if (!existing || !sameFtRect(existing, geom) || (geom.stackTier !== undefined && geom.stackTier !== existing.stackTier)) {
+      lockCheck(unit, 'editing this placement');
+    }
+    if (!rectFitsCanvas(geom, plan)) {
+      throw new AppError(400, 'VALIDATION', `Placement ${unit.unitCode} ${formatFt(geom.x)},${formatFt(geom.y)} ${formatFt(geom.width)}×${formatFt(geom.height)} exceeds the ${formatFt(plan.width)}×${formatFt(plan.height)} ft canvas — enlarge the canvas first`);
+    }
+    const area = rectAreaSqft(geom);
+    const areaChanged = !existing || rectAreaSqft(existing) !== area;
+    if (areaChanged && areaDeviation(geom, unit.sqft) > AREA_TOLERANCE) {
+      const fp = sqftFootprint(unit.sqft, unit.size.code, unit.size.widthFt, unit.size.heightFt);
+      throw new AppError(400, 'VALIDATION', `Placement ${formatFt(geom.width)}×${formatFt(geom.height)} (= ${Math.round(area * 100) / 100} sq ft) deviates ${Math.round(areaDeviation(geom, unit.sqft) * 100)}% from unit ${unit.unitCode}'s ${unit.sqft} sqft (tolerance ${Math.round(AREA_TOLERANCE * 100)}%) — use ~${fp.w}×${fp.h} ft`);
+    }
+    const explicitTier = geom.stackTier !== undefined;
+    const tier = explicitTier ? checkStackTier(geom.stackTier as number) : ((existing?.stackTier ?? 0) === 1 ? 1 : 0);
+    final.set(unit.id, { unitId: unit.id, unitCode: unit.unitCode, sizeCode: unit.size.code, x: geom.x, y: geom.y, width: geom.width, height: geom.height, stackTier: tier, explicitTier });
+    placementWrites.push({ unitId: unit.id, x: geom.x, y: geom.y, width: geom.width, height: geom.height, stackTier: tier, doorEdges: normalizeDoorEdges(geom.doorEdges) });
+  }
+  // Stacking + overlap over the FINAL layout (only pairs touching a changed unit).
+  const changed = new Set([...placementWrites.map((w) => w.unitId)]);
+  const finals = [...final.values()];
+  const demote = new Set<string>();
+  for (const f of finals) {
+    const mates = finals.filter((o) => o.unitId !== f.unitId && sameFtRect(o, f));
+    if (f.stackTier === 1 && !mates.some((o) => o.stackTier === 0)) {
+      if (f.explicitTier) throw new AppError(400, 'VALIDATION', `Cannot place ${f.unitCode} as upper tier (stackTier 1) — no ground-tier placement shares its exact rect`);
+      demote.add(f.unitId); // orphaned upper → ground single (same as the single-write path)
+    }
+  }
+  for (const id of demote) {
+    const f = final.get(id)!;
+    f.stackTier = 0;
+    changed.add(id);
+    const w = placementWrites.find((x) => x.unitId === id);
+    if (w) w.stackTier = 0;
+    else placementWrites.push({ unitId: id, x: f.x, y: f.y, width: f.width, height: f.height, stackTier: 0, doorEdges: undefined });
+  }
+  for (const id of changed) {
+    const f = final.get(id)!;
+    for (const o of final.values()) {
+      if (o.unitId === id || !rectsOverlapExact(f, o)) continue;
+      const stackPair = sameFtRect(f, o) && f.stackTier !== o.stackTier && isLockerSize(f.sizeCode) && isLockerSize(o.sizeCode);
+      const third = [...final.values()].filter((x) => sameFtRect(x, f)).length > 2;
+      if (!stackPair || third) {
+        throw new AppError(409, 'PLACEMENT_OVERLAP', `Placement ${f.unitCode} (${formatFt(f.x)},${formatFt(f.y)} ${formatFt(f.width)}×${formatFt(f.height)}) overlaps ${o.unitCode} (${formatFt(o.x)},${formatFt(o.y)} ${formatFt(o.width)}×${formatFt(o.height)}) — move to a free spot`);
+      }
+    }
+  }
+
+  // ---- blocks / markers / boundaries ----
+  const ownedIds = async (model: 'floorPlanBlock' | 'floorPlanMarker' | 'floorPlanBoundary', ids: string[]) => {
+    if (!ids.length) return new Map<string, { floorPlanId: string } & Record<string, unknown>>();
+    const rows = await (prisma[model] as unknown as { findMany: (a: unknown) => Promise<Array<{ id: string; floorPlanId: string } & Record<string, unknown>>> }).findMany({ where: { id: { in: ids } } });
+    for (const r of rows) {
+      if (r.floorPlanId !== plan.id) throw new AppError(404, 'NOT_FOUND', `${model.replace('floorPlan', '')} ${r.id} does not belong to floor ${floorId}'s plan`);
+    }
+    return new Map(rows.map((r) => [r.id, r]));
+  };
+  await ownedIds('floorPlanBlock', [...(up.blocks ?? []).map((b) => b.id), ...(del.blocks ?? [])]);
+  await ownedIds('floorPlanMarker', [...(up.markers ?? []).map((m) => m.id), ...(del.markers ?? [])]);
+  const boundaryRows = await ownedIds('floorPlanBoundary', [...(up.boundaries ?? []).map((b) => b.id), ...(del.boundaries ?? [])]);
+  const idOk = (id: unknown) => typeof id === 'string' && id.length >= 1 && id.length <= 64;
+  const blockWrites = (up.blocks ?? []).map((b) => {
+    if (!idOk(b.id)) throw new AppError(400, 'VALIDATION', 'Block id must be a 1–64 character string');
+    const g = checkGeometry(b);
+    if (!rectFitsCanvas(g, plan)) throw new AppError(400, 'VALIDATION', `Block "${b.name}" ${formatFt(g.x)},${formatFt(g.y)} ${formatFt(g.width)}×${formatFt(g.height)} exceeds the canvas — enlarge the canvas first`);
+    return { id: b.id, name: checkBlockName(b.name), ...g, color: checkBlockColor(b.color), doorEdges: normalizeDoorEdges(b.doorEdges) };
+  });
+  const markerWrites = (up.markers ?? []).map((m) => {
+    if (!idOk(m.id)) throw new AppError(400, 'VALIDATION', 'Marker id must be a 1–64 character string');
+    return { id: m.id, kind: checkMarkerKind(m.kind), label: checkMarkerLabel(m.label), ...checkMarkerPoint(m.x, m.y, plan) };
+  });
+  const boundaryWrites = (up.boundaries ?? []).map((b) => {
+    if (!idOk(b.id)) throw new AppError(400, 'VALIDATION', 'Boundary id must be a 1–64 character string');
+    const closed = b.closed ?? false;
+    const kind = checkBoundaryKind(b.kind);
+    const prev = boundaryRows.get(b.id) as { thickness?: number | null } | undefined;
+    return {
+      id: b.id,
+      label: b.label === undefined ? 'Boundary' : checkBoundaryLabel(b.label),
+      kind,
+      points: checkBoundaryPoints(b.points, closed, plan),
+      closed,
+      sortOrder: checkBoundarySortOrder(b.sortOrder) ?? 0,
+      thickness: resolveThickness(kind, b.thickness, prev?.thickness ?? null),
+    };
+  });
+
+  // ---- apply atomically ----
+  await prisma.$transaction(async (tx) => {
+    if (del.placements?.length) await tx.unitPlacement.deleteMany({ where: { floorPlanId: plan.id, unitId: { in: del.placements } } });
+    if (del.blocks?.length) await tx.floorPlanBlock.deleteMany({ where: { floorPlanId: plan.id, id: { in: del.blocks } } });
+    if (del.markers?.length) await tx.floorPlanMarker.deleteMany({ where: { floorPlanId: plan.id, id: { in: del.markers } } });
+    if (del.boundaries?.length) await tx.floorPlanBoundary.deleteMany({ where: { floorPlanId: plan.id, id: { in: del.boundaries } } });
+    for (const w of placementWrites) {
+      const { doorEdges, ...g } = w;
+      await tx.unitPlacement.upsert({
+        where: { unitId: w.unitId },
+        create: { floorPlanId: plan.id, ...g, ...(doorEdges !== undefined ? { doorEdges } : {}) },
+        update: { floorPlanId: plan.id, ...g, ...(doorEdges !== undefined ? { doorEdges } : {}) },
+      });
+    }
+    for (const { id, doorEdges, ...b } of blockWrites) {
+      const data = { ...b, ...(doorEdges !== undefined ? { doorEdges } : {}) };
+      await tx.floorPlanBlock.upsert({ where: { id }, create: { id, floorPlanId: plan.id, ...data }, update: data });
+    }
+    for (const { id, ...m } of markerWrites) {
+      await tx.floorPlanMarker.upsert({ where: { id }, create: { id, floorPlanId: plan.id, ...m }, update: m });
+    }
+    for (const { id, points, ...b } of boundaryWrites) {
+      const data = { ...b, points: points as unknown as Prisma.InputJsonValue };
+      await tx.floorPlanBoundary.upsert({ where: { id }, create: { id, floorPlanId: plan.id, ...data }, update: data });
+    }
+  });
+  await markDraft(plan.id);
+  return getFloorPlan(floorId);
+}

@@ -157,6 +157,7 @@ import {
   removeFloorPlanBlock,
   listFloorPlanBoundaries,
   createFloorPlanBoundary,
+  applyFloorPlanBatch,
   updateFloorPlanBoundary,
   removeFloorPlanBoundary,
   FP_MARKER_KINDS,
@@ -1385,6 +1386,38 @@ router.post('/floor-plans/:floorId/boundaries', requireAuth, async (req: Request
     return;
   }
   created(res, await createFloorPlanBoundary(String(req.params.floorId), parsed.data));
+});
+
+// Transactional multi-element edit (precision Phase 4): group moves, align /
+// distribute, arrays, duplicate / paste, undo / redo. Validated against the
+// FINAL layout and applied atomically; returns the full plan read (same shape
+// as GET /floor-plans/:floorId). Upserts keyed by unitId / row id (missing ids
+// are created with that id).
+const batchIdList = z.array(z.string().min(1).max(64)).max(2000).optional();
+const floorPlanBatchSchema = z.object({
+  upsert: z
+    .object({
+      placements: z.array(floorPlanPlacementSchema.extend({ unitId: z.string().min(1).max(64) })).max(2000).optional(),
+      blocks: z.array(floorPlanBlockSchema.extend({ id: z.string().min(1).max(64) })).max(2000).optional(),
+      markers: z.array(floorPlanMarkerSchema.extend({ id: z.string().min(1).max(64) })).max(2000).optional(),
+      boundaries: z
+        .array(floorPlanBoundarySchema.extend({ id: z.string().min(1).max(64), points: z.array(z.tuple([z.number(), z.number()])).min(2).max(500) }))
+        .max(500)
+        .optional(),
+    })
+    .optional(),
+  delete: z
+    .object({ placements: batchIdList, blocks: batchIdList, markers: batchIdList, boundaries: batchIdList })
+    .optional(),
+});
+
+router.post('/floor-plans/:floorId/batch', requireAuth, async (req: Request, res: Response) => {
+  const parsed = floorPlanBatchSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid floor-plan batch payload', parsed.error.flatten());
+    return;
+  }
+  ok(res, await applyFloorPlanBatch(String(req.params.floorId), parsed.data));
 });
 
 // Update a boundary line item scoped to the plan: vertex drag / close-loop /

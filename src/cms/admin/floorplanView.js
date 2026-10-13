@@ -65,7 +65,7 @@ let fpDimsTimer = null;
 // is a future dead tool, so it warns instead of silently lingering. Audit is
 // console-only and never blocks the editor.
 const FP_TOOLBAR_GROUPS = [
-  { id: 'units', label: 'Units', tools: ['fpPaletteReopen', 'fpAutoPlace', 'fpAutoDoors', 'fpUndoBtn', 'fpRotateGhost', 'fpLockSqft'] },
+  { id: 'units', label: 'Units', tools: ['fpPaletteReopen', 'fpAutoPlace', 'fpAutoDoors', 'fpUndoBtn', 'fpRedoBtn', 'fpRotateGhost', 'fpLockSqft'] },
   // Studio ribbon: the Select/Add-Unit/Draw-Wall/Add-Block segmented control.
   // fpBoundaryTool (line tool) + fpAddBlock (block form) are the Draw/Block
   // segments — no duplicate buttons, one handler each.
@@ -73,7 +73,7 @@ const FP_TOOLBAR_GROUPS = [
   { id: 'markers', label: 'Markers/Safety', tools: ['fpMarkersBtn', 'fpMarkerTools'] },
   { id: 'canvas', label: 'Canvas', tools: ['fpWidth', 'fpHeight'] },
   { id: 'plan', label: 'Plan', tools: ['fpGfa', 'fpBoundaryMetrics'] },
-  { id: 'view', label: 'View', tools: ['fpZoomOut', 'fpZoomIn', 'fpZoomPreset', 'fpGridToggle', 'fpSnapStep', 'fpObjSnap'] },
+  { id: 'view', label: 'View', tools: ['fpZoomOut', 'fpZoomIn', 'fpZoomPreset', 'fpGridToggle', 'fpSnapStep', 'fpObjSnap', 'fpLayersBtn', 'fpShortcutsBtn'] },
   { id: 'info', label: 'Labels', tools: ['fpSelInfo'] },
 ];
 
@@ -879,24 +879,7 @@ async function fpFetch() {
   }
   try {
     const body = await get(`/floor-plans/${encodeURIComponent(state.fp.floorId)}`);
-    state.fp.plan = body.plan;
-    state.fp.canvasDefaults = body.canvasDefaults || { width: 70, height: 80 };
-    state.fp.structure = body.plan ? body.plan.structure : null;
-    state.fp.placements = fpNormalizePlacements(body.plan);
-    state.fp.blocks = fpNormalizeBlocks(body.plan);
-    state.fp.boundaries = fpNormalizeBoundaries(body.plan);
-    state.fp.markers = fpNormalizeMarkers(body.plan);
-    state.fp.gfa = body.plan && body.plan.gfaSqft != null && Number.isFinite(body.plan.gfaSqft) ? body.plan.gfaSqft : null;
-    state.fp.unplaced = (body.unplacedUnits || []).map(fpNormalizeUnit);
-    state.fp.branchName = body.branch && body.branch.name;
-    state.fp.floorName = body.floor ? `Level ${body.floor.level}` : '';
-    state.fp.selected = null;
-    state.fp.selectedBlock = null;
-    state.fp.selectedBoundary = null;
-    state.fp.selectedMarker = null;
-    state.fp.armedMarker = null;
-    state.fp.scale = 1;
-    fpClearUndo(); // floor (re)load invalidates inverse ops from the previous floor
+    fpApplyPlanPayload(body, false); // full reload: selection, zoom and undo reset
     // A (re)load shows the live plan — no draft version is loaded anymore and
     // the canvas matches the server (unsaved-changes guard resets).
     fpSetLoadedDraft(null);
@@ -1002,52 +985,18 @@ const fpUndoStack = [];
 function fpPushUndo(entry) {
   if (!entry || !entry.kind) return;
   fpUndoStack.push(entry);
-  if (fpUndoStack.length > 50) fpUndoStack.shift();
+  if (fpUndoStack.length > FP_UNDO_LIMIT) fpUndoStack.shift();
+  fpRedoStack.length = 0; // a new action invalidates the redo branch
+  fpSyncUndoButtons();
 }
 function fpClearUndo() {
   fpUndoStack.length = 0;
+  fpRedoStack.length = 0;
+  fpSyncUndoButtons();
 }
 function fpUndoDepth() {
   return fpUndoStack.length;
 }
-async function fpUndo() {
-  const entry = fpUndoStack.pop();
-  if (!entry) {
-    fpToast('Nothing to undo.', false);
-    return;
-  }
-  const floorId = encodeURIComponent(state.fp.floorId);
-  try {
-    if (entry.kind === 'placement') {
-      const url = `/floor-plans/${floorId}/units/${encodeURIComponent(entry.unitId)}`;
-      if (entry.prev) await fpMutate(url, { method: 'PUT', body: JSON.stringify(entry.prev) });
-      else await fpMutate(url, { method: 'DELETE' });
-    } else if (entry.kind === 'block') {
-      const url = `/floor-plans/${floorId}/blocks/${encodeURIComponent(entry.blockId)}`;
-      if (entry.prev) await fpMutate(url, { method: 'PUT', body: JSON.stringify(entry.prev) });
-      else await fpMutate(url, { method: 'DELETE' });
-    } else if (entry.kind === 'marker') {
-      const url = `/floor-plans/${floorId}/markers/${encodeURIComponent(entry.markerId)}`;
-      if (entry.prev && entry.deleted) await fpMutate(`/floor-plans/${floorId}/markers`, { method: 'POST', body: JSON.stringify(entry.prev) });
-      else if (entry.prev) await fpMutate(url, { method: 'PUT', body: JSON.stringify(entry.prev) });
-      else await fpMutate(url, { method: 'DELETE' });
-    } else if (entry.kind === 'boundary') {
-      const url = `/floor-plans/${floorId}/boundaries/${encodeURIComponent(entry.boundaryId)}`;
-      if (entry.prev && entry.deleted) await fpMutate(`/floor-plans/${floorId}/boundaries`, { method: 'POST', body: JSON.stringify(entry.prev) });
-      else if (entry.prev) await fpMutate(url, { method: 'PUT', body: JSON.stringify(entry.prev) });
-      else await fpMutate(url, { method: 'DELETE' });
-    } else {
-      fpToast('Nothing to undo.', false);
-      return;
-    }
-    fpToast('Undone.', true);
-    await fpFetch();
-  } catch (err) {
-    fpToast('Undo: ' + describeError(err), false);
-    await fpFetch();
-  }
-}
-
 // ---------- occupied edit lock (live plans) ----------
 // Mirrors assertPlacementEditable() in src/core/floorPlans.ts: when the plan
 // is ACTIVE, OCCUPIED/OVERDUE placements are uneditable (no drag/resize/
@@ -1337,13 +1286,13 @@ function fpRenderCanvas() {
   }
   canvas.innerHTML = '';
   fpRenderStructure(canvas, u);
-  fpRenderBoundaryLayer(canvas, u, fpCanvasDims(), state.fp.boundaries || [], true, state.fp.selectedBoundary);
+  fpRenderBoundaryLayer(canvas, u, fpCanvasDims(), fpLayerHidden('lines') ? [] : state.fp.boundaries || [], true, state.fp.selectedBoundary);
   // Decoration blocks — BELOW units in z-order (blocks z-index 1, units 2).
   // Fill falls back to FP_DEFAULT_BLOCK_COLOR (== the .fp-block CSS tone) when
   // the block has no persisted colour, so unset blocks render exactly as before.
-  for (const blk of state.fp.blocks) {
+  for (const blk of fpLayerHidden('blocks') ? [] : state.fp.blocks) {
     const el = document.createElement('div');
-    el.className = 'fp-block' + (state.fp.selectedBlock === blk.id ? ' selected' : '');
+    el.className = 'fp-block' + (state.fp.selectedBlock === blk.id || fpInMulti('block', blk.id) ? ' selected' : '');
     el.dataset.blockId = blk.id;
     el.style.left = blk.x * u + 'px';
     el.style.top = blk.y * u + 'px';
@@ -1363,13 +1312,13 @@ function fpRenderCanvas() {
   const statusDot = null; // retired: tile colours come from fpStatusColor() (no grey unknown fallback)
   // Stacked pairs (same rect, tiers 0 + 1) render as ONE block split by a
   // middle divider line: upper unit code above, lower code below.
-  for (const group of fpGroupByRect(state.fp.placements)) {
+  for (const group of fpGroupByRect(fpLayerHidden('units') ? [] : state.fp.placements)) {
     const r = group.rect;
     if (group.members.length >= 2) {
       const lower = group.members[0];
       const upper = group.members[1];
       const el = document.createElement('div');
-      const selected = state.fp.selected === lower.unitId || state.fp.selected === upper.unitId;
+      const selected = state.fp.selected === lower.unitId || state.fp.selected === upper.unitId || fpInMulti('placement', lower.unitId) || fpInMulti('placement', upper.unitId);
       el.className = 'fp-placed fp-stacked' + (selected ? ' selected' : '');
       el.dataset.unitId = lower.unitId;
       el.dataset.stackMateId = upper.unitId;
@@ -1392,7 +1341,7 @@ function fpRenderCanvas() {
     }
     const pl = group.members[0];
     const el = document.createElement('div');
-    el.className = 'fp-placed' + (state.fp.selected === pl.unitId ? ' selected' : '');
+    el.className = 'fp-placed' + (state.fp.selected === pl.unitId || fpInMulti('placement', pl.unitId) ? ' selected' : '');
     el.dataset.unitId = pl.unitId;
     el.dataset.stackTier = String(pl.stackTier || 0);
     el.style.left = pl.x * u + 'px';
@@ -1415,7 +1364,7 @@ function fpRenderCanvas() {
   canvas.style.cursor = state.fp.drawMode || state.fp.armedMarker || state.fp.measureMode ? 'crosshair' : '';
   // Safety/facility point icons render LAST (top of the z-order) so a marker
   // never hides under a placement.
-  fpRenderMarkerLayer(canvas, u, state.fp.markers || [], true, state.fp.selectedMarker);
+  fpRenderMarkerLayer(canvas, u, fpLayerHidden('markers') ? [] : state.fp.markers || [], true, state.fp.selectedMarker);
   fpZoomLabel();
 }
 
@@ -1428,7 +1377,8 @@ function fpRenderMarkerLayer(canvas, u, markers, interactive, selectedId) {
     const def = fpMarkerDef(m.kind);
     const size = Math.max(22, Math.round(u * 1.1));
     const el = document.createElement('div');
-    el.className = 'fp-marker' + (m.id && m.id === selectedId ? ' selected' : '');
+    const isSel = !!m.id && (m.id === selectedId || (interactive && fpInMulti('marker', m.id)));
+    el.className = 'fp-marker' + (isSel ? ' selected' : '');
     el.dataset.markerId = m.id;
     el.title = `${fpMarkerLabel(m)} · ${m.x},${m.y} ft${interactive ? ' — drag to move, click to select' : ''}`;
     el.style.position = 'absolute';
@@ -1448,9 +1398,844 @@ function fpRenderMarkerLayer(canvas, u, markers, interactive, selectedId) {
     el.style.boxSizing = 'border-box';
     el.style.zIndex = '3';
     if (!interactive) el.style.pointerEvents = 'none';
-    if (m.id && m.id === selectedId) el.style.boxShadow = `0 0 0 2px ${def.tone}`;
+    if (isSel) el.style.boxShadow = `0 0 0 2px ${def.tone}`;
     el.textContent = def.icon;
     canvas.appendChild(el);
+  }
+}
+
+// ---------- productivity (precision Phase 4) ----------
+// Multi-element edits go through POST /floor-plans/:floorId/batch, which
+// validates the FINAL layout and applies it atomically, then returns the full
+// plan read. Built on it: generic undo / REDO (every entry is a list of
+// {type, id, before, after} element states — legacy single-element entries are
+// converted on the fly), multi-select (Shift-click, marquee, Cmd/Ctrl+A) with
+// group drag / nudge / delete, align & distribute, copy / paste / duplicate
+// (blocks, markers, lines — units are real inventory), unit arrays (place the
+// next N unplaced units of the same size in a row), layers (show / lock) and
+// a keyboard-shortcut sheet. A save-status chip tracks in-flight writes and a
+// beforeunload guard protects pending ones.
+
+const fpRedoStack = [];
+let fpClipboard = null; // { items: [{ type, state }], pastes: number }
+let fpSaving = 0;
+let fpSaveFailed = false;
+let fpLastSavedAt = null;
+let fpGroupNudge = null; // { before, timer }
+const FP_UNDO_LIMIT = 100;
+const FP_LAYERS = [['units', 'Units'], ['blocks', 'Blocks'], ['lines', 'Lines'], ['markers', 'Markers']];
+const FP_LAYERS_STORAGE_KEY = 'storelah.fp.layers';
+const FP_BATCH_KEYS = { placement: 'placements', block: 'blocks', marker: 'markers', boundary: 'boundaries' };
+
+// ---- save status ----
+function fpRenderSaveStatus() {
+  const el = $('#fpSaveStatus');
+  if (!el) return;
+  if (fpSaving > 0) el.textContent = 'Saving…';
+  else if (fpSaveFailed) el.textContent = '⚠ Last save failed';
+  else if (fpLastSavedAt) el.textContent = `✓ Saved ${fpLastSavedAt.toLocaleTimeString('en-SG', { hour: '2-digit', minute: '2-digit' })}`;
+  else el.textContent = '';
+  el.style.color = fpSaveFailed && !fpSaving ? 'var(--terra,#C1664C)' : '';
+}
+
+function fpHasPendingWrites() {
+  return fpSaving > 0 || !!fpNudgePending || !!fpGroupNudge;
+}
+
+// ---- layers ----
+function fpLoadLayers() {
+  const base = Object.fromEntries(FP_LAYERS.map(([k]) => [k, { hidden: false, locked: false }]));
+  try {
+    const saved = JSON.parse(window.localStorage.getItem(FP_LAYERS_STORAGE_KEY) || '{}');
+    for (const [k] of FP_LAYERS) if (saved && saved[k]) base[k] = { hidden: !!saved[k].hidden, locked: !!saved[k].locked };
+  } catch (_) {
+    // Storage blocked or corrupt — every layer visible + unlocked.
+  }
+  state.fp.layers = base;
+}
+
+function fpLayerHidden(layer) {
+  return !!(state.fp.layers && state.fp.layers[layer] && state.fp.layers[layer].hidden);
+}
+
+// Hidden layers are also non-interactive.
+function fpLayerLocked(layer) {
+  return fpLayerHidden(layer) || !!(state.fp.layers && state.fp.layers[layer] && state.fp.layers[layer].locked);
+}
+
+function fpRenderLayersMenu() {
+  const menu = $('#fpLayersList');
+  if (!menu) return;
+  menu.innerHTML = FP_LAYERS.map(
+    ([k, label]) =>
+      `<label class="t-type" style="display:flex;gap:8px;align-items:center;padding:3px 2px;white-space:nowrap;">` +
+      `<span style="min-width:62px;font-weight:700;">${label}</span>` +
+      `<span><input type="checkbox" data-fp-layer="${k}" data-fp-layer-prop="hidden"${fpLayerHidden(k) ? '' : ' checked'}> show</span>` +
+      `<span><input type="checkbox" data-fp-layer="${k}" data-fp-layer-prop="locked"${state.fp.layers[k].locked ? ' checked' : ''}> lock</span></label>`,
+  ).join('');
+}
+
+function fpSetLayerProp(layer, prop, on) {
+  if (!state.fp.layers || !state.fp.layers[layer]) return;
+  state.fp.layers[layer][prop] = on;
+  try {
+    window.localStorage.setItem(FP_LAYERS_STORAGE_KEY, JSON.stringify(state.fp.layers));
+  } catch (_) {
+    // Storage blocked — applies for this session only.
+  }
+  // Drop selections that just became hidden / locked.
+  const layerOfType = { placement: 'units', block: 'blocks', marker: 'markers' };
+  state.fp.multi = (state.fp.multi || []).filter((m) => !fpLayerLocked(layerOfType[m.type]));
+  if (fpLayerLocked('units')) state.fp.selected = null;
+  if (fpLayerLocked('blocks')) state.fp.selectedBlock = null;
+  if (fpLayerLocked('markers')) state.fp.selectedMarker = null;
+  if (fpLayerLocked('lines')) {
+    state.fp.selectedBoundary = null;
+    state.fp.selectedVertex = null;
+  }
+  fpRenderLayersMenu();
+  fpRenderCanvas();
+  fpRenderSelInfo();
+}
+
+// ---- element states (the unit of undo / redo / batch) ----
+function fpElemState(type, id) {
+  if (type === 'placement') {
+    const p = state.fp.placements.find((x) => x.unitId === id);
+    return p ? { unitId: p.unitId, x: p.x, y: p.y, width: p.width, height: p.height, stackTier: p.stackTier || 0, doorEdges: p.doorEdges || null } : null;
+  }
+  if (type === 'block') {
+    const b = state.fp.blocks.find((x) => x.id === id);
+    return b ? { id: b.id, name: b.name, x: b.x, y: b.y, width: b.width, height: b.height, color: b.color || null, doorEdges: b.doorEdges || null } : null;
+  }
+  if (type === 'marker') {
+    const m = (state.fp.markers || []).find((x) => x.id === id);
+    return m ? { id: m.id, kind: m.kind, label: m.label || null, x: m.x, y: m.y } : null;
+  }
+  if (type === 'boundary') {
+    const b = (state.fp.boundaries || []).find((x) => x.id === id);
+    return b
+      ? { id: b.id, label: b.label || 'Boundary', kind: b.kind || 'BOUNDARY', points: fpBoundaryPoints(b.points), closed: !!b.closed, sortOrder: b.sortOrder || 0, thickness: b.thickness ?? null }
+      : null;
+  }
+  return null;
+}
+
+function fpBatchBody(items) {
+  const body = { upsert: {}, delete: {} };
+  for (const it of items) {
+    const k = FP_BATCH_KEYS[it.type];
+    if (!k) continue;
+    if (it.state) (body.upsert[k] = body.upsert[k] || []).push(it.state);
+    else (body.delete[k] = body.delete[k] || []).push(it.id);
+  }
+  return body;
+}
+
+// Adopt a plan payload (GET /floor-plans/:floorId shape). `keep` preserves
+// selection, zoom and undo history (batch responses); otherwise it is a full
+// reload (fpFetch).
+function fpApplyPlanPayload(body, keep) {
+  state.fp.plan = body.plan;
+  state.fp.canvasDefaults = body.canvasDefaults || { width: 70, height: 80 };
+  state.fp.structure = body.plan ? body.plan.structure : null;
+  state.fp.placements = fpNormalizePlacements(body.plan);
+  state.fp.blocks = fpNormalizeBlocks(body.plan);
+  state.fp.boundaries = fpNormalizeBoundaries(body.plan);
+  state.fp.markers = fpNormalizeMarkers(body.plan);
+  state.fp.gfa = body.plan && body.plan.gfaSqft != null && Number.isFinite(body.plan.gfaSqft) ? body.plan.gfaSqft : null;
+  state.fp.unplaced = (body.unplacedUnits || []).map(fpNormalizeUnit);
+  state.fp.branchName = body.branch && body.branch.name;
+  state.fp.floorName = body.floor ? `Level ${body.floor.level}` : '';
+  if (keep) {
+    // Keep only selections whose element still exists.
+    if (state.fp.selected && !fpElemState('placement', state.fp.selected)) state.fp.selected = null;
+    if (state.fp.selectedBlock && !fpElemState('block', state.fp.selectedBlock)) state.fp.selectedBlock = null;
+    if (state.fp.selectedMarker && !fpElemState('marker', state.fp.selectedMarker)) state.fp.selectedMarker = null;
+    if (state.fp.selectedBoundary && !fpElemState('boundary', state.fp.selectedBoundary)) state.fp.selectedBoundary = null;
+    state.fp.multi = (state.fp.multi || []).filter((m) => fpElemState(m.type, m.id));
+    fpRender();
+    return;
+  }
+  state.fp.selected = null;
+  state.fp.selectedBlock = null;
+  state.fp.selectedBoundary = null;
+  state.fp.selectedMarker = null;
+  state.fp.selectedVertex = null;
+  state.fp.multi = [];
+  state.fp.armedMarker = null;
+  state.fp.scale = 1;
+  fpClearUndo(); // floor (re)load invalidates inverse ops from the previous floor
+}
+
+async function fpSendBatch(items) {
+  const res = await fpMutate(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/batch`, {
+    method: 'POST',
+    body: JSON.stringify(fpBatchBody(items)),
+  });
+  fpApplyPlanPayload(res.data, true);
+  notifyMetricsFloorChanged();
+}
+
+/**
+ * Persist target element states in one batch and record ONE undo step.
+ * `before` (optional) = the states to restore on undo, when the caller has
+ * already mutated local state (drags / nudges); else captured now.
+ */
+async function fpCommitBatch(targets, verb, before) {
+  const prior = before || targets.map((t) => ({ type: t.type, id: t.id, state: fpElemState(t.type, t.id) }));
+  try {
+    await fpSendBatch(targets);
+    fpPushUndo({
+      kind: 'batch',
+      items: prior.map((p) => ({ type: p.type, id: p.id, before: p.state, after: fpElemState(p.type, p.id) })),
+    });
+    fpToast(verb, true);
+    return true;
+  } catch (err) {
+    fpToast(`${verb.replace(/\.$/, '')}: ${describeError(err)}`, false);
+    await fpFetch();
+    return false;
+  }
+}
+
+// ---- undo / redo ----
+// Legacy single-element entries ({kind, <id>, prev, deleted?}) become one
+// {type, id, before, after} item; partial `prev` payloads merge over the
+// element's current state.
+function fpUndoItems(entry) {
+  if (entry.kind === 'batch') return entry.items;
+  const type = entry.kind;
+  const id = entry.unitId || entry.blockId || entry.markerId || entry.boundaryId;
+  const current = fpElemState(type, id);
+  let before = null;
+  if (entry.prev) {
+    before = { ...(current || {}), ...entry.prev };
+    if (type === 'placement') before.unitId = id;
+    else before.id = id;
+    if (type === 'boundary') before.points = fpBoundaryPoints(before.points);
+  }
+  return [{ type, id, before, after: current }];
+}
+
+async function fpUndo() {
+  fpFlushNudge();
+  fpFlushGroupNudge();
+  const entry = fpUndoStack.pop();
+  if (!entry) {
+    fpToast('Nothing to undo.', false);
+    return;
+  }
+  const items = fpUndoItems(entry);
+  try {
+    await fpSendBatch(items.map((i) => ({ type: i.type, id: i.id, state: i.before })));
+    fpRedoStack.push({ kind: 'batch', items });
+    fpToast(`Undone (${fpUndoStack.length} more · ${fpRedoStack.length} to redo).`, true);
+  } catch (err) {
+    fpToast('Undo: ' + describeError(err), false);
+    await fpFetch();
+  }
+  fpSyncUndoButtons();
+}
+
+async function fpRedo() {
+  const entry = fpRedoStack.pop();
+  if (!entry) {
+    fpToast('Nothing to redo.', false);
+    return;
+  }
+  try {
+    await fpSendBatch(entry.items.map((i) => ({ type: i.type, id: i.id, state: i.after })));
+    fpUndoStack.push(entry);
+    fpToast(`Redone (${fpRedoStack.length} more to redo).`, true);
+  } catch (err) {
+    fpToast('Redo: ' + describeError(err), false);
+    await fpFetch();
+  }
+  fpSyncUndoButtons();
+}
+
+function fpSyncUndoButtons() {
+  const u = $('#fpUndoBtn');
+  const r = $('#fpRedoBtn');
+  if (u) u.disabled = fpUndoStack.length === 0;
+  if (r) r.disabled = fpRedoStack.length === 0;
+}
+
+// ---- multi-select ----
+function fpInMulti(type, id) {
+  return (state.fp.multi || []).some((m) => m.type === type && m.id === id);
+}
+
+function fpSingleAsMulti() {
+  if (state.fp.selected) return [{ type: 'placement', id: state.fp.selected }];
+  if (state.fp.selectedBlock) return [{ type: 'block', id: state.fp.selectedBlock }];
+  if (state.fp.selectedMarker) return [{ type: 'marker', id: state.fp.selectedMarker }];
+  return [];
+}
+
+function fpClearSingles() {
+  state.fp.selected = null;
+  state.fp.selectedBlock = null;
+  state.fp.selectedMarker = null;
+  state.fp.selectedBoundary = null;
+  state.fp.selectedVertex = null;
+}
+
+// Replace the selection with `list`; one item collapses to a single selection.
+function fpSetSelection(list) {
+  fpClearSingles();
+  if (list.length === 1) {
+    const [m] = list;
+    if (m.type === 'placement') state.fp.selected = m.id;
+    else if (m.type === 'block') state.fp.selectedBlock = m.id;
+    else if (m.type === 'marker') state.fp.selectedMarker = m.id;
+    state.fp.multi = [];
+  } else {
+    state.fp.multi = list;
+  }
+  fpRenderCanvas();
+  fpRenderSelInfo();
+}
+
+function fpToggleMulti(type, id) {
+  const cur = state.fp.multi && state.fp.multi.length ? state.fp.multi.slice() : fpSingleAsMulti();
+  const i = cur.findIndex((m) => m.type === type && m.id === id);
+  if (i >= 0) cur.splice(i, 1);
+  else cur.push({ type, id });
+  fpSetSelection(cur);
+}
+
+function fpLiveItem(type, id) {
+  if (type === 'placement') return state.fp.placements.find((p) => p.unitId === id) || null;
+  if (type === 'block') return state.fp.blocks.find((b) => b.id === id) || null;
+  if (type === 'marker') return (state.fp.markers || []).find((m) => m.id === id) || null;
+  return null;
+}
+
+// Selected items with live refs; placements expand to include stack mates.
+function fpMultiItems() {
+  const out = [];
+  const seen = new Set();
+  for (const m of state.fp.multi || []) {
+    const it = fpLiveItem(m.type, m.id);
+    if (!it || seen.has(m.type + m.id)) continue;
+    seen.add(m.type + m.id);
+    out.push({ type: m.type, id: m.id, it });
+    if (m.type === 'placement') {
+      const mate = fpStackMate(it);
+      if (mate && !seen.has('placement' + mate.unitId)) {
+        seen.add('placement' + mate.unitId);
+        out.push({ type: 'placement', id: mate.unitId, it: mate, mateOf: m.id });
+      }
+    }
+  }
+  return out;
+}
+
+function fpItemRect(m) {
+  return m.type === 'marker' ? { x: m.it.x, y: m.it.y, width: 0, height: 0 } : { x: m.it.x, y: m.it.y, width: m.it.width, height: m.it.height };
+}
+
+function fpBBox(items) {
+  const rs = items.map(fpItemRect);
+  const x0 = Math.min(...rs.map((r) => r.x));
+  const y0 = Math.min(...rs.map((r) => r.y));
+  const x1 = Math.max(...rs.map((r) => quantizeFt(r.x + r.width)));
+  const y1 = Math.max(...rs.map((r) => quantizeFt(r.y + r.height)));
+  return { x0, y0, x1, y1 };
+}
+
+// After local positions changed: first moved placement that overlaps a unit
+// (other moved units are already at their final spots), else null.
+function fpGroupOverlap(items) {
+  for (const m of items) {
+    if (m.type !== 'placement') continue;
+    const mate = fpStackMate(m.it);
+    const ignore = [m.it.unitId].concat(mate ? [mate.unitId] : []);
+    const hit = fpOverlapAt(m.it.x, m.it.y, m.it.width, m.it.height, ignore, m.it.stackTier || 0);
+    if (hit) return { m, hit };
+  }
+  return null;
+}
+
+function fpGroupLocked(items) {
+  return items.find((m) => m.type === 'placement' && fpIsOccupiedLocked(m.it)) || null;
+}
+
+const fpStatesOf = (items) => items.map((m) => ({ type: m.type, id: m.id, state: fpElemState(m.type, m.id) }));
+
+// Translate the group by (dx, dy), clamped so the bbox stays on canvas.
+function fpShiftGroup(items, orig, dx, dy) {
+  const { w: cw, h: ch } = fpCanvasDims();
+  const bb = fpBBox(orig.map((o) => ({ type: o.type, it: o })));
+  const cdx = clampFt(dx, -bb.x0, quantizeFt(cw - bb.x1));
+  const cdy = clampFt(dy, -bb.y0, quantizeFt(ch - bb.y1));
+  items.forEach((m, i) => {
+    m.it.x = quantizeFt(orig[i].x + cdx);
+    m.it.y = quantizeFt(orig[i].y + cdy);
+  });
+  return { dx: cdx, dy: cdy };
+}
+
+function fpGroupStartMove(e) {
+  const items = fpMultiItems();
+  const locked = fpGroupLocked(items);
+  if (locked) {
+    fpToast(`${locked.it.unitCode} is occupied on a live plan — the group can't move. Unpublish to draft first.`, false);
+    return;
+  }
+  e.preventDefault();
+  const raw0 = fpCanvasRawAt(e.clientX, e.clientY);
+  const orig = items.map((m) => ({ type: m.type, x: m.it.x, y: m.it.y, width: m.it.width || 0, height: m.it.height || 0 }));
+  const before = fpStatesOf(items);
+  let moved = false;
+  const move = (ev) => {
+    const raw = fpCanvasRawAt(ev.clientX, ev.clientY);
+    if (!raw || !raw0) return;
+    const step = fpSnapStep(ev);
+    let dx = snapFt(raw[0] - raw0[0], step);
+    let dy = snapFt(raw[1] - raw0[1], step);
+    if (ev.shiftKey) {
+      if (Math.abs(dx) >= Math.abs(dy)) dy = 0;
+      else dx = 0;
+    }
+    if (!dx && !dy && !moved) return;
+    moved = true;
+    const d = fpShiftGroup(items, orig, dx, dy);
+    fpRenderCanvas();
+    fpSetReadout(`${items.length} items Δ ${formatFt(d.dx)}, ${formatFt(d.dy)} ft`);
+  };
+  const up = () => {
+    document.removeEventListener('pointermove', move);
+    document.removeEventListener('pointerup', up);
+    if (!moved) return;
+    const clash = fpGroupOverlap(items);
+    if (clash) {
+      items.forEach((m, i) => {
+        m.it.x = orig[i].x;
+        m.it.y = orig[i].y;
+      });
+      fpRenderCanvas();
+      fpToast(`Cannot move the group — ${clash.m.it.unitCode} would overlap ${clash.hit.unitCode}. Reverted.`, false);
+      return;
+    }
+    fpCommitBatch(fpStatesOf(items), `Moved ${items.length} items.`, before);
+  };
+  document.addEventListener('pointermove', move);
+  document.addEventListener('pointerup', up);
+}
+
+function fpFlushGroupNudge() {
+  if (!fpGroupNudge) return;
+  clearTimeout(fpGroupNudge.timer);
+  const { before, items } = fpGroupNudge;
+  fpGroupNudge = null;
+  fpCommitBatch(fpStatesOf(items), `Nudged ${items.length} items.`, before);
+}
+
+// Arrow-key nudge for a multi-selection (one batch + undo step per burst).
+function fpNudgeGroup(dx, dy) {
+  const items = fpMultiItems();
+  if (!items.length) return;
+  const locked = fpGroupLocked(items);
+  if (locked) {
+    fpToast(`${locked.it.unitCode} is occupied on a live plan — the group can't move.`, false);
+    return;
+  }
+  const orig = items.map((m) => ({ type: m.type, x: m.it.x, y: m.it.y, width: m.it.width || 0, height: m.it.height || 0 }));
+  fpShiftGroup(items, orig, dx, dy);
+  const clash = fpGroupOverlap(items);
+  if (clash) {
+    items.forEach((m, i) => {
+      m.it.x = orig[i].x;
+      m.it.y = orig[i].y;
+    });
+    fpToast(`Cannot nudge — ${clash.m.it.unitCode} would overlap ${clash.hit.unitCode}.`, false);
+    return;
+  }
+  if (!fpGroupNudge) {
+    const before = items.map((m, i) => {
+      const s = fpElemState(m.type, m.id);
+      return { type: m.type, id: m.id, state: s ? { ...s, x: orig[i].x, y: orig[i].y } : s };
+    });
+    fpGroupNudge = { before, items, timer: null };
+  }
+  clearTimeout(fpGroupNudge.timer);
+  fpGroupNudge.timer = setTimeout(fpFlushGroupNudge, 450);
+  fpRenderCanvas();
+  fpRenderSelInfo();
+}
+
+// Marquee selection from an empty-canvas press; a plain click deselects.
+function fpMarqueeStart(e) {
+  const raw0 = fpCanvasRawAt(e.clientX, e.clientY);
+  const additive = e.shiftKey;
+  const base = additive ? (state.fp.multi && state.fp.multi.length ? state.fp.multi.slice() : fpSingleAsMulti()) : [];
+  let box = null;
+  const canvas = $('#fpCanvas');
+  const move = (ev) => {
+    const raw = fpCanvasRawAt(ev.clientX, ev.clientY);
+    if (!raw || !raw0) return;
+    const u = fpPx();
+    if (!box && Math.hypot((raw[0] - raw0[0]) * u, (raw[1] - raw0[1]) * u) < 4) return;
+    box = { x0: Math.min(raw0[0], raw[0]), y0: Math.min(raw0[1], raw[1]), x1: Math.max(raw0[0], raw[0]), y1: Math.max(raw0[1], raw[1]) };
+    let el = canvas && canvas.querySelector('.fp-marquee');
+    if (!el && canvas) {
+      el = document.createElement('div');
+      el.className = 'fp-marquee';
+      canvas.appendChild(el);
+    }
+    if (el) {
+      el.style.left = box.x0 * u + 'px';
+      el.style.top = box.y0 * u + 'px';
+      el.style.width = (box.x1 - box.x0) * u + 'px';
+      el.style.height = (box.y1 - box.y0) * u + 'px';
+    }
+  };
+  const up = () => {
+    document.removeEventListener('pointermove', move);
+    document.removeEventListener('pointerup', up);
+    if (!box) {
+      if (!additive) fpSetSelection([]);
+      return;
+    }
+    const hits = [];
+    const touches = (r) => r.x <= box.x1 && quantizeFt(r.x + r.width) >= box.x0 && r.y <= box.y1 && quantizeFt(r.y + r.height) >= box.y0;
+    if (!fpLayerLocked('units')) for (const p of state.fp.placements) if ((p.stackTier || 0) === 0 && touches(p)) hits.push({ type: 'placement', id: p.unitId });
+    if (!fpLayerLocked('blocks')) for (const b of state.fp.blocks) if (touches(b)) hits.push({ type: 'block', id: b.id });
+    if (!fpLayerLocked('markers')) for (const m of state.fp.markers || []) if (touches({ x: m.x, y: m.y, width: 0, height: 0 })) hits.push({ type: 'marker', id: m.id });
+    const merged = base.slice();
+    for (const h of hits) if (!merged.some((m) => m.type === h.type && m.id === h.id)) merged.push(h);
+    fpSetSelection(merged);
+    fpSetReadout(`${merged.length} selected`);
+  };
+  document.addEventListener('pointermove', move);
+  document.addEventListener('pointerup', up);
+}
+
+function fpSelectAll() {
+  const all = [];
+  if (!fpLayerLocked('units')) for (const p of state.fp.placements) if ((p.stackTier || 0) === 0) all.push({ type: 'placement', id: p.unitId });
+  if (!fpLayerLocked('blocks')) for (const b of state.fp.blocks) all.push({ type: 'block', id: b.id });
+  if (!fpLayerLocked('markers')) for (const m of state.fp.markers || []) all.push({ type: 'marker', id: m.id });
+  fpSetSelection(all);
+  fpToast(`Selected ${all.length} items.`, true);
+}
+
+async function fpDeleteMulti() {
+  const items = fpMultiItems();
+  if (!items.length) return;
+  const locked = fpGroupLocked(items);
+  if (locked) {
+    fpToast(`${locked.it.unitCode} is occupied on a live plan — remove it from the selection first.`, false);
+    return;
+  }
+  const units = items.filter((m) => m.type === 'placement').length;
+  const ok = await confirmDialog({
+    title: `Remove ${items.length} selected item${items.length === 1 ? '' : 's'}?`,
+    message: units ? `${units} unit${units === 1 ? ' goes' : 's go'} back to the palette (unit records are untouched); blocks and markers are deleted. Undo restores everything.` : 'Blocks and markers are deleted. Undo restores them.',
+    confirmLabel: 'Remove',
+    danger: true,
+  });
+  if (!ok) return;
+  const targets = items.map((m) => ({ type: m.type, id: m.id, state: null }));
+  state.fp.multi = [];
+  fpCommitBatch(targets, `Removed ${items.length} items.`);
+}
+
+// Align (left / center / right / top / middle / bottom) or distribute (h / v).
+function fpAlignMulti(mode) {
+  const items = fpMultiItems().filter((m) => !m.mateOf);
+  if (items.length < 2 || (mode.startsWith('dist') && items.length < 3)) {
+    fpToast(mode.startsWith('dist') ? 'Distribute needs at least 3 items.' : 'Align needs at least 2 items.', false);
+    return;
+  }
+  const locked = fpGroupLocked(fpMultiItems());
+  if (locked) {
+    fpToast(`${locked.it.unitCode} is occupied on a live plan — it can't be moved.`, false);
+    return;
+  }
+  const all = fpMultiItems();
+  const before = fpStatesOf(all);
+  const orig = all.map((m) => ({ x: m.it.x, y: m.it.y }));
+  const bb = fpBBox(items);
+  const w = (m) => m.it.width || 0;
+  const h = (m) => m.it.height || 0;
+  const place = (m, x, y) => {
+    m.it.x = quantizeFt(x);
+    m.it.y = quantizeFt(y);
+    const mate = all.find((o) => o.mateOf === m.id);
+    if (mate) {
+      mate.it.x = m.it.x;
+      mate.it.y = m.it.y;
+    }
+  };
+  if (mode === 'left') items.forEach((m) => place(m, bb.x0, m.it.y));
+  else if (mode === 'right') items.forEach((m) => place(m, bb.x1 - w(m), m.it.y));
+  else if (mode === 'center') items.forEach((m) => place(m, (bb.x0 + bb.x1) / 2 - w(m) / 2, m.it.y));
+  else if (mode === 'top') items.forEach((m) => place(m, m.it.x, bb.y0));
+  else if (mode === 'bottom') items.forEach((m) => place(m, m.it.x, bb.y1 - h(m)));
+  else if (mode === 'middle') items.forEach((m) => place(m, m.it.x, (bb.y0 + bb.y1) / 2 - h(m) / 2));
+  else if (mode === 'dist-h' || mode === 'dist-v') {
+    const horiz = mode === 'dist-h';
+    const sorted = items.slice().sort((a, b) => (horiz ? a.it.x - b.it.x : a.it.y - b.it.y));
+    const span = horiz ? bb.x1 - bb.x0 : bb.y1 - bb.y0;
+    const sizes = sorted.reduce((s, m) => s + (horiz ? w(m) : h(m)), 0);
+    const gap = (span - sizes) / (sorted.length - 1);
+    let pos = horiz ? bb.x0 : bb.y0;
+    for (const m of sorted) {
+      if (horiz) place(m, pos, m.it.y);
+      else place(m, m.it.x, pos);
+      pos += (horiz ? w(m) : h(m)) + gap;
+    }
+  }
+  const clash = fpGroupOverlap(all);
+  if (clash) {
+    all.forEach((m, i) => {
+      m.it.x = orig[i].x;
+      m.it.y = orig[i].y;
+    });
+    fpRenderCanvas();
+    fpToast(`Cannot ${mode.startsWith('dist') ? 'distribute' : 'align'} — ${clash.m.it.unitCode} would overlap ${clash.hit.unitCode}.`, false);
+    return;
+  }
+  fpRenderCanvas();
+  const label = { left: 'Aligned left', center: 'Aligned centres', right: 'Aligned right', top: 'Aligned top', middle: 'Aligned middles', bottom: 'Aligned bottom', 'dist-h': 'Distributed horizontally', 'dist-v': 'Distributed vertically' }[mode];
+  fpCommitBatch(fpStatesOf(all), `${label} — ${items.length} items.`, before);
+}
+
+// ---- copy / paste / duplicate (blocks, markers, lines) ----
+function fpNewId(prefix) {
+  const rnd = window.crypto && typeof window.crypto.randomUUID === 'function' ? window.crypto.randomUUID() : `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+  return `${prefix}-${rnd}`.slice(0, 64);
+}
+
+function fpCopySelection() {
+  const picked = [];
+  let skippedUnits = 0;
+  const list = state.fp.multi && state.fp.multi.length ? state.fp.multi : fpSingleAsMulti();
+  for (const m of list) {
+    if (m.type === 'placement') skippedUnits++;
+    else {
+      const s = fpElemState(m.type, m.id);
+      if (s) picked.push({ type: m.type, state: s });
+    }
+  }
+  if (state.fp.selectedBoundary) {
+    const s = fpElemState('boundary', state.fp.selectedBoundary);
+    if (s) picked.push({ type: 'boundary', state: s });
+  }
+  if (!picked.length) {
+    fpToast(skippedUnits ? 'Units are real inventory and can’t be copied — use ⇶ Array to lay out more units.' : 'Select blocks, markers or a line to copy.', false);
+    return false;
+  }
+  fpClipboard = { items: picked, pastes: 0 };
+  fpToast(`Copied ${picked.length} item${picked.length === 1 ? '' : 's'}${skippedUnits ? ` (${skippedUnits} unit${skippedUnits === 1 ? '' : 's'} skipped — use ⇶ Array)` : ''}.`, true);
+  return true;
+}
+
+async function fpPasteClipboard() {
+  if (!fpClipboard || !fpClipboard.items.length) {
+    fpToast('Nothing to paste — copy blocks, markers or a line first (Cmd/Ctrl+C).', false);
+    return;
+  }
+  fpClipboard.pastes += 1;
+  const off = quantizeFt(Math.max(1, fpSnapStep() * 10) * fpClipboard.pastes);
+  const { w: cw, h: ch } = fpCanvasDims();
+  const targets = fpClipboard.items.map(({ type, state: s }) => {
+    const id = fpNewId(type === 'block' ? 'blk' : type === 'marker' ? 'mk' : 'bd');
+    if (type === 'boundary') {
+      const xs = s.points.map((p) => p[0]);
+      const ys = s.points.map((p) => p[1]);
+      const dx = clampFt(off, -Math.min(...xs), cw - Math.max(...xs));
+      const dy = clampFt(off, -Math.min(...ys), ch - Math.max(...ys));
+      return { type, id, state: { ...s, id, points: s.points.map(([x, y]) => [quantizeFt(x + dx), quantizeFt(y + dy)]) } };
+    }
+    const w = s.width || 0;
+    const h = s.height || 0;
+    return { type, id, state: { ...s, id, x: clampFt(s.x + off, 0, cw - w), y: clampFt(s.y + off, 0, ch - h) } };
+  });
+  const ok = await fpCommitBatch(targets, `Pasted ${targets.length} item${targets.length === 1 ? '' : 's'}.`);
+  if (ok) {
+    const sel = targets.filter((t) => t.type !== 'boundary').map((t) => ({ type: t.type, id: t.id }));
+    if (sel.length) fpSetSelection(sel);
+    else {
+      fpClearSingles();
+      state.fp.selectedBoundary = targets[0].id;
+      fpRenderCanvas();
+      fpRenderSelInfo();
+    }
+  }
+}
+
+// Duplicate = copy + paste without disturbing the clipboard.
+async function fpDuplicateSelection() {
+  const saved = fpClipboard;
+  if (!fpCopySelection()) {
+    fpClipboard = saved;
+    return;
+  }
+  await fpPasteClipboard();
+  fpClipboard = saved;
+}
+
+// ---- arrays ----
+// Units: place the next N unplaced units of the selected unit's size (whose
+// sqft fits its W×H within tolerance) in a row from the selected unit.
+// Blocks: N copies. Direction → ↓ ← ↑; gap in ft. Stops at the canvas edge
+// or at the first overlap.
+async function fpApplyArray() {
+  const count = Math.max(1, Math.min(99, parseInt(($('#fpSelInfo [data-fp-arr="count"]') || {}).value, 10) || 0));
+  const dir = (($('#fpSelInfo [data-fp-arr="dir"]') || {}).value || 'right');
+  const gap = Math.max(0, fpParseLen(($('#fpSelInfo [data-fp-arr="gap"]') || {}).value) || 0);
+  const { w: cw, h: ch } = fpCanvasDims();
+  const pl = state.fp.placements.find((p) => p.unitId === state.fp.selected);
+  const blk = state.fp.blocks.find((b) => b.id === state.fp.selectedBlock);
+  const src = pl || blk;
+  if (!src) return;
+  const vec = { right: [1, 0], down: [0, 1], left: [-1, 0], up: [0, -1] }[dir] || [1, 0];
+  const stepX = quantizeFt(vec[0] * (src.width + gap));
+  const stepY = quantizeFt(vec[1] * (src.height + gap));
+  const spots = [];
+  for (let i = 1; spots.length < count && i <= count; i++) {
+    const x = quantizeFt(src.x + stepX * i);
+    const y = quantizeFt(src.y + stepY * i);
+    if (x < 0 || y < 0 || toMilli(x) + toMilli(src.width) > toMilli(cw) || toMilli(y) + toMilli(src.height) > toMilli(ch)) break;
+    if (pl && fpOverlapAt(x, y, src.width, src.height, null, 0)) break;
+    spots.push({ x, y });
+  }
+  if (!spots.length) {
+    fpToast('No room for an array in that direction — the canvas edge or another unit is in the way.', false);
+    return;
+  }
+  let targets;
+  if (pl) {
+    const pool = state.fp.unplaced
+      .filter((u) => String(u.sizeCode || '').toUpperCase() === String(pl.sizeCode || '').toUpperCase() && u.sqft > 0 && areaDeviation(pl, u.sqft) <= AREA_TOLERANCE)
+      .sort((a, b) => String(a.unitCode).localeCompare(String(b.unitCode)));
+    if (!pool.length) {
+      fpToast(`No unplaced ${pl.sizeName || pl.sizeCode} units whose sqft fits ${formatFt(pl.width)}×${formatFt(pl.height)} ft (±${Math.round(AREA_TOLERANCE * 100)}%).`, false);
+      return;
+    }
+    targets = spots.slice(0, pool.length).map((s, i) => ({ type: 'placement', id: pool[i].id, state: { unitId: pool[i].id, x: s.x, y: s.y, width: pl.width, height: pl.height, stackTier: 0 } }));
+  } else {
+    targets = spots.map((s) => {
+      const id = fpNewId('blk');
+      return { type: 'block', id, state: { ...fpElemState('block', blk.id), id, x: s.x, y: s.y } };
+    });
+  }
+  state.fp.arrayOpen = false;
+  const ok = await fpCommitBatch(targets, `Arrayed ${targets.length} ${pl ? 'unit' : 'block'}${targets.length === 1 ? '' : 's'} ${dir}${spots.length < count || (pl && targets.length < count) ? ` (${count - targets.length} short — ${pl && targets.length < spots.length ? 'ran out of matching units' : 'hit the canvas edge or a unit'})` : ''}.`);
+  if (ok) fpSetSelection([{ type: pl ? 'placement' : 'block', id: pl ? pl.unitId : blk.id }, ...targets.map((t) => ({ type: t.type, id: t.id }))]);
+}
+
+function fpArrayFormHTML() {
+  return (
+    `<span class="fp-num-lbl">Array</span>` +
+    `<input type="text" inputmode="numeric" class="tbl-search fp-num" data-fp-arr="count" value="10" aria-label="Number of copies" title="How many to add (1–99)" style="width:48px;">` +
+    `<select class="fp-zoompreset" data-fp-arr="dir" aria-label="Array direction"><option value="right">→ right</option><option value="down">↓ down</option><option value="left">← left</option><option value="up">↑ up</option></select>` +
+    `<span class="fp-num-lbl">gap</span><input type="text" inputmode="decimal" class="tbl-search fp-num" data-fp-arr="gap" value="0" aria-label="Gap in feet" style="width:48px;"><span class="t-type">ft</span>` +
+    `<button class="act-btn primary" id="fpArrayApply" style="padding:2px 9px;font-size:10px;">Place</button>` +
+    `<button class="act-btn" id="fpArrayCancel" style="padding:2px 9px;font-size:10px;">Cancel</button>`
+  );
+}
+
+// Multi-selection strip: count + align / distribute / duplicate / remove.
+function fpRenderMultiInfo(info) {
+  const items = fpMultiItems().filter((m) => !m.mateOf);
+  const n = { placement: 0, block: 0, marker: 0 };
+  items.forEach((m) => n[m.type]++);
+  const bb = items.length ? fpBBox(items) : null;
+  const btn = (act, label, title) => `<button class="act-btn" data-fp-align="${act}" style="padding:2px 7px;font-size:10px;" title="${title}">${label}</button>`;
+  info.innerHTML =
+    `<span class="t-type">⧉ ${items.length} selected · ${[n.placement && `${n.placement} unit${n.placement === 1 ? '' : 's'}`, n.block && `${n.block} block${n.block === 1 ? '' : 's'}`, n.marker && `${n.marker} marker${n.marker === 1 ? '' : 's'}`].filter(Boolean).join(', ')}` +
+    (bb ? ` · ${formatFt(Math.round((bb.x1 - bb.x0) * 100) / 100)}×${formatFt(Math.round((bb.y1 - bb.y0) * 100) / 100)} ft` : '') +
+    `</span>` +
+    btn('left', '⇤', 'Align left edges') + btn('center', '↔', 'Align horizontal centres') + btn('right', '⇥', 'Align right edges') +
+    btn('top', '⤒', 'Align top edges') + btn('middle', '↕', 'Align vertical middles') + btn('bottom', '⤓', 'Align bottom edges') +
+    btn('dist-h', '⋯', 'Distribute horizontally (equal gaps, 3+ items)') + btn('dist-v', '⋮', 'Distribute vertically (equal gaps, 3+ items)') +
+    (n.block || n.marker ? `<button class="act-btn" id="fpDupBtn" style="padding:2px 9px;font-size:10px;" title="Duplicate the selected blocks / markers (Cmd/Ctrl+D)">⎘ Duplicate</button>` : '') +
+    `<button class="act-btn danger" id="fpMultiRemoveBtn" style="padding:2px 9px;font-size:10px;" title="Remove the selection (Delete) — units return to the palette">Remove</button>` +
+    `<span class="t-type">drag any to move · arrows nudge · Esc clears</span>`;
+}
+
+// ---- keyboard shortcut sheet ----
+const FP_SHORTCUTS = [
+  ['Selection', [['Click / Shift+click', 'select / add or remove from the selection'], ['Drag on empty canvas', 'marquee select (Shift adds)'], ['Cmd/Ctrl+A', 'select all units, blocks and markers'], ['Esc', 'clear selection / cancel the current tool'], ['Delete', 'remove the selection (or the selected line vertex)']]],
+  ['Move & edit', [['Arrows', 'nudge by the snap step (Shift ×10, Alt 0.01 ft)'], ['Shift while dragging', 'lock to one axis'], ['Alt while dragging', 'fine 0.01 ft snap'], ['Cmd/Ctrl+C · V · D', 'copy · paste · duplicate (blocks, markers, lines)'], ['Cmd/Ctrl+Z · Shift+Z (or Y)', 'undo · redo']]],
+  ['Lines & measure', [['L', 'line tool on / off'], ['Click · double-click / Enter', 'add vertex · finish'], ['Click first vertex / C', 'close the loop'], ['Type a number (+ Tab angle) · Enter', 'exact segment length / angle'], ['Backspace', 'remove the last vertex'], ['M', 'measure tool (two clicks)']]],
+  ['Help', [['?', 'this sheet']]],
+];
+
+function fpToggleShortcutSheet(force) {
+  let el = document.getElementById('fpShortcutSheet');
+  const open = force !== undefined ? force : !el;
+  if (!open) {
+    if (el) el.remove();
+    return;
+  }
+  if (el) return;
+  el = document.createElement('div');
+  el.id = 'fpShortcutSheet';
+  el.className = 'fp-shortcuts';
+  el.setAttribute('role', 'dialog');
+  el.setAttribute('aria-label', 'Floor plan keyboard shortcuts');
+  el.innerHTML =
+    `<div class="fp-shortcuts-card"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;"><span class="chart-title">Floor plan shortcuts</span><button class="act-btn" id="fpShortcutClose" type="button">Close</button></div>` +
+    FP_SHORTCUTS.map(([group, rows]) =>
+      `<div class="fp-num-lbl" style="margin:10px 0 4px;">${group}</div>` +
+      rows.map(([k, d]) => `<div style="display:flex;gap:12px;font-size:12px;padding:2px 0;"><span style="min-width:190px;font-weight:700;">${escapeHtml(k)}</span><span>${escapeHtml(d)}</span></div>`).join(''),
+    ).join('') +
+    `</div>`;
+  el.addEventListener('click', (e) => {
+    if (e.target === el || (e.target && e.target.id === 'fpShortcutClose')) fpToggleShortcutSheet(false);
+  });
+  document.body.appendChild(el);
+}
+
+// Editing shortcuts with modifiers (Cmd/Ctrl + A / C / V / D / Y / Shift+Z) plus ?.
+function fpOnEditKey(e) {
+  const t = e.target;
+  if (t && typeof t.closest === 'function' && t.closest('input, textarea, select, [contenteditable]')) return;
+  const designer = document.querySelector('#facility-floorplans');
+  if (!designer || designer.offsetParent === null) return;
+  const viewModal = $('#fpViewModal');
+  if (viewModal && !viewModal.hidden) return;
+  const confirmModal = $('#confirmModal');
+  if (confirmModal && !confirmModal.hidden) return;
+  const k = String(e.key).toLowerCase();
+  if (e.key === '?' || (e.shiftKey && k === '/')) {
+    e.preventDefault();
+    fpToggleShortcutSheet();
+    return;
+  }
+  if (e.key === 'Escape' && document.getElementById('fpShortcutSheet')) {
+    e.preventDefault();
+    fpToggleShortcutSheet(false);
+    return;
+  }
+  if (e.key === 'Escape' && state.fp.multi && state.fp.multi.length) {
+    e.preventDefault();
+    fpSetSelection([]);
+    return;
+  }
+  if (!(e.metaKey || e.ctrlKey) || e.altKey) return;
+  if ((k === 'z' && e.shiftKey) || k === 'y') {
+    e.preventDefault();
+    fpRedo().catch(() => {});
+  } else if (k === 'a') {
+    e.preventDefault();
+    fpSelectAll();
+  } else if (k === 'c' && !e.shiftKey) {
+    e.preventDefault();
+    fpCopySelection();
+  } else if (k === 'v' && !e.shiftKey) {
+    e.preventDefault();
+    fpPasteClipboard();
+  } else if (k === 'd') {
+    e.preventDefault();
+    fpDuplicateSelection();
   }
 }
 
@@ -1652,6 +2437,12 @@ function fpOnArrowKey(e) {
   if (viewModal && !viewModal.hidden) return;
   const confirmModal = $('#confirmModal');
   if (confirmModal && !confirmModal.hidden) return;
+  if (state.fp.multi && state.fp.multi.length > 1) {
+    e.preventDefault();
+    const st = fpSnapStep(e) * (e.shiftKey ? 10 : 1);
+    fpNudgeGroup(quantizeFt(dir[0] * st), quantizeFt(dir[1] * st));
+    return;
+  }
   const target = fpSelectionTarget();
   if (!target) return;
   e.preventDefault();
@@ -1666,6 +2457,10 @@ function fpOnArrowKey(e) {
 function fpRenderSelInfo() {
   const info = $('#fpSelInfo');
   if (!info) return;
+  if (state.fp.multi && state.fp.multi.length > 1) {
+    fpRenderMultiInfo(info);
+    return;
+  }
   // A selected decoration block takes priority over any selected unit.
   const blk = state.fp.blocks.find((b) => b.id === state.fp.selectedBlock);
   if (blk) {
@@ -1684,6 +2479,10 @@ function fpRenderSelInfo() {
       `<span class="t-type">Fill${blk.color ? '' : ' (default)'}:</span>` + swatches +
       `<input type="color" id="fpBlockColorPick" value="${escapeHtml(fpBlockFill(blk))}" title="Custom fill colour" aria-label="Custom fill colour" style="width:30px;height:20px;padding:0;border:1px solid var(--line);border-radius:6px;background:#fff;">` +
       (blk.color ? `<button class="act-btn" id="fpBlockColorDefault" style="padding:2px 9px;font-size:10px;" title="Clear the fill back to the default block tone">Default</button>` : '') +
+      (state.fp.arrayOpen
+        ? fpArrayFormHTML()
+        : `<button class="act-btn" id="fpArrayBtn" style="padding:2px 9px;font-size:10px;" title="Array — add N copies of this block in a row">⇶ Array</button>` +
+          `<button class="act-btn" id="fpDupBtn" style="padding:2px 9px;font-size:10px;" title="Duplicate (Cmd/Ctrl+D)">⎘ Duplicate</button>`) +
       `<button class="act-btn danger" id="fpBlockRemoveBtn" style="padding:2px 9px;font-size:10px;">Remove block</button>`;
     return;
   }
@@ -1802,6 +2601,9 @@ function fpRenderSelInfo() {
       : '') +
     `<span class="t-type">Doors${authored ? ' · terra ticks = authored' : ' (auto · ghost ticks = all edges)'}:</span>` + doorBtns +
     (authored ? `<button class="act-btn" id="fpDoorsAutoBtn" style="padding:2px 9px;font-size:10px;" title="Clear authored doors — fall back to all edges">Auto</button>` : '') +
+    (state.fp.arrayOpen
+      ? fpArrayFormHTML()
+      : `<button class="act-btn" id="fpArrayBtn" style="padding:2px 9px;font-size:10px;" title="Array — place the next unplaced units of this size in a row from here">⇶ Array</button>`) +
     `<button class="act-btn danger" id="fpRemoveBtn" style="padding:2px 9px;font-size:10px;">Remove from floor</button>`;
 }
 
@@ -2076,7 +2878,7 @@ function fpObjectSnap(raw, ev, opts = {}) {
   };
   if (state.fp.objSnap !== false) {
     for (const [x, y] of opts.extra || []) consider(x, y, 'endpoint', 0);
-    for (const b of state.fp.boundaries || []) {
+    for (const b of fpLayerHidden('lines') ? [] : state.fp.boundaries || []) {
       const pts = fpBoundaryPoints(b.points);
       const segs = [];
       for (let i = 0; i < pts.length; i++) {
@@ -2094,7 +2896,7 @@ function fpObjectSnap(raw, ev, opts = {}) {
         consider(n.x, n.y, 'edge', 3);
       }
     }
-    for (const r of state.fp.placements.concat(state.fp.blocks)) {
+    for (const r of (fpLayerHidden('units') ? [] : state.fp.placements).concat(fpLayerHidden('blocks') ? [] : state.fp.blocks)) {
       const x0 = r.x;
       const y0 = r.y;
       const x1 = quantizeFt(r.x + r.width);
@@ -4035,7 +4837,20 @@ function fpRenderPlanStatus() {
 // drag/resize/drop. Reads keep using get(); Publish uses request() directly
 // (the server sets ACTIVE, then fpFetch reloads).
 async function fpMutate(url, opts) {
-  const res = await request(url, opts);
+  fpSaving += 1;
+  fpRenderSaveStatus();
+  let res;
+  try {
+    res = await request(url, opts);
+    fpSaveFailed = false;
+    fpLastSavedAt = new Date();
+  } catch (err) {
+    fpSaveFailed = true;
+    throw err;
+  } finally {
+    fpSaving -= 1;
+    fpRenderSaveStatus();
+  }
   if (state.fp.plan) state.fp.plan.status = 'DRAFT';
   fpCanvasDirty = true; // every designer write funnels through here — the
   // canvas now differs from the last load/save (Load guards on this)
@@ -4722,7 +5537,10 @@ function fpOnDeleteKey(e) {
   if (viewModal && !viewModal.hidden) return;
   const confirmModal = $('#confirmModal');
   if (confirmModal && !confirmModal.hidden) return;
-  if (state.fp.selectedBoundary && state.fp.selectedVertex != null) {
+  if (state.fp.multi && state.fp.multi.length > 1) {
+    e.preventDefault();
+    fpDeleteMulti();
+  } else if (state.fp.selectedBoundary && state.fp.selectedVertex != null) {
     e.preventDefault();
     fpDeleteSelectedVertex();
   } else if (state.fp.selectedBoundary) {
@@ -4945,6 +5763,15 @@ export function fpInitEvents() {
   // consumes (Backspace / Enter / Esc / digits) so Delete / arrows never fire.
   document.addEventListener('keydown', fpPenKey);
   document.addEventListener('keydown', fpOnToolKey);
+  document.addEventListener('keydown', fpOnEditKey);
+  // Never lose a pending write (debounced nudge, in-flight save) on unload.
+  window.addEventListener('beforeunload', (e) => {
+    if (!fpHasPendingWrites()) return;
+    fpFlushNudge();
+    fpFlushGroupNudge();
+    e.preventDefault();
+    e.returnValue = '';
+  });
   document.addEventListener('keydown', fpOnDeleteKey);
   document.addEventListener('keydown', fpOnArrowKey);
   // Escape cancels an armed marker (the line tool owns its own mid-draft Escape).
@@ -4975,6 +5802,33 @@ export function fpInitEvents() {
   // Undo: replays the last draw/move/delete inverse op via DELETE/PUT.
   const fpUndoBtn = $('#fpUndoBtn');
   if (fpUndoBtn) fpUndoBtn.addEventListener('click', () => fpUndo().catch(() => {}));
+  $('#fpRedoBtn')?.addEventListener('click', () => fpRedo().catch(() => {}));
+  fpSyncUndoButtons();
+  // Layers menu (show / lock per layer, remembered per browser) + shortcut sheet.
+  fpLoadLayers();
+  fpRenderLayersMenu();
+  $('#fpLayersBtn')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const menu = $('#fpLayersMenu');
+    if (!menu) return;
+    menu.hidden = !menu.hidden;
+    $('#fpLayersBtn').setAttribute('aria-expanded', String(!menu.hidden));
+  });
+  $('#fpLayersMenu')?.addEventListener('click', (e) => e.stopPropagation());
+  $('#fpLayersMenu')?.addEventListener('change', (e) => {
+    const box = e.target;
+    if (!box || !box.dataset || !box.dataset.fpLayer) return;
+    const prop = box.dataset.fpLayerProp;
+    fpSetLayerProp(box.dataset.fpLayer, prop, prop === 'hidden' ? !box.checked : box.checked);
+  });
+  document.addEventListener('pointerdown', () => {
+    const menu = $('#fpLayersMenu');
+    if (menu && !menu.hidden) {
+      menu.hidden = true;
+      $('#fpLayersBtn')?.setAttribute('aria-expanded', 'false');
+    }
+  });
+  $('#fpShortcutsBtn')?.addEventListener('click', () => fpToggleShortcutSheet());
   document.addEventListener('keydown', (e) => {
     // Ctrl/Cmd+Z undoes the last designer draw/move/delete (not while typing
     // in an input, and not when the block-name field owns Enter/Escape).
@@ -5058,32 +5912,53 @@ export function fpInitEvents() {
     }
     // Selected line: its vertex / midpoint handles win over everything below
     // (handles can sit on top of units and blocks).
-    const vHit = fpVertexHitAt(e.clientX, e.clientY);
+    const vHit = fpLayerLocked('lines') ? null : fpVertexHitAt(e.clientX, e.clientY);
     if (vHit) {
       fpVertexStartDrag(e, vHit);
       return;
     }
     state.fp.selectedVertex = null;
-    const placed = e.target.closest('.fp-placed');
+    state.fp.arrayOpen = false;
+    // Locked / hidden layers (Layers menu) ignore pointer input.
+    const placed = fpLayerLocked('units') ? null : e.target.closest('.fp-placed');
+    const marker = fpLayerLocked('markers') ? null : e.target.closest('.fp-marker');
+    const blk = fpLayerLocked('blocks') ? null : e.target.closest('.fp-block');
+    // Marker badges render topmost, so they hit-test before blocks.
+    const hitRef = placed
+      ? { type: 'placement', id: placed.dataset.unitId }
+      : marker
+        ? { type: 'marker', id: marker.dataset.markerId }
+        : blk
+          ? { type: 'block', id: blk.dataset.blockId }
+          : null;
+    // Shift-click toggles multi-selection; dragging a member moves the group.
+    if (hitRef && e.shiftKey) {
+      e.preventDefault();
+      fpToggleMulti(hitRef.type, hitRef.id);
+      return;
+    }
+    if (hitRef && state.fp.multi && state.fp.multi.length > 1 && fpInMulti(hitRef.type, hitRef.id) && !e.target.classList.contains('fp-resize')) {
+      fpGroupStartMove(e);
+      return;
+    }
+    if (hitRef) state.fp.multi = [];
     if (placed) {
       fpStartMove(e, placed);
       return;
     }
-    // Marker badges render topmost, so they hit-test before blocks.
-    const marker = e.target.closest('.fp-marker');
     if (marker) {
       fpMarkerStartMove(e, marker);
       return;
     }
-    const blk = e.target.closest('.fp-block');
     if (blk) {
       fpBlockStartMove(e, blk);
       return;
     }
     // click near a drawn boundary line → select it (the SVG layer is
     // pointer-events:none, so the segment hit-test runs here)
-    const bndHit = fpBoundaryHitAt(e.clientX, e.clientY);
+    const bndHit = fpLayerLocked('lines') ? null : fpBoundaryHitAt(e.clientX, e.clientY);
     if (bndHit) {
+      state.fp.multi = [];
       state.fp.selectedBoundary = bndHit;
       state.fp.selected = null;
       state.fp.selectedBlock = null;
@@ -5092,15 +5967,25 @@ export function fpInitEvents() {
       fpRenderSelInfo();
       return;
     }
-    // click on empty canvas → deselect
-    state.fp.selected = null;
-    state.fp.selectedBlock = null;
-    state.fp.selectedMarker = null;
-    state.fp.selectedBoundary = null;
-    fpRenderCanvas();
-    fpRenderSelInfo();
+    // Empty canvas: drag = marquee select (Shift adds); a plain click deselects.
+    if (e.button === 0) fpMarqueeStart(e);
   });
   $('#fpSelInfo').addEventListener('click', (e) => {
+    const alignBtn = e.target && e.target.closest ? e.target.closest('[data-fp-align]') : null;
+    if (alignBtn) {
+      fpAlignMulti(alignBtn.dataset.fpAlign);
+      return;
+    }
+    const id = e.target && e.target.id;
+    if (id === 'fpMultiRemoveBtn') return void fpDeleteMulti();
+    if (id === 'fpDupBtn') return void fpDuplicateSelection();
+    if (id === 'fpArrayBtn' || id === 'fpArrayCancel') {
+      state.fp.arrayOpen = id === 'fpArrayBtn';
+      fpRenderSelInfo();
+      if (state.fp.arrayOpen) $('#fpSelInfo [data-fp-arr="count"]')?.select();
+      return;
+    }
+    if (id === 'fpArrayApply') return void fpApplyArray();
     if (e.target && e.target.id === 'fpRemoveBtn') fpRemovePlacement();
     else if (e.target && e.target.id === 'fpRotateBtn') fpRotatePlacement();
     else if (e.target && e.target.id === 'fpStackBtn') fpStackSelected();
@@ -5146,6 +6031,17 @@ export function fpInitEvents() {
             again.select();
           }
         }
+      }
+      return;
+    }
+    if (e.target && e.target.dataset && e.target.dataset.fpArr) {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        fpApplyArray();
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        state.fp.arrayOpen = false;
+        fpRenderSelInfo();
       }
       return;
     }

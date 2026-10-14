@@ -62,6 +62,9 @@ function normalizeUnit(u) {
     hasPillar: u.hasPillar === true,
     tenant,
     rateHistory: u.rateHistory || [],
+    // Floor-plan unit sync: drawn size + size history (detail reads only).
+    placement: u.placement || null,
+    areaHistory: u.areaHistory || [],
     operations: u.operations || null,
   };
 }
@@ -230,7 +233,23 @@ export async function showUnitDetail(code) {
     setVal('#udBranch', u.branchName || '—');
     setVal('#udLevel', u.level ? 'Level ' + u.level : '—');
     setVal('#udSize', u.sizeName || '—');
-    setVal('#udSizeSub', u.sizeCode ? u.sizeCode + (u.sqft ? ' · ' + u.sqft + ' sq ft' : '') : '—');
+    const lastSize = u.areaHistory[0];
+    const fmtD = (d) => new Date(d).toLocaleDateString('en-SG', { day: '2-digit', month: 'short', year: 'numeric' });
+    setVal(
+      '#udSizeSub',
+      u.sizeCode
+        ? u.sizeCode +
+            (u.sqft ? ' · ' + u.sqft + ' sq ft' : '') +
+            (u.placement ? ` · drawn ${u.placement.widthFt}×${u.placement.heightFt} ft${u.placement.areaDirty ? ' (changes on publish)' : ''}` : '') +
+            (lastSize ? ` · was ${lastSize.previous} sq ft until ${fmtD(lastSize.date)}` : '')
+        : '—',
+    );
+    const sizeEl = $('#udSize');
+    if (sizeEl) {
+      sizeEl.title = u.areaHistory.length
+        ? 'Size history:\n' + u.areaHistory.map((a) => `${fmtD(a.date)}: ${a.previous} → ${a.current} sq ft (${a.source === 'FLOOR_PLAN_PUBLISH' ? 'floor plan' : String(a.source).toLowerCase()}, ${a.by})`).join('\n')
+        : '';
+    }
     setVal('#udPsf', u.psf != null ? '$' + Number(u.psf).toFixed(2) : '—');
     setVal('#udPsfSub', u.sqft ? u.sqft + ' sq ft' : '—');
     setVal('#udRateHistCount', u.rateHistory.length);

@@ -66,11 +66,11 @@ let fpDimsTimer = null;
 // is a future dead tool, so it warns instead of silently lingering. Audit is
 // console-only and never blocks the editor.
 const FP_TOOLBAR_GROUPS = [
-  { id: 'units', label: 'Units', tools: ['fpPaletteReopen', 'fpAutoPlace', 'fpAutoDoors', 'fpUndoBtn', 'fpRedoBtn', 'fpRotateGhost', 'fpLockSqft'] },
+  { id: 'units', label: 'Units', tools: ['fpPaletteReopen', 'fpAutoPlace', 'fpAutoDoors', 'fpUndoBtn', 'fpRedoBtn', 'fpRotateGhost', 'fpLockSqft', 'fpSizesBtn'] },
   // Studio ribbon: the Select/Add-Unit/Draw-Wall/Add-Block segmented control.
   // fpBoundaryTool (line tool) + fpAddBlock (block form) are the Draw/Block
   // segments — no duplicate buttons, one handler each.
-  { id: 'mode', label: 'Mode', tools: ['fpModeSelect', 'fpModeAddUnit', 'fpBoundaryTool', 'fpMeasureTool', 'fpAddBlock'] },
+  { id: 'mode', label: 'Mode', tools: ['fpModeSelect', 'fpModeAddUnit', 'fpNewUnitTool', 'fpBoundaryTool', 'fpMeasureTool', 'fpAddBlock'] },
   { id: 'markers', label: 'Markers/Safety', tools: ['fpMarkersBtn', 'fpMarkerTools'] },
   { id: 'canvas', label: 'Canvas', tools: ['fpWidth', 'fpHeight'] },
   { id: 'plan', label: 'Plan', tools: ['fpGfa', 'fpBoundaryMetrics'] },
@@ -360,6 +360,46 @@ function fpSqftForRect(r) {
 }
 function fpSameSqft(a, b) {
   return Math.abs(Number(a) - Number(b)) < FP_SQFT_EPSILON;
+}
+
+// ---------- drawn units (floor-plan unit sync Phase 4) ----------
+// Mirrors of the server rules so the new-unit form can preview what the API
+// will create: MARKET_PSF (src/core/market.ts), defaultRateFor and the
+// nearest-tier rule resolveSizeTier (src/core/unitSizing.ts).
+const FP_MARKET_PSF = { LOCKER: 5.2, SMALL: 4.8, MEDIUM: 4.4, LARGE: 3.8 };
+function fpDefaultRate(sizeCode, sqft) {
+  const psf = FP_MARKET_PSF[String(sizeCode || '').toUpperCase()] ?? Math.min(...Object.values(FP_MARKET_PSF));
+  return Math.round(psf * sqft * 100) / 100;
+}
+function fpNearestTier(sqft, currentId) {
+  const dist = (s) => (sqft < s.sqftFrom ? s.sqftFrom - sqft : sqft > s.sqftTo ? sqft - s.sqftTo : 0);
+  const ranked = (state.sizes || [])
+    .slice()
+    .sort((a, b) => dist(a) - dist(b) || Number(b.id === currentId) - Number(a.id === currentId) || (a.sortOrder || 0) - (b.sortOrder || 0));
+  return ranked.length ? { size: ranked[0], inBand: dist(ranked[0]) === 0 } : null;
+}
+function fpSizeIdByCode(code) {
+  const s = (state.sizes || []).find((x) => String(x.code || '').toUpperCase() === String(code || '').toUpperCase());
+  return s ? s.id : undefined;
+}
+// Creation spec of a DRAFT unit (what undo needs to re-create it after a
+// discard). Specs typed in the new-unit form are kept per unit id; the rate
+// is only replayed while the drawn size still matches the one it was typed for.
+function fpDraftSpec(pl) {
+  const kept = (state.fp.draftSpecs || {})[pl.unitId];
+  const spec = {
+    sizeId: fpSizeIdByCode(pl.sizeCode),
+    name: pl.name && pl.name !== pl.unitCode ? pl.name : null,
+    hasAC: !!pl.hasAC,
+    hasPillar: !!pl.hasPillar,
+  };
+  if (kept && kept.monthlyRate != null && fpSameSqft(kept.sqft, pl.sqft)) {
+    spec.monthlyRate = kept.monthlyRate;
+  }
+  return spec;
+}
+function fpIsDraftUnit(pl) {
+  return String((pl && pl.status) || '').toUpperCase() === 'DRAFT';
 }
 
 // Live status readout at the right of the selection strip: cursor position
@@ -1291,6 +1331,20 @@ function fpRenderBoundaryLayer(canvas, u, dims, boundaries, withOverlay, selecte
   canvas.appendChild(svg);
 }
 
+// Corner tags on unit tiles: NEW = DRAFT unit (drawn, not yet published);
+// Δ = drawn size differs from the unit's sqft and updates on publish.
+function fpUnitTagsHTML(...units) {
+  const draft = units.some(fpIsDraftUnit);
+  const dirty = units.filter((x) => x && x.areaDirty);
+  let html = '';
+  if (draft) html += '<div class="fp-tag fp-tag-new" title="New unit — not published yet; publish the plan to make it available">NEW</div>';
+  if (dirty.length) {
+    const d = dirty[0];
+    html += `<div class="fp-tag fp-tag-dirty" title="${escapeHtml(d.unitCode)}: drawn ${fpFmtArea(fpSqftForRect(d))} sqft, unit ${fpFmtArea(d.sqft)} sqft — updates on publish">Δ</div>`;
+  }
+  return html;
+}
+
 function fpRenderCanvas() {
   const canvas = $('#fpCanvas');
   if (!canvas) return;
@@ -1354,7 +1408,7 @@ function fpRenderCanvas() {
       const upper = group.members[1];
       const el = document.createElement('div');
       const selected = state.fp.selected === lower.unitId || state.fp.selected === upper.unitId || fpInMulti('placement', lower.unitId) || fpInMulti('placement', upper.unitId);
-      el.className = 'fp-placed fp-stacked' + (selected ? ' selected' : '');
+      el.className = 'fp-placed fp-stacked' + (selected ? ' selected' : '') + (fpIsDraftUnit(lower) || fpIsDraftUnit(upper) ? ' fp-draft' : '');
       el.dataset.unitId = lower.unitId;
       el.dataset.stackMateId = upper.unitId;
       el.style.left = r.x * u + 'px';
@@ -1369,6 +1423,7 @@ function fpRenderCanvas() {
         `<div class="fp-code fp-stack-upper">${escapeHtml(upper.unitCode)}</div>` +
         `<div class="fp-stack-divider"></div>` +
         `<div class="fp-code fp-stack-lower">${escapeHtml(lower.unitCode)}</div>` +
+        fpUnitTagsHTML(lower, upper) +
         fpDoorMarkersHTML({ doorEdges: null }, u) +
         ((fpIsOccupiedLocked(lower) || fpIsOccupiedLocked(upper)) ? '' : `<div class="fp-resize" title="Drag to resize"></div>`);
       canvas.appendChild(el);
@@ -1376,7 +1431,7 @@ function fpRenderCanvas() {
     }
     const pl = group.members[0];
     const el = document.createElement('div');
-    el.className = 'fp-placed' + (state.fp.selected === pl.unitId || fpInMulti('placement', pl.unitId) ? ' selected' : '');
+    el.className = 'fp-placed' + (state.fp.selected === pl.unitId || fpInMulti('placement', pl.unitId) ? ' selected' : '') + (fpIsDraftUnit(pl) ? ' fp-draft' : '');
     el.dataset.unitId = pl.unitId;
     el.dataset.stackTier = String(pl.stackTier || 0);
     el.style.left = pl.x * u + 'px';
@@ -1388,6 +1443,7 @@ function fpRenderCanvas() {
       `<div class="fp-status" style="background:${fpStatusColor(pl.status)};"></div>` +
       `<div class="fp-code">${escapeHtml(pl.unitCode)}</div>` +
       (pl.height * u > 34 ? `<div class="fp-size">${escapeHtml(pl.sizeName)}</div>` : '') +
+      fpUnitTagsHTML(pl) +
       fpDoorMarkersHTML(pl, u) +
       (fpIsOccupiedLocked(pl) ? '' : `<div class="fp-resize" title="Drag to resize"></div>`);
     canvas.appendChild(el);
@@ -1396,7 +1452,8 @@ function fpRenderCanvas() {
   // placement/block drags only run when the tool is toggled off). An armed
   // marker (Markers/Safety group) behaves the same — the next canvas click
   // places it, so the crosshair applies there too.
-  canvas.style.cursor = state.fp.underlayMode === 'move' ? 'move' : state.fp.drawMode || state.fp.armedMarker || state.fp.measureMode || state.fp.underlayMode ? 'crosshair' : '';
+  canvas.style.cursor = state.fp.underlayMode === 'move' ? 'move' : state.fp.drawMode || state.fp.armedMarker || state.fp.measureMode || state.fp.underlayMode || state.fp.newUnitMode ? 'crosshair' : '';
+  if (fpNewDraft) fpRenderNewUnitGhost(canvas, u);
   // Safety/facility point icons render LAST (top of the z-order) so a marker
   // never hides under a placement.
   fpRenderMarkerLayer(canvas, u, fpLayerHidden('markers') ? [] : state.fp.markers || [], true, state.fp.selectedMarker);
@@ -2078,6 +2135,13 @@ function fpRenderSaveStatus() {
   else if (fpSaveFailed) el.textContent = '⚠ Last save failed';
   else if (fpLastSavedAt) el.textContent = `✓ Saved ${fpLastSavedAt.toLocaleTimeString('en-SG', { hour: '2-digit', minute: '2-digit' })}`;
   else el.textContent = '';
+  // Pending publish work (floor-plan unit sync): drafts + resized units.
+  const drafts = (state.fp.placements || []).filter(fpIsDraftUnit).length;
+  const resized = (state.fp.placements || []).filter((p) => p.areaDirty).length;
+  const bits = [];
+  if (drafts) bits.push(`${drafts} new unit${drafts === 1 ? '' : 's'}`);
+  if (resized) bits.push(`${resized} size change${resized === 1 ? '' : 's'}`);
+  if (bits.length && !fpSaving && !fpSaveFailed) el.textContent += `${el.textContent ? ' · ' : ''}${bits.join(', ')} pending publish`;
   el.style.color = fpSaveFailed && !fpSaving ? 'var(--terra,#C1664C)' : '';
 }
 
@@ -2164,15 +2228,50 @@ function fpElemState(type, id) {
   return null;
 }
 
+function fpUnitExists(unitId) {
+  return state.fp.placements.some((p) => p.unitId === unitId) || (state.fp.unplaced || []).some((u) => u.id === unitId);
+}
+
 function fpBatchBody(items) {
   const body = { upsert: {}, delete: {} };
   for (const it of items) {
     const k = FP_BATCH_KEYS[it.type];
     if (!k) continue;
+    // A placement for a unit that does not exist (new drawn unit, or a draft
+    // discarded earlier and now restored by undo/redo) is CREATED: the item
+    // id becomes the batch tempId and the server mints the real id + code.
+    if (it.type === 'placement' && it.state && it.createSpec && !fpUnitExists(it.id)) {
+      const { x, y, width, height, stackTier, doorEdges } = it.state;
+      if (!body.create) body.create = { units: [] };
+      body.create.units.push({ x, y, width, height, stackTier: stackTier || 0, doorEdges: doorEdges || null, ...it.createSpec, tempId: it.id });
+      continue;
+    }
     if (it.state) (body.upsert[k] = body.upsert[k] || []).push(it.state);
     else (body.delete[k] = body.delete[k] || []).push(it.id);
   }
   return body;
+}
+
+// Swap a temp / discarded unit id for the id the server minted, everywhere
+// undo/redo and selection may still reference it.
+function fpRemapUnitId(oldId, newId) {
+  if (!oldId || oldId === newId) return;
+  const fix = (it) => {
+    if (it.id === oldId) it.id = newId;
+    if (it.before && it.before.unitId === oldId) it.before.unitId = newId;
+    if (it.after && it.after.unitId === oldId) it.after.unitId = newId;
+  };
+  for (const entry of [...fpUndoStack, ...fpRedoStack]) {
+    if (entry.kind === 'batch') entry.items.forEach(fix);
+    else if (entry.unitId === oldId) entry.unitId = newId;
+  }
+  const specs = state.fp.draftSpecs || {};
+  if (specs[oldId]) {
+    specs[newId] = specs[oldId];
+    delete specs[oldId];
+  }
+  if (state.fp.selected === oldId) state.fp.selected = newId;
+  state.fp.multi = (state.fp.multi || []).map((m) => (m.type === 'placement' && m.id === oldId ? { ...m, id: newId } : m));
 }
 
 // Adopt a plan payload (GET /floor-plans/:floorId shape). `keep` preserves
@@ -2213,29 +2312,51 @@ function fpApplyPlanPayload(body, keep) {
   fpClearUndo(); // floor (re)load invalidates inverse ops from the previous floor
 }
 
+// Returns the server's `created` map ({ [tempId]: { id, unitCode } }) after
+// remapping temp ids to the minted ones.
 async function fpSendBatch(items) {
   const res = await fpMutate(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/batch`, {
     method: 'POST',
     body: JSON.stringify(fpBatchBody(items)),
   });
+  const created = (res.data && res.data.created) || {};
+  for (const [tempId, ref] of Object.entries(created)) fpRemapUnitId(tempId, ref.id);
   fpApplyPlanPayload(res.data, true);
   notifyMetricsFloorChanged();
+  return created;
 }
+
+let fpLastCreated = {}; // created map of the last fpCommitBatch (tempId → { id, unitCode })
 
 /**
  * Persist target element states in one batch and record ONE undo step.
  * `before` (optional) = the states to restore on undo, when the caller has
  * already mutated local state (drags / nudges); else captured now.
  */
-async function fpCommitBatch(targets, verb, before) {
-  const prior = before || targets.map((t) => ({ type: t.type, id: t.id, state: fpElemState(t.type, t.id) }));
+async function fpCommitBatch(targets, verb, before, opts = {}) {
+  // Draft units carry a creation spec so undoing their discard re-creates them.
+  const specFor = (t) => {
+    if (t.createSpec) return t.createSpec;
+    if (t.type !== 'placement') return undefined;
+    const pl = state.fp.placements.find((x) => x.unitId === t.id);
+    return pl && fpIsDraftUnit(pl) ? fpDraftSpec(pl) : undefined;
+  };
+  const prior = (before || targets.map((t) => ({ type: t.type, id: t.id, state: fpElemState(t.type, t.id) }))).map((p) => {
+    const t = targets.find((x) => x.type === p.type && x.id === p.id) || p;
+    return { ...p, createSpec: p.createSpec || specFor(t) };
+  });
   try {
-    await fpSendBatch(targets);
+    const created = await fpSendBatch(targets);
+    fpLastCreated = created;
+    const idOf = (id) => (created[id] ? created[id].id : id);
     fpPushUndo({
       kind: 'batch',
-      items: prior.map((p) => ({ type: p.type, id: p.id, before: p.state, after: fpElemState(p.type, p.id) })),
+      items: prior.map((p) => {
+        const id = idOf(p.id);
+        return { type: p.type, id, before: p.state, after: fpElemState(p.type, id), ...(p.createSpec ? { createSpec: p.createSpec } : {}) };
+      }),
     });
-    fpToast(verb, true);
+    if (!opts.silent) fpToast(verb, true);
     return true;
   } catch (err) {
     fpToast(`${verb.replace(/\.$/, '')}: ${describeError(err)}`, false);
@@ -2273,8 +2394,15 @@ async function fpUndo() {
   }
   const items = fpUndoItems(entry);
   try {
-    await fpSendBatch(items.map((i) => ({ type: i.type, id: i.id, state: i.before })));
+    // Re-creating a discarded draft mints a new id; fpSendBatch remaps the
+    // items (already on the redo stack) to it.
     fpRedoStack.push({ kind: 'batch', items });
+    try {
+      await fpSendBatch(items.map((i) => ({ type: i.type, id: i.id, state: i.before, createSpec: i.createSpec })));
+    } catch (e) {
+      fpRedoStack.pop();
+      throw e;
+    }
     fpToast(`Undone (${fpUndoStack.length} more · ${fpRedoStack.length} to redo).`, true);
   } catch (err) {
     fpToast('Undo: ' + describeError(err), false);
@@ -2290,8 +2418,13 @@ async function fpRedo() {
     return;
   }
   try {
-    await fpSendBatch(entry.items.map((i) => ({ type: i.type, id: i.id, state: i.after })));
     fpUndoStack.push(entry);
+    try {
+      await fpSendBatch(entry.items.map((i) => ({ type: i.type, id: i.id, state: i.after, createSpec: i.createSpec })));
+    } catch (e) {
+      fpUndoStack.pop();
+      throw e;
+    }
     fpToast(`Redone (${fpRedoStack.length} more to redo).`, true);
   } catch (err) {
     fpToast('Redo: ' + describeError(err), false);
@@ -2577,9 +2710,14 @@ async function fpDeleteMulti() {
     return;
   }
   const units = items.filter((m) => m.type === 'placement').length;
+  const drafts = items.filter((m) => m.type === 'placement' && fpIsDraftUnit(state.fp.placements.find((p) => p.unitId === m.id))).length;
   const ok = await confirmDialog({
     title: `Remove ${items.length} selected item${items.length === 1 ? '' : 's'}?`,
-    message: units ? `${units} unit${units === 1 ? ' goes' : 's go'} back to the palette (unit records are untouched); blocks and markers are deleted. Undo restores everything.` : 'Blocks and markers are deleted. Undo restores them.',
+    message:
+      (units - drafts ? `${units - drafts} unit${units - drafts === 1 ? ' goes' : 's go'} back to the palette (unit records are untouched). ` : '') +
+      (drafts ? `${drafts} new unpublished unit${drafts === 1 ? ' is' : 's are'} discarded. ` : '') +
+      (items.length > units ? 'Blocks and markers are deleted. ' : '') +
+      'Undo restores everything.',
     confirmLabel: 'Remove',
     danger: true,
   });
@@ -2716,6 +2854,11 @@ async function fpPasteClipboard() {
 
 // Duplicate = copy + paste without disturbing the clipboard.
 async function fpDuplicateSelection() {
+  const onlyUnit = !(state.fp.multi && state.fp.multi.length > 1) && state.fp.selected ? state.fp.placements.find((p) => p.unitId === state.fp.selected) : null;
+  if (onlyUnit) {
+    await fpDuplicateUnit(onlyUnit);
+    return;
+  }
   const saved = fpClipboard;
   if (!fpCopySelection()) {
     fpClipboard = saved;
@@ -2759,11 +2902,25 @@ async function fpApplyArray() {
     const pool = state.fp.unplaced
       .filter((u) => String(u.sizeCode || '').toUpperCase() === String(pl.sizeCode || '').toUpperCase() && u.sqft > 0 && areaDeviation(pl, u.sqft) <= AREA_TOLERANCE)
       .sort((a, b) => String(a.unitCode).localeCompare(String(b.unitCode)));
-    if (!pool.length) {
-      fpToast(`No unplaced ${pl.sizeName || pl.sizeCode} units whose sqft fits ${formatFt(pl.width)}×${formatFt(pl.height)} ft (±${Math.round(AREA_TOLERANCE * 100)}%).`, false);
-      return;
-    }
     targets = spots.slice(0, pool.length).map((s, i) => ({ type: 'placement', id: pool[i].id, state: { unitId: pool[i].id, x: s.x, y: s.y, width: pl.width, height: pl.height, stackTier: 0 } }));
+    const extra = spots.slice(pool.length);
+    if (extra.length) {
+      const makeNew = await confirmDialog({
+        title: `Create ${extra.length} new unit${extra.length === 1 ? '' : 's'}?`,
+        message: `${pool.length ? `Only ${pool.length} unplaced ${pl.sizeName || pl.sizeCode} unit${pool.length === 1 ? '' : 's'} fit${pool.length === 1 ? 's' : ''} ${formatFt(pl.width)}×${formatFt(pl.height)} ft. ` : `No unplaced ${pl.sizeName || pl.sizeCode} units fit ${formatFt(pl.width)}×${formatFt(pl.height)} ft. `}${pool.length ? `Create ${extra.length} new draft unit${extra.length === 1 ? '' : 's'} for the rest?` : `Create ${extra.length} new draft unit${extra.length === 1 ? '' : 's'} instead?`} They become available when you publish.`,
+        confirmLabel: 'Create units',
+      });
+      if (!makeNew && !targets.length) return;
+      if (makeNew) {
+        const spec = fpDraftSpec(pl);
+        delete spec.monthlyRate;
+        spec.name = null;
+        for (const sp of extra) {
+          const id = fpNewId('new');
+          targets.push({ type: 'placement', id, state: { unitId: id, x: sp.x, y: sp.y, width: pl.width, height: pl.height, stackTier: 0, doorEdges: null }, createSpec: spec });
+        }
+      }
+    }
   } else {
     targets = spots.map((s) => {
       const id = fpNewId('blk');
@@ -2772,7 +2929,7 @@ async function fpApplyArray() {
   }
   state.fp.arrayOpen = false;
   const ok = await fpCommitBatch(targets, `Arrayed ${targets.length} ${pl ? 'unit' : 'block'}${targets.length === 1 ? '' : 's'} ${dir}${spots.length < count || (pl && targets.length < count) ? ` (${count - targets.length} short — ${pl && targets.length < spots.length ? 'ran out of matching units' : 'hit the canvas edge or a unit'})` : ''}.`);
-  if (ok) fpSetSelection([{ type: pl ? 'placement' : 'block', id: pl ? pl.unitId : blk.id }, ...targets.map((t) => ({ type: t.type, id: t.id }))]);
+  if (ok) fpSetSelection([{ type: pl ? 'placement' : 'block', id: pl ? pl.unitId : blk.id }, ...targets.map((t) => ({ type: t.type, id: fpLastCreated[t.id] ? fpLastCreated[t.id].id : t.id }))]);
 }
 
 function fpArrayFormHTML() {
@@ -2808,7 +2965,8 @@ function fpRenderMultiInfo(info) {
 // ---- keyboard shortcut sheet ----
 const FP_SHORTCUTS = [
   ['Selection', [['Click / Shift+click', 'select / add or remove from the selection'], ['Drag on empty canvas', 'marquee select (Shift adds)'], ['Cmd/Ctrl+A', 'select all units, blocks and markers'], ['Esc', 'clear selection / cancel the current tool'], ['Delete', 'remove the selection (or the selected line vertex)']]],
-  ['Move & edit', [['Arrows', 'nudge by the snap step (Shift ×10, Alt 0.01 ft)'], ['Shift while dragging', 'lock to one axis'], ['Alt while dragging', 'fine 0.01 ft snap'], ['Cmd/Ctrl+C · V · D', 'copy · paste · duplicate (blocks, markers, lines)'], ['Cmd/Ctrl+Z · Shift+Z (or Y)', 'undo · redo']]],
+  ['Move & edit', [['Arrows', 'nudge by the snap step (Shift ×10, Alt 0.01 ft)'], ['Shift while dragging', 'lock to one axis'], ['Alt while dragging', 'fine 0.01 ft snap'], ['Cmd/Ctrl+C · V · D', 'copy · paste · duplicate (blocks, markers, lines; D on a unit makes a new draft unit)'], ['Cmd/Ctrl+Z · Shift+Z (or Y)', 'undo · redo']]],
+  ['Units', [['N', 'new-unit tool: drag a rectangle, then confirm tier / rate'], ['Enter · Esc (in the form)', 'create · cancel'], ['Delete on a NEW unit', 'discard it (undo brings it back)']]],
   ['Lines & measure', [['L', 'line tool on / off'], ['Click · double-click / Enter', 'add vertex · finish'], ['Click first vertex / C', 'close the loop'], ['Type a number (+ Tab angle) · Enter', 'exact segment length / angle'], ['Backspace', 'remove the last vertex'], ['M', 'measure tool (two clicks)']]],
   ['Help', [['?', 'this sheet']]],
 ];
@@ -3243,7 +3401,7 @@ function fpRenderSelInfo() {
       `<span class="t-type">doors auto (ghost ticks = all edges)</span>` +
       `<button class="act-btn" id="fpRotateBtn" style="padding:2px 9px;font-size:10px;" title="Swap width/height (90° rotation) for both tiers">⟳ Rotate</button>` +
       `<button class="act-btn" id="fpUnstackBtn" style="padding:2px 9px;font-size:10px;" title="Remove the upper tier — the lower tier stays as a single">Unstack</button>` +
-      `<button class="act-btn danger" id="fpRemoveBtn" style="padding:2px 9px;font-size:10px;">Remove from floor</button>`;
+      `<button class="act-btn danger" id="fpRemoveBtn" style="padding:2px 9px;font-size:10px;">${fpIsDraftUnit(pl) ? 'Discard new unit' : 'Remove from floor'}</button>`;
     return;
   }
   // Lone locker placements offer Stack when exactly one same-rect partner is
@@ -3264,13 +3422,15 @@ function fpRenderSelInfo() {
     `<button class="act-btn" id="fpRotateBtn" style="padding:2px 9px;font-size:10px;" title="Swap width/height (90° rotation)">⟳ Rotate</button>` +
     (stackable.length === 1
       ? `<button class="act-btn" id="fpStackBtn" style="padding:2px 9px;font-size:10px;" title="Stack ${escapeHtml(stackable[0].unitCode)} (upper) onto this block">⧉ Stack ${escapeHtml(stackable[0].unitCode)}</button>`
-      : '') +
+      : fpIsLockerPlacement(pl) && !stackable.length
+        ? `<button class="act-btn" id="fpStackNewBtn" style="padding:2px 9px;font-size:10px;" title="Create a new locker unit stacked on top of this one (draft until you publish)">⧉ Stack new locker</button>`
+        : '') +
     `<span class="t-type">Doors${authored ? ' · terra ticks = authored' : ' (auto · ghost ticks = all edges)'}:</span>` + doorBtns +
     (authored ? `<button class="act-btn" id="fpDoorsAutoBtn" style="padding:2px 9px;font-size:10px;" title="Clear authored doors — fall back to all edges">Auto</button>` : '') +
     (state.fp.arrayOpen
       ? fpArrayFormHTML()
       : `<button class="act-btn" id="fpArrayBtn" style="padding:2px 9px;font-size:10px;" title="Array — place the next unplaced units of this size in a row from here">⇶ Array</button>`) +
-    `<button class="act-btn danger" id="fpRemoveBtn" style="padding:2px 9px;font-size:10px;">Remove from floor</button>`;
+    `<button class="act-btn danger" id="fpRemoveBtn" style="padding:2px 9px;font-size:10px;">${fpIsDraftUnit(pl) ? 'Discard new unit' : 'Remove from floor'}</button>`;
 }
 
 // Persist one placement's authored door edges (null clears back to AUTO).
@@ -3445,6 +3605,7 @@ function fpRender() {
   fpRenderCanvas();
   fpRenderSelInfo();
   fpRenderPlanStatus();
+  fpRenderSaveStatus(); // pending-publish counts follow the plan
   fpSyncModeUI();
 }
 
@@ -6150,10 +6311,364 @@ async function fpDeleteDraft(draftId) {
   }
 }
 
+// ---------- new-unit tool (floor-plan unit sync Phase 4) ----------
+// N or "＋ New Unit": drag a rectangle on the canvas (snaps to the grid and to
+// unit / block / wall corners, so units sit flush), then confirm tier, name,
+// AC, pillar and rate in the form. The unit is created DRAFT through the batch
+// endpoint (one undo step) and becomes available when the plan is published.
+let fpNewDraft = null; // { x, y, width, height, bad } while dragging / in the form
+
+function fpSetNewUnitMode(on, quiet) {
+  const next = !!on;
+  if (next) {
+    if (state.fp.measureMode) fpSetMeasureMode(false);
+    state.fp.drawMode = false;
+    fpResetPen();
+    state.fp.armedMarker = null;
+    state.fp.tool = 'select';
+    fpRenderMarkerTools();
+  }
+  if (!next && fpNewDraft) fpCancelNewUnit(true);
+  state.fp.newUnitMode = next;
+  fpRenderCanvas();
+  fpSyncModeUI();
+  if (!quiet) {
+    fpToast(
+      next
+        ? 'New unit — drag a rectangle on the canvas. It snaps to corners and edges; Esc cancels.'
+        : 'New-unit tool off.',
+      true,
+    );
+  }
+}
+
+function fpNewUnitRectFrom(a, b) {
+  const x = Math.min(a.x, b.x);
+  const y = Math.min(a.y, b.y);
+  return { x: quantizeFt(x), y: quantizeFt(y), width: quantizeFt(Math.abs(b.x - a.x)), height: quantizeFt(Math.abs(b.y - a.y)) };
+}
+
+function fpNewUnitProblem(r) {
+  if (!(r.width >= MIN_RECT_SIDE_FT) || !(r.height >= MIN_RECT_SIDE_FT)) return 'too small';
+  if (fpSqftForRect(r) < 1) return 'under 1 sqft';
+  const hit = fpOverlapAt(r.x, r.y, r.width, r.height, null, 0);
+  if (hit) return `overlaps ${hit.unitCode}`;
+  return null;
+}
+
+function fpNewUnitReadout(r) {
+  const sqft = fpSqftForRect(r);
+  const tier = fpNearestTier(sqft);
+  const problem = fpNewUnitProblem(r);
+  fpSetReadout(
+    `New unit ${formatFt(r.width)} × ${formatFt(r.height)} ft = ${fpFmtArea(sqft)} sqft` +
+      (tier ? ` · ${tier.size.name}${tier.inBand ? '' : ' (nearest)'}` : '') +
+      (problem ? ` — ${problem}` : ''),
+  );
+}
+
+function fpRenderNewUnitGhost(canvas, u) {
+  const r = fpNewDraft;
+  if (!r || !(r.width > 0) || !(r.height > 0)) return;
+  const el = document.createElement('div');
+  el.className = 'fp-new-ghost' + (r.bad ? ' bad' : '');
+  el.style.left = r.x * u + 'px';
+  el.style.top = r.y * u + 'px';
+  el.style.width = r.width * u + 'px';
+  el.style.height = r.height * u + 'px';
+  el.textContent = `${fpFmtArea(fpSqftForRect(r))} sqft`;
+  canvas.appendChild(el);
+}
+
+function fpNewUnitPointerDown(e) {
+  e.preventDefault();
+  const start = fpSnapPointer(e);
+  if (!start) return;
+  const a = { x: start.x, y: start.y };
+  fpNewDraft = { ...fpNewUnitRectFrom(a, a), bad: true };
+  const move = (ev) => {
+    const cur = fpSnapPointer(ev);
+    if (!cur) return;
+    const r = fpNewUnitRectFrom(a, cur);
+    fpNewDraft = { ...r, bad: !!fpNewUnitProblem(r) };
+    fpRenderCanvas();
+    fpNewUnitReadout(r);
+  };
+  const up = () => {
+    document.removeEventListener('pointermove', move);
+    document.removeEventListener('pointerup', up);
+    const r = fpNewDraft;
+    const problem = r && fpNewUnitProblem(r);
+    if (!r || problem) {
+      fpNewDraft = null;
+      fpRenderCanvas();
+      if (r && r.width * fpPx() < 4 && r.height * fpPx() < 4) fpToast('Drag a rectangle to draw a unit (a click alone does nothing).', false);
+      else if (problem) fpToast(`Can't draw a unit here — ${problem}.`, false);
+      return;
+    }
+    fpOpenNewUnitForm(r);
+  };
+  document.addEventListener('pointermove', move);
+  document.addEventListener('pointerup', up);
+}
+
+function fpCancelNewUnit(quiet) {
+  fpNewDraft = null;
+  const pop = $('#fpNewUnitPop');
+  if (pop) pop.remove();
+  fpRenderCanvas();
+  if (!quiet) fpSetReadout('');
+}
+
+function fpOpenNewUnitForm(r) {
+  const stage = $('#fpStage');
+  if (!stage) return;
+  const old = $('#fpNewUnitPop');
+  if (old) old.remove();
+  const sqft = fpSqftForRect(r);
+  const tier = fpNearestTier(sqft);
+  if (!tier) {
+    fpCancelNewUnit(true);
+    fpToast('No unit size tiers exist — add size tiers before drawing units.', false);
+    return;
+  }
+  const opts = (state.sizes || [])
+    .slice()
+    .sort((x, y) => (x.sortOrder || 0) - (y.sortOrder || 0))
+    .map((sz) => `<option value="${escapeHtml(sz.id)}"${sz.id === tier.size.id ? ' selected' : ''}>${escapeHtml(sz.name)} (${sz.sqftFrom === sz.sqftTo ? sz.sqftFrom : `${sz.sqftFrom}–${sz.sqftTo}`} sqft)</option>`)
+    .join('');
+  const pop = document.createElement('form');
+  pop.id = 'fpNewUnitPop';
+  pop.className = 'fp-newunit-pop';
+  pop.setAttribute('role', 'dialog');
+  pop.setAttribute('aria-label', 'New unit');
+  pop.innerHTML =
+    `<div class="fp-newunit-hdr">New unit <span class="t-type">${formatFt(r.width)} × ${formatFt(r.height)} ft · ${fpFmtArea(sqft)} sqft</span></div>` +
+    `<label class="fp-newunit-row"><span>Size tier</span><select class="tbl-select" name="sizeId">${opts}</select></label>` +
+    `<div class="fp-pub-note" data-nu-tiernote>${tier.inBand ? '' : `Nearest tier — no tier range covers ${fpFmtArea(sqft)} sqft.`}</div>` +
+    `<label class="fp-newunit-row"><span>Name <em class="t-type">(optional)</em></span><input class="tbl-search" name="name" maxlength="80" autocomplete="off" placeholder="Shown instead of the unit code"></label>` +
+    `<label class="fp-newunit-row"><span>Monthly rate (S$)</span><input class="tbl-search" name="rate" type="number" min="0" step="0.01" required></label>` +
+    `<div class="fp-pub-note" data-nu-psf></div>` +
+    `<div class="fp-newunit-checks"><label><input type="checkbox" name="hasAC"> Air-conditioned</label><label><input type="checkbox" name="hasPillar"> Has a pillar</label></div>` +
+    `<div class="fp-pub-note">Created as a <b>draft</b> with the next unit code; it becomes available when you publish the plan.</div>` +
+    `<div class="fp-newunit-actions"><button type="button" class="act-btn" data-nu-cancel>Cancel</button><button type="submit" class="act-btn primary">Create unit</button></div>`;
+  stage.appendChild(pop);
+  const sizeSel = pop.elements.sizeId;
+  const rateIn = pop.elements.rate;
+  let rateTouched = false;
+  const sync = () => {
+    const sz = (state.sizes || []).find((x) => x.id === sizeSel.value);
+    if (!rateTouched && sz) rateIn.value = fpDefaultRate(sz.code, sqft).toFixed(2);
+    const rate = Number(rateIn.value);
+    pop.querySelector('[data-nu-psf]').textContent = Number.isFinite(rate) && rate >= 0 ? `S$${(rate / sqft).toFixed(2)}/sqft · default is the ${sz ? sz.name : ''} market rate × sqft` : '';
+    pop.querySelector('[data-nu-tiernote]').textContent = sz && sz.id === tier.size.id && !tier.inBand ? `Nearest tier — no tier range covers ${fpFmtArea(sqft)} sqft.` : '';
+  };
+  sizeSel.addEventListener('change', sync);
+  rateIn.addEventListener('input', () => {
+    rateTouched = true;
+    sync();
+  });
+  sync();
+  pop.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Escape') {
+      ev.preventDefault();
+      ev.stopPropagation();
+      fpCancelNewUnit();
+    }
+  });
+  pop.querySelector('[data-nu-cancel]').addEventListener('click', () => fpCancelNewUnit());
+  pop.addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const rate = Number(rateIn.value);
+    if (!(Number.isFinite(rate) && rate >= 0)) {
+      rateIn.focus();
+      return;
+    }
+    const spec = {
+      sizeId: sizeSel.value,
+      name: pop.elements.name.value.trim() || null,
+      hasAC: pop.elements.hasAC.checked,
+      hasPillar: pop.elements.hasPillar.checked,
+      monthlyRate: Math.round(rate * 100) / 100,
+    };
+    pop.querySelector('button[type="submit"]').disabled = true;
+    const ok = await fpCreateUnits([{ rect: r, spec }]);
+    if (ok) fpCancelNewUnit(true);
+    else pop.querySelector('button[type="submit"]').disabled = false;
+  });
+  try {
+    sizeSel.focus({ preventScroll: true });
+  } catch (e) { /* noop */ }
+}
+
+// Create DRAFT units in one batch (one undo step). items: [{ rect, spec }].
+async function fpCreateUnits(items, verbOverride) {
+  const targets = items.map(({ rect, spec }) => {
+    const id = fpNewId('new');
+    return {
+      type: 'placement',
+      id,
+      state: { unitId: id, x: rect.x, y: rect.y, width: rect.width, height: rect.height, stackTier: rect.stackTier || 0, doorEdges: null },
+      createSpec: spec,
+    };
+  });
+  const prior = targets.map((t) => ({ type: 'placement', id: t.id, state: null, createSpec: t.createSpec }));
+  const ok = await fpCommitBatch(targets, verbOverride || 'Create unit', prior, { silent: !verbOverride });
+  if (!ok) return false;
+  const codes = [];
+  const ids = [];
+  for (const t of targets) {
+    const ref = fpLastCreated[t.id];
+    if (!ref) continue;
+    codes.push(ref.unitCode);
+    ids.push(ref.id);
+    if (t.createSpec.monthlyRate != null) {
+      state.fp.draftSpecs = state.fp.draftSpecs || {};
+      state.fp.draftSpecs[ref.id] = { monthlyRate: t.createSpec.monthlyRate, sqft: fpSqftForRect(t.state) };
+    }
+  }
+  if (ids.length === 1) {
+    fpClearSingles();
+    state.fp.selected = ids[0];
+    fpRenderCanvas();
+    fpRenderSelInfo();
+  } else if (ids.length) fpSetSelection(ids.map((id) => ({ type: 'placement', id })));
+  if (!verbOverride) fpToast(`Created ${codes.join(', ')} as a draft — publish the plan to make ${codes.length === 1 ? 'it' : 'them'} available.`, true);
+  return true;
+}
+
+// Duplicate a unit: a new DRAFT unit with the same footprint and settings in
+// the first free spot right of / below / left of / above it.
+async function fpDuplicateUnit(pl) {
+  const { w: cw, h: ch } = fpCanvasDims();
+  const tries = [
+    [pl.x + pl.width, pl.y],
+    [pl.x, pl.y + pl.height],
+    [pl.x - pl.width, pl.y],
+    [pl.x, pl.y - pl.height],
+  ];
+  const spot = tries
+    .map(([x, y]) => ({ x: quantizeFt(x), y: quantizeFt(y), width: pl.width, height: pl.height }))
+    .find((r) => r.x >= 0 && r.y >= 0 && toMilli(r.x) + toMilli(r.width) <= toMilli(cw) && toMilli(r.y) + toMilli(r.height) <= toMilli(ch) && !fpOverlapAt(r.x, r.y, r.width, r.height, null, 0));
+  if (!spot) {
+    fpToast(`No free spot next to ${pl.unitCode} for a copy — make room or draw one with ＋ New Unit.`, false);
+    return;
+  }
+  const spec = fpDraftSpec(pl);
+  delete spec.monthlyRate; // the copy gets the default rate for its tier
+  spec.name = null;
+  await fpCreateUnits([{ rect: spot, spec }]);
+}
+
+// ---------- reconcile sizes (floor-plan unit sync Phase 4) ----------
+// Placed units whose drawing and unit size disagree from before the floor
+// plan owned sizes (old 15% / 2% bands). Per unit: "Use drawing" flags it so
+// the next publish sets the unit's sqft from the drawing; "Fit drawing"
+// resizes the drawing to the unit's sqft. Never automatic.
+async function fpOpenReconcile() {
+  if (!state.fp.floorId || !state.fp.plan) {
+    fpToast('Open a floor with a plan first.', false);
+    return;
+  }
+  let rows;
+  try {
+    rows = await get(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/size-mismatches`);
+  } catch (err) {
+    fpToast('Sizes: ' + describeError(err), false);
+    return;
+  }
+  const modal = $('#fpReconcileModal');
+  const body = $('#fpReconcileBody');
+  if (!modal || !body) return;
+  const render = (list) => {
+    if (!list.length) {
+      body.innerHTML = '<p class="fp-pub-note">Every placed unit’s drawing matches its size (within 0.05 sqft). Nothing to reconcile.</p>';
+      return;
+    }
+    body.innerHTML =
+      `<p class="fp-pub-note">${list.length} unit${list.length === 1 ? '' : 's'} drawn at a different size than ${list.length === 1 ? 'its' : 'their'} unit record (drawn before the floor plan set unit sizes). Pick one fix per unit — nothing changes automatically.</p>` +
+      '<div class="fp-publish-scroll"><table class="data-tbl"><thead><tr><th>Unit</th><th>Unit sqft</th><th>Drawn</th><th></th></tr></thead><tbody>' +
+      list
+        .map(
+          (m) =>
+            `<tr><td><b>${escapeHtml(m.unitCode)}</b><div class="fp-pub-note">${escapeHtml(String(m.status).toLowerCase())}</div></td>` +
+            `<td>${fpFmtArea(m.sqft)}</td>` +
+            `<td>${fpFmtArea(m.drawnSqft)}<div class="fp-pub-note">${formatFt(m.widthFt)}×${formatFt(m.heightFt)} ft</div></td>` +
+            `<td style="white-space:nowrap">` +
+            `<button class="act-btn" type="button" data-rc="MARK_FOR_SYNC" data-rc-unit="${escapeHtml(m.unitId)}"${m.contracted ? ` disabled title="${escapeHtml(m.unitCode)} is ${escapeHtml(String(m.contracted).toLowerCase())} — its size can't change"` : ` title="On the next publish, set the unit to ${fpFmtArea(m.drawnSqft)} sqft (rate and tier per the publish review)"`}>Use drawing</button> ` +
+            `<button class="act-btn" type="button" data-rc="FIT_DRAWING" data-rc-unit="${escapeHtml(m.unitId)}" title="Resize the drawing to ${fpFmtArea(m.sqft)} sqft from the same corner">Fit drawing</button>` +
+            `</td></tr>`,
+        )
+        .join('') +
+      '</tbody></table></div>';
+  };
+  render(rows);
+  body.onclick = async (e) => {
+    const btn = e.target && e.target.closest ? e.target.closest('[data-rc]') : null;
+    if (!btn || btn.disabled) return;
+    btn.disabled = true;
+    try {
+      const res = await fpMutate(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/reconcile`, {
+        method: 'POST',
+        body: JSON.stringify({ items: [{ unitId: btn.dataset.rcUnit, action: btn.dataset.rc }] }),
+      });
+      render(res.data.mismatches);
+      const plan = await get(`/floor-plans/${encodeURIComponent(state.fp.floorId)}`);
+      fpApplyPlanPayload(plan, true);
+      fpToast(btn.dataset.rc === 'FIT_DRAWING' ? 'Drawing resized to the unit’s size.' : 'Unit will take the drawn size when you publish.', true);
+    } catch (err) {
+      btn.disabled = false;
+      fpToast('Sizes: ' + describeError(err), false);
+    }
+  };
+  const close = () => {
+    modal.hidden = true;
+    document.removeEventListener('keydown', onKey, true);
+  };
+  const onKey = (ev) => {
+    if (ev.key === 'Escape') {
+      ev.preventDefault();
+      ev.stopImmediatePropagation();
+      close();
+    }
+  };
+  document.addEventListener('keydown', onKey, true);
+  $('#fpReconcileClose').onclick = close;
+  $('#fpReconcileDone').onclick = close;
+  modal.onclick = (ev) => {
+    if (ev.target === modal) close();
+  };
+  modal.hidden = false;
+  try {
+    $('#fpReconcileDone').focus({ preventScroll: true });
+  } catch (e) { /* noop */ }
+}
+
+// A new DRAFT locker as the upper tier of the selected single locker.
+async function fpStackNewLocker() {
+  const pl = state.fp.placements.find((p) => p.unitId === state.fp.selected);
+  if (!pl || !fpIsLockerPlacement(pl) || fpStackMate(pl)) return;
+  const spec = fpDraftSpec(pl);
+  delete spec.monthlyRate;
+  spec.name = null;
+  await fpCreateUnits([{ rect: { x: pl.x, y: pl.y, width: pl.width, height: pl.height, stackTier: 1 }, spec }]);
+}
+
 async function fpRemovePlacement() {
   const pl = state.fp.placements.find((p) => p.unitId === state.fp.selected);
   if (!pl) return;
   if (fpGuardLocked(pl)) return; // live occupied placement: no delete
+  if (fpIsDraftUnit(pl)) {
+    const discardOk = await confirmDialog({
+      title: `Discard new unit ${pl.unitCode}?`,
+      message: 'It was never published, so the unit is deleted along with its drawing. Undo brings it back.',
+      confirmLabel: 'Discard',
+      danger: true,
+    });
+    if (!discardOk) return;
+    await fpCommitBatch([{ type: 'placement', id: pl.unitId, state: null }], `Discarded new unit ${pl.unitCode}.`);
+    return;
+  }
   const plOk = await confirmDialog({
     title: `Remove ${pl.unitCode} from the floor plan?`,
     message: 'The unit itself is unaffected.',
@@ -6321,6 +6836,7 @@ function fpViewRender() {
       `<div class="fp-status" style="background:${fpStatusColor(pl.status)};"></div>` +
       `<div class="fp-code">${escapeHtml(pl.unitCode)}</div>` +
       (pl.height * u > 34 ? `<div class="fp-size">${escapeHtml(pl.sizeName)}</div>` : '') +
+      fpUnitTagsHTML(pl) +
       fpDoorMarkersHTML(pl, u) +
       (fpIsOccupiedLocked(pl) ? '' : `<div class="fp-resize" title="Drag to resize"></div>`);
     canvas.appendChild(el);
@@ -6397,6 +6913,13 @@ function fpOnToolKey(e) {
   } else if (e.key === 'm' || e.key === 'M') {
     e.preventDefault();
     fpSetMeasureMode(!state.fp.measureMode);
+  } else if (e.key === 'n' || e.key === 'N') {
+    e.preventDefault();
+    fpSetNewUnitMode(!state.fp.newUnitMode);
+  } else if (e.key === 'Escape' && (fpNewDraft || state.fp.newUnitMode)) {
+    e.preventDefault();
+    if (fpNewDraft) fpCancelNewUnit();
+    else fpSetNewUnitMode(false);
   }
 }
 
@@ -6466,6 +6989,7 @@ function fpEffectiveMode() {
   if (state.fp.armedMarker) return 'marker';
   if (state.fp.drawMode) return 'draw';
   if (state.fp.measureMode) return 'measure';
+  if (state.fp.newUnitMode) return 'newunit';
   if (state.fp.tool === 'add') return 'add';
   if (state.fp.tool === 'block') return 'block';
   return 'select';
@@ -6488,6 +7012,8 @@ function fpSyncModeUI() {
           ? 'MODE: MEASURE'
           : mode === 'draw'
           ? `MODE: DRAW ${fpLineKindLabel(fpPenKind()).toUpperCase()}`
+          : mode === 'newunit'
+            ? 'MODE: NEW UNIT — DRAG A RECTANGLE'
           : mode === 'add'
             ? 'MODE: ADD UNIT'
             : mode === 'block'
@@ -6502,6 +7028,7 @@ function fpSyncModeUI() {
   };
   set('#fpModeSelect', mode === 'select');
   set('#fpModeAddUnit', mode === 'add');
+  set('#fpNewUnitTool', mode === 'newunit');
   // fpBoundaryTool/fpAddBlock keep their own .on sync (pencil toggle / block
   // form); mirror the effective mode here so the segmented control reads as one.
   const pencil = $('#fpBoundaryTool');
@@ -6822,6 +7349,12 @@ export function fpInitEvents() {
       if (canvas && canvas.contains(e.target)) fpMeasurePointerDown(e);
       return;
     }
+    // New-unit tool: drag a rectangle (object-snapped) to draw a unit.
+    if (state.fp.newUnitMode) {
+      const canvas = $('#fpCanvas');
+      if (canvas && canvas.contains(e.target) && e.button === 0 && !fpNewDraft) fpNewUnitPointerDown(e);
+      return;
+    }
     // Selected line: its vertex / midpoint handles win over everything below
     // (handles can sit on top of units and blocks).
     const vHit = fpLayerLocked('lines') ? null : fpVertexHitAt(e.clientX, e.clientY);
@@ -6903,6 +7436,7 @@ export function fpInitEvents() {
     if (e.target && e.target.id === 'fpRemoveBtn') fpRemovePlacement();
     else if (e.target && e.target.id === 'fpRotateBtn') fpRotatePlacement();
     else if (e.target && e.target.id === 'fpStackBtn') fpStackSelected();
+    else if (e.target && e.target.id === 'fpStackNewBtn') fpStackNewLocker();
     else if (e.target && e.target.id === 'fpUnstackBtn') fpUnstackSelected();
     else if (e.target && e.target.id === 'fpBlockRemoveBtn') fpRemoveBlock();
     else if (e.target && e.target.id === 'fpBoundaryRemoveBtn') fpRemoveBoundary();
@@ -7042,7 +7576,10 @@ export function fpInitEvents() {
     fpRenderCanvas();
     fpSyncModeUI();
   });
+  $('#fpNewUnitTool')?.addEventListener('click', () => fpSetNewUnitMode(!state.fp.newUnitMode));
+  $('#fpSizesBtn')?.addEventListener('click', () => fpOpenReconcile());
   $('#fpModeAddUnit')?.addEventListener('click', () => {
+    fpSetNewUnitMode(false, true);
     state.fp.tool = 'add';
     state.fp.drawMode = false;
     fpResetPen();

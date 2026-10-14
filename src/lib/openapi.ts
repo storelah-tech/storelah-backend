@@ -335,7 +335,14 @@ export const openapiSpec = {
         'blockers, sizes }`; `GET .../size-mismatches`; `POST .../reconcile` `{ items: [{ unitId, action: ' +
         'MARK_FOR_SYNC|FIT_DRAWING }] }`. `PUT /cms/units/{code}` with a changed `sqft` on a placed unit → ' +
         '409 `SIZE_OWNED_BY_PLAN`; `GET /cms/units/{code}` gains `placement`, `sizeOwnedByPlan`, ' +
-        '`areaHistory`. `UnitStatus` gains `DRAFT` (never on public reads). Public shapes unchanged.',
+        '`areaHistory`. `UnitStatus` gains `DRAFT` (never on public reads). Public shapes unchanged. ' +
+        'Units drawn on the plan: `POST /cms/floor-plans/{floorId}/units` `{ x, y, width, height, stackTier?, ' +
+        'doorEdges?, sizeId?, name?, hasAC?, hasPillar?, monthlyRate? }` → 201 `{ unit: { id, unitCode }, ' +
+        'placement }` (DRAFT, sqft = round(w×h), nearest tier, rate MARKET_PSF×sqft by default); batch gains ' +
+        '`create.units[]` with a client `tempId` and the response gains `created: { [tempId]: { id, unitCode } }`. ' +
+        'Removing a DRAFT unit\'s placement discards (hard-deletes) the unit; resizing a DRAFT unit updates its ' +
+        'sqft/tier/rate immediately. DRAFT units are excluded from the CMS units list, unit map, activity, ' +
+        'summary, branch totals and facility metrics.',
     ].join('\n'),
   },
   servers: [

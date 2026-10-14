@@ -3,7 +3,8 @@ import { toNum, pct } from '../lib/format';
 
 export async function getSummary() {
   const units = await prisma.unit.findMany({
-    where: { deletedAt: null },
+    // DRAFT = drawn on a floor plan, not yet published (docs/FLOOR_PLAN_UNIT_SYNC_PLAN.md D7) — not inventory yet.
+    where: { deletedAt: null, status: { not: 'DRAFT' } },
     include: { size: true, tenant: true, branch: true },
   });
 

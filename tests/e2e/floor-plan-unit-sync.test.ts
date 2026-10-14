@@ -9,15 +9,18 @@ import { PIN, api, prisma, resetDb, seedMoveInWorld, type MoveInWorld } from './
 import {
   applyFloorPlanBatch,
   getFloorPlan,
+  createUnitOnPlan,
   publishFloorPlan,
   publishFloorPlanWithSync,
   reconcileUnitSizes,
+  removeUnitPlacement,
   setUnitPlacement,
 } from '../../src/core/floorPlans';
+import { getSummary } from '../../src/core/summary';
 import { MAX_UNIT_SQFT, checkPlacementArea, sqftForRect } from '../../src/core/unitSizing';
 import { buildSizeSyncPlan, keepPsfRate, listSizeMismatches, resolveSizeTier } from '../../src/core/unitSizeSync';
 import { publishDraft, saveDraft } from '../../src/core/floorPlanDrafts';
-import { getUnitDetail, updateUnit } from '../../src/core/units';
+import { getUnitDetail, listUnits, updateUnit } from '../../src/core/units';
 
 async function unitId(unitCode: string): Promise<string> {
   const u = await prisma.unit.findUnique({ where: { unitCode } });
@@ -425,5 +428,148 @@ describe('floor-plan unit sync — publish (DB)', () => {
     // An unplaced unit keeps the editable sqft.
     await prisma.unitPlacement.delete({ where: { unitId: rentable } });
     await expect(updateUnit(PIN.rentableUnit, { sqft: 70 })).resolves.toMatchObject({ sqft: 70 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 3: units drawn on the plan (DRAFT), discard, DRAFT exclusion.
+// Fixture codes are legacy BM-01-xx, so the first minted 4-digit code is 1001.
+// SMALL band 30–80; MARKET_PSF.SMALL = 4.8.
+// ---------------------------------------------------------------------------
+
+describe('floor-plan unit sync — drawing new units (DB)', () => {
+  let world: MoveInWorld;
+
+  beforeEach(async () => {
+    await resetDb();
+    world = await seedMoveInWorld();
+  });
+
+  it('draws a DRAFT unit: minted code, rounded sqft, nearest tier, MARKET_PSF rate, plan → DRAFT', async () => {
+    const { unit, placement } = await createUnitOnPlan(world.floorId, { x: 40, y: 30, width: 6, height: 8.05 }); // 48.3 → 48
+    expect(unit.unitCode).toBe('1001');
+    const row = await prisma.unit.findUnique({ where: { id: unit.id }, include: { size: true } });
+    expect(row).toMatchObject({ status: 'DRAFT', sqft: 48, floorId: world.floorId, branchId: world.branchId, hasAC: false, name: null });
+    expect(row!.size.code).toBe('SMALL');
+    expect(Number(row!.monthlyRate)).toBe(230.4);
+    expect(placement).toMatchObject({ x: 40, y: 30, width: 6, height: 8.05, areaDirty: false });
+    expect((await prisma.floorPlan.findUnique({ where: { floorId: world.floorId } }))!.status).toBe('DRAFT');
+  });
+
+  it('honours explicit tier, rate, name and flags', async () => {
+    const small = await prisma.unitSize.findUnique({ where: { code: 'SMALL' } });
+    const { unit } = await createUnitOnPlan(world.floorId, { x: 40, y: 30, width: 5, height: 6, sizeId: small!.id, monthlyRate: 99.999, name: ' Corner ', hasAC: true, hasPillar: true });
+    expect(await prisma.unit.findUnique({ where: { id: unit.id } })).toMatchObject({ name: 'Corner', hasAC: true, hasPillar: true, sqft: 30 });
+    expect(Number((await prisma.unit.findUnique({ where: { id: unit.id } }))!.monthlyRate)).toBe(100);
+  });
+
+  it('rejects overlaps, canvas overflow, bad sizes and inactive floors — and creates nothing', async () => {
+    const occupiedSpot = await prisma.unitPlacement.findFirst({ where: { unit: { unitCode: PIN.rentableUnit } } });
+    await expectAppError(createUnitOnPlan(world.floorId, { x: occupiedSpot!.x + 1, y: occupiedSpot!.y + 1, width: 5, height: 6 }), 409, 'PLACEMENT_OVERLAP');
+    await expectAppError(createUnitOnPlan(world.floorId, { x: 68, y: 30, width: 5, height: 6 }), 400, 'VALIDATION');
+    await expectAppError(createUnitOnPlan(world.floorId, { x: 40, y: 30, width: 5, height: 6, sizeId: 'nope' }), 400, 'VALIDATION');
+    await expectAppError(createUnitOnPlan(world.floorId, { x: 40, y: 30, width: 0.5, height: 0.5 }), 400, 'VALIDATION');
+    await prisma.floor.update({ where: { id: world.floorId }, data: { isActive: false } });
+    await expectAppError(createUnitOnPlan(world.floorId, { x: 40, y: 30, width: 5, height: 6 }), 400, 'VALIDATION');
+    expect(await prisma.unit.count({ where: { status: 'DRAFT' } })).toBe(0);
+  });
+
+  it('batch: creates several units atomically with sequential codes and a tempId map', async () => {
+    const res = await applyFloorPlanBatch(world.floorId, {
+      create: {
+        units: [
+          { tempId: 'a', x: 40, y: 30, width: 5, height: 6 },
+          { tempId: 'b', x: 45, y: 30, width: 5, height: 6 },
+          { tempId: 'c', x: 50, y: 30, width: 5, height: 6 },
+        ],
+      },
+    });
+    expect(Object.fromEntries(Object.entries(res.created).map(([k, v]) => [k, v.unitCode]))).toEqual({ a: '1001', b: '1002', c: '1003' });
+    expect(res.plan!.placements.filter((p: { unit: { status: string } }) => p.unit.status === 'DRAFT')).toHaveLength(3);
+
+    // One overlapping new unit rejects the whole batch.
+    await expectAppError(
+      applyFloorPlanBatch(world.floorId, {
+        create: { units: [{ tempId: 'd', x: 55, y: 30, width: 5, height: 6 }, { tempId: 'e', x: 57, y: 30, width: 5, height: 6 }] },
+      }),
+      409,
+      'PLACEMENT_OVERLAP',
+    );
+    expect(await prisma.unit.count({ where: { status: 'DRAFT' } })).toBe(3);
+  });
+
+  it('resizing a DRAFT unit updates its Unit row at once (keep $/sqft), never flags it', async () => {
+    const { unit } = await createUnitOnPlan(world.floorId, { x: 40, y: 30, width: 5, height: 6 }); // 30 sqft @ 144
+    await setUnitPlacement(world.floorId, unit.id, { x: 40, y: 30, width: 6, height: 10 }); // 60
+    const row = await prisma.unit.findUnique({ where: { id: unit.id } });
+    expect(row!.sqft).toBe(60);
+    expect(Number(row!.monthlyRate)).toBe(288);
+    expect(await dirty(unit.id)).toBe(false);
+    await applyFloorPlanBatch(world.floorId, { upsert: { placements: [{ unitId: unit.id, x: 40, y: 30, width: 5, height: 8 }] } }); // 40
+    expect((await prisma.unit.findUnique({ where: { id: unit.id } }))!.sqft).toBe(40);
+  });
+
+  it('removing a DRAFT unit from the plan discards it; its never-published code is freed', async () => {
+    const a = await createUnitOnPlan(world.floorId, { x: 40, y: 30, width: 5, height: 6 });
+    const r = await removeUnitPlacement(world.floorId, a.unit.id);
+    expect(r).toMatchObject({ removed: true, discarded: true });
+    expect(await prisma.unit.findUnique({ where: { id: a.unit.id } })).toBeNull();
+
+    const b = await createUnitOnPlan(world.floorId, { x: 40, y: 30, width: 5, height: 6 });
+    expect(b.unit.unitCode).toBe('1001'); // undo → redraw does not burn codes
+    await applyFloorPlanBatch(world.floorId, { delete: { placements: [b.unit.id] } });
+    expect(await prisma.unit.findUnique({ where: { id: b.unit.id } })).toBeNull();
+
+    // Published units are only unplaced, never deleted.
+    const rentable = await unitId(PIN.rentableUnit);
+    expect(await removeUnitPlacement(world.floorId, rentable)).toMatchObject({ discarded: false });
+    expect(await prisma.unit.findUnique({ where: { id: rentable } })).not.toBeNull();
+  });
+
+  it('a DRAFT unit referenced by operational records cannot be discarded', async () => {
+    const { unit } = await createUnitOnPlan(world.floorId, { x: 40, y: 30, width: 5, height: 6 });
+    const t = await prisma.tenant.create({ data: { name: 'T', monthlyRate: 1, psf: 1, status: 'ACTIVE' } });
+    await prisma.booking.create({ data: { bookingRef: 'SL-E2E-0002', tenantId: t.id, unitId: unit.id, moveInDate: new Date(), duration: 'Monthly', amount: 1 } });
+    await expectAppError(removeUnitPlacement(world.floorId, unit.id), 409, 'CONFLICT');
+    expect(await prisma.unitPlacement.findUnique({ where: { unitId: unit.id } })).not.toBeNull(); // rolled back
+  });
+
+  it('new lockers can stack onto an existing locker', async () => {
+    const locker = await prisma.unitSize.create({ data: { code: 'LOCKER', name: 'Locker', sqftFrom: 12, sqftTo: 12, sortOrder: 1 } });
+    const ground = await createUnitOnPlan(world.floorId, { x: 50, y: 60, width: 3, height: 4, sizeId: locker.id });
+    const upper = await applyFloorPlanBatch(world.floorId, {
+      create: { units: [{ tempId: 'up', x: 50, y: 60, width: 3, height: 4, stackTier: 1, sizeId: locker.id }] },
+    });
+    const id = upper.created.up.id;
+    expect(await prisma.unitPlacement.findUnique({ where: { unitId: id } })).toMatchObject({ stackTier: 1 });
+    expect(ground.unit.unitCode).toBe('1001');
+    // A non-locker cannot stack.
+    await expectAppError(
+      applyFloorPlanBatch(world.floorId, { create: { units: [{ tempId: 'x', x: 50, y: 60, width: 3, height: 4, stackTier: 1 }] } }),
+      409,
+      'PLACEMENT_OVERLAP',
+    );
+  });
+
+  it('DRAFT units stay out of inventory until publish promotes them', async () => {
+    const before = (await getSummary()).kpis.totalUnits;
+    const listBefore = (await listUnits({ perPage: 200 })).meta.total;
+    const { unit } = await createUnitOnPlan(world.floorId, { x: 40, y: 30, width: 5, height: 6 });
+
+    expect((await getSummary()).kpis.totalUnits).toBe(before);
+    expect((await listUnits({ perPage: 200 })).meta.total).toBe(listBefore);
+    const pub = await api.get('/api/v1/public/units');
+    expect(pub.body.data.map((u: { unitCode: string }) => u.unitCode)).not.toContain(unit.unitCode);
+
+    const preview = await buildSizeSyncPlan(world.floorId);
+    expect(preview.newUnits).toMatchObject([{ unitCode: unit.unitCode, sqft: 30 }]);
+    const { sizeSync } = await publishFloorPlanWithSync(world.floorId);
+    expect(sizeSync.promoted).toEqual([unit.unitCode]);
+
+    expect((await getSummary()).kpis.totalUnits).toBe(before + 1);
+    const pub2 = await api.get('/api/v1/public/units');
+    expect(pub2.body.data.find((u: { unitCode: string }) => u.unitCode === unit.unitCode)).toMatchObject({ status: 'AVAILABLE', sqft: 30, rate: 144 });
+    const plan = await api.get(`/api/v1/public/floor-plans/${PIN.branchCode}/${PIN.level}`);
+    expect(plan.body.data.plan.placements.map((p: { unit: { unitCode: string } }) => p.unit.unitCode)).toContain(unit.unitCode);
   });
 });

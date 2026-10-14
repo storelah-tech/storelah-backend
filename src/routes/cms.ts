@@ -153,6 +153,7 @@ import {
   removeUnitPlacement,
   deleteFloorPlan,
   publishFloorPlanWithSync,
+  createUnitOnPlan,
   reconcileUnitSizes,
   createFloorPlanBlock,
   setFloorPlanBlock,
@@ -1455,6 +1456,14 @@ router.post('/floor-plans/:floorId/boundaries', requireAuth, async (req: Request
 // as GET /floor-plans/:floorId). Upserts keyed by unitId / row id (missing ids
 // are created with that id).
 const batchIdList = z.array(z.string().min(1).max(64)).max(2000).optional();
+const floorPlanNewUnitSchema = floorPlanPlacementSchema.extend({
+  sizeId: z.string().min(1).max(64).optional(),
+  name: z.string().max(80).nullish(),
+  hasAC: z.boolean().optional(),
+  hasPillar: z.boolean().optional(),
+  monthlyRate: z.number().min(0).max(1_000_000).optional(),
+});
+
 const floorPlanBatchSchema = z.object({
   upsert: z
     .object({
@@ -1470,6 +1479,9 @@ const floorPlanBatchSchema = z.object({
   delete: z
     .object({ placements: batchIdList, blocks: batchIdList, markers: batchIdList, boundaries: batchIdList })
     .optional(),
+  // Units drawn on the canvas (floor-plan unit sync Phase 3): created DRAFT,
+  // promoted on publish; the response's `created` maps tempId → { id, unitCode }.
+  create: z.object({ units: z.array(floorPlanNewUnitSchema.extend({ tempId: z.string().min(1).max(64) })).max(500).optional() }).optional(),
 });
 
 // --- Floor-plan tracing underlay (precision Phase 5) ---
@@ -1524,6 +1536,19 @@ router.put('/floor-plans/:floorId/underlay', requireAuth, async (req: Request, r
 
 router.delete('/floor-plans/:floorId/underlay', requireAuth, async (req: Request, res: Response) => {
   ok(res, await removeUnderlay(String(req.params.floorId)));
+});
+
+// Draw one new unit on the plan: created DRAFT (4-digit code minted, size =
+// nearest tier unless sizeId, rate = MARKET_PSF × sqft unless monthlyRate);
+// invisible to booking until the plan is published. Removing its placement
+// (DELETE .../units/:unitId or batch delete) discards the draft unit.
+router.post('/floor-plans/:floorId/units', requireAuth, async (req: Request, res: Response) => {
+  const parsed = floorPlanNewUnitSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid new unit', parsed.error.flatten());
+    return;
+  }
+  created(res, await createUnitOnPlan(String(req.params.floorId), parsed.data));
 });
 
 router.post('/floor-plans/:floorId/batch', requireAuth, async (req: Request, res: Response) => {

@@ -60,7 +60,7 @@ export async function getNetPsf() {
   const branches = await prisma.branch.findMany({
     include: {
       units: {
-        where: { deletedAt: null },
+        where: { deletedAt: null, status: { not: 'DRAFT' } }, // DRAFT = unpublished floor-plan unit
         select: { status: true, sqft: true, monthlyRate: true, size: { select: { code: true } } },
       },
     },

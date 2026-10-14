@@ -17,7 +17,8 @@ export async function listBranches() {
       _count: { select: { units: true, tenants: true, leads: true } },
       floors: { select: { level: true }, orderBy: { level: 'asc' } },
       units: {
-        where: { deletedAt: null },
+        // DRAFT = drawn on a floor plan, not yet published (docs/FLOOR_PLAN_UNIT_SYNC_PLAN.md D7) — not inventory yet.
+        where: { deletedAt: null, status: { not: 'DRAFT' } },
         select: { status: true, sqft: true, monthlyRate: true },
       },
     },

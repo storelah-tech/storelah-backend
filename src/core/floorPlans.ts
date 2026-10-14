@@ -20,8 +20,21 @@ import {
   toMilli,
 } from './planGeometry';
 import { serializeUnderlay } from './floorPlanUnderlay';
-import { assertStackedLockerTier, checkPlacementArea, loadContractedUnits, loadSizeTiers } from './unitSizing';
-import { applySizeSync, listSizeMismatches, type SizeSyncChoice, type SizeSyncResult } from './unitSizeSync';
+import {
+  MAX_UNIT_SQFT,
+  MIN_UNIT_SQFT,
+  assertStackedLockerTier,
+  checkPlacementArea,
+  defaultRateFor,
+  loadContractedUnits,
+  loadSizeTiers,
+  resolveSizeTier,
+  sqftForRect,
+  type SizeTierRow,
+} from './unitSizing';
+import { applySizeSync, keepPsfRate, listSizeMismatches, type SizeSyncChoice, type SizeSyncResult } from './unitSizeSync';
+import { nextFourDigitCode } from './units';
+import { toNum } from '../lib/format';
 import { Prisma } from '@prisma/client';
 
 // Floor-plan layout aggregate (see docs/FLOOR_PLAN_MODEL.md).
@@ -598,7 +611,9 @@ function serializePlan(p: PlanPayload, opts: { publicView?: boolean } = {}) {
     structure: p.structure,
     branch: { id: p.floor.branchId, code: p.floor.branch.code, name: p.floor.branch.name },
     floor: { id: p.floor.id, level: p.floor.level, name: p.floor.name },
-    placements: p.placements.map(serializePlacement),
+    // Public reads never expose DRAFT units (unpublished floor-plan designs);
+    // publish promotes them, so this only guards odd states.
+    placements: (opts.publicView ? p.placements.filter((pl) => pl.unit.status !== 'DRAFT') : p.placements).map(serializePlacement),
     blocks: p.blocks.map(serializeBlock),
     // Safety/facility point icons (grid-ft points) in authored order.
     markers: p.markers.map(serializeMarker),
@@ -897,7 +912,7 @@ export async function getFloorPlan(floorId: string) {
 
   const plan = await prisma.floorPlan.findFirst({ where: { floorId }, include: planInclude });
   const unplacedUnits = await prisma.unit.findMany({
-    where: { floorId, deletedAt: null, status: { not: 'INACTIVE' }, placement: { is: null } },
+    where: { floorId, deletedAt: null, status: { notIn: ['INACTIVE', 'DRAFT'] }, placement: { is: null } },
     include: { size: true },
     orderBy: { unitCode: 'asc' },
   });
@@ -1299,7 +1314,10 @@ export async function setUnitPlacement(floorId: string, unitId: string, input: P
   // contracted (legacy ±AREA_TOLERANCE, 409 UNIT_CONTRACTED). Runs after the
   // stacking/overlap rules so stack attempts report their specific error first.
   const contracted = await loadContractedUnits([unitId]);
-  const areaDirty = checkPlacementArea({ unit, geom, existing, contractedReason: contracted.get(unitId) });
+  const checkedDirty = checkPlacementArea({ unit, geom, existing, contractedReason: contracted.get(unitId) });
+  // DRAFT units are not live: their Unit row follows the drawing right away.
+  const isDraftUnit = unit.status === 'DRAFT';
+  const areaDirty = isDraftUnit ? false : checkedDirty;
   // D4: a stacked locker pair stays in the LOCKER tier. Stacked = this write
   // is an upper tier, sits under an upper tier, or moves a ground tier whose
   // upper mate follows onto the new rect.
@@ -1347,6 +1365,14 @@ export async function setUnitPlacement(floorId: string, unitId: string, input: P
     include: { unit: { include: { size: true } } },
   });
 
+  if (isDraftUnit) {
+    const upd = draftResize(unit, geom, await loadSizeTiers());
+    if (upd) {
+      const { id, ...data } = upd;
+      placement.unit = await prisma.unit.update({ where: { id }, data, include: { size: true } });
+    }
+  }
+
   // A ground tier moving off its rect orphans its upper tier — demote the
   // leftover upper to a standalone ground single (never leave a lone tier 1).
   if (
@@ -1378,13 +1404,67 @@ export async function removeUnitPlacement(floorId: string, unitId: string) {
   // Occupied edit lock: removing an OCCUPIED/OVERDUE placement from a live
   // (ACTIVE) plan is rejected with 409.
   await assertPlacementEditable(floorId, unitId, 'removing this placement');
-  await prisma.unitPlacement.delete({ where: { unitId } });
+  const unitRow = await prisma.unit.findUnique({ where: { id: unitId }, select: { status: true } });
+  let discarded = false;
+  if (unitRow?.status === 'DRAFT') {
+    // A DRAFT unit exists only as a drawing — removing it discards the unit.
+    await prisma.$transaction(async (tx) => {
+      await tx.unitPlacement.delete({ where: { unitId } });
+      await discardDraftUnitTx(tx, unitId);
+    });
+    discarded = true;
+  } else {
+    await prisma.unitPlacement.delete({ where: { unitId } });
+  }
   if (placement.stackTier === 0) {
     await demoteOrphanedUppers(plan.id, { x: placement.x, y: placement.y, width: placement.width, height: placement.height });
   }
   // Placement removals never auto-promote — the plan returns to DRAFT.
   await markDraft(plan.id);
-  return { floorId, unitId, removed: true };
+  return { floorId, unitId, removed: true, discarded };
+}
+
+/**
+ * Hard-delete a DRAFT unit (docs/FLOOR_PLAN_UNIT_SYNC_PLAN.md D7): it was
+ * never published, so nothing customer-facing can reference it. Refuses if
+ * anything operational does (tenant, booking, invoice, notice, work order,
+ * incident); its own rate/size history rows go with it. The placement must
+ * already be deleted (onDelete: Restrict). Its 4-digit code is freed: it was
+ * never published, so nothing customer-facing ever saw it (the never-reuse
+ * rule in units.ts protects codes WITH history; undo → redraw shouldn't burn codes).
+ */
+async function discardDraftUnitTx(tx: Prisma.TransactionClient, unitId: string): Promise<void> {
+  const u = await tx.unit.findUnique({
+    where: { id: unitId },
+    select: {
+      unitCode: true,
+      status: true,
+      tenant: { select: { id: true } },
+      _count: { select: { bookings: true, invoices: true, notices: true, workOrders: true, incidents: true } },
+    },
+  });
+  if (!u) return;
+  if (u.status !== 'DRAFT') throw new AppError(400, 'VALIDATION', `Unit ${u.unitCode} is ${u.status}, not DRAFT — only unpublished units can be discarded`);
+  const refs = Object.entries(u._count).filter(([, n]) => n > 0).map(([k]) => k);
+  if (u.tenant) refs.push('tenant');
+  if (refs.length) {
+    throw new AppError(409, 'CONFLICT', `Draft unit ${u.unitCode} is referenced by ${refs.join(', ')} and can't be discarded`);
+  }
+  await tx.rateChange.deleteMany({ where: { unitId } });
+  await tx.unitAreaChange.deleteMany({ where: { unitId } });
+  await tx.unit.delete({ where: { id: unitId } });
+}
+
+/** A DRAFT unit's size follows its drawing immediately (it is not live yet). */
+function draftResize(
+  unit: { id: string; sqft: number; sizeId: string; monthlyRate: Prisma.Decimal | number },
+  geom: { width: number; height: number },
+  sizes: readonly SizeTierRow[],
+): { id: string; sqft: number; sizeId: string; monthlyRate: number } | null {
+  const sqft = sqftForRect(geom);
+  if (sqft === unit.sqft) return null;
+  const tier = resolveSizeTier(sizes, unit.sizeId, sqft);
+  return { id: unit.id, sqft, sizeId: tier?.size.id ?? unit.sizeId, monthlyRate: keepPsfRate(toNum(unit.monthlyRate), unit.sqft, sqft) };
 }
 
 export interface BlockInput {
@@ -1879,6 +1959,17 @@ export interface FloorPlanBatchInput {
     boundaries?: Array<BoundaryInput & { id: string; points: unknown }>;
   };
   delete?: { placements?: string[]; blocks?: string[]; markers?: string[]; boundaries?: string[] };
+  /** New units drawn on the plan (created DRAFT; promoted on publish). */
+  create?: { units?: Array<CreatePlanUnitInput & { tempId: string }> };
+}
+
+/** A unit drawn on the canvas (docs/FLOOR_PLAN_UNIT_SYNC_PLAN.md §5.2). */
+export interface CreatePlanUnitInput extends PlacementGeometry {
+  sizeId?: string; // default: nearest tier for the drawn sqft
+  name?: string | null;
+  hasAC?: boolean;
+  hasPillar?: boolean;
+  monthlyRate?: number; // default: MARKET_PSF[tier] × sqft
 }
 
 const MAX_BATCH_ITEMS = 2000;
@@ -1888,7 +1979,8 @@ export async function applyFloorPlanBatch(floorId: string, input: FloorPlanBatch
   const del = input.delete ?? {};
   const count =
     (up.placements?.length ?? 0) + (up.blocks?.length ?? 0) + (up.markers?.length ?? 0) + (up.boundaries?.length ?? 0) +
-    (del.placements?.length ?? 0) + (del.blocks?.length ?? 0) + (del.markers?.length ?? 0) + (del.boundaries?.length ?? 0);
+    (del.placements?.length ?? 0) + (del.blocks?.length ?? 0) + (del.markers?.length ?? 0) + (del.boundaries?.length ?? 0) +
+    (input.create?.units?.length ?? 0);
   if (count === 0) throw new AppError(400, 'VALIDATION', 'Batch is empty — nothing to apply');
   if (count > MAX_BATCH_ITEMS) throw new AppError(400, 'VALIDATION', `Batch has ${count} items — at most ${MAX_BATCH_ITEMS} per request`);
 
@@ -1912,12 +2004,18 @@ export async function applyFloorPlanBatch(floorId: string, input: FloorPlanBatch
       throw new AppError(409, 'CONFLICT', `Unit ${unit.unitCode} is ${unit.status} and the plan is live (ACTIVE) — Occupied, uneditable when live. Unpublish to draft before ${action}.`);
     }
   };
+  const discards: string[] = []; // DRAFT units whose placement is deleted are discarded
   for (const unitId of del.placements ?? []) {
     const cur = currentByUnit.get(unitId);
     if (!cur) continue; // already unplaced — idempotent
     lockCheck(cur.unit, 'removing this placement');
     final.delete(unitId);
+    if (cur.unit.status === 'DRAFT') discards.push(unitId);
   }
+  const creates = input.create?.units ?? [];
+  const needSizes = creates.length > 0 || (up.placements ?? []).length > 0;
+  const sizes = needSizes ? await loadSizeTiers() : [];
+  const draftUpdates: Array<{ id: string; sqft: number; sizeId: string; monthlyRate: number }> = [];
   // areaDirty undefined = leave the stored flag (demoted uppers keep their rect).
   const placementWrites: Array<{ unitId: string; x: number; y: number; width: number; height: number; stackTier: 0 | 1; doorEdges: string | null | undefined; areaDirty?: boolean }> = [];
   const upUnitIds = (up.placements ?? []).map((p) => p.unitId);
@@ -1942,15 +2040,73 @@ export async function applyFloorPlanBatch(floorId: string, input: FloorPlanBatch
       throw new AppError(400, 'VALIDATION', `Placement ${unit.unitCode} ${formatFt(geom.x)},${formatFt(geom.y)} ${formatFt(geom.width)}×${formatFt(geom.height)} exceeds the ${formatFt(plan.width)}×${formatFt(plan.height)} ft canvas — enlarge the canvas first`);
     }
     // Area rule (./unitSizing.ts): resize → areaDirty, contracted → ±tolerance.
-    const areaDirty = checkPlacementArea({ unit, geom, existing, contractedReason: contracted.get(unit.id) });
+    // DRAFT units are never dirty — their Unit row follows the drawing now.
+    let areaDirty = checkPlacementArea({ unit, geom, existing, contractedReason: contracted.get(unit.id) });
+    if (unit.status === 'DRAFT') {
+      areaDirty = false;
+      const upd = draftResize(unit, geom, sizes);
+      if (upd) draftUpdates.push(upd);
+    }
     if (!existing || rectAreaSqft(existing) !== rectAreaSqft(geom)) resized.add(unit.id);
     const explicitTier = geom.stackTier !== undefined;
     const tier = explicitTier ? checkStackTier(geom.stackTier as number) : ((existing?.stackTier ?? 0) === 1 ? 1 : 0);
     final.set(unit.id, { unitId: unit.id, unitCode: unit.unitCode, sizeCode: unit.size.code, x: geom.x, y: geom.y, width: geom.width, height: geom.height, stackTier: tier, explicitTier });
     placementWrites.push({ unitId: unit.id, x: geom.x, y: geom.y, width: geom.width, height: geom.height, stackTier: tier, doorEdges: normalizeDoorEdges(geom.doorEdges), areaDirty });
   }
+  // ---- new units drawn on the canvas (created DRAFT inside the tx below) ----
+  type CreateRow = {
+    key: string;
+    tempId: string;
+    sqft: number;
+    sizeId: string;
+    monthlyRate: number;
+    name: string | null;
+    hasAC: boolean;
+    hasPillar: boolean;
+    geom: { x: number; y: number; width: number; height: number; stackTier: 0 | 1; doorEdges: string | null | undefined };
+  };
+  const createRows: CreateRow[] = [];
+  if (creates.length) {
+    const floor = await prisma.floor.findUniqueOrThrow({ where: { id: floorId }, select: { isActive: true } });
+    if (!floor.isActive) throw new AppError(400, 'VALIDATION', `Floor ${floorId} is inactive — activate it before adding units`);
+    if (!sizes.length) throw new AppError(400, 'VALIDATION', 'No unit size tiers exist — add size tiers before drawing units');
+    const seen = new Set<string>();
+    for (const c of creates) {
+      if (typeof c.tempId !== 'string' || !c.tempId || c.tempId.length > 64) throw new AppError(400, 'VALIDATION', 'Each new unit needs a tempId (1–64 chars)');
+      if (seen.has(c.tempId)) throw new AppError(400, 'VALIDATION', `Duplicate tempId ${c.tempId}`);
+      seen.add(c.tempId);
+      const g = checkGeometry(c);
+      if (!rectFitsCanvas(g, plan)) {
+        throw new AppError(400, 'VALIDATION', `New unit ${formatFt(g.x)},${formatFt(g.y)} ${formatFt(g.width)}×${formatFt(g.height)} exceeds the ${formatFt(plan.width)}×${formatFt(plan.height)} ft canvas — enlarge the canvas first`);
+      }
+      const sqft = sqftForRect(g);
+      if (sqft < MIN_UNIT_SQFT || sqft > MAX_UNIT_SQFT) {
+        throw new AppError(400, 'VALIDATION', `New unit ${formatFt(g.width)}×${formatFt(g.height)} ft would be ${sqft} sqft — units must be ${MIN_UNIT_SQFT}–${MAX_UNIT_SQFT} sqft`);
+      }
+      const size = c.sizeId ? sizes.find((s) => s.id === c.sizeId) : resolveSizeTier(sizes, '', sqft)?.size;
+      if (!size) throw new AppError(400, 'VALIDATION', `Unknown size ${c.sizeId}`);
+      const rate = c.monthlyRate ?? defaultRateFor(size.code, sqft);
+      if (!(Number.isFinite(rate) && rate >= 0 && rate <= 1_000_000)) throw new AppError(400, 'VALIDATION', 'monthlyRate must be between 0 and 1,000,000');
+      const name = typeof c.name === 'string' && c.name.trim() ? c.name.trim().slice(0, 80) : null;
+      const tier = c.stackTier === undefined ? 0 : checkStackTier(c.stackTier);
+      const key = `new:${c.tempId}`;
+      final.set(key, { unitId: key, unitCode: name ?? `new unit (${c.tempId})`, sizeCode: size.code, x: g.x, y: g.y, width: g.width, height: g.height, stackTier: tier, explicitTier: c.stackTier !== undefined });
+      createRows.push({
+        key,
+        tempId: c.tempId,
+        sqft,
+        sizeId: size.id,
+        monthlyRate: Math.round(rate * 100) / 100,
+        name,
+        hasAC: c.hasAC ?? false,
+        hasPillar: c.hasPillar ?? false,
+        geom: { ...g, stackTier: tier, doorEdges: normalizeDoorEdges(c.doorEdges) },
+      });
+    }
+  }
+
   // Stacking + overlap over the FINAL layout (only pairs touching a changed unit).
-  const changed = new Set([...placementWrites.map((w) => w.unitId)]);
+  const changed = new Set([...placementWrites.map((w) => w.unitId), ...createRows.map((r) => r.key)]);
   const finals = [...final.values()];
   const demote = new Set<string>();
   for (const f of finals) {
@@ -1964,6 +2120,11 @@ export async function applyFloorPlanBatch(floorId: string, input: FloorPlanBatch
     const f = final.get(id)!;
     f.stackTier = 0;
     changed.add(id);
+    const cr = createRows.find((r) => r.key === id);
+    if (cr) {
+      cr.geom.stackTier = 0;
+      continue;
+    }
     const w = placementWrites.find((x) => x.unitId === id);
     if (w) w.stackTier = 0;
     else placementWrites.push({ unitId: id, x: f.x, y: f.y, width: f.width, height: f.height, stackTier: 0, doorEdges: undefined });
@@ -2030,8 +2191,41 @@ export async function applyFloorPlanBatch(floorId: string, input: FloorPlanBatch
   });
 
   // ---- apply atomically ----
+  const created: Record<string, { id: string; unitCode: string }> = {};
   await prisma.$transaction(async (tx) => {
     if (del.placements?.length) await tx.unitPlacement.deleteMany({ where: { floorPlanId: plan.id, unitId: { in: del.placements } } });
+    for (const unitId of discards) await discardDraftUnitTx(tx, unitId);
+    for (const { id, ...data } of draftUpdates) await tx.unit.update({ where: { id }, data });
+    if (createRows.length) {
+      // 4-digit codegen inside the tx (same rule as createUnit: next above the
+      // MAX across ALL rows, never reused). A concurrent create racing for the
+      // same code fails the unique index and rolls the whole batch back.
+      const codes = await tx.unit.findMany({ select: { unitCode: true } });
+      let next = Number(nextFourDigitCode(codes.map((c) => c.unitCode)));
+      const floor = await tx.floor.findUniqueOrThrow({ where: { id: floorId }, select: { branchId: true } });
+      for (const r of createRows) {
+        if (next > 9999) throw new AppError(409, 'CONFLICT', 'Unit code space exhausted (1001–9999 all taken)');
+        const unit = await tx.unit.create({
+          data: {
+            branchId: floor.branchId,
+            floorId,
+            sizeId: r.sizeId,
+            unitCode: String(next++),
+            name: r.name,
+            sqft: r.sqft,
+            monthlyRate: r.monthlyRate,
+            status: 'DRAFT',
+            hasAC: r.hasAC,
+            hasPillar: r.hasPillar,
+          },
+        });
+        const { doorEdges, ...g } = r.geom;
+        await tx.unitPlacement.create({
+          data: { floorPlanId: plan.id, unitId: unit.id, ...g, ...(doorEdges !== undefined ? { doorEdges } : {}) },
+        });
+        created[r.tempId] = { id: unit.id, unitCode: unit.unitCode };
+      }
+    }
     if (del.blocks?.length) await tx.floorPlanBlock.deleteMany({ where: { floorPlanId: plan.id, id: { in: del.blocks } } });
     if (del.markers?.length) await tx.floorPlanMarker.deleteMany({ where: { floorPlanId: plan.id, id: { in: del.markers } } });
     if (del.boundaries?.length) await tx.floorPlanBoundary.deleteMany({ where: { floorPlanId: plan.id, id: { in: del.boundaries } } });
@@ -2056,5 +2250,18 @@ export async function applyFloorPlanBatch(floorId: string, input: FloorPlanBatch
     }
   });
   await markDraft(plan.id);
-  return getFloorPlan(floorId);
+  // `created` maps each new unit's client tempId → { id, unitCode } so the
+  // editor can swap its placeholders (additive key on the plan read).
+  return { ...(await getFloorPlan(floorId)), created };
+}
+
+/**
+ * Draw one new unit on a floor's plan (single-item batch — same validation).
+ * The unit is created DRAFT with a minted 4-digit code; publish promotes it.
+ */
+export async function createUnitOnPlan(floorId: string, input: CreatePlanUnitInput) {
+  const res = await applyFloorPlanBatch(floorId, { create: { units: [{ ...input, tempId: 'new' }] } });
+  const ref = res.created.new;
+  const placement = res.plan?.placements.find((p) => p.unit.id === ref.id) ?? null;
+  return { unit: { id: ref.id, unitCode: ref.unitCode }, placement };
 }

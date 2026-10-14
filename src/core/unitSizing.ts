@@ -2,6 +2,7 @@ import type { Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { AppError } from '../lib/http';
 import { AREA_TOLERANCE, areaDeviation, formatFt, rectAreaSqft } from './planGeometry';
+import { MARKET_PSF } from './market';
 
 // Floor-plan ⇄ unit size sync (docs/FLOOR_PLAN_UNIT_SYNC_PLAN.md).
 //
@@ -122,6 +123,16 @@ export function resolveSizeTier(
     (a, b) => dist(a) - dist(b) || Number(b.id === currentSizeId) - Number(a.id === currentSizeId) || a.sortOrder - b.sortOrder,
   );
   return ranked.length ? { size: ranked[0], inBand: dist(ranked[0]) === 0 } : null;
+}
+
+/**
+ * Default monthly rate for a unit drawn on the plan (owner decision Q3):
+ * MARKET_PSF[tier] × sqft, rounded to cents. Tiers without a reference PSF
+ * (e.g. XLBIZ) fall back to the lowest reference PSF (largest-unit rate).
+ */
+export function defaultRateFor(sizeCode: string, sqft: number): number {
+  const psf = MARKET_PSF[sizeCode.toUpperCase()] ?? Math.min(...Object.values(MARKET_PSF));
+  return Math.round(psf * sqft * 100) / 100;
 }
 
 /** All size tiers (for the stacked-locker tier check). */

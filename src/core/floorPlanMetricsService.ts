@@ -1045,7 +1045,8 @@ export async function getFacilityMetrics(branchRef: string): Promise<FacilityMet
   // the same denominator as the per-floor coverage figures):
   // unplaced = the coverage.unplacedUnits definition (no placement row);
   // occupied = OCCUPIED + OVERDUE (RESERVED excluded, per revenue convention).
-  const inactiveFilter = { status: { not: 'INACTIVE' as const } };
+  // DRAFT units (unpublished floor-plan designs) are not facility inventory yet.
+  const inactiveFilter = { status: { notIn: ['INACTIVE' as const, 'DRAFT' as const] } };
   const [allUnits, unplacedUnits, occupiedUnits] = await Promise.all([
     prisma.unit.findMany({
       where: { branchId: branch.id, deletedAt: null, ...inactiveFilter },

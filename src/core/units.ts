@@ -137,7 +137,8 @@ export async function listUnits(query: UnitListQuery = {}) {
   if (query.to) createdAt.lte = query.to;
   const where: Prisma.UnitWhereInput = {
     deletedAt: null,
-    ...(query.status ? { status: query.status as UnitStatus } : {}),
+    // DRAFT = drawn on a floor plan, not yet published (docs/FLOOR_PLAN_UNIT_SYNC_PLAN.md D7) — not inventory yet.
+    status: query.status ? (query.status as UnitStatus) : { not: 'DRAFT' },
     ...(query.branch ? { branch: { code: query.branch } } : {}),
     ...(query.level != null ? { floor: { level: query.level } } : {}),
     ...(query.hasAC != null ? { hasAC: query.hasAC } : {}),
@@ -388,7 +389,8 @@ export async function getUnitMap(branchCode: string, level: number, opts?: UnitM
       deletedAt: null,
       // Admin map hides INACTIVE units (same as the floor-plan editor canvas —
       // out-of-service units must not render on maps); lists keep them.
-      status: { not: 'INACTIVE' },
+      // DRAFT units (unpublished, floor-plan designer only) never render here.
+      status: { notIn: ['INACTIVE', 'DRAFT'] },
       branch: { code: branchCode },
       floor: {
         level,
@@ -982,7 +984,7 @@ export async function getUnitActivity(limit = 20) {
   const capped = Math.min(100, Math.max(1, limit));
   const [units, rateChanges, moveIns, bookings] = await Promise.all([
     prisma.unit.findMany({
-      where: { deletedAt: null },
+      where: { deletedAt: null, status: { not: 'DRAFT' } }, // DRAFT = drawn on a floor plan, not yet published (docs/FLOOR_PLAN_UNIT_SYNC_PLAN.md D7) — not inventory yet.
       include: { size: true, branch: true },
       orderBy: { unitCode: 'asc' },
     }),

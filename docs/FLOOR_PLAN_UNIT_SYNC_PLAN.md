@@ -1,6 +1,6 @@
 # Floor Plan ⇄ Unit Sync — Feature Plan
 
-Status: **Phase 1 pushed (`b68cec4`), Phase 2 implemented** (2026-10-13/14, branch `feature/5-floorplan-unit-sync`; Phase 2 uncommitted). Owner accepted all recommendations: Q1 integer sqft, Q2 keep $/sqft, Q3 `MARKET_PSF[tier] × sqft`, Q4 no pillar deduction, Q5 sync on publish, Q6 RESERVED/pending-payment locked, no override.
+Status: **Phases 1–2 pushed (`b68cec4`, `a458fd1`), Phase 3 implemented** (2026-10-14, branch `feature/5-floorplan-unit-sync`; Phase 3 uncommitted). Decimal `Unit.sqft` (Q1) re-raised by the owner 2026-10-14 — still integer pending their call; all sizing goes through `sqftForRect`. Owner accepted all recommendations: Q1 integer sqft, Q2 keep $/sqft, Q3 `MARKET_PSF[tier] × sqft`, Q4 no pillar deduction, Q5 sync on publish, Q6 RESERVED/pending-payment locked, no override.
 Lane: backend (CMS designer + API). Optional cross-lane follow-up: booking (§9).
 Builds on: `FLOOR_PLAN_MODEL.md`, `FLOOR_PLAN_PRECISION_PLAN.md` (decimal-feet geometry, Phases 1–5 merged on `main` at `9b46aa9`/`960edfd`).
 
@@ -103,7 +103,8 @@ size and a price; changing either needs a separate commercial process. Error:
 - **On publish:** `DRAFT → AVAILABLE` (or the status chosen in the new-unit form).
 - **Discard:** removing a DRAFT unit from the plan **hard-deletes** it (no bookings/invoices can
   exist — guarded), clearing its placement first (`onDelete: Restrict`). Its 4-digit code is
-  burned (codegen never reuses — acceptable; codes are cosmetic).
+  freed *(revised in Phase 3: it was never published, so nothing references it, and undo → redraw
+  shouldn't burn codes; the never-reuse rule still protects codes with history)*.
 - Code is minted at creation (needed for `unitCode @unique NOT NULL` and so the canvas can label
   it). Minting runs inside the creating transaction with a retry on unique violation.
 
@@ -273,7 +274,7 @@ skill on the resize readout, create popover and publish review before shipping.
 | 0 | Owner answers Q1–Q6 | decisions logged |
 | 1 ✅ | Migration `20261014000000_floor_plan_unit_sync` (DRAFT enum, `areaDirty`, `UnitAreaChange`); `src/core/unitSizing.ts` (`checkPlacementArea`, contracted guard, locker band) wired into `setUnitPlacement` + `applyFloorPlanBatch`; `areaDirty` in placement reads; minimal editor: sqft lock default OFF, contracted units force-locked, readout "unit 60 → 72 on publish" | `tests/e2e/floor-plan-unit-sync.test.ts` (16); precision tests re-pointed at contracted units. **Gap until Phase 2:** dirty sizes do not sync yet, and draft-snapshot publish does not mark dirty |
 | 2 ✅ | `src/core/unitSizeSync.ts` (`buildSizeSyncPlan`, `applySizeSync` inside the publish transaction, token, `listSizeMismatches`); `publishFloorPlanWithSync` + `reconcileUnitSizes` (MARK_FOR_SYNC / FIT_DRAWING); draft-version publish flags restored size changes with a contracted preflight; routes `GET …/publish-preview`, `POST …/publish` + `/drafts/:id/publish` body `{ token, choices }`, `GET …/size-mismatches`, `POST …/reconcile`; Units `PUT` 409 `SIZE_OWNED_BY_PLAN`, detail `placement` / `sizeOwnedByPlan` / `areaHistory`; OpenAPI 1.10.0; **publish review dialog** (moved up from Phase 4) + Units form sqft lock | e2e 32 in unit-sync suite; browser-verified end to end on clone. Reconcile has API only (UI in Phase 4) |
-| 3 | Unit creation API (single + batch tempIds + discard) + DRAFT exclusion audit §5.4 | public-invisibility tests |
+| 3 ✅ | `POST /cms/floor-plans/:floorId/units` (`createUnitOnPlan`, single-item batch) + batch `create.units[]` with `tempId` → response `created` map; codes minted in the tx; default tier = nearest, rate = `defaultRateFor` (MARKET_PSF, lowest PSF fallback); removing a DRAFT unit's placement **discards** it (`discardDraftUnitTx`, refuses if tenant/booking/invoice/notice/work order/incident; code freed); resizing a DRAFT unit updates its Unit row immediately; DRAFT excluded from CMS units list, unit map, activity, summary, branch totals, net PSF, facility metrics, unplaced palette, public plan read (rent/quote paths already AVAILABLE-only; floor counts intentionally include drafts) | 9 new e2e (41 in suite); live HTTP smoke on :4100. Designer still renders DRAFT as available-green — dashed "NEW" styling is Phase 4 |
 | 4 | Designer UX: resize readout/inspector, create tool + popover, duplicate/array/stack-new, publish review dialog, reconcile view, Units page read-only | browser verification + ui-ux review |
 | 5 | Docs (`FLOOR_PLAN_MODEL.md`, OpenAPI 1.10.0), decision log, prod rollout (authorized) | prod smoke |
 | 6 | (Booking lane, optional) real dims from placement | vitest + visual check |

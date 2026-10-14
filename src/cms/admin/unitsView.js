@@ -240,8 +240,8 @@ export async function showUnitDetail(code) {
       u.sizeCode
         ? u.sizeCode +
             (u.sqft ? ' · ' + u.sqft + ' sq ft' : '') +
-            (u.placement ? ` · drawn ${u.placement.widthFt}×${u.placement.heightFt} ft${u.placement.areaDirty ? ' (changes on publish)' : ''}` : '') +
-            (lastSize ? ` · was ${lastSize.previous} sq ft until ${fmtD(lastSize.date)}` : '')
+            (u.placement ? ` · drawn ${u.placement.widthFt}×${u.placement.heightFt}${u.placement.areaDirty ? ' (Δ on publish)' : ''}` : '') +
+            (lastSize ? ` · was ${lastSize.previous}` : '')
         : '—',
     );
     const sizeEl = $('#udSize');

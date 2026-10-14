@@ -1103,6 +1103,7 @@ const FP_STATUS_COLORS = {
   MAINTENANCE: '#332B24',
   INACTIVE: '#332B24',
   BLOCKED: '#332B24',
+  DRAFT: '#9A4A33', // drawn, not published — never "available" green
 };
 function fpStatusColor(status) {
   return FP_STATUS_COLORS[String(status || '').toUpperCase()] || FP_STATUS_COLORS.AVAILABLE;
@@ -5917,8 +5918,11 @@ function fpOpenPublishReview(floorId, preview) {
     go.disabled = false;
   };
   modal.hidden = false;
+  // Start on the first per-unit decision (or Cancel) — never on Publish, so a
+  // stray Enter can't apply price changes unreviewed.
+  const first = body.querySelector('select, input:not([disabled])') || $('#fpPublishCancel');
   try {
-    go.focus({ preventScroll: true });
+    first.focus({ preventScroll: true });
   } catch (e) { /* noop */ }
 }
 
@@ -6415,7 +6419,13 @@ function fpNewUnitPointerDown(e) {
 function fpCancelNewUnit(quiet) {
   fpNewDraft = null;
   const pop = $('#fpNewUnitPop');
+  const hadFocus = pop && pop.contains(document.activeElement);
   if (pop) pop.remove();
+  if (hadFocus) {
+    try {
+      $('#fpNewUnitTool')?.focus({ preventScroll: true });
+    } catch (e) { /* noop */ }
+  }
   fpRenderCanvas();
   if (!quiet) fpSetReadout('');
 }
@@ -6453,6 +6463,29 @@ function fpOpenNewUnitForm(r) {
     `<div class="fp-pub-note">Created as a <b>draft</b> with the next unit code; it becomes available when you publish the plan.</div>` +
     `<div class="fp-newunit-actions"><button type="button" class="act-btn" data-nu-cancel>Cancel</button><button type="submit" class="act-btn primary">Create unit</button></div>`;
   stage.appendChild(pop);
+  // Anchor beside the drawn rectangle in the stage's SCROLLED content
+  // coordinates (the stage is the scroll container), right of it when there
+  // is room, else left; then bring it into view. A fixed top/right offset
+  // would land off-screen whenever the plan is scrolled or zoomed.
+  const ghostEl = $('#fpCanvas .fp-new-ghost');
+  if (ghostEl) {
+    const sr = stage.getBoundingClientRect();
+    const gr = ghostEl.getBoundingClientRect();
+    const pw = pop.offsetWidth;
+    const ph = pop.offsetHeight;
+    const gap = 10;
+    const contentW = Math.max(stage.scrollWidth, stage.clientWidth);
+    let left = gr.right - sr.left + stage.scrollLeft + gap;
+    if (left + pw > contentW - 4) left = gr.left - sr.left + stage.scrollLeft - pw - gap;
+    left = Math.max(stage.scrollLeft + 4, left);
+    const top = Math.max(4, gr.top - sr.top + stage.scrollTop);
+    pop.style.left = left + 'px';
+    pop.style.top = Math.min(top, Math.max(4, stage.scrollHeight - ph - 4)) + 'px';
+    pop.style.right = 'auto';
+  }
+  try {
+    pop.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  } catch (e) { /* noop */ }
   const sizeSel = pop.elements.sizeId;
   const rateIn = pop.elements.rate;
   let rateTouched = false;
@@ -6607,6 +6640,21 @@ async function fpOpenReconcile() {
     const btn = e.target && e.target.closest ? e.target.closest('[data-rc]') : null;
     if (!btn || btn.disabled) return;
     btn.disabled = true;
+    if (btn.dataset.rc === 'FIT_DRAWING') {
+      // Through the editor's batch path so it is one undo step like any resize.
+      const pl = state.fp.placements.find((x) => x.unitId === btn.dataset.rcUnit);
+      if (!pl) return;
+      const fp = sizeFootprint(pl.sizeCode, pl.sqft);
+      const landscape = pl.width >= pl.height;
+      const [w, h] = landscape === fp.w >= fp.h ? [fp.w, fp.h] : [fp.h, fp.w];
+      const ok = await fpCommitBatch([{ type: 'placement', id: pl.unitId, state: { ...fpElemState('placement', pl.unitId), width: w, height: h } }], `Fitted ${pl.unitCode}'s drawing to ${fpFmtArea(pl.sqft)} sqft.`);
+      if (!ok) {
+        btn.disabled = false;
+        return;
+      }
+      render(await get(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/size-mismatches`));
+      return;
+    }
     try {
       const res = await fpMutate(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/reconcile`, {
         method: 'POST',
@@ -6615,7 +6663,7 @@ async function fpOpenReconcile() {
       render(res.data.mismatches);
       const plan = await get(`/floor-plans/${encodeURIComponent(state.fp.floorId)}`);
       fpApplyPlanPayload(plan, true);
-      fpToast(btn.dataset.rc === 'FIT_DRAWING' ? 'Drawing resized to the unit’s size.' : 'Unit will take the drawn size when you publish.', true);
+      fpToast('Unit will take the drawn size when you publish (review it in Publish).', true);
     } catch (err) {
       btn.disabled = false;
       fpToast('Sizes: ' + describeError(err), false);

@@ -351,6 +351,17 @@ function fpFmtArea(sqft) {
   return (Math.round(Number(sqft || 0) * 100) / 100).toLocaleString('en-SG', { maximumFractionDigits: 2 });
 }
 
+// Decimal unit sizes — mirrors sqftForRect / sameSqft in src/core/unitSizing.ts:
+// a drawn unit's sqft is its exact area to 0.01, and sizes within 0.05 sqft
+// count as unchanged (absorbs the 0.001-ft geometry quantization).
+const FP_SQFT_EPSILON = 0.05;
+function fpSqftForRect(r) {
+  return Math.round(rectAreaSqft(r) * 100) / 100;
+}
+function fpSameSqft(a, b) {
+  return Math.abs(Number(a) - Number(b)) < FP_SQFT_EPSILON;
+}
+
 // Live status readout at the right of the selection strip: cursor position
 // while hovering, live position / size / length while dragging or drawing.
 function fpSetReadout(text) {
@@ -2920,14 +2931,14 @@ function fpIsContracted(it) {
 }
 
 // Area readout for a unit rect vs its sqft. Contracted: "29.99 sqft · −0.03%"
-// (flags > tolerance). Otherwise: "48 sqft (unit 40 → 48 on publish)".
+// (flags > tolerance). Otherwise: "47.25 sqft · unit 40 → 47.25 on publish".
 function fpAreaNoteHTML(rect, sqft, it) {
   const area = rectAreaSqft(rect);
   if (!(sqft > 0)) return `<span class="t-type">${fpFmtArea(area)} sqft</span>`;
   if (!fpIsContracted(it)) {
-    const next = Math.round(area);
-    const changes = next !== sqft;
-    return `<span class="t-type" style="${changes ? 'color:var(--terra,#C1664C);font-weight:700;' : ''}" title="The floor plan sets this unit's size: its sqft becomes the rounded drawn area when the plan is published">${fpFmtArea(area)} sqft${changes ? ` · unit ${sqft} → ${next} on publish` : ''}</span>`;
+    const next = fpSqftForRect(rect);
+    const changes = !fpSameSqft(next, sqft);
+    return `<span class="t-type" style="${changes ? 'color:var(--terra,#C1664C);font-weight:700;' : ''}" title="The floor plan sets this unit's size: its sqft becomes the drawn area (to 0.01 sqft) when the plan is published">${fpFmtArea(area)} sqft${changes ? ` · unit ${fpFmtArea(sqft)} → ${fpFmtArea(next)} on publish` : ''}</span>`;
   }
   const dev = (area - sqft) / sqft;
   const pct = (Math.round(dev * 10000) / 100).toLocaleString('en-SG', { maximumFractionDigits: 2, signDisplay: 'exceptZero' });
@@ -4510,8 +4521,8 @@ function fpStartResize(e, pl) {
       p.height = h;
     }
     fpRenderCanvas();
-    const nextSqft = Math.round(rectAreaSqft({ width: w, height: h }));
-    const sizeNote = nextSqft !== pl.sqft && !pair.some(fpIsContracted) ? ` → unit ${pl.sqft} → ${nextSqft} sqft on publish` : ` (unit ${pl.sqft})`;
+    const nextSqft = fpSqftForRect({ width: w, height: h });
+    const sizeNote = !fpSameSqft(nextSqft, pl.sqft) && !pair.some(fpIsContracted) ? ` → unit ${fpFmtArea(pl.sqft)} → ${fpFmtArea(nextSqft)} sqft on publish` : ` (unit ${fpFmtArea(pl.sqft)})`;
     fpSetReadout(`${pl.unitCode} ${formatFt(w)} × ${formatFt(h)} ft = ${fpFmtArea(rectAreaSqft({ width: w, height: h }))} sqft${sizeNote}`);
   };
   const up = () => {

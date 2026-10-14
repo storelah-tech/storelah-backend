@@ -204,7 +204,7 @@ export function buildUnitGroups(units: Array<{ sizeCode: string | null | undefin
       label: def.label,
       sizeCodes: [...def.sizeCodes],
       units: groupUnits,
-      areaSqft: groupArea,
+      areaSqft: round1(groupArea), // decimal Unit.sqft: same 1dp as overall.areaSqft
       areaSharePct: overallArea > 0 ? round1((groupArea / overallArea) * 100) : 0,
     };
   });

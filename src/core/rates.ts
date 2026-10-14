@@ -82,7 +82,7 @@ export async function getNetPsf() {
       ? revenue.reduce((s, u) => s + (u.sqft ? toNum(u.monthlyRate) / u.sqft : 0), 0) /
         revenue.length
       : 0;
-    const totalSqft = b.units.reduce((s, u) => s + u.sqft, 0);
+    const totalSqft = Math.round(b.units.reduce((s, u) => s + u.sqft, 0) * 100) / 100; // decimal sqft
     return {
       branch: b.code,
       name: b.name,

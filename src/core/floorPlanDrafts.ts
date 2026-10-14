@@ -10,7 +10,7 @@ import {
   publishFloorPlan,
   type PublishFloorPlanOptions,
 } from './floorPlans';
-import { loadContractedUnits, sqftForRect } from './unitSizing';
+import { loadContractedUnits, sameSqft, sqftForRect } from './unitSizing';
 import {
   DEFAULT_WALL_THICKNESS_FT,
   MAX_WALL_THICKNESS_FT,
@@ -591,7 +591,7 @@ export async function publishDraft(draftId: string, opts?: PublishFloorPlanOptio
         areaDirty: (() => {
           const prev = liveByUnit.get(unitId);
           const changed = !prev || prev.areaDirty || rectAreaSqft(prev) !== rectAreaSqft(r);
-          const dirty = changed && sqftForRect(r) !== unit.sqft;
+          const dirty = changed && !sameSqft(sqftForRect(r), unit.sqft);
           if (dirty) sizeChanges.push({ unitId, unitCode: unit.unitCode, from: unit.sqft, to: sqftForRect(r) });
           return dirty;
         })(),

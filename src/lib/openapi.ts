@@ -342,7 +342,10 @@ export const openapiSpec = {
         '`create.units[]` with a client `tempId` and the response gains `created: { [tempId]: { id, unitCode } }`. ' +
         'Removing a DRAFT unit\'s placement discards (hard-deletes) the unit; resizing a DRAFT unit updates its ' +
         'sqft/tier/rate immediately. DRAFT units are excluded from the CMS units list, unit map, activity, ' +
-        'summary, branch totals and facility metrics.',
+        'summary, branch totals and facility metrics. DECIMAL SQFT: `sqft` on every unit read (public and CMS) ' +
+        'is now a decimal number quantized to 0.01 (was integer) — e.g. `47.25`; writes (`POST|PUT /cms/units`, ' +
+        'CSV import) accept up to 2 decimals; a drawn unit\'s sqft is its exact drawn area to 0.01, and sizes ' +
+        'within 0.05 sqft count as unchanged.',
     ].join('\n'),
   },
   servers: [
@@ -4133,7 +4136,7 @@ export const openapiSpec = {
             type: 'string',
             description: 'Display name; falls back to the unit code.',
           },
-          sqft: { type: 'integer' },
+          sqft: { type: 'number', description: 'Decimal square feet (0.01 step since 1.10.0).' },
           rate: { type: 'number', description: 'Monthly rate (SGD).' },
           psf: { type: 'number', description: 'Rate per square foot.' },
           status: { $ref: openapiSchemaRef('UnitStatus') },
@@ -4218,7 +4221,7 @@ export const openapiSpec = {
                 },
                 psf: { type: 'number' },
                 rate: { type: 'number', description: 'Monthly rate (SGD).' },
-                sqft: { type: 'integer' },
+                sqft: { type: 'number', description: 'Decimal square feet (0.01 step since 1.10.0).' },
                 status: {
                   type: 'string',
                   description:
@@ -4674,7 +4677,7 @@ export const openapiSpec = {
           duration: { type: 'string', description: 'e.g. "3 months".' },
           amount: { type: 'number', description: 'Amount (SGD).' },
           unitCode: { type: 'string' },
-          sqft: { type: 'integer' },
+          sqft: { type: 'number', description: 'Decimal square feet (0.01 step since 1.10.0).' },
           branchName: { type: 'string' },
         },
       },
@@ -4765,7 +4768,7 @@ export const openapiSpec = {
             required: ['code', 'sqft', 'rate'],
             properties: {
               code: { type: 'string' },
-              sqft: { type: 'integer', description: 'Square footage.' },
+              sqft: { type: 'number', description: 'Square footage (decimal, 0.01 step since 1.10.0).' },
               rate: { type: 'number', description: 'Monthly rate (SGD).' },
             },
           },
@@ -4803,7 +4806,7 @@ export const openapiSpec = {
           },
           code: { type: 'string', description: 'Unit code.' },
           size: { type: 'string', description: 'Size name.' },
-          sqft: { type: 'integer' },
+          sqft: { type: 'number', description: 'Decimal square feet (0.01 step since 1.10.0).' },
           rate: { type: 'number', description: 'Monthly rate (SGD).' },
           psf: { type: 'number' },
           status: { $ref: openapiSchemaRef('UnitStatus') },
@@ -5344,7 +5347,7 @@ export const openapiSpec = {
               id: { type: 'string' },
               unitCode: { type: 'string' },
               name: { type: 'string', description: 'Display label; falls back to unitCode.' },
-              sqft: { type: 'integer' },
+              sqft: { type: 'number', description: 'Decimal square feet (0.01 step since 1.10.0).' },
               status: { $ref: openapiSchemaRef('UnitStatus') },
               size: {
                 type: 'object',
@@ -5714,7 +5717,7 @@ export const openapiSpec = {
           name: { type: 'string' },
           sizeCode: { type: 'string' },
           sizeName: { type: 'string' },
-          sqft: { type: 'integer' },
+          sqft: { type: 'number', description: 'Decimal square feet (0.01 step since 1.10.0).' },
           status: { $ref: openapiSchemaRef('UnitStatus') },
           occupied: { type: 'boolean', description: 'OCCUPIED or OVERDUE (revenue convention, no new flags).' },
           climateControlled: { type: 'boolean' },

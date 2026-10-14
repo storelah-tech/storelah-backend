@@ -29,6 +29,7 @@ import {
   loadContractedUnits,
   loadSizeTiers,
   resolveSizeTier,
+  sameSqft,
   sqftForRect,
   type SizeTierRow,
 } from './unitSizing';
@@ -1462,7 +1463,7 @@ function draftResize(
   sizes: readonly SizeTierRow[],
 ): { id: string; sqft: number; sizeId: string; monthlyRate: number } | null {
   const sqft = sqftForRect(geom);
-  if (sqft === unit.sqft) return null;
+  if (sameSqft(sqft, unit.sqft)) return null;
   const tier = resolveSizeTier(sizes, unit.sizeId, sqft);
   return { id: unit.id, sqft, sizeId: tier?.size.id ?? unit.sizeId, monthlyRate: keepPsfRate(toNum(unit.monthlyRate), unit.sqft, sqft) };
 }

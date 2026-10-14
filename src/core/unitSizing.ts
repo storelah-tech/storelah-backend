@@ -22,9 +22,29 @@ export const CONTRACTED_STATUSES = ['OCCUPIED', 'OVERDUE', 'RESERVED'] as const;
 export const MIN_UNIT_SQFT = 1;
 export const MAX_UNIT_SQFT = 2000;
 
-/** Unit.sqft for a drawn rect: whole square feet, half-up (D3 — sqft stays Int). */
+/**
+ * Decimal sqft (owner decision 2026-10-14, supersedes D3's whole numbers):
+ * Unit.sqft is stored quantized to 0.01 sqft.
+ */
+export const SQFT_STEP = 0.01;
+export function quantizeSqft(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
+/**
+ * Two sizes count as the SAME when they differ by less than 0.05 sqft. The
+ * drawing is stored to 0.001 ft, so a rect fitted to a catalogue size
+ * (w snapped, h = sqft / w quantized) can land a few hundredths off — e.g.
+ * 4.73 × 6.342 = 29.998 for a 30 sqft unit. Anything ≥ 0.05 is a real resize.
+ */
+export const SQFT_EPSILON = 0.05;
+export function sameSqft(a: number, b: number): boolean {
+  return Math.abs(a - b) < SQFT_EPSILON;
+}
+
+/** Unit.sqft for a drawn rect: the exact drawn area quantized to 0.01 sqft. */
 export function sqftForRect(r: { width: number; height: number }): number {
-  return Math.round(rectAreaSqft(r));
+  return quantizeSqft(rectAreaSqft(r));
 }
 
 /**
@@ -65,7 +85,8 @@ type Rect = { width: number; height: number };
  *  - contracted unit: legacy ±AREA_TOLERANCE vs Unit.sqft, never dirty
  *    (409 UNIT_CONTRACTED beyond it);
  *  - otherwise: any area within [MIN_UNIT_SQFT, MAX_UNIT_SQFT] is accepted and
- *    dirty iff round(area) differs from Unit.sqft (resizing back clears it).
+ *    dirty iff the drawn sqft differs from Unit.sqft by ≥ SQFT_EPSILON
+ *    (resizing back clears it).
  */
 export function checkPlacementArea(input: {
   unit: { unitCode: string; sqft: number };
@@ -99,7 +120,7 @@ export function checkPlacementArea(input: {
       `Unit ${unit.unitCode} ${formatFt(geom.width)}×${formatFt(geom.height)} ft would be ${sqft} sqft — units must be ${MIN_UNIT_SQFT}–${MAX_UNIT_SQFT} sqft`,
     );
   }
-  return sqft !== unit.sqft;
+  return !sameSqft(sqft, unit.sqft);
 }
 
 export type SizeTierRow = { id: string; code: string; name: string; sqftFrom: number; sqftTo: number; sortOrder: number };

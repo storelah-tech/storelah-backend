@@ -4,7 +4,7 @@ import { prisma } from '../lib/prisma';
 import { AppError } from '../lib/http';
 import { toNum } from '../lib/format';
 import { formatFt, rectAreaSqft } from './planGeometry';
-import { loadContractedUnits, resolveSizeTier, sqftForRect } from './unitSizing';
+import { loadContractedUnits, resolveSizeTier, sameSqft, sqftForRect } from './unitSizing';
 
 export { resolveSizeTier };
 
@@ -60,7 +60,7 @@ export interface SizeSyncChange {
 export interface SizeSyncPlan {
   token: string;
   changes: SizeSyncChange[];
-  /** Dirty placements whose rounded area already equals Unit.sqft — flag is just cleared. */
+  /** Dirty placements whose drawn sqft already matches Unit.sqft (< SQFT_EPSILON) — flag is just cleared. */
   unchanged: Array<{ unitId: string; unitCode: string }>;
   /** DRAFT units on this floor's plan — promoted to AVAILABLE on publish. */
   newUnits: Array<{ unitId: string; unitCode: string; sqft: number; size: { code: string; name: string }; rate: number }>;
@@ -112,7 +112,7 @@ export async function buildSizeSyncPlan(
       continue;
     }
     const newSqft = sqftForRect(p);
-    if (newSqft === u.sqft) {
+    if (sameSqft(newSqft, u.sqft)) {
       out.unchanged.push({ unitId: u.id, unitCode: u.unitCode });
       continue;
     }
@@ -287,7 +287,7 @@ export async function listSizeMismatches(floorId: string): Promise<SizeMismatch[
     include: { unit: { select: { id: true, unitCode: true, status: true, sqft: true } } },
     orderBy: { unit: { unitCode: 'asc' } },
   });
-  const mism = rows.filter((p) => sqftForRect(p) !== p.unit.sqft);
+  const mism = rows.filter((p) => !sameSqft(sqftForRect(p), p.unit.sqft));
   const contracted = await loadContractedUnits(mism.map((p) => p.unitId));
   return mism.map((p) => ({
     unitId: p.unitId,

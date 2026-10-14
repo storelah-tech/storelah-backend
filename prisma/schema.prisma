@@ -479,7 +479,7 @@ model Unit {
   size           UnitSize   @relation(fields: [sizeId], references: [id])
   unitCode       String     @unique // 4-digit numeric code, e.g. 1001 (globally unique; see docs/UNIT_CODE_AND_NAME.md)
   name           String? // optional display label; null/empty => display name falls back to unitCode
-  sqft           Int
+  sqft           Float // decimal square feet, quantized to 0.01 on every write (owner decision 2026-10-14; was Int) — see quantizeSqft in src/core/unitSizing.ts
   monthlyRate    Decimal    @default(0) @db.Decimal(10, 2)
   status         UnitStatus @default(AVAILABLE)
   climateControl String? // LEGACY free-text climate note (e.g. "Ambient climate"). Kept readable/writable for
@@ -839,8 +839,8 @@ model UnitAreaChange {
   id          String   @id @default(cuid())
   unitId      String
   unit        Unit     @relation(fields: [unitId], references: [id])
-  previous    Int // sqft before
-  current     Int // sqft after
+  previous    Float // sqft before (0.01 sqft)
+  current     Float // sqft after (0.01 sqft)
   prevSizeId  String
   newSizeId   String
   widthFt     Float?

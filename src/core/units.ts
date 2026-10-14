@@ -2,6 +2,7 @@ import { prisma } from '../lib/prisma';
 import { toNum } from '../lib/format';
 import { AppError } from '../lib/http';
 import { Prisma, UnitStatus } from '@prisma/client';
+import { quantizeSqft } from './unitSizing';
 
 type UnitWithRelations = Prisma.UnitGetPayload<{
   include: { size: true; branch: true; floor: true; tenant: true };
@@ -286,7 +287,7 @@ export async function createUnit(input: CreateUnitInput) {
       sizeId: input.sizeId,
       unitCode,
       name: input.name?.trim() || null,
-      sqft: input.sqft,
+      sqft: quantizeSqft(input.sqft), // decimal sqft, 0.01 step
       monthlyRate: input.monthlyRate,
       status: input.status ?? 'AVAILABLE',
       climateControl: input.climateControl,
@@ -308,7 +309,8 @@ export async function updateUnit(code: string, input: UpdateUnitInput) {
   // unit's size is set by its drawing (synced on publish) — resize it on the
   // floor plan instead. Re-sending the current sqft (the edit form always
   // does) stays a no-op.
-  if (unit.placement && input.sqft !== undefined && input.sqft !== unit.sqft) {
+  const nextSqft = input.sqft === undefined ? undefined : quantizeSqft(input.sqft); // decimal sqft, 0.01 step
+  if (unit.placement && nextSqft !== undefined && nextSqft !== unit.sqft) {
     throw new AppError(
       409,
       'SIZE_OWNED_BY_PLAN',
@@ -322,7 +324,7 @@ export async function updateUnit(code: string, input: UpdateUnitInput) {
   // and mapped onto hasAC when the caller doesn't set hasAC explicitly.
   const mappedAC = climateControlToHasAC(input.climateControl ?? undefined);
   const data: Prisma.UnitUpdateInput = {
-    sqft: input.sqft,
+    sqft: nextSqft,
     monthlyRate: input.monthlyRate,
     status: input.status,
     climateControl: input.climateControl,
@@ -887,11 +889,13 @@ export async function importUnits(csvText: string): Promise<UnitImportReport> {
         rows.push(fail(rowNum, `unknown size ${JSON.stringify(sizeRaw)} (use size code, e.g. SMALL)`));
         continue;
       }
-      const sqft = Number(sqftRaw);
-      if (!Number.isFinite(sqft) || sqft <= 0 || !Number.isInteger(sqft)) {
-        rows.push(fail(rowNum, `sqft must be a positive integer (got ${JSON.stringify(sqftRaw)})`));
+      const sqftIn = Number(sqftRaw);
+      // Decimal sqft (2026-10-14): up to 2 decimal places, e.g. 47.25.
+      if (!Number.isFinite(sqftIn) || sqftIn <= 0 || Math.abs(quantizeSqft(sqftIn) - sqftIn) > 1e-9) {
+        rows.push(fail(rowNum, `sqft must be a positive number with at most 2 decimals (got ${JSON.stringify(sqftRaw)})`));
         continue;
       }
+      const sqft = quantizeSqft(sqftIn);
       const rate = Number(rateRaw);
       if (!Number.isFinite(rate) || rate < 0) {
         rows.push(fail(rowNum, `rate must be 0 or greater (got ${JSON.stringify(rateRaw)})`));

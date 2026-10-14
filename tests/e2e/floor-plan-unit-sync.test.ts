@@ -17,10 +17,10 @@ import {
   setUnitPlacement,
 } from '../../src/core/floorPlans';
 import { getSummary } from '../../src/core/summary';
-import { MAX_UNIT_SQFT, checkPlacementArea, sqftForRect } from '../../src/core/unitSizing';
+import { MAX_UNIT_SQFT, checkPlacementArea, quantizeSqft, sameSqft, sqftForRect } from '../../src/core/unitSizing';
 import { buildSizeSyncPlan, keepPsfRate, listSizeMismatches, resolveSizeTier } from '../../src/core/unitSizeSync';
 import { publishDraft, saveDraft } from '../../src/core/floorPlanDrafts';
-import { getUnitDetail, listUnits, updateUnit } from '../../src/core/units';
+import { getUnitDetail, importUnits, listUnits, updateUnit } from '../../src/core/units';
 
 async function unitId(unitCode: string): Promise<string> {
   const u = await prisma.unit.findUnique({ where: { unitCode } });
@@ -39,10 +39,19 @@ async function dirty(id: string): Promise<boolean> {
 describe('unitSizing (pure)', () => {
   const unit = { unitCode: '1001', sqft: 50 };
 
-  it('rounds the drawn area half-up to whole sqft', () => {
-    expect(sqftForRect({ width: 7.5, height: 6.3 })).toBe(47); // 47.25
-    expect(sqftForRect({ width: 5, height: 10.1 })).toBe(51); // 50.5
-    expect(sqftForRect({ width: 5, height: 10.09 })).toBe(50); // 50.45
+  it('keeps the drawn area as decimal sqft, quantized to 0.01', () => {
+    expect(sqftForRect({ width: 7.5, height: 6.3 })).toBe(47.25);
+    expect(sqftForRect({ width: 5, height: 10.1 })).toBe(50.5);
+    expect(sqftForRect({ width: 4.73, height: 6.342 })).toBe(30); // 29.99766
+    expect(sqftForRect({ width: 3.333, height: 3.333 })).toBe(11.11); // 11.108889
+    expect(quantizeSqft(47.255)).toBe(47.26);
+  });
+
+  it('sizes within 0.05 sqft are the same size', () => {
+    expect(sameSqft(29.998, 30)).toBe(true);
+    expect(sameSqft(30.04, 30)).toBe(true);
+    expect(sameSqft(30.05, 30)).toBe(false);
+    expect(sameSqft(47.25, 47)).toBe(false);
   });
 
   it('unchanged area keeps the stored flag (move / rotation)', () => {
@@ -51,10 +60,11 @@ describe('unitSizing (pure)', () => {
     expect(checkPlacementArea({ unit, geom: { width: 5, height: 12 }, existing: { ...existing, areaDirty: false }, contractedReason: undefined })).toBe(false);
   });
 
-  it('resize is dirty iff the rounded area differs from sqft', () => {
+  it('resize is dirty iff the drawn sqft differs from Unit.sqft by ≥ 0.05', () => {
     const existing = { width: 5, height: 10 };
     expect(checkPlacementArea({ unit, geom: { width: 8, height: 8 }, existing, contractedReason: undefined })).toBe(true);
-    expect(checkPlacementArea({ unit, geom: { width: 4, height: 12.6 }, existing, contractedReason: undefined })).toBe(false); // 50.4 → 50
+    expect(checkPlacementArea({ unit, geom: { width: 4, height: 12.6 }, existing, contractedReason: undefined })).toBe(true); // 50.4
+    expect(checkPlacementArea({ unit, geom: { width: 4.73, height: 10.575 }, existing, contractedReason: undefined })).toBe(false); // 50.02
   });
 
   it('contracted: within tolerance never dirty, beyond → 409 UNIT_CONTRACTED', () => {
@@ -100,7 +110,7 @@ describe('floor-plan unit sync — resize (DB)', () => {
     await setUnitPlacement(world.floorId, id, { x: 40, y: 30, width: 8, height: 8 });
     await setUnitPlacement(world.floorId, id, { x: 50, y: 30, width: 8, height: 8 }); // move
     expect(await dirty(id)).toBe(true);
-    await setUnitPlacement(world.floorId, id, { x: 50, y: 30, width: 5, height: 10.05 }); // 50.25 → 50
+    await setUnitPlacement(world.floorId, id, { x: 50, y: 30, width: 5, height: 10.005 }); // 50.025 ≈ 50
     expect(await dirty(id)).toBe(false);
   });
 
@@ -446,12 +456,12 @@ describe('floor-plan unit sync — drawing new units (DB)', () => {
   });
 
   it('draws a DRAFT unit: minted code, rounded sqft, nearest tier, MARKET_PSF rate, plan → DRAFT', async () => {
-    const { unit, placement } = await createUnitOnPlan(world.floorId, { x: 40, y: 30, width: 6, height: 8.05 }); // 48.3 → 48
+    const { unit, placement } = await createUnitOnPlan(world.floorId, { x: 40, y: 30, width: 6, height: 8.05 }); // 48.3 sqft
     expect(unit.unitCode).toBe('1001');
     const row = await prisma.unit.findUnique({ where: { id: unit.id }, include: { size: true } });
-    expect(row).toMatchObject({ status: 'DRAFT', sqft: 48, floorId: world.floorId, branchId: world.branchId, hasAC: false, name: null });
+    expect(row).toMatchObject({ status: 'DRAFT', sqft: 48.3, floorId: world.floorId, branchId: world.branchId, hasAC: false, name: null });
     expect(row!.size.code).toBe('SMALL');
-    expect(Number(row!.monthlyRate)).toBe(230.4);
+    expect(Number(row!.monthlyRate)).toBe(231.84); // 4.8 × 48.3
     expect(placement).toMatchObject({ x: 40, y: 30, width: 6, height: 8.05, areaDirty: false });
     expect((await prisma.floorPlan.findUnique({ where: { floorId: world.floorId } }))!.status).toBe('DRAFT');
   });
@@ -571,5 +581,61 @@ describe('floor-plan unit sync — drawing new units (DB)', () => {
     expect(pub2.body.data.find((u: { unitCode: string }) => u.unitCode === unit.unitCode)).toMatchObject({ status: 'AVAILABLE', sqft: 30, rate: 144 });
     const plan = await api.get(`/api/v1/public/floor-plans/${PIN.branchCode}/${PIN.level}`);
     expect(plan.body.data.plan.placements.map((p: { unit: { unitCode: string } }) => p.unit.unitCode)).toContain(unit.unitCode);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Decimal sqft (owner decision 2026-10-14): Unit.sqft is a 0.01-step decimal.
+// ---------------------------------------------------------------------------
+
+describe('decimal unit sqft (DB)', () => {
+  let world: MoveInWorld;
+
+  beforeEach(async () => {
+    await resetDb();
+    world = await seedMoveInWorld();
+  });
+
+  it('publish writes the exact drawn size (47.25), history and rate in decimals', async () => {
+    const id = await unitId(PIN.rentableUnit); // 50 @ 120
+    await setUnitPlacement(world.floorId, id, { x: 40, y: 30, width: 7.5, height: 6.3 });
+    const { sizeSync } = await publishFloorPlanWithSync(world.floorId);
+    expect(sizeSync.changed[0]).toMatchObject({ oldSqft: 50, newSqft: 47.25, newRate: 113.4 });
+    const u = await prisma.unit.findUnique({ where: { id } });
+    expect(u!.sqft).toBe(47.25);
+    expect(await prisma.unitAreaChange.findFirst({ where: { unitId: id } })).toMatchObject({ previous: 50, current: 47.25 });
+    const pub = await api.get('/api/v1/public/units');
+    expect(pub.body.data.find((x: { unitCode: string }) => x.unitCode === PIN.rentableUnit)).toMatchObject({ sqft: 47.25 });
+  });
+
+  it('a catalogue-fitted rect 0.002 sqft off is not a size change', async () => {
+    const id = await unitId(PIN.rentableUnit);
+    await prisma.unit.update({ where: { id }, data: { sqft: 30 } });
+    await setUnitPlacement(world.floorId, id, { x: 40, y: 30, width: 4.73, height: 6.342 }); // 29.99766
+    expect(await dirty(id)).toBe(false);
+    expect((await listSizeMismatches(world.floorId)).map((m) => m.unitId)).not.toContain(id);
+  });
+
+  it('CSV import accepts up to 2 decimals and rejects more', async () => {
+    const csv = [
+      'code,branch,level,size,sqft,rate,status,hasAC,hasPillar,name',
+      `,${PIN.branchCode},${PIN.level},SMALL,47.25,120,AVAILABLE,no,no,`,
+      `,${PIN.branchCode},${PIN.level},SMALL,47.255,120,AVAILABLE,no,no,`,
+    ].join('\n');
+    const report = await importUnits(csv);
+    expect(report.rows.map((r) => r.status)).toEqual(['created', 'error']);
+    expect(report.rows[1].message).toContain('at most 2 decimals');
+    const created = await prisma.unit.findUnique({ where: { unitCode: report.rows[0].code! } });
+    expect(created!.sqft).toBe(47.25);
+  });
+
+  it('unit edits quantize to 0.01 sqft; a placed unit re-sending its own decimal sqft is a no-op', async () => {
+    const id = await unitId(PIN.rentableUnit);
+    await prisma.unitPlacement.delete({ where: { unitId: id } });
+    await expect(updateUnit(PIN.rentableUnit, { sqft: 47.255 })).resolves.toMatchObject({ sqft: 47.26 });
+    const plan = await prisma.floorPlan.findUnique({ where: { floorId: world.floorId } });
+    await prisma.unitPlacement.create({ data: { floorPlanId: plan!.id, unitId: id, x: 40, y: 30, width: 5, height: 9.452 } });
+    await expect(updateUnit(PIN.rentableUnit, { sqft: 47.26, monthlyRate: 130 })).resolves.toMatchObject({ sqft: 47.26 });
+    await expectAppError(updateUnit(PIN.rentableUnit, { sqft: 47.3 }), 409, 'SIZE_OWNED_BY_PLAN');
   });
 });

@@ -1,4 +1,5 @@
 import { prisma } from '../lib/prisma';
+import { quantizeSqft } from './unitSizing';
 import { toNum, pct } from '../lib/format';
 import { serializeBookings } from './finance';
 
@@ -27,10 +28,11 @@ export async function listBranches() {
 
   return branches.map((b) => {
     const units = b.units;
-    const totalSqft = units.reduce((s, u) => s + u.sqft, 0);
-    const leasedSqft = units
-      .filter((u) => LEASED_STATUSES.includes(u.status))
-      .reduce((s, u) => s + u.sqft, 0);
+    // Decimal sqft: round sums to 0.01 so float noise never surfaces.
+    const totalSqft = quantizeSqft(units.reduce((s, u) => s + u.sqft, 0));
+    const leasedSqft = quantizeSqft(
+      units.filter((u) => LEASED_STATUSES.includes(u.status)).reduce((s, u) => s + u.sqft, 0),
+    );
     const revenueUnits = units.filter((u) => REVENUE_STATUSES.includes(u.status));
     const mrr = revenueUnits.reduce((s, u) => s + toNum(u.monthlyRate), 0);
     const netPsf = revenueUnits.length

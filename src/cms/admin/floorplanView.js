@@ -6002,10 +6002,13 @@ async function fpDeletePlan() {
 
 // ---------- floor-plan draft versions (versioned design snapshots) ----------
 // "Save as draft" freezes the canvas as version N (max+1 per floor); each row
-// offers Load (populate the editable canvas from the snapshot so the operator
-// can keep designing from it), View (read-only preview in the existing
-// #fpViewModal) and Delete (confirmDialog). Publishing is canvas/live-plan
-// only (the #fpPublishPlan flow) — there is no per-draft Publish action.
+// offers Publish (per-draft confirm popup via the read-only publish preview —
+// counts, the version going back to draft, skipped placements — then POST
+// /drafts/:id/publish), Load (populate the editable canvas from the snapshot
+// so the operator can keep designing from it), View (read-only preview in the
+// existing #fpViewModal) and Delete (confirmDialog). Publishing a version
+// demotes the previously-published version back to DRAFT server-side, so
+// exactly one version stays published.
 // Loading never writes the live
 // plan — it only replaces local editor state; the next Save-as-draft freezes
 // the edited canvas as a NEW version (never overwrites the loaded one).
@@ -6077,7 +6080,7 @@ function fpRenderDrafts() {
   fpRenderLibraryScope();
   if (sub) {
     sub.textContent = fpDrafts.length
-      ? `${fpDrafts.length} saved version${fpDrafts.length === 1 ? '' : 's'} — view, load into the editor, or delete`
+      ? `${fpDrafts.length} saved version${fpDrafts.length === 1 ? '' : 's'} — view, load into the editor, publish, or delete`
       : 'No saved versions yet — Save as draft freezes the current canvas as v1';
   }
   if (!fpDrafts.length) {
@@ -6098,6 +6101,7 @@ function fpRenderDrafts() {
         `${escapeHtml(c.boundaries || 0)} lines · ${escapeHtml(c.markers || 0)} markers</td>` +
         `<td class="t-type">${escapeHtml(when)}${d.createdBy ? ' · ' + escapeHtml(d.createdBy) : ''}</td>` +
         '<td style="white-space:nowrap">' +
+        `<button class="tb-btn ghost" data-fp-draft-act="publish" data-fp-draft-id="${escapeHtml(d.id)}" title="Publish this version — a confirm shows what goes live, what goes back to draft, and what will be skipped">Publish</button> ` +
         `<button class="tb-btn ghost" data-fp-draft-act="load" data-fp-draft-id="${escapeHtml(d.id)}" title="Load this version into the editable canvas (live plan unchanged)">Load</button> ` +
         `<button class="tb-btn ghost" data-fp-draft-act="view" data-fp-draft-id="${escapeHtml(d.id)}">View</button> ` +
         `<button class="tb-btn danger" data-fp-draft-act="delete" data-fp-draft-id="${escapeHtml(d.id)}">Delete</button>` +
@@ -6133,18 +6137,13 @@ function fpSetLoadedDraft(d) {
 // populates state.fp.* (canvas dims, placements, blocks, boundaries, markers,
 // structure, gfaSqft), then re-renders. Local state only — the live plan is
 // never written. The operator then edits and either saves a NEW draft version
-// (max+1, never overwrites the loaded one); publishing stays on the
-// canvas-level Publish action (#fpPublishPlan). Unsaved canvas edits guard
-// via confirmDialog (fpCanvasDirty).
+// (max+1, never overwrites the loaded one), or publishes a saved version via
+// its per-draft Publish action. Unsaved canvas edits guard via
+// fpResolveUnsaved (Save as Draft, Discard, or Cancel).
 async function fpLoadDraft(draftId) {
-  const meta = fpDrafts.find((r) => r.id === draftId);
-  if (fpCanvasDirty) {
-    const loadOk = await confirmDialog({
-      title: `Load draft v${meta ? meta.version : ''} into the editor?`,
-      message: 'The canvas has unsaved changes — loading replaces the editable canvas with this version. The live plan is unchanged either way.',
-      confirmLabel: 'Load draft',
-    });
-    if (!loadOk) return;
+  if (fpCanvasDirty || fpHasPendingWrites()) {
+    // Save as Draft, Discard, or Cancel — staying keeps the current screen.
+    if ((await fpResolveUnsaved('and load the draft')) !== 'proceed') return;
   }
   try {
     const res = await request(`/drafts/${encodeURIComponent(draftId)}`);
@@ -6248,23 +6247,118 @@ async function fpLoadDraft(draftId) {
   }
 }
 
+// Unsaved-changes guard for user-initiated navigation (branch/floor switch,
+// publishing or loading another draft version): "Save as Draft, Discard, or
+// Cancel" via two sequential confirms (confirmDialog is a 2-button modal).
+// Returns 'proceed' | 'stay'. 'proceed' covers the clean case, a successful
+// Save as Draft, and an explicit Discard.
+async function fpResolveUnsaved(discardVerb) {
+  if (!fpCanvasDirty && !fpHasPendingWrites()) return 'proceed';
+  const saveOk = await confirmDialog({
+    title: 'Unsaved floor-plan changes?',
+    message: `You have unsaved changes — Save as Draft, Discard, or Cancel. Save as Draft freezes the full canvas on screen as a new draft version; Discard ${discardVerb || 'continues'} and loses the edits; Cancel stays here.`,
+    confirmLabel: 'Save as Draft',
+    cancelLabel: 'Not now',
+  });
+  if (saveOk) {
+    const saved = await fpSaveDraft();
+    return saved ? 'proceed' : 'stay'; // a failed save keeps the operator on screen
+  }
+  const discardOk = await confirmDialog({
+    title: `Discard unsaved changes${discardVerb ? ` ${discardVerb}` : ''}?`,
+    message: 'The canvas on screen reverts and your unsaved edits are lost. The live plan is unchanged either way.',
+    confirmLabel: 'Discard',
+    danger: true,
+  });
+  return discardOk ? 'proceed' : 'stay';
+}
+
+// Publish a version straight from the drafts Library list: unsaved screen
+// edits guard first (Save as Draft freezes them as a new version, Discard
+// drops them, Cancel stays), then the chosen SAVED version publishes by id —
+// the screen is never shipped, so this path is stale-proof by construction.
+async function fpPublishDraftFromLibrary(draftId) {
+  if (fpCanvasDirty || fpHasPendingWrites()) {
+    // Save as Draft, Discard, or Cancel — staying keeps the current screen.
+    if ((await fpResolveUnsaved('and publish the draft')) !== 'proceed') return;
+  }
+  await fpConfirmPublishDraft(draftId);
+}
+
+// Shared per-draft Publish with the owner-required CONFIRM POPUP. Fetches the
+// read-only publish preview BEFORE confirming, so the popup names what will
+// go live (counts), what goes back to draft (the currently-published version,
+// if any), and the exact skipped placements (deleted/inactive/moved units) —
+// Confirm = Publish, Cancel stays. Exactly one version stays published: the
+// server demotes the previous one back to DRAFT in the same transaction.
+// Returns true when the publish landed.
+async function fpConfirmPublishDraft(draftId) {
+  let preview;
+  try {
+    const res = await request(`/drafts/${encodeURIComponent(draftId)}/publish-preview`);
+    preview = res.data;
+  } catch (err) {
+    fpToast('Publish preview: ' + describeError(err), false);
+    return false;
+  }
+  const c = (preview && preview.counts) || {};
+  const units = c.placements || 0;
+  const blocks = c.blocks || 0;
+  const lines = c.boundaries || 0;
+  const markers = c.markers || 0;
+  const pub = preview && preview.published;
+  const selfPublished = pub && pub.id === draftId;
+  const unitWord = `${units} unit${units === 1 ? '' : 's'}`;
+  const extra = blocks || lines || markers ? ` (+ ${blocks} blocks, ${lines} lines, ${markers} markers)` : '';
+  const demoteLine = !pub
+    ? 'No version is currently published.'
+    : selfPublished
+      ? `v${pub.version} is already published — republishing refreshes the live copy with this version.`
+      : `v${pub.version} is currently published and will go back to draft.`;
+  const skipped = (preview && preview.skippedPlacements) || [];
+  const skipLine = skipped.length
+    ? ` Skipped (${skipped.length}): ${skipped.join(', ')} — deleted, moved floors, or deactivated since the save; they will not go live.`
+    : '';
+  const pubOk = await confirmDialog({
+    title: `Publish v${preview.version}? ${units} unit${units === 1 ? '' : 's'} will go live`,
+    message: `${unitWord} will go live to booking${extra}. ${demoteLine}${skipLine}`,
+    confirmLabel: 'Publish',
+  });
+  if (!pubOk) return false;
+  try {
+    const res = await request(`/drafts/${encodeURIComponent(draftId)}/publish`, { method: 'POST' });
+    const skippedAfter = (res && res.meta && res.meta.skippedPlacements) || [];
+    fpToast(
+      `Draft v${preview.version} published — ${unitWord} live.` +
+        (skippedAfter.length ? ` Skipped (${skippedAfter.length}): ${skippedAfter.join(', ')}.` : ''),
+      !skippedAfter.length,
+    );
+    await fpFetch(); // reloads live state + clears the loaded-draft mode (screen == live)
+    await fpFetchDrafts().catch(() => {});
+    return true;
+  } catch (err) {
+    fpToast('Publish draft: ' + describeError(err), false);
+    return false;
+  }
+}
+
 async function fpSaveDraft() {
   if (!state.fp.floorId) {
     fpToast('Pick a facility and floor first.', false);
-    return;
+    return null;
   }
   const w = fpParseDim($('#fpWidth').value);
   const h = fpParseDim($('#fpHeight').value);
   if (w === null || h === null) {
     fpToast('Canvas size must be a number between 1 and 500 feet (decimals allowed).', false);
-    return;
+    return null;
   }
   const gfaEl = $('#fpGfa');
   const gfaParsed = fpParseGfa(gfaEl ? gfaEl.value : '');
   if (!gfaParsed.ok) {
     fpToast('GFA must be a positive number of sqft (up to 10,000,000) — or empty to unset.', false);
     if (gfaEl) gfaEl.focus();
-    return;
+    return null;
   }
   let structure = null;
   const raw = $('#fpStructure').value.trim();
@@ -6273,7 +6367,7 @@ async function fpSaveDraft() {
       structure = JSON.parse(raw);
     } catch (err) {
       fpToast('Structure JSON is invalid — fix the syntax or clear the field.', false);
-      return;
+      return null;
     }
   }
   // Snapshot the CURRENT editor state (which may hold unsaved drag/resize
@@ -6302,14 +6396,16 @@ async function fpSaveDraft() {
       method: 'POST',
       body: JSON.stringify(body),
     });
-    fpToast(`Draft v${saved.data.version} saved — the live canvas is unchanged.`, true);
+    fpToast(`Draft v${saved.data.version} saved — the live plan is unchanged; the screen now matches v${saved.data.version}.`, true);
     // The canvas now matches the freshly frozen version — point the
     // loaded-version indicator at it and reset the unsaved-changes guard.
     fpCanvasDirty = false;
     fpSetLoadedDraft({ id: saved.data.id, version: saved.data.version });
     await fpFetchDrafts();
+    return saved.data;
   } catch (err) {
     fpToast('Save as draft: ' + describeError(err), false);
+    return null;
   }
 }
 
@@ -7155,16 +7251,22 @@ export function fpInitEvents() {
   // Wiring follows the toolbar groups in canonical order (see
   // FP_TOOLBAR_GROUPS): units → mode → markers → canvas → plan → view → info.
   // --- Group: header (branch/floor scope + save/delete plan actions, delete last) ---
-  $('#fpBranch').addEventListener('change', (e) => {
+  $('#fpBranch').addEventListener('change', async (e) => {
+    const next = e.target.value;
+    e.target.value = state.fp.branchCode; // hold until the unsaved guard resolves
+    if ((await fpResolveUnsaved('and switch facilities')) !== 'proceed') return;
     fpFlushNudge(); // a pending nudge persists against the floor it was made on
-    state.fp.branchCode = e.target.value;
+    state.fp.branchCode = next;
     state.fp.floorId = null;
     fpPopulateFloorSelect();
     if (state.fp.floorId) fpFetch().catch(() => {});
   });
-  $('#fpFloor').addEventListener('change', (e) => {
+  $('#fpFloor').addEventListener('change', async (e) => {
+    const next = e.target.value;
+    e.target.value = state.fp.floorId; // hold until the unsaved guard resolves
+    if ((await fpResolveUnsaved('and switch floors')) !== 'proceed') return;
     fpFlushNudge(); // a pending nudge persists against the floor it was made on
-    state.fp.floorId = e.target.value;
+    state.fp.floorId = next;
     fpFetch().catch(() => {});
   });
   $('#fpSaveCanvas').addEventListener('click', fpSaveCanvas);
@@ -7660,7 +7762,7 @@ export function fpInitEvents() {
   $('#unitShowFloorPlan').addEventListener('click', fpViewOpen);
   $('#fpViewClose').addEventListener('click', fpViewClose);
   $('#fpViewCloseBtn').addEventListener('click', fpViewClose);
-  // Draft versions table (Load / View / Delete per saved version).
+  // Draft versions table (Publish / Load / View / Delete per saved version).
   $('#fpDraftsBody')?.addEventListener('click', (e) => {
     const btn = e.target && e.target.closest ? e.target.closest('[data-fp-draft-act]') : null;
     if (!btn) return;
@@ -7668,6 +7770,7 @@ export function fpInitEvents() {
     const act = btn.dataset.fpDraftAct;
     if (act === 'load') fpLoadDraft(id);
     else if (act === 'view') fpViewDraft(id);
+    else if (act === 'publish') fpPublishDraftFromLibrary(id);
     else if (act === 'delete') fpDeleteDraft(id);
   });
   // Floor Plan Library → Designer cross-link: plain subtab navigation (the

@@ -400,8 +400,20 @@ snapshot. The live `FloorPlan` stays single-per-floor (the working copy the
 editor mutates — "Save canvas" upserts it and demotes to DRAFT, Publish walks
 DRAFT → ACTIVE); a draft is the whole canvas at save time frozen as version N
 for that floor. Each version can be viewed (read-only preview), loaded back
-into the editable designer, or deleted — there is no per-draft Publish button in the designer UI; publishing is canvas/live-plan only (`Publish` in the designer header, `POST /floor-plans/:floorId/publish`). The existing single-plan
-publish flow is untouched.
+into the editable designer, published, or deleted. Publishing runs two ways:
+canvas/live-plan (`Publish` in the designer header,
+`POST /floor-plans/:floorId/publish`, with the unit-size review), or per-draft
+— every row in the drafts Library list has its own Publish button and the
+editor publishes the loaded draft, both through a CONFIRM POPUP: the editor
+fetches the read-only preview (`GET /drafts/:draftId/publish-preview` —
+restorable counts, the currently-published version, live status, exact skipped
+placements) BEFORE confirming, so the popup names what will go live, what goes
+back to draft, and what will be skipped. `POST /drafts/:draftId/publish`
+wholesale-restores the snapshot into the live plan and walks DRAFT → ACTIVE
+via the existing publish path (including the floor-plan unit sync — see
+`docs/FLOOR_PLAN_UNIT_SYNC_PLAN.md`); every OTHER published version on the
+floor is demoted back to DRAFT in the same transaction, so exactly one version
+per floor stays published. The existing single-plan publish flow is untouched.
 
 | Field        | Type        | Meaning                                                        |
 | ------------ | ----------- | -------------------------------------------------------------- |
@@ -431,7 +443,8 @@ reuses them.
 
 **Semantics** (`src/core/floorPlanDrafts.ts`, CMS routes
 `POST|GET /floor-plans/:floorId/drafts`, `GET|DELETE /drafts/:draftId`,
-`POST /drafts/:draftId/publish` — Bearer JWT, envelope `{ data, meta }`):
+`GET /drafts/:draftId/publish-preview`, `POST /drafts/:draftId/publish` —
+Bearer JWT, envelope `{ data, meta }`):
 
 - **Save** (`saveDraft`): every field optional — omitted fields fall back to
   the live plan's values, so `POST {}` snapshots the working copy as-is;
@@ -447,18 +460,27 @@ reuses them.
   the designer replaces its local `state.fp.*` (canvas dims, placements,
   blocks, boundaries, markers, structure, GFA) with the snapshot and
   re-renders, setting an "Editing from draft vN" indicator; the live plan is
-  never written. Canvas edits after a load guard on unsaved changes
-  (`confirmDialog`), and the next save freezes a NEW version (max+1 — the
-  loaded version is never overwritten). Publish from a loaded draft still
-  wholesale-restores the live plan.
+  never written. Canvas edits after a load guard on unsaved changes (Save as
+  Draft / Discard / Cancel), and the next save freezes a NEW version (max+1 —
+  the loaded version is never overwritten). Any saved version can be published
+  straight from the Library list (unsaved screen edits guard first — the
+  screen itself is never shipped).
 - **Publish** (`publishDraft`): wholesale-restores the snapshot into the live
   plan (canvas upsert + delete-all/re-create placements/blocks/boundaries/
   markers in one transaction — placements added after the snapshot are
   removed), marks the draft `ACTIVE`, then walks the live plan DRAFT → ACTIVE
-  via the existing `publishFloorPlan` path (same `promotions.approve` gate).
-  Snapshot placements whose unit has since been deleted, moved floors, or been
-   deactivated are skipped and reported in `meta.skippedPlacements` (never
-   fatal). The designer UI no longer offers this per-draft action — the endpoint stays for compatibility, unwired.
+  via the existing `publishFloorPlan` path (same `promotions.approve` gate,
+  including the floor-plan unit sync). Snapshot placements whose unit has
+  since been deleted, moved floors, or been deactivated are skipped and
+  reported in `meta.skippedPlacements` (never fatal). Every OTHER `ACTIVE`
+  version on the floor is demoted back to DRAFT in the same restore
+  transaction — exactly one published version at a time. The designer offers
+  this per version (Library Publish button + confirm popup fed by the preview
+  below).
+- **Publish preview** (`getPublishPreview`, read-only — never writes): the
+  draft's restorable element counts, the floor's currently-published version
+  (`null` when nothing is published yet), the live plan status, and the exact
+  skipped-placement list (same skip semantics as the publish).
 - **Drafts never leak to booking**: `GET /public/floor-plans/:branchCode/:level`
   (`getPublicFloorPlan`) resolves the ACTIVE live plan only and never touches
   `FloorPlanDraft` — a draft-only floor still reads as `plan: null`.

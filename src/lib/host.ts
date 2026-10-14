@@ -1,4 +1,5 @@
 import type { Request } from 'express';
+import { config } from './config';
 
 /**
  * Host-kind routing for the cms.storelah.sg migration (2026-08).
@@ -52,9 +53,30 @@ export function requestDomain(req: Request): string {
 }
 
 /**
+ * RFC 1918 private-network check for LAN dev access (e.g. phone on same Wi-Fi
+ * hitting the Mac's LAN IP). Handles `::ffff:` IPv4-mapped forms, which
+ * `normalizeHost` otherwise passes through unstripped.
+ */
+function isPrivateIPv4(host: string): boolean {
+  const v4 = host.startsWith('::ffff:') ? host.slice('::ffff:'.length) : host;
+  const parts = v4.split('.');
+  if (parts.length !== 4) return false;
+  const octets = parts.map((p) => Number(p));
+  if (octets.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return false;
+  if (octets[0] === 10) return true;
+  if (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31) return true;
+  if (octets[0] === 192 && octets[1] === 168) return true;
+  return false;
+}
+
+/**
  * Classifies a request host as:
  *  - `cms`: cms.storelah.sg exactly, plus a localhost/loopback dev override so
- *    the CMS root path is exercisable locally.
+ *    the CMS root path is exercisable locally. Outside production, RFC 1918
+ *    private-network hosts (LAN IPs) also classify as `cms` so the dashboard
+ *    is reachable from other devices on the same Wi-Fi. In production the
+ *    private-IP branch is disabled, so a private-IP Host header still
+ *    classifies as `api` and the `/config` 404 gate on the api host holds.
  *  - `api`: everything else — api.storelah.sg, the API Gateway invoke hostname
  *    (azzp4x84e6.execute-api.ap-southeast-1.amazonaws.com), or any unknown host.
  */
@@ -62,6 +84,9 @@ export function resolveHostKind(req: Request): HostKind {
   const host = normalizeHost(requestDomain(req));
   if (host === CMS_DOMAIN) return 'cms';
   if (host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === 'cms.localhost') {
+    return 'cms';
+  }
+  if (!config.isProd && isPrivateIPv4(host)) {
     return 'cms';
   }
   return 'api';

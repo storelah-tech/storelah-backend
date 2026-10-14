@@ -183,6 +183,7 @@ import {
   saveDraft,
   listDrafts,
   getDraft,
+  getPublishPreview,
   deleteDraft,
   publishDraft,
 } from '../core/floorPlanDrafts';
@@ -1790,6 +1791,14 @@ router.get('/drafts/:draftId', requireAuth, async (req: Request, res: Response) 
   ok(res, await getDraft(String(req.params.draftId)));
 });
 
+// Publish preview for the confirm popup (read-only): restorable counts, the
+// currently-published version (demoted back to DRAFT on publish), live status,
+// and the exact skipped-placement list — so the popup can name what will go
+// live, what goes back to draft, and what will be skipped BEFORE confirming.
+router.get('/drafts/:draftId/publish-preview', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await getPublishPreview(String(req.params.draftId)));
+});
+
 // Delete one draft version (design history only — the live plan is untouched).
 router.delete('/drafts/:draftId', requireAuth, async (req: Request, res: Response) => {
   ok(res, await deleteDraft(String(req.params.draftId)));
@@ -1797,8 +1806,10 @@ router.delete('/drafts/:draftId', requireAuth, async (req: Request, res: Respons
 
 // Publish a draft version: wholesale-restore its snapshot into the live plan
 // (placements added after the snapshot are removed), then DRAFT → ACTIVE via
-// the existing publish path. Placements whose unit has since been deleted,
-// moved floors, or deactivated are skipped and reported in meta.
+// the existing publish path (which also applies the floor-plan unit sync).
+// Every OTHER published version on the floor is demoted back to DRAFT, so
+// exactly one version stays published. Placements whose unit has since been
+// deleted, moved floors, or deactivated are skipped and reported in meta.
 router.post('/drafts/:draftId/publish', requireAuth, async (req: Request, res: Response) => {
   const p = publishOpts(req);
   if ('error' in p) {

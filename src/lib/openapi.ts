@@ -1585,6 +1585,51 @@ export const openapiSpec = {
         },
       },
     },
+    '/cms/drafts/{draftId}/publish-preview': {
+      get: {
+        tags: ['Operator CMS'],
+        summary: 'Preview a floor-plan draft publish',
+        description: [
+          'Read-only preview for the publish confirm popup (never writes): the draft\'s restorable ' +
+            'element counts, the floor\'s currently-published version (demoted back to DRAFT on publish; ' +
+            'null when nothing is published), the live plan status, and the exact skipped-placement list ' +
+            '(same skip semantics as the publish, so the popup can never promise units the publish drops).',
+          '',
+          'Operator CMS endpoints are documented here for reference only; they are served on the CMS host under ',
+          '`/api/v1/cms` and require a Bearer JWT issued by `/api/v1/cms/login` (auto-login via `/api/v1/cms/config`).',
+        ].join('\n'),
+        operationId: 'previewFloorPlanDraftPublish',
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          {
+            name: 'draftId',
+            in: 'path',
+            required: true,
+            description: 'Draft row id (cuid).',
+            schema: { type: 'string' },
+          },
+        ],
+        responses: {
+          '200': openapiResponse({
+            type: 'object',
+            required: ['draftId', 'floorId', 'version', 'status', 'counts', 'published', 'liveStatus', 'skippedPlacements'],
+            properties: {
+              draftId: { type: 'string' },
+              floorId: { type: 'string' },
+              version: { type: 'integer' },
+              status: { type: 'string' },
+              counts: { type: 'object' },
+              published: { type: 'object', nullable: true },
+              liveStatus: { type: 'string', nullable: true },
+              skippedPlacements: { type: 'array', items: { type: 'string' } },
+            },
+          }),
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '404': openapiErrorResponse('Draft not found.'),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+    },
     '/cms/drafts/{draftId}/publish': {
       post: {
         tags: ['Operator CMS'],
@@ -1594,7 +1639,9 @@ export const openapiSpec = {
             'snapshot are removed), then walks DRAFT → ACTIVE via the existing publish path (same ' +
             '`promotions.approve` gate for actors holding permission rows). Snapshot placements whose ' +
             'unit has since been deleted, moved floors, or deactivated are skipped and reported in ' +
-            '`meta.skippedPlacements` (never fatal). The draft row is marked ACTIVE as its published marker.',
+            '`meta.skippedPlacements` (never fatal). The draft row is marked ACTIVE as its published marker, ' +
+            'and every OTHER published version on the floor is demoted back to DRAFT — exactly one ' +
+            'published version at a time. Preview with `GET /cms/drafts/{draftId}/publish-preview` first.',
           '',
           'Operator CMS endpoints are documented here for reference only; they are served on the CMS host under ',
           '`/api/v1/cms` and require a Bearer JWT issued by `/api/v1/cms/login` (auto-login via `/api/v1/cms/config`).',

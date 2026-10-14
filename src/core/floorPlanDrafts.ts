@@ -46,8 +46,11 @@ import {
 // and never touches FloorPlanDraft, so drafts can never leak to booking.
 // Publishing a draft copies its snapshot into the live FloorPlan (wholesale
 // replace — placements added after the snapshot are removed) and then walks
-// DRAFT → ACTIVE via the existing publishFloorPlan path; the single-plan
-// publish flow is untouched.
+// DRAFT → ACTIVE via the existing publishFloorPlan path (which also applies
+// the floor-plan unit sync); every OTHER ACTIVE version on the floor is
+// demoted back to DRAFT in the same restore transaction, so exactly one
+// version per floor carries the published marker. The single-plan publish
+// flow is untouched.
 
 const MAX_CANVAS = 500; // feet per axis, same sanity cap as the live canvas
 
@@ -528,12 +531,32 @@ export interface PublishDraftResult {
  * are SKIPPED (reported, never fatal). The draft row is marked ACTIVE as its
  * published marker. The single-plan publish flow is untouched.
  */
-export async function publishDraft(draftId: string, opts?: PublishFloorPlanOptions): Promise<PublishDraftResult> {
-  const draft = await prisma.floorPlanDraft.findUnique({
-    where: { id: draftId },
-    include: { floor: true },
-  });
-  if (!draft) throw new AppError(404, 'NOT_FOUND', `Floor plan draft ${draftId} not found`);
+export interface PublishPreview {
+  draftId: string;
+  floorId: string;
+  version: number;
+  status: string;
+  counts: { placements: number; blocks: number; boundaries: number; markers: number };
+  /** The floor's currently-published version, if any (null = nothing published yet). */
+  published: { id: string; version: number } | null;
+  /** The live serving copy's status (null = no live plan exists yet). */
+  liveStatus: string | null;
+  /** Unit codes the publish would skip (deleted, moved floors, deactivated, or unfit since the save). */
+  skippedPlacements: string[];
+}
+
+type DraftWithFloor = Prisma.FloorPlanDraftGetPayload<{ include: { floor: true } }>;
+
+// Snapshot → live-row resolution shared by the publish preview and the
+// publish itself (identical skip semantics in both, so the confirm popup can
+// never promise units the publish then drops). Placements whose unit has since
+// been deleted, moved floors, or deactivated — or whose geometry no longer
+// fits the draft canvas — are SKIPPED (reported, never fatal). Row ids from
+// the snapshot are traceability only — publish mints fresh live rows.
+// Size-change bookkeeping (areaDirty flags + sizeChanges) reuses the Float
+// unit-sizing helpers (sqftForRect/sameSqft — Unit.sqft is float8 quantized to
+// 0.01, never Math.round).
+async function resolveDraftSnapshotRows(draft: DraftWithFloor) {
   const floorId = draft.floorId;
   const canvas = { width: draft.width, height: draft.height };
 
@@ -598,20 +621,10 @@ export async function publishDraft(draftId: string, opts?: PublishFloorPlanOptio
       });
     }
   }
-  // Preflight before the working copy is replaced: a contracted unit's size
-  // can never sync, so refuse up front instead of leaving a half-applied draft.
-  if (sizeChanges.length) {
-    const contracted = await loadContractedUnits(sizeChanges.map((c) => c.unitId));
-    const blocked = sizeChanges.filter((c) => contracted.has(c.unitId));
-    if (blocked.length) {
-      throw new AppError(
-        409,
-        'PUBLISH_BLOCKED',
-        `Publish blocked: this version resizes contracted unit(s) ${blocked.map((b) => `${b.unitCode} (${contracted.get(b.unitId)!.toLowerCase()}, ${b.from}→${b.to} sqft)`).join(', ')}`,
-        { blockers: blocked.map((b) => ({ unitId: b.unitId, unitCode: b.unitCode, code: 'UNIT_CONTRACTED' })) },
-      );
-    }
-  }
+  // Preflight lives in publishDraft (after the shared resolution above): a
+  // contracted unit's size can never sync, so the publish refuses up front
+  // instead of leaving a half-applied draft. The read-only preview below
+  // never throws — it only reports counts and skips.
 
   const blockRows = snapshotBlocks
     .filter((b) => b && isPlanNumber(b.x) && isPlanNumber(b.y) && isPlanNumber(b.width) && isPlanNumber(b.height))
@@ -651,6 +664,95 @@ export async function publishDraft(draftId: string, opts?: PublishFloorPlanOptio
       y: quantizeFt(m.y),
     }));
 
+  return {
+    canvas,
+    placementRows,
+    blockRows,
+    boundaryRows,
+    markerRows,
+    skippedPlacements,
+    sizeChanges,
+    counts: {
+      placements: placementRows.length,
+      blocks: blockRows.length,
+      boundaries: boundaryRows.length,
+      markers: markerRows.length,
+    },
+  };
+}
+
+/**
+ * Publish preview for the confirm popup (read-only — never writes): the
+ * draft's restorable counts, the floor's currently-published version (which
+ * the publish demotes back to DRAFT), the live plan status, and the exact
+ * skipped-placement list the publish would report. The editor fetches this
+ * BEFORE confirming so the popup names what will go live (counts), what goes
+ * back to draft, and what will be skipped.
+ */
+export async function getPublishPreview(draftId: string): Promise<PublishPreview> {
+  const draft = await prisma.floorPlanDraft.findUnique({
+    where: { id: draftId },
+    include: { floor: true },
+  });
+  if (!draft) throw new AppError(404, 'NOT_FOUND', `Floor plan draft ${draftId} not found`);
+  const resolved = await resolveDraftSnapshotRows(draft);
+  const live = await prisma.floorPlan.findUnique({ where: { floorId: draft.floorId }, select: { status: true } });
+  // Highest ACTIVE version wins the "currently published" label (a legacy
+  // floor could hold more than one ACTIVE marker — the next publish demotes
+  // all but the chosen one, self-healing the invariant).
+  const publishedRow = await prisma.floorPlanDraft.findFirst({
+    where: { floorId: draft.floorId, status: 'ACTIVE' },
+    select: { id: true, version: true },
+    orderBy: { version: 'desc' },
+  });
+  return {
+    draftId: draft.id,
+    floorId: draft.floorId,
+    version: draft.version,
+    status: draft.status,
+    counts: resolved.counts,
+    published: publishedRow ? { id: publishedRow.id, version: publishedRow.version } : null,
+    liveStatus: live?.status ?? null,
+    skippedPlacements: resolved.skippedPlacements,
+  };
+}
+
+/**
+ * Publish a draft version: copy its snapshot into the live FloorPlan
+ * (wholesale replace — placements added after the snapshot are removed) and
+ * walk DRAFT → ACTIVE via the existing publishFloorPlan path (which also
+ * applies the floor-plan unit sync). Snapshot placements whose unit has since
+ * been deleted, moved floors, or deactivated are SKIPPED (reported, never
+ * fatal). The chosen draft row is marked ACTIVE and every OTHER ACTIVE
+ * version on the floor is demoted back to DRAFT in the same restore
+ * transaction, so exactly one version per floor stays published. The
+ * single-plan publish flow is untouched.
+ */
+export async function publishDraft(draftId: string, opts?: PublishFloorPlanOptions): Promise<PublishDraftResult> {
+  const draft = await prisma.floorPlanDraft.findUnique({
+    where: { id: draftId },
+    include: { floor: true },
+  });
+  if (!draft) throw new AppError(404, 'NOT_FOUND', `Floor plan draft ${draftId} not found`);
+  const floorId = draft.floorId;
+  const { canvas, placementRows, blockRows, boundaryRows, markerRows, skippedPlacements, sizeChanges } =
+    await resolveDraftSnapshotRows(draft);
+
+  // Preflight before the working copy is replaced: a contracted unit's size
+  // can never sync, so refuse up front instead of leaving a half-applied draft.
+  if (sizeChanges.length) {
+    const contracted = await loadContractedUnits(sizeChanges.map((c) => c.unitId));
+    const blocked = sizeChanges.filter((c) => contracted.has(c.unitId));
+    if (blocked.length) {
+      throw new AppError(
+        409,
+        'PUBLISH_BLOCKED',
+        `Publish blocked: this version resizes contracted unit(s) ${blocked.map((b) => `${b.unitCode} (${contracted.get(b.unitId)!.toLowerCase()}, ${b.from}→${b.to} sqft)`).join(', ')}`,
+        { blockers: blocked.map((b) => ({ unitId: b.unitId, unitCode: b.unitCode, code: 'UNIT_CONTRACTED' })) },
+      );
+    }
+  }
+
   await prisma.$transaction(async (tx) => {
     const plan = await tx.floorPlan.upsert({
       where: { floorId },
@@ -686,6 +788,14 @@ export async function publishDraft(draftId: string, opts?: PublishFloorPlanOptio
     if (markerRows.length) {
       await tx.floorPlanMarker.createMany({ data: markerRows.map((r) => ({ ...r, floorPlanId: plan.id })) });
     }
+    // Single-published enforcement (no migration — application-level): every
+    // OTHER published version on the floor goes back to DRAFT in the same
+    // transaction as the restore, so exactly one version per floor carries
+    // the ACTIVE marker once the publish below flips the live copy.
+    await tx.floorPlanDraft.updateMany({
+      where: { floorId, status: 'ACTIVE', id: { not: draftId } },
+      data: { status: 'DRAFT' },
+    });
     await tx.floorPlanDraft.update({ where: { id: draftId }, data: { status: 'ACTIVE' } });
   });
 

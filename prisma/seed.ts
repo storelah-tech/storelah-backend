@@ -167,8 +167,8 @@ async function main() {
     sizeIds[code as SizeKey] = rec.id;
   }
 
-  const branches = [
-    { code: 'BM', name: 'Bukit Merah', address: '11 Jalan Bukit Merah, Singapore 159478', floors: 4 },
+  const branches: { code: string; name: string; address: string; description?: string; floors: number }[] = [
+    { code: 'BM', name: 'Sembawang', address: 'Admirax, Sembawang', description: 'Admirax Sembawang Singapore', floors: 4 },
     { code: 'WD', name: 'Woodlands', address: '12 Woodlands Loop, Singapore 738999', floors: 4 },
     { code: 'UB', name: 'Ubi', address: '13 Ubi Close, Singapore 409761', floors: 4 },
   ];
@@ -177,7 +177,7 @@ async function main() {
 
   for (const b of branches) {
     const branch = await prisma.branch.create({
-      data: { code: b.code, name: b.name, address: b.address, operatingHours: 'Mon–Sun 7am–11pm' },
+      data: { code: b.code, name: b.name, address: b.address, description: b.description ?? null, operatingHours: 'Mon–Sun 7am–11pm' },
     });
     const floorIds: Record<number, string> = {};
     for (let l = 1; l <= b.floors; l++) {

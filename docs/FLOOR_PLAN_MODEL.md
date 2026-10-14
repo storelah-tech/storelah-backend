@@ -477,10 +477,23 @@ Bearer JWT, envelope `{ data, meta }`):
   transaction — exactly one published version at a time. The designer offers
   this per version (Library Publish button + confirm popup fed by the preview
   below).
+  - **Empty-plan guard**: a publish that would put 0 placements live is refused
+    with `409 EMPTY_PLAN` (counts in `details`) unless the body carries the
+    typed acknowledgement `{ confirmEmpty: true }` — customers would see an
+    empty floor. Applies to both `POST /drafts/:draftId/publish` and the live
+    `POST /floor-plans/:floorId/publish` (an acknowledged empty publish lands
+    as before; re-publishing an already-ACTIVE plan stays idempotent).
 - **Publish preview** (`getPublishPreview`, read-only — never writes): the
   draft's restorable element counts, the floor's currently-published version
   (`null` when nothing is published yet), the live plan status, and the exact
-  skipped-placement list (same skip semantics as the publish).
+  skipped-placement list (same skip semantics as the publish) — plus
+  `emptyPlan` (0 placements going live → the popup escalates to a danger
+  confirm) and `blockers` (would-be contracted-unit publish blockers with
+  from→to sqft, via the same `loadContractedUnits` + `SQFT_EPSILON` helper the
+  publish preflight uses — the popup lists these BEFORE confirm instead of
+  failing after it; the 409 itself is unchanged). The live
+  `GET /floor-plans/:floorId/publish-preview` plan likewise carries
+  `placementCount` + `emptyPlan` so the plain confirm names the unit count.
 - **Drafts never leak to booking**: `GET /public/floor-plans/:branchCode/:level`
   (`getPublicFloorPlan`) resolves the ACTIVE live plan only and never touches
   `FloorPlanDraft` — a draft-only floor still reads as `plan: null`.

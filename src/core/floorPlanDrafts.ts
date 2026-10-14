@@ -543,6 +543,41 @@ export interface PublishPreview {
   liveStatus: string | null;
   /** Unit codes the publish would skip (deleted, moved floors, deactivated, or unfit since the save). */
   skippedPlacements: string[];
+  /** True when the draft would put 0 placements live — the confirm popup
+   * escalates to a danger confirm and the publish needs { confirmEmpty: true }. */
+  emptyPlan: boolean;
+  /** Would-be contracted-unit publish blockers (same contracted semantics +
+   * epsilon as the publish preflight — the popup lists these BEFORE confirm so
+   * a blocked draft never fails only after confirm). Empty when clean. */
+  blockers: DraftPublishBlocker[];
+}
+
+/** A draft resize the publish would refuse (contracted unit, 409 PUBLISH_BLOCKED). */
+export interface DraftPublishBlocker {
+  unitId: string;
+  unitCode: string;
+  code: 'UNIT_CONTRACTED';
+  /** Unit.sqft the customer contracted → drawn sqft the draft would sync. */
+  from: number;
+  to: number;
+  /** Contracted reason (unit status or 'awaiting booking payment'). */
+  reason: string;
+}
+
+// Would-be contracted-unit blockers for a draft's size changes — the single
+// helper shared by the publish preflight and the read-only preview (identical
+// contracted semantics + epsilon in both, so the popup can never disagree
+// with the publish). `sizeChanges` already carries the SQFT_EPSILON rule
+// (dirty only when !sameSqft in resolveDraftSnapshotRows); this step applies
+// the loadContractedUnits half, exactly as the publish does.
+async function findDraftContractedBlockers(
+  sizeChanges: Array<{ unitId: string; unitCode: string; from: number; to: number }>,
+): Promise<DraftPublishBlocker[]> {
+  if (!sizeChanges.length) return [];
+  const contracted = await loadContractedUnits(sizeChanges.map((c) => c.unitId));
+  return sizeChanges
+    .filter((c) => contracted.has(c.unitId))
+    .map((c) => ({ unitId: c.unitId, unitCode: c.unitCode, code: 'UNIT_CONTRACTED' as const, from: c.from, to: c.to, reason: contracted.get(c.unitId)! }));
 }
 
 type DraftWithFloor = Prisma.FloorPlanDraftGetPayload<{ include: { floor: true } }>;
@@ -696,6 +731,7 @@ export async function getPublishPreview(draftId: string): Promise<PublishPreview
   });
   if (!draft) throw new AppError(404, 'NOT_FOUND', `Floor plan draft ${draftId} not found`);
   const resolved = await resolveDraftSnapshotRows(draft);
+  const blockers = await findDraftContractedBlockers(resolved.sizeChanges);
   const live = await prisma.floorPlan.findUnique({ where: { floorId: draft.floorId }, select: { status: true } });
   // Highest ACTIVE version wins the "currently published" label (a legacy
   // floor could hold more than one ACTIVE marker — the next publish demotes
@@ -714,6 +750,8 @@ export async function getPublishPreview(draftId: string): Promise<PublishPreview
     published: publishedRow ? { id: publishedRow.id, version: publishedRow.version } : null,
     liveStatus: live?.status ?? null,
     skippedPlacements: resolved.skippedPlacements,
+    emptyPlan: resolved.placementRows.length === 0,
+    blockers,
   };
 }
 
@@ -738,19 +776,32 @@ export async function publishDraft(draftId: string, opts?: PublishFloorPlanOptio
   const { canvas, placementRows, blockRows, boundaryRows, markerRows, skippedPlacements, sizeChanges } =
     await resolveDraftSnapshotRows(draft);
 
+  // Empty-plan guard: a publish that would put 0 placements live is refused
+  // (409 EMPTY_PLAN) without the typed { confirmEmpty: true }
+  // acknowledgement — customers would see an empty floor. confirmEmpty flows
+  // through to the live publish below, so an acknowledged empty draft still
+  // lands (existing behavior).
+  if (placementRows.length === 0 && !opts?.confirmEmpty) {
+    throw new AppError(
+      409,
+      'EMPTY_PLAN',
+      `Publish refused: draft v${draft.version} would put 0 units live — customers will see an empty floor. Re-confirm with { confirmEmpty: true } to publish it empty.`,
+      { counts: { placements: 0, blocks: blockRows.length, boundaries: boundaryRows.length, markers: markerRows.length }, skippedPlacements },
+    );
+  }
+
   // Preflight before the working copy is replaced: a contracted unit's size
   // can never sync, so refuse up front instead of leaving a half-applied draft.
-  if (sizeChanges.length) {
-    const contracted = await loadContractedUnits(sizeChanges.map((c) => c.unitId));
-    const blocked = sizeChanges.filter((c) => contracted.has(c.unitId));
-    if (blocked.length) {
-      throw new AppError(
-        409,
-        'PUBLISH_BLOCKED',
-        `Publish blocked: this version resizes contracted unit(s) ${blocked.map((b) => `${b.unitCode} (${contracted.get(b.unitId)!.toLowerCase()}, ${b.from}→${b.to} sqft)`).join(', ')}`,
-        { blockers: blocked.map((b) => ({ unitId: b.unitId, unitCode: b.unitCode, code: 'UNIT_CONTRACTED' })) },
-      );
-    }
+  // Uses the shared blocker helper (same as the preview) — the 409 itself is
+  // unchanged (details gain the from→to sqft the preview already lists).
+  const blocked = await findDraftContractedBlockers(sizeChanges);
+  if (blocked.length) {
+    throw new AppError(
+      409,
+      'PUBLISH_BLOCKED',
+      `Publish blocked: this version resizes contracted unit(s) ${blocked.map((b) => `${b.unitCode} (${b.reason.toLowerCase()}, ${b.from}→${b.to} sqft)`).join(', ')}`,
+      { blockers: blocked.map((b) => ({ unitId: b.unitId, unitCode: b.unitCode, code: b.code, from: b.from, to: b.to })) },
+    );
   }
 
   await prisma.$transaction(async (tx) => {

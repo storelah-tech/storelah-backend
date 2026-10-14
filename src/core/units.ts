@@ -139,17 +139,47 @@ export async function listUnits(query: UnitListQuery = {}) {
   const where: Prisma.UnitWhereInput = {
     deletedAt: null,
     // DRAFT = drawn on a floor plan, not yet published (docs/FLOOR_PLAN_UNIT_SYNC_PLAN.md D7) — not inventory yet.
-    status: query.status ? (query.status as UnitStatus) : { not: 'DRAFT' },
+    // Excluded in JS below (default view only), NOT in this where clause:
+    // sending the DRAFT literal as query input throws `Invalid value for
+    // argument 'not'. Expected UnitStatus` on any runtime whose generated
+    // Prisma client predates the DRAFT enum value (migration 20261014000000).
+    // An explicit ?status= filter passes through untouched (operator asked for it).
+    ...(query.status ? { status: query.status as UnitStatus } : {}),
     ...(query.branch ? { branch: { code: query.branch } } : {}),
     ...(query.level != null ? { floor: { level: query.level } } : {}),
     ...(query.hasAC != null ? { hasAC: query.hasAC } : {}),
     ...(createdAt.gte || createdAt.lte ? { createdAt } : {}),
   };
+  const include = { size: true, branch: true, floor: true, tenant: true };
+  const orderBy = { unitCode: 'asc' } as const;
+  // Default view: paginate in JS AFTER the DRAFT exclusion so page rows AND
+  // meta.total match the intended query exactly on old and new clients (a DB
+  // skip/take over the unfiltered set would shift page boundaries and inflate
+  // the total whenever DRAFT rows exist). An explicit ?status= keeps DB
+  // pagination — it never sends the DRAFT literal unless the operator asked
+  // for DRAFT itself.
+  if (!query.status) {
+    const fetched = await prisma.unit.findMany({ where, include, orderBy });
+    // Draft-plan units are not inventory yet (see where clause above).
+    const visible = fetched.filter((u) => u.status !== 'DRAFT');
+    const total = visible.length;
+    const rows = visible.slice((page - 1) * perPage, page * perPage);
+    return {
+      rows: rows.map(serializeUnit),
+      meta: {
+        count: rows.length,
+        page,
+        perPage,
+        totalPages: Math.max(1, Math.ceil(total / perPage)),
+        total,
+      },
+    };
+  }
   const [units, total] = await Promise.all([
     prisma.unit.findMany({
       where,
-      include: { size: true, branch: true, floor: true, tenant: true },
-      orderBy: { unitCode: 'asc' },
+      include,
+      orderBy,
       skip: (page - 1) * perPage,
       take: perPage,
     }),
@@ -201,7 +231,12 @@ export async function listPublicUnits(query: PublicUnitsQuery = {}) {
     where: {
       deletedAt: null,
       status: { in: statuses },
-      ...(query.branch ? { branch: { code: query.branch } } : {}),
+      // Inactive branches are hidden from the frontend entirely (branch
+      // CRUD lives in Global Settings; only ACTIVE branches serve booking).
+      branch: {
+        ...(query.branch ? { code: query.branch } : {}),
+        status: 'ACTIVE',
+      },
       floor: {
         ...(query.level != null ? { level: query.level } : {}),
         isActive: true,
@@ -386,14 +421,22 @@ export async function getUnitMap(branchCode: string, level: number, opts?: UnitM
       floorPlan: { include: { placements: true, blocks: true } },
     },
   });
-  const units = await prisma.unit.findMany({
+  const fetched = await prisma.unit.findMany({
     where: {
       deletedAt: null,
       // Admin map hides INACTIVE units (same as the floor-plan editor canvas —
       // out-of-service units must not render on maps); lists keep them.
-      // DRAFT units (unpublished, floor-plan designer only) never render here.
-      status: { notIn: ['INACTIVE', 'DRAFT'] },
-      branch: { code: branchCode },
+      // DRAFT units (unpublished, floor-plan designer only) never render here —
+      // excluded in JS below, NOT in this where clause: sending the DRAFT
+      // literal as query input throws `Invalid value for argument ... Expected
+      // UnitStatus` on any runtime whose generated Prisma client predates the
+      // DRAFT enum value (migration 20261014000000). Filtering post-fetch keeps
+      // the result identical on old and new clients.
+      status: { not: 'INACTIVE' },
+      // Public map never serves an INACTIVE branch (CMS branch CRUD lives in
+      // Global Settings); the admin map is unfiltered so operators still see
+      // the whole floor.
+      branch: isPublic ? { code: branchCode, status: 'ACTIVE' } : { code: branchCode },
       floor: {
         level,
         // Public map never shows units on an inactive floor (admin map is
@@ -406,6 +449,8 @@ export async function getUnitMap(branchCode: string, level: number, opts?: UnitM
     include: { size: true, tenant: true },
     orderBy: { unitCode: 'asc' },
   });
+  // Draft-plan units are not inventory yet (see where clause above).
+  const units = fetched.filter((u) => u.status !== 'DRAFT');
 
   // Near-lift proximity resolves against the floor's plan geometry: placements
   // joined by unitId, lift blocks matched by name. No plan / no lift blocks /
@@ -986,9 +1031,15 @@ const fmtDollars = (n: number) =>
 // which the add_crud_timestamps migration backfilled for pre-existing rows.
 export async function getUnitActivity(limit = 20) {
   const capped = Math.min(100, Math.max(1, limit));
-  const [units, rateChanges, moveIns, bookings] = await Promise.all([
+  const [fetchedUnits, rateChanges, moveIns, bookings] = await Promise.all([
     prisma.unit.findMany({
-      where: { deletedAt: null, status: { not: 'DRAFT' } }, // DRAFT = drawn on a floor plan, not yet published (docs/FLOOR_PLAN_UNIT_SYNC_PLAN.md D7) — not inventory yet.
+      // DRAFT = drawn on a floor plan, not yet published (docs/FLOOR_PLAN_UNIT_SYNC_PLAN.md D7) — not inventory yet.
+      // Excluded in JS below, NOT in this where clause: sending the DRAFT
+      // literal as query input throws `Invalid value for argument 'not'.
+      // Expected UnitStatus` on any runtime whose generated Prisma client
+      // predates the DRAFT enum value (migration 20261014000000). Filtering
+      // post-fetch keeps the result identical on old and new clients.
+      where: { deletedAt: null },
       include: { size: true, branch: true },
       orderBy: { unitCode: 'asc' },
     }),
@@ -1010,6 +1061,9 @@ export async function getUnitActivity(limit = 20) {
   ]);
 
   const events: UnitActivityItem[] = [];
+
+  // Draft-plan units are not inventory yet (see unit where clause above).
+  const units = fetchedUnits.filter((u) => u.status !== 'DRAFT');
 
   for (const u of units) {
     const unit = { code: u.unitCode, size: u.size.name, branch: u.branch.code };

@@ -41,7 +41,7 @@ import {
 } from '../core/conversations';
 import { getActionItems } from '../core/actionCenter';
 import { listBookings, listInvoices } from '../core/finance';
-import { listBranches, getMoveIns, getPortfolio } from '../core/branches';
+import { listBranches, getMoveIns, getPortfolio, createBranch, updateBranch, deleteBranch } from '../core/branches';
 import { getSettings, upsertSettings } from '../core/settings';
 import { listSiteContent, getSiteContentByKey, upsertSiteContent } from '../core/siteContent';
 import { adjustRate, getNetPsf } from '../core/rates';
@@ -946,6 +946,57 @@ router.get('/branches', requireAuth, async (_req: Request, res: Response) => {
   ok(res, await listBranches());
 });
 
+// --- Branch (facility) CRUD — Global Settings (CMS-only) ---
+// Branch.code is immutable after create (embedded in Unit.unitCode and
+// door/asset codes): POST validates + uppercases it (409 on dup), PUT never
+// accepts it (400 defensively in core). Editable: name, address,
+// operatingHours, description, status. Retirement path is status INACTIVE
+// (hides the branch from every public read); DELETE hard-deletes and is
+// guarded 409 while any Floor/Unit/Tenant/Lead/Appointment rows reference the
+// branch (?deactivate=true converts to a reversible INACTIVE instead).
+const createBranchSchema = z.object({
+  code: z.string().trim().min(2).max(8),
+  name: z.string().trim().min(1).max(120),
+  address: z.string().trim().min(1).max(500),
+  operatingHours: z.string().trim().min(1).max(200),
+  description: z.string().trim().max(2000).nullable().optional(),
+  status: z.enum(['ACTIVE', 'INACTIVE']).optional(),
+});
+
+const updateBranchSchema = z.object({
+  name: z.string().trim().min(1).max(120).optional(),
+  address: z.string().trim().min(1).max(500).optional(),
+  operatingHours: z.string().trim().min(1).max(200).optional(),
+  description: z.string().trim().max(2000).nullable().optional(),
+  status: z.enum(['ACTIVE', 'INACTIVE']).optional(),
+}).strict();
+
+router.post('/branches', requireAuth, async (req: Request, res: Response) => {
+  const parsed = createBranchSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid branch payload', parsed.error.flatten());
+    return;
+  }
+  created(res, await createBranch(parsed.data));
+});
+
+router.put('/branches/:id', requireAuth, async (req: Request, res: Response) => {
+  const parsed = updateBranchSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid branch payload', parsed.error.flatten());
+    return;
+  }
+  ok(res, await updateBranch(String(req.params.id), parsed.data));
+});
+
+router.delete('/branches/:id', requireAuth, async (req: Request, res: Response) => {
+  // Guard lives in core: 409 while any Floor/Unit/Tenant/Lead/Appointment
+  // rows reference the branch. ?deactivate=true converts to a reversible
+  // deactivation instead.
+  const deactivate = req.query.deactivate === '1' || req.query.deactivate === 'true';
+  ok(res, await deleteBranch(String(req.params.id), { deactivate }));
+});
+
 // P1 item 1: portfolio overview — per-facility sqft cards + portfolio rollup
 // (computed from Unit rows; no stored state).
 router.get('/portfolio', requireAuth, async (_req: Request, res: Response) => {
@@ -1631,7 +1682,8 @@ router.delete('/floor-plans/:floorId/markers/:markerId', requireAuth, async (req
 // `token` from GET .../publish-preview (409 STALE_PREVIEW when the plan moved
 // on) and per-unit `choices` (ratePolicy KEEP_PSF | KEEP_RATE | SET + rate,
 // sizeId tier override). 409 PUBLISH_BLOCKED lists blockers; meta.sizeSync
-// reports what changed.
+// reports what changed. `confirmEmpty: true` is the typed acknowledgement for
+// an empty publish (0 placements going live — 409 EMPTY_PLAN otherwise).
 const sizeSyncChoiceSchema = z.object({
   unitId: z.string().min(1).max(64),
   ratePolicy: z.enum(RATE_POLICIES).optional(),
@@ -1642,6 +1694,7 @@ const publishBodySchema = z
   .object({
     token: z.string().min(1).max(64).optional(),
     choices: z.array(sizeSyncChoiceSchema).max(2000).optional(),
+    confirmEmpty: z.boolean().optional(),
   })
   .optional();
 
@@ -1650,7 +1703,7 @@ function publishOpts(req: Request) {
   if (!parsed.success) return { error: parsed.error.flatten() } as const;
   const user = (req as any).user as { sub?: string; name?: string; email?: string } | undefined;
   return {
-    opts: { actorId: user?.sub, actorName: user?.name || user?.email || 'Operator', token: parsed.data?.token, choices: parsed.data?.choices },
+    opts: { actorId: user?.sub, actorName: user?.name || user?.email || 'Operator', token: parsed.data?.token, choices: parsed.data?.choices, confirmEmpty: parsed.data?.confirmEmpty },
   } as const;
 }
 
@@ -1666,7 +1719,9 @@ router.post('/floor-plans/:floorId/publish', requireAuth, async (req: Request, r
 
 // Publish review (read-only): the exact Unit changes publish would make —
 // size/tier/rate per resized unit, DRAFT units to promote, blockers — plus a
-// `token` to send back with publish and the size tiers for overrides.
+// `token` to send back with publish and the size tiers for overrides. Also
+// carries `placementCount` (live placements customers would see) + `emptyPlan`
+// so the confirm can warn before publishing an empty floor.
 router.get('/floor-plans/:floorId/publish-preview', requireAuth, async (req: Request, res: Response) => {
   const floorId = String(req.params.floorId);
   const plan = await prisma.floorPlan.findUnique({ where: { floorId }, select: { status: true } });
@@ -1793,8 +1848,11 @@ router.get('/drafts/:draftId', requireAuth, async (req: Request, res: Response) 
 
 // Publish preview for the confirm popup (read-only): restorable counts, the
 // currently-published version (demoted back to DRAFT on publish), live status,
-// and the exact skipped-placement list — so the popup can name what will go
-// live, what goes back to draft, and what will be skipped BEFORE confirming.
+// the exact skipped-placement list — so the popup can name what will go
+// live, what goes back to draft, and what will be skipped BEFORE confirming —
+// plus `emptyPlan` (0 placements going live → danger confirm) and `blockers`
+// (would-be contracted-unit publish blockers with from→to sqft, same semantics
+// as the publish preflight — shown instead of failing after confirm).
 router.get('/drafts/:draftId/publish-preview', requireAuth, async (req: Request, res: Response) => {
   ok(res, await getPublishPreview(String(req.params.draftId)));
 });
@@ -1810,6 +1868,8 @@ router.delete('/drafts/:draftId', requireAuth, async (req: Request, res: Respons
 // Every OTHER published version on the floor is demoted back to DRAFT, so
 // exactly one version stays published. Placements whose unit has since been
 // deleted, moved floors, or deactivated are skipped and reported in meta.
+// A 0-placement publish needs { confirmEmpty: true } (409 EMPTY_PLAN
+// otherwise); a contracted-unit resize is 409 PUBLISH_BLOCKED either way.
 router.post('/drafts/:draftId/publish', requireAuth, async (req: Request, res: Response) => {
   const p = publishOpts(req);
   if ('error' in p) {

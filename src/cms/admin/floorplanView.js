@@ -5821,14 +5821,24 @@ async function fpPublishPlan() {
   }
   const hasUnitWork = preview.changes.length || preview.newUnits.length || preview.blockers.length;
   if (!hasUnitWork) {
-    // Publish/destructive only — Save Canvas stays a plain draft write.
+    // Unit-count line (never publish silently): the plain confirm names how
+    // many units go live. An empty plan escalates to a danger confirm with an
+    // explicit acknowledgement checkbox (→ confirmEmpty:true) — customers
+    // would see an empty floor.
+    const liveUnits = Number(preview.placementCount || 0);
+    const unitLine = `${liveUnits} unit${liveUnits === 1 ? '' : 's'} will go live to booking.`;
+    const isEmpty = preview.emptyPlan === true || liveUnits === 0;
     const pubOk = await confirmDialog({
-      title: 'Publish this floor plan?',
-      message: 'The current draft becomes visible to the booking frontend. Further edits return it to draft until re-published.',
-      confirmLabel: 'Publish',
+      title: isEmpty ? 'Publish an EMPTY floor plan?' : 'Publish this floor plan?',
+      message: isEmpty
+        ? `0 units will go live — customers will see an empty floor. ${unitLine} Further edits return it to draft until re-published.`
+        : `${unitLine} The current draft becomes visible to the booking frontend. Further edits return it to draft until re-published.`,
+      confirmLabel: isEmpty ? 'Publish empty plan' : 'Publish',
+      danger: isEmpty,
+      requireCheck: isEmpty ? 'I understand customers will see an empty floor' : undefined,
     });
     if (!pubOk) return;
-    await fpSendPublish(floorId, { token: preview.token });
+    await fpSendPublish(floorId, isEmpty ? { token: preview.token, confirmEmpty: true } : { token: preview.token });
     return;
   }
   fpOpenPublishReview(floorId, preview);
@@ -6319,14 +6329,32 @@ async function fpConfirmPublishDraft(draftId) {
   const skipLine = skipped.length
     ? ` Skipped (${skipped.length}): ${skipped.join(', ')} — deleted, moved floors, or deactivated since the save; they will not go live.`
     : '';
+  // Would-be contracted-unit blockers, listed BEFORE confirm (same semantics as
+  // the publish preflight — a blocked draft shows these instead of failing
+  // only after confirm; the 409 itself is unchanged).
+  const blockers = (preview && preview.blockers) || [];
+  const blockerLine = blockers.length
+    ? ` Blocked (${blockers.length}): ${blockers.map((b) => `${b.unitCode} (${b.from}→${b.to} sqft)`).join(', ')} — contracted, so this version cannot publish until the drawing is resized back.`
+    : '';
+  // Empty-plan escalation: a 0-unit publish goes danger-styled with an explicit
+  // acknowledgement checkbox (→ confirmEmpty:true) — it can never again publish
+  // emptiness silently. The copy states customers will see an empty floor.
+  const isEmpty = preview.emptyPlan === true || units === 0;
   const pubOk = await confirmDialog({
-    title: `Publish v${preview.version}? ${units} unit${units === 1 ? '' : 's'} will go live`,
-    message: `${unitWord} will go live to booking${extra}. ${demoteLine}${skipLine}`,
-    confirmLabel: 'Publish',
+    title: isEmpty ? `Publish v${preview.version}? 0 units will go live` : `Publish v${preview.version}? ${units} unit${units === 1 ? '' : 's'} will go live`,
+    message: isEmpty
+      ? `0 units will go live to booking${extra} — customers will see an empty floor. ${demoteLine}${skipLine}${blockerLine}`
+      : `${unitWord} will go live to booking${extra}. ${demoteLine}${skipLine}${blockerLine}`,
+    confirmLabel: isEmpty ? 'Publish empty plan' : 'Publish',
+    danger: isEmpty,
+    requireCheck: isEmpty ? 'I understand customers will see an empty floor' : undefined,
   });
   if (!pubOk) return false;
   try {
-    const res = await request(`/drafts/${encodeURIComponent(draftId)}/publish`, { method: 'POST' });
+    const res = await request(`/drafts/${encodeURIComponent(draftId)}/publish`, {
+      method: 'POST',
+      body: JSON.stringify(isEmpty ? { confirmEmpty: true } : {}),
+    });
     const skippedAfter = (res && res.meta && res.meta.skippedPlacements) || [];
     fpToast(
       `Draft v${preview.version} published — ${unitWord} live.` +

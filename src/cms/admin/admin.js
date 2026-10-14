@@ -33,6 +33,7 @@ import {
 } from './leadsGroups.js';
 import { setRefsLoader as fpSetRefsLoader, fpInitEvents, fpOpen, fpOpenLibrary, fpViewClose, getFpViewFloorId } from './floorplanView.js';
 import { setRefreshAll as floorsSetRefreshAll, setRefsLoader as floorsSetRefsLoader, bindFloorsView, wireFloorsView } from './floorsView.js';
+import { setRefreshAll as branchesSetRefreshAll, setRefsLoader as branchesSetRefsLoader, bindBranchesSection, wireBranchesView } from './branchesView.js';
 import { wireMetricsPanel, refreshMetricsView } from './metricsView.js';
 import {
   bindMaintenance, bindAssets, bindIncidents, bindAccess, bindInspections,
@@ -72,6 +73,7 @@ const sideNav = {
     ['Move-ins', 'customers', 'customer-moveins'], ['Quotes', 'customers', 'customer-quotes'],
     ['Move-outs', 'customers', 'customer-moveouts']],
   facilities: [['Units Information', 'facilities', 'facility-map'], ['Units', 'facilities', 'facility-units'],
+    ['Floors', 'facilities', 'facility-floors'],
     ['Floor Plan Designer', 'facilities', 'facility-floorplans'], ['Floor Plan Library', 'facilities', 'facility-floorplan-library'], ['Maintenance', 'facilities', 'facility-maintenance'],
     ['Assets & vendors', 'facilities', 'facility-assets'], ['Incidents', 'facilities', 'facility-incidents'],
     ['Access control', 'facilities', 'facility-access'], ['Inspections', 'facilities', 'facility-inspections']],
@@ -184,10 +186,6 @@ function openPage(id) {
 }
 
 function openPanel(page, panel) {
-  // Floors module is hidden from the menu (floors are detected from units) —
-  // stale callers (search, bookmarks) land on Units Information instead. The
-  // panel markup + /floors API + floorsView stay intact.
-  if (page === 'facilities' && panel === 'facility-floors') panel = 'facility-map';
   openPage(page);
   setTimeout(() => {
     const tab = document.querySelector('[data-tab="' + panel + '"],[data-settings-tab="' + panel + '"]');
@@ -1872,6 +1870,7 @@ async function bindSettings() {
     grid.innerHTML = '<div class="card"><div class="card-body"><div class="section-empty">Settings failed to load: ' + escapeHtml(describeError(e)) + '</div></div></div>';
   }
   // P1 settings extensions (independent sections — failures never break scalars).
+  bindBranchesSection().catch((e) => showBanner('Facilities: ' + describeError(e)));
   bindFeesSection().catch((e) => showBanner('Fees: ' + describeError(e)));
   bindBusinessRulesSection().catch((e) => showBanner('Business rules: ' + describeError(e)));
   bindUsersSection().catch((e) => showBanner('Users: ' + describeError(e)));
@@ -4130,7 +4129,10 @@ async function boot() {
     fpSetRefsLoader(loadRefs);
     floorsSetRefreshAll(refreshAll);
     floorsSetRefsLoader(loadRefs);
+    branchesSetRefreshAll(refreshAll);
+    branchesSetRefsLoader(loadRefs);
     wireFloorsView();
+    wireBranchesView();
     await login();
     initCharts();
     await Promise.all([loadRefs(), refreshAll()]);

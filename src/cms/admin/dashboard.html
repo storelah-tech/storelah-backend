@@ -55,7 +55,6 @@ button,input,select,textarea{font:inherit}button{cursor:pointer}
 .nav-submenu{display:none;margin:1px 8px 7px 23px;padding:3px 0 3px 12px;border-left:1px solid #ffffff26}
 .nav.has-children.expanded+.nav-submenu{display:grid;gap:1px}
 .nav-subitem{display:flex;align-items:center;gap:8px;border:0;background:transparent;color:#c7cec1;text-align:left;padding:7px 9px;border-radius:7px;font-size:12px;line-height:1.25;cursor:pointer;width:100%}
-.subtabs [data-tab="facility-floors"]{display:none!important}
 .nav-subitem:before{content:'';width:5px;height:5px;border-radius:50%;background:#7e8878;flex:none}
 .nav-subitem:hover{background:#ffffff0c;color:#fff}
 .nav-subitem.active{background:#ffffff16;color:#fff;font-weight:750}
@@ -1034,7 +1033,7 @@ body.lead-drawer-open{overflow-x:hidden}
 
     <!-- ============ FACILITIES ============ -->
     <section class="page" id="facilities">
-      <div class="subtabs" data-tabs="facility"><button class="active" data-tab="facility-map">Units Information</button><button data-tab="facility-units">Units</button><button data-tab="facility-floors" hidden>Floors</button><button data-tab="facility-floorplans">Floor Plan Designer</button><button data-tab="facility-floorplan-library">Floor Plan Library</button><button data-tab="facility-maintenance">Maintenance</button><button data-tab="facility-assets">Assets &amp; Vendors</button><button data-tab="facility-incidents">Incidents</button><button data-tab="facility-access">Access Control</button><button data-tab="facility-inspections">Inspections</button></div>
+      <div class="subtabs" data-tabs="facility"><button class="active" data-tab="facility-map">Units Information</button><button data-tab="facility-units">Units</button><button data-tab="facility-floors">Floors</button><button data-tab="facility-floorplans">Floor Plan Designer</button><button data-tab="facility-floorplan-library">Floor Plan Library</button><button data-tab="facility-maintenance">Maintenance</button><button data-tab="facility-assets">Assets &amp; Vendors</button><button data-tab="facility-incidents">Incidents</button><button data-tab="facility-access">Access Control</button><button data-tab="facility-inspections">Inspections</button></div>
       <!-- Units Information -->
       <div class="module-panel active" id="facility-map">
         <div class="unit-map-card">
@@ -1097,7 +1096,7 @@ body.lead-drawer-open{overflow-x:hidden}
           <div class="sec-hdr"><div><div class="sec-title">Floors</div><div class="sec-sub" id="floorsSub">Floors per facility</div></div><div style="display:flex;gap:7px;"><button class="tb-btn primary" id="addFloorBtn">+ Add Floor</button></div></div>
           <div class="tbl-toolbar"><select id="floorBranchFilter" class="tbl-select"><option value="">All facilities</option></select></div>
           <div class="modal-alert" id="floorsBanner" hidden></div>
-          <table class="data-tbl" id="floorsTable"><thead><tr><th>Facility</th><th>Level</th><th>Name</th><th>Units</th><th>Status</th><th></th></tr></thead><tbody id="floorsBody"></tbody></table>
+          <table class="data-tbl" id="floorsTable"><thead><tr><th>Facility</th><th>Level</th><th>Name</th><th>Units</th><th>Status</th><th>Plan</th><th></th></tr></thead><tbody id="floorsBody"></tbody></table>
         </div>
       </div>
       <!-- Floor Plan Editor -->
@@ -1652,6 +1651,16 @@ body.lead-drawer-open{overflow-x:hidden}
       <div class="head"><div><h1>Global Settings</h1><p>Business rules, fees, alerts and platform-wide policies. Changes apply app-wide on save.</p></div><div class="actions"><span class="dirty-dot" id="settingsDirty"><i></i>Unsaved changes</span><button class="primary" id="settingsSaveBtn" disabled>Save changes</button></div></div>
       <div class="modal-alert" id="settingsBanner" hidden></div>
       <div id="settingsGrid"></div>
+      <!-- Facilities (branches): list, create, edit, activate/deactivate.
+           Branch codes are immutable after create (embedded in unit/door/asset
+           codes); retiring a facility is status INACTIVE (hidden from booking).
+           Floors stay managed on the Facilities → Floors tab (one clear path);
+           the per-row Floors button jumps there filtered to the branch. -->
+      <div class="tbl-card" id="branchesSection" style="margin-top:16px;">
+        <div class="sec-hdr"><div><div class="sec-title">Facilities</div><div class="sec-sub" id="branchesSub">Branches per facility · inactive hidden from booking</div></div><div style="display:flex;gap:7px;"><button class="tb-btn primary" id="addBranchBtn">+ Add Facility</button></div></div>
+        <div class="modal-alert" id="branchesBanner" hidden></div>
+        <table class="data-tbl" id="branchesTable"><thead><tr><th>Code</th><th>Address</th><th>Floors · Units</th><th>Status</th><th></th></tr></thead><tbody id="branchesBody"></tbody></table>
+      </div>
       <!-- Fees & deposits (P1 item 5): Global → Facility → Product → Exception chain -->
       <div class="tbl-card" id="feesSection" style="margin-top:16px;">
         <div class="sec-hdr"><div><div class="sec-title">Fees &amp; deposits</div><div class="sec-sub">Global → Facility → Product → Exception priority · scalar settings untouched</div></div></div>
@@ -1749,6 +1758,26 @@ body.lead-drawer-open{overflow-x:hidden}
         <div class="field"><label for="ff-active">Active (visible to booking)</label><input type="checkbox" id="ff-active" name="active" checked><div class="field-err" id="fe-active"></div></div>
       </div>
       <div class="modal-foot"><button class="act-btn" type="button" id="floorFormCancel">Cancel</button><button class="act-btn primary" type="submit" id="floorFormSubmit">Save Floor</button></div>
+    </form>
+  </div>
+</div>
+
+<!-- Branch (facility) modal -->
+<div class="modal-overlay" id="branchModal" hidden>
+  <div class="modal-win">
+    <div class="modal-hdr"><div class="modal-title" id="branchModalTitle">Add Facility</div><button class="modal-x" id="branchModalClose" type="button">✕</button></div>
+    <div class="modal-alert" id="branchModalAlert" hidden></div>
+    <div class="modal-hint" id="branchModalHint" hidden></div>
+    <form id="branchForm" novalidate>
+      <div class="form-grid">
+        <div class="field"><label for="bf-code">Code (immutable)</label><input type="text" id="bf-code" name="code" maxlength="8" placeholder="e.g. BM" style="text-transform:uppercase;"><div class="field-err" id="be-code"></div></div>
+        <div class="field"><label for="bf-name">Name</label><input type="text" id="bf-name" name="name" maxlength="120" placeholder="e.g. Bukit Merah"><div class="field-err" id="be-name"></div></div>
+        <div class="field full"><label for="bf-address">Address</label><input type="text" id="bf-address" name="address" maxlength="500" placeholder="Street address"><div class="field-err" id="be-address"></div></div>
+        <div class="field"><label for="bf-hours">Operating hours</label><input type="text" id="bf-hours" name="hours" maxlength="200" placeholder="Mon–Sun 7am–11pm"><div class="field-err" id="be-hours"></div></div>
+        <div class="field"><label for="bf-active">Active (visible to booking)</label><input type="checkbox" id="bf-active" name="active" checked><div class="field-err" id="be-active"></div></div>
+        <div class="field full"><label for="bf-desc">Description (optional)</label><input type="text" id="bf-desc" name="description" maxlength="2000" placeholder="Operator blurb"><div class="field-err" id="be-desc"></div></div>
+      </div>
+      <div class="modal-foot"><button class="act-btn" type="button" id="branchFormCancel">Cancel</button><button class="act-btn primary" type="submit" id="branchFormSubmit">Save Facility</button></div>
     </form>
   </div>
 </div>

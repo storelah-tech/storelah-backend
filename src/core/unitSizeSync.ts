@@ -65,6 +65,12 @@ export interface SizeSyncPlan {
   /** DRAFT units on this floor's plan — promoted to AVAILABLE on publish. */
   newUnits: Array<{ unitId: string; unitCode: string; sqft: number; size: { code: string; name: string }; rate: number }>;
   blockers: SizeSyncBlocker[];
+  /** Live placements customers would see (soft-deleted + INACTIVE filtered out;
+   * DRAFT units count — publish promotes them). 0 means the publish would put
+   * an empty floor live (see the EMPTY_PLAN guard). */
+  placementCount: number;
+  /** True when placementCount is 0 — the publish-confirm surfaces the empty warning. */
+  emptyPlan: boolean;
 }
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
@@ -87,23 +93,34 @@ export async function buildSizeSyncPlan(
   const db = opts.db ?? prisma;
   const choiceBy = new Map((opts.choices ?? []).map((c) => [c.unitId, c]));
   const plan = await db.floorPlan.findUnique({ where: { floorId }, select: { id: true } });
-  const empty: SizeSyncPlan = { token: hashToken([]), changes: [], unchanged: [], newUnits: [], blockers: [] };
+  const empty: SizeSyncPlan = { token: hashToken([]), changes: [], unchanged: [], newUnits: [], blockers: [], placementCount: 0, emptyPlan: true };
   if (!plan) return empty;
+  // Live placement count for the empty-plan warning (same visibility filter as
+  // the publish guard — soft-deleted + INACTIVE excluded, DRAFT included).
+  const placementCount = await db.unitPlacement.count({
+    where: { floorPlanId: plan.id, unit: { deletedAt: null, status: { not: 'INACTIVE' } } },
+  });
 
-  const placements = await db.unitPlacement.findMany({
+  const fetched = await db.unitPlacement.findMany({
+    // DRAFT-unit inclusion happens in the JS filter below, NOT in this where
+    // clause: sending the DRAFT literal as query input throws `Invalid value
+    // for argument ... Expected UnitStatus` on any runtime whose generated
+    // Prisma client predates the DRAFT enum value (migration 20261014000000).
+    // Filtering post-fetch keeps the result identical on old and new clients.
     where: {
       floorPlanId: plan.id,
       unit: { deletedAt: null, status: { not: 'INACTIVE' } },
-      OR: [{ areaDirty: true }, { unit: { status: 'DRAFT' } }],
     },
     include: { unit: { include: { size: true } } },
     orderBy: { unit: { unitCode: 'asc' } },
   });
-  if (!placements.length) return empty;
+  // Dirty placements plus DRAFT units (promoted on publish — see where above).
+  const placements = fetched.filter((p) => p.areaDirty || p.unit.status === 'DRAFT');
+  if (!placements.length) return { ...empty, placementCount, emptyPlan: placementCount === 0 };
 
   const sizes = await db.unitSize.findMany({ select: { id: true, code: true, name: true, sqftFrom: true, sqftTo: true, sortOrder: true } });
   const contracted = await loadContractedUnits(placements.map((p) => p.unitId), db);
-  const out: SizeSyncPlan = { token: '', changes: [], unchanged: [], newUnits: [], blockers: [] };
+  const out: SizeSyncPlan = { token: '', changes: [], unchanged: [], newUnits: [], blockers: [], placementCount, emptyPlan: placementCount === 0 };
 
   for (const p of placements) {
     const u = p.unit;
@@ -255,7 +272,21 @@ export async function applySizeSync(
   const touched = [...plan.changes.map((c) => c.unitId), ...plan.unchanged.map((u) => u.unitId)];
   if (touched.length) await tx.unitPlacement.updateMany({ where: { unitId: { in: touched } }, data: { areaDirty: false } });
   if (plan.newUnits.length) {
-    await tx.unit.updateMany({ where: { id: { in: plan.newUnits.map((n) => n.unitId) }, status: 'DRAFT' }, data: { status: 'AVAILABLE' } });
+    // DRAFT-guard in JS, NOT in the updateMany where clause: sending the DRAFT
+    // literal as query input throws `Invalid value for argument ... Expected
+    // UnitStatus` on any runtime whose generated Prisma client predates the
+    // DRAFT enum value (migration 20261014000000). Selecting status first and
+    // promoting only still-DRAFT ids writes the identical row set on old and
+    // new clients.
+    const stillDraft = (
+      await tx.unit.findMany({
+        where: { id: { in: plan.newUnits.map((n) => n.unitId) } },
+        select: { id: true, status: true },
+      })
+    ).filter((u) => u.status === 'DRAFT');
+    if (stillDraft.length) {
+      await tx.unit.updateMany({ where: { id: { in: stillDraft.map((u) => u.id) } }, data: { status: 'AVAILABLE' } });
+    }
     result.promoted = plan.newUnits.map((n) => n.unitCode);
   }
   return result;
@@ -283,11 +314,17 @@ export async function listSizeMismatches(floorId: string): Promise<SizeMismatch[
   const plan = await prisma.floorPlan.findUnique({ where: { floorId }, select: { id: true } });
   if (!plan) return [];
   const rows = await prisma.unitPlacement.findMany({
-    where: { floorPlanId: plan.id, areaDirty: false, unit: { deletedAt: null, status: { notIn: ['INACTIVE', 'DRAFT'] } } },
+    // DRAFT units are excluded in the JS filter below, NOT in this where
+    // clause: sending the DRAFT literal as query input throws `Invalid value
+    // for argument ... Expected UnitStatus` on any runtime whose generated
+    // Prisma client predates the DRAFT enum value (migration 20261014000000).
+    // Filtering post-fetch keeps the result identical on old and new clients.
+    where: { floorPlanId: plan.id, areaDirty: false, unit: { deletedAt: null, status: { not: 'INACTIVE' } } },
     include: { unit: { select: { id: true, unitCode: true, status: true, sqft: true } } },
     orderBy: { unit: { unitCode: 'asc' } },
   });
-  const mism = rows.filter((p) => !sameSqft(sqftForRect(p), p.unit.sqft));
+  // Draft-plan units are not inventory yet (see where clause above).
+  const mism = rows.filter((p) => p.unit.status !== 'DRAFT' && !sameSqft(sqftForRect(p), p.unit.sqft));
   const contracted = await loadContractedUnits(mism.map((p) => p.unitId));
   return mism.map((p) => ({
     unitId: p.unitId,

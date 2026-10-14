@@ -60,7 +60,13 @@ export async function getNetPsf() {
   const branches = await prisma.branch.findMany({
     include: {
       units: {
-        where: { deletedAt: null, status: { not: 'DRAFT' } }, // DRAFT = unpublished floor-plan unit
+        // DRAFT = unpublished floor-plan unit — excluded in JS below, NOT in
+        // this where clause: sending the DRAFT literal as query input throws
+        // `Invalid value for argument 'not'. Expected UnitStatus` on any
+        // runtime whose generated Prisma client predates the DRAFT enum value
+        // (migration 20261014000000). Filtering post-fetch keeps the result
+        // identical on old and new clients.
+        where: { deletedAt: null },
         select: { status: true, sqft: true, monthlyRate: true, size: { select: { code: true } } },
       },
     },
@@ -69,7 +75,9 @@ export async function getNetPsf() {
 
   const sizeAgg: Record<string, { total: number; count: number }> = {};
   const facilities = branches.map((b) => {
-    const revenue = b.units.filter((u) => u.status === 'OCCUPIED' || u.status === 'OVERDUE');
+    // Draft-plan units are not inventory yet (see where clause above).
+    const units = b.units.filter((u) => u.status !== 'DRAFT');
+    const revenue = units.filter((u) => u.status === 'OCCUPIED' || u.status === 'OVERDUE');
     for (const u of revenue) {
       if (!u.sqft) continue;
       const psf = toNum(u.monthlyRate) / u.sqft;
@@ -82,12 +90,12 @@ export async function getNetPsf() {
       ? revenue.reduce((s, u) => s + (u.sqft ? toNum(u.monthlyRate) / u.sqft : 0), 0) /
         revenue.length
       : 0;
-    const totalSqft = Math.round(b.units.reduce((s, u) => s + u.sqft, 0) * 100) / 100; // decimal sqft
+    const totalSqft = Math.round(units.reduce((s, u) => s + u.sqft, 0) * 100) / 100; // decimal sqft
     return {
       branch: b.code,
       name: b.name,
       units: revenue.length,
-      totalUnits: b.units.length,
+      totalUnits: units.length,
       totalSqft,
       mrr: Math.round(revenue.reduce((s, u) => s + toNum(u.monthlyRate), 0)),
       netPsf: Math.round(netPsf * 100) / 100,

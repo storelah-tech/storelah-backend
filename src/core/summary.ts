@@ -3,11 +3,18 @@ import { toNum, pct } from '../lib/format';
 import { quantizeSqft } from './unitSizing';
 
 export async function getSummary() {
-  const units = await prisma.unit.findMany({
+  const fetched = await prisma.unit.findMany({
     // DRAFT = drawn on a floor plan, not yet published (docs/FLOOR_PLAN_UNIT_SYNC_PLAN.md D7) — not inventory yet.
-    where: { deletedAt: null, status: { not: 'DRAFT' } },
+    // Excluded in JS below, NOT in this where clause: sending the DRAFT
+    // literal as query input throws `Invalid value for argument 'not'.
+    // Expected UnitStatus` on any runtime whose generated Prisma client
+    // predates the DRAFT enum value (migration 20261014000000). Filtering
+    // post-fetch keeps the result identical on old and new clients.
+    where: { deletedAt: null },
     include: { size: true, tenant: true, branch: true },
   });
+  // Draft-plan units are not inventory yet (see where clause above).
+  const units = fetched.filter((u) => u.status !== 'DRAFT');
 
   const total = units.length;
   const occupiedUnits = units.filter((u) => u.status === 'OCCUPIED').length;

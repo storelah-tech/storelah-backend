@@ -64,19 +64,30 @@ function renderFloorsTable() {
       (inactive ? ` · ${inactive} inactive (hidden from booking)` : ' · all active');
   }
   if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="6"><div class="section-empty">No floors yet — add the first one.</div></td></tr>';
+    tbody.innerHTML = '<tr><td colspan="7"><div class="section-empty">No floors yet — add the first one.</div></td></tr>';
     return;
   }
   tbody.innerHTML = rows.map((f) => {
     const live = f.liveUnitCount ?? f.unitCount ?? 0;
     const total = f.unitCount ?? 0;
+    // Plan status comes from GET /floors (additive planStatus: none/draft/
+    // active). Gating is via Floor.isActive, not the plan state — a
+    // draft-only floor reads as plan: null on the public surface.
+    const plan = f.planStatus || 'none';
+    const planBadge = plan === 'active'
+      ? '<span class="badge avail">Active</span>'
+      : plan === 'draft'
+        ? '<span class="badge neutral">Draft</span>'
+        : '<span class="t-type">None</span>';
     return `<tr data-floor-id="${escapeHtml(f.id)}" class="${f.isActive ? '' : 'row-blocked'}">
       <td><strong>${escapeHtml(f.branch?.code || '—')}</strong><div class="t-type">${escapeHtml(f.branch?.name || '')}</div></td>
       <td>Level ${f.level}</td>
       <td>${escapeHtml(f.name || '')}</td>
       <td>${live} live${total !== live ? ` · ${total} total` : ''}</td>
       <td><span class="badge ${f.isActive ? 'avail' : 'neutral'}">${f.isActive ? 'Active' : 'Inactive'}</span></td>
+      <td>${planBadge}</td>
       <td class="unit-actions">
+        <button class="act-btn" data-fact="design" data-floor-id="${escapeHtml(f.id)}">Designer</button>
         <button class="act-btn" data-fact="edit" data-floor-id="${escapeHtml(f.id)}">Edit</button>
         <button class="act-btn ${f.isActive ? '' : 'primary'}" data-fact="toggle" data-floor-id="${escapeHtml(f.id)}">${f.isActive ? 'Deactivate' : 'Activate'}</button>
         <button class="act-btn danger" data-fact="delete" data-floor-id="${escapeHtml(f.id)}">Delete</button>
@@ -90,8 +101,21 @@ function renderFloorsTable() {
       if (act === 'edit') openEditFloor(id);
       else if (act === 'toggle') toggleFloorActive(id);
       else if (act === 'delete') deleteFloorRow(id);
+      else if (act === 'design') openFloorInDesigner(id);
     });
   });
+}
+
+// Jump to the existing Floor Plan Designer with this floor selected — the
+// publish flow itself is untouched (floors never rebuild it).
+function openFloorInDesigner(id) {
+  const f = (state.floors || []).find((x) => x.id === id);
+  if (!f) return;
+  if (f.branch?.code) state.fp.branchCode = f.branch.code;
+  state.fp.floorId = id;
+  const tab = document.querySelector('[data-tabs="facility"] [data-tab="facility-floorplans"]');
+  if (tab) tab.click();
+  else showBanner('Floor Plan Designer tab not found.');
 }
 
 export async function bindFloorsView() {

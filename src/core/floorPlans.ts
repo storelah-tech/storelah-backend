@@ -912,11 +912,19 @@ export async function getFloorPlan(floorId: string) {
   if (!floor) throw new AppError(404, 'NOT_FOUND', `Floor ${floorId} not found`);
 
   const plan = await prisma.floorPlan.findFirst({ where: { floorId }, include: planInclude });
-  const unplacedUnits = await prisma.unit.findMany({
-    where: { floorId, deletedAt: null, status: { notIn: ['INACTIVE', 'DRAFT'] }, placement: { is: null } },
+  const fetchedUnplaced = await prisma.unit.findMany({
+    // INACTIVE units stay out of the editor palette via the where clause;
+    // DRAFT units (unpublished designs) are excluded in JS below, NOT here:
+    // sending the DRAFT literal as query input throws `Invalid value for
+    // argument ... Expected UnitStatus` on any runtime whose generated Prisma
+    // client predates the DRAFT enum value (migration 20261014000000).
+    // Filtering post-fetch keeps the result identical on old and new clients.
+    where: { floorId, deletedAt: null, status: { not: 'INACTIVE' }, placement: { is: null } },
     include: { size: true },
     orderBy: { unitCode: 'asc' },
   });
+  // Draft-plan units are not inventory yet (see where clause above).
+  const unplacedUnits = fetchedUnplaced.filter((u) => u.status !== 'DRAFT');
 
   // CMS-only tracing underlay metadata (precision Phase 5) — never in the
   // public read; the image itself is GET /floor-plans/:floorId/underlay/image.
@@ -1066,6 +1074,10 @@ export interface PublishFloorPlanOptions {
   token?: string;
   /** Per-unit rate policy / tier override chosen in the publish review. */
   choices?: readonly SizeSyncChoice[];
+  /** Typed acknowledgement for an empty publish: required (409 EMPTY_PLAN
+   * otherwise) when the plan would put 0 placements live — customers would
+   * see an empty floor. */
+  confirmEmpty?: boolean;
 }
 
 /**
@@ -1095,6 +1107,26 @@ export async function publishFloorPlanWithSync(
   if (opts?.actorId) {
     const { requirePermission } = await import('./users');
     await requirePermission(opts.actorId, 'promotions.approve');
+  }
+  // Empty-plan guard: a publish that would put 0 placements live is refused
+  // (409 EMPTY_PLAN) without the typed { confirmEmpty: true }
+  // acknowledgement — customers would see an empty floor. Counts the placements
+  // customers would actually see (soft-deleted and INACTIVE units are filtered
+  // from every read, including the public one); DRAFT units count because the
+  // same publish promotes them to AVAILABLE. Republishing an already-ACTIVE
+  // plan stays idempotent (returns above) and never hits this guard.
+  if (!opts?.confirmEmpty) {
+    const livePlacements = await prisma.unitPlacement.count({
+      where: { floorPlan: { floorId }, unit: { deletedAt: null, status: { not: 'INACTIVE' } } },
+    });
+    if (livePlacements === 0) {
+      throw new AppError(
+        409,
+        'EMPTY_PLAN',
+        'Publish refused: this plan has 0 unit placements — customers will see an empty floor. Re-confirm with { confirmEmpty: true } to publish it empty.',
+        { counts: { placements: 0 } },
+      );
+    }
   }
   const { published, sizeSync } = await prisma.$transaction(async (tx) => {
     const sizeSync = await applySizeSync(tx, floorId, {
@@ -1928,8 +1960,10 @@ export async function getPublicFloorPlan(branchCode: string, level: number) {
   });
   if (!floor) throw new AppError(404, 'NOT_FOUND', `Floor ${level} not found at branch ${branchCode}`);
   // An inactive floor has no public presence — the booking renderer must not
-  // draw it (same 404 as a missing floor; admin reads are unaffected).
-  if (!floor.isActive) {
+  // draw it (same 404 as a missing floor; admin reads are unaffected). An
+  // INACTIVE branch hides the same way (branch CRUD lives in Global Settings;
+  // only ACTIVE branches serve the frontend).
+  if (!floor.isActive || floor.branch.status !== 'ACTIVE') {
     throw new AppError(404, 'NOT_FOUND', `Floor ${level} not found at branch ${branchCode}`);
   }
 

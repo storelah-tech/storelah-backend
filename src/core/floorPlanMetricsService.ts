@@ -1046,17 +1046,27 @@ export async function getFacilityMetrics(branchRef: string): Promise<FacilityMet
   // unplaced = the coverage.unplacedUnits definition (no placement row);
   // occupied = OCCUPIED + OVERDUE (RESERVED excluded, per revenue convention).
   // DRAFT units (unpublished floor-plan designs) are not facility inventory yet.
-  const inactiveFilter = { status: { notIn: ['INACTIVE' as const, 'DRAFT' as const] } };
-  const [allUnits, unplacedUnits, occupiedUnits] = await Promise.all([
+  // Excluded in JS below, NOT in a where clause: sending the DRAFT literal as
+  // query input throws `Invalid value for argument ... Expected UnitStatus` on
+  // any runtime whose generated Prisma client predates the DRAFT enum value
+  // (migration 20261014000000). Filtering post-fetch keeps the result
+  // identical on old and new clients.
+  const [fetchedUnits, unplacedRows, occupiedUnits] = await Promise.all([
     prisma.unit.findMany({
-      where: { branchId: branch.id, deletedAt: null, ...inactiveFilter },
-      select: { sqft: true, size: { select: { code: true } } },
+      where: { branchId: branch.id, deletedAt: null, status: { not: 'INACTIVE' } },
+      select: { sqft: true, status: true, size: { select: { code: true } } },
     }),
-    prisma.unit.count({ where: { branchId: branch.id, deletedAt: null, ...inactiveFilter, placement: { is: null } } }),
+    prisma.unit.findMany({
+      where: { branchId: branch.id, deletedAt: null, status: { not: 'INACTIVE' }, placement: { is: null } },
+      select: { id: true, status: true },
+    }),
     prisma.unit.count({
       where: { branchId: branch.id, deletedAt: null, status: { in: ['OCCUPIED', 'OVERDUE'] } },
     }),
   ]);
+  // Draft-plan units are not inventory yet (see where clauses above).
+  const allUnits = fetchedUnits.filter((u) => u.status !== 'DRAFT');
+  const unplacedUnits = unplacedRows.filter((u) => u.status !== 'DRAFT').length;
   const unitGroups = buildUnitGroups(allUnits.map((u) => ({ sizeCode: u.size.code, sqft: u.sqft })));
   const placedUnits = Math.max(0, allUnits.length - unplacedUnits);
 

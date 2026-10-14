@@ -25,7 +25,7 @@ export const openapiSpec = {
   openapi: '3.0.3',
   info: {
     title: 'StoreLah Booking API',
-    version: '1.10.0',
+    version: '1.10.2',
     description: [
       'Customer-facing booking API for the StoreLah self-storage business.',
       '',
@@ -346,6 +346,26 @@ export const openapiSpec = {
         'is now a decimal number quantized to 0.01 (was integer) — e.g. `47.25`; writes (`POST|PUT /cms/units`, ' +
         'CSV import) accept up to 2 decimals; a drawn unit\'s sqft is its exact drawn area to 0.01, and sizes ' +
         'within 0.05 sqft count as unchanged.',
+       'v1.10.1 is ADDITIVE over 1.10.0: empty-plan publish guard + draft blocker preview (CMS only, ' +
+        'Bearer JWT). A publish that would put 0 placements live is refused with `409 EMPTY_PLAN` ' +
+        '(`details.counts`) unless the body carries the typed acknowledgement `{ confirmEmpty: true }` — ' +
+        'applies to both `POST /cms/floor-plans/{floorId}/publish` and `POST /cms/drafts/{draftId}/publish` ' +
+        '(acknowledged empty publishes behave as before). `GET /cms/drafts/{draftId}/publish-preview` gains ' +
+        '`emptyPlan` (boolean) and `blockers[]` (`{ unitId, unitCode, code: UNIT_CONTRACTED, from, to, reason }` — ' +
+        'the exact would-be contracted-unit publish blockers with from→to sqft, same semantics as the publish ' +
+        'preflight; empty when clean; the 409 itself is unchanged), and the live ' +
+        '`GET /cms/floor-plans/{floorId}/publish-preview` plan gains `placementCount` + `emptyPlan`. ' +
+        'Public shapes unchanged.',
+       'v1.10.2 is ADDITIVE over 1.10.1: branch (facility) CRUD for Global Settings ' +
+         '(CMS only, Bearer JWT) — `POST /cms/branches` (code 2..8 uppercase, ' +
+         '409 on dup), `PUT /cms/branches/{id}` (name/address/hours/description/' +
+         'status; code immutable, never accepted), `DELETE /cms/branches/{id}` ' +
+         '(guarded 409 while floors/units/tenants/leads/appointments reference ' +
+         'the branch; `?deactivate=true` converts to a reversible INACTIVE). ' +
+         '`GET /public/branches` now serves ACTIVE branches only and the public ' +
+         'units / map / floor-plan reads exclude INACTIVE branches (shape-compatible, ' +
+         'filtering only). CMS `GET /cms/floors` rows gain additive `planStatus` ' +
+         '(none/draft/active). Public shapes unchanged.',
     ].join('\n'),
   },
   servers: [
@@ -374,7 +394,7 @@ export const openapiSpec = {
         tags: ['Public'],
         summary: 'List branches',
         description:
-          'All branches with their floor levels and current count of AVAILABLE units. No tenant/internal counters.',
+          'ACTIVE branches only (INACTIVE branches are hidden from the frontend) with their active floor levels and current count of AVAILABLE units on active floors. No tenant/internal counters.',
         operationId: 'listPublicBranches',
         security: [],
         responses: {
@@ -1593,7 +1613,11 @@ export const openapiSpec = {
           'Read-only preview for the publish confirm popup (never writes): the draft\'s restorable ' +
             'element counts, the floor\'s currently-published version (demoted back to DRAFT on publish; ' +
             'null when nothing is published), the live plan status, and the exact skipped-placement list ' +
-            '(same skip semantics as the publish, so the popup can never promise units the publish drops).',
+            '(same skip semantics as the publish, so the popup can never promise units the publish drops). ' +
+            '`emptyPlan` is true when the draft would put 0 placements live (the popup escalates to a ' +
+            'danger confirm and the publish needs `{ confirmEmpty: true }`); `blockers` lists the ' +
+            'would-be contracted-unit publish blockers (`{ unitId, unitCode, code: UNIT_CONTRACTED, from, ' +
+            'to, reason }`, from→to sqft, same semantics as the publish preflight — empty when clean).',
           '',
           'Operator CMS endpoints are documented here for reference only; they are served on the CMS host under ',
           '`/api/v1/cms` and require a Bearer JWT issued by `/api/v1/cms/login` (auto-login via `/api/v1/cms/config`).',
@@ -1612,7 +1636,7 @@ export const openapiSpec = {
         responses: {
           '200': openapiResponse({
             type: 'object',
-            required: ['draftId', 'floorId', 'version', 'status', 'counts', 'published', 'liveStatus', 'skippedPlacements'],
+            required: ['draftId', 'floorId', 'version', 'status', 'counts', 'published', 'liveStatus', 'skippedPlacements', 'emptyPlan', 'blockers'],
             properties: {
               draftId: { type: 'string' },
               floorId: { type: 'string' },
@@ -1622,6 +1646,23 @@ export const openapiSpec = {
               published: { type: 'object', nullable: true },
               liveStatus: { type: 'string', nullable: true },
               skippedPlacements: { type: 'array', items: { type: 'string' } },
+              emptyPlan: { type: 'boolean', description: 'True when the publish would put 0 placements live.' },
+              blockers: {
+                type: 'array',
+                description: 'Would-be contracted-unit publish blockers (empty when clean).',
+                items: {
+                  type: 'object',
+                  required: ['unitId', 'unitCode', 'code', 'from', 'to', 'reason'],
+                  properties: {
+                    unitId: { type: 'string' },
+                    unitCode: { type: 'string' },
+                    code: { type: 'string', enum: ['UNIT_CONTRACTED'] },
+                    from: { type: 'number', description: 'Contracted Unit.sqft.' },
+                    to: { type: 'number', description: 'Drawn sqft the draft would sync.' },
+                    reason: { type: 'string', description: 'Contracted reason (unit status or awaiting booking payment).' },
+                  },
+                },
+              },
             },
           }),
           '401': openapiErrorResponse('Missing/invalid bearer token.'),
@@ -1641,7 +1682,10 @@ export const openapiSpec = {
             'unit has since been deleted, moved floors, or deactivated are skipped and reported in ' +
             '`meta.skippedPlacements` (never fatal). The draft row is marked ACTIVE as its published marker, ' +
             'and every OTHER published version on the floor is demoted back to DRAFT — exactly one ' +
-            'published version at a time. Preview with `GET /cms/drafts/{draftId}/publish-preview` first.',
+            'published version at a time. Preview with `GET /cms/drafts/{draftId}/publish-preview` first. ' +
+            'A 0-placement publish is refused with `409 EMPTY_PLAN` (`details.counts`) unless the body ' +
+            'carries `{ confirmEmpty: true }`; a contracted-unit resize is `409 PUBLISH_BLOCKED` ' +
+            '(`details.blockers[]` with from→to sqft) either way.',
           '',
           'Operator CMS endpoints are documented here for reference only; they are served on the CMS host under ',
           '`/api/v1/cms` and require a Bearer JWT issued by `/api/v1/cms/login` (auto-login via `/api/v1/cms/config`).',
@@ -1657,6 +1701,21 @@ export const openapiSpec = {
             schema: { type: 'string' },
           },
         ],
+        requestBody: {
+          required: false,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  token: { type: 'string', description: 'Preview token (live-publish path; stale → 409 STALE_PREVIEW).' },
+                  choices: { type: 'array', description: 'Per-unit rate/tier overrides (live-publish path).', items: { type: 'object' } },
+                  confirmEmpty: { type: 'boolean', description: 'Typed acknowledgement for a 0-placement publish (required, else 409 EMPTY_PLAN).' },
+                },
+              },
+            },
+          },
+        },
         responses: {
           '200': openapiResponse({
             type: 'object',
@@ -1664,6 +1723,7 @@ export const openapiSpec = {
           }),
           '401': openapiErrorResponse('Missing/invalid bearer token.'),
           '404': openapiErrorResponse('Draft not found.'),
+          '409': openapiErrorResponse('EMPTY_PLAN (0 placements going live without { confirmEmpty: true }) or PUBLISH_BLOCKED (contracted-unit resize; details.blockers).'),
           '500': openapiErrorResponse('Unexpected server error'),
         },
       },
@@ -2533,6 +2593,110 @@ export const openapiSpec = {
           }),
           '401': openapiErrorResponse('Missing/invalid bearer token.'),
           '404': openapiErrorResponse('Addon not found.'),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+    },
+    // --- Operator CMS: branch (facility) CRUD for Global Settings (v1.10.2, additive) ---
+    // Branch.code is immutable after create (embedded in unit/door/asset
+    // codes): POST validates + uppercases it (409 on dup), PUT never accepts
+    // it. Retirement path is status INACTIVE (hides the branch from every
+    // public read — branches, units, map, floor-plan); DELETE hard-deletes and
+    // is guarded 409 while any Floor/Unit/Tenant/Lead/Appointment rows
+    // reference the branch (?deactivate=true converts to a reversible
+    // INACTIVE). Served on the CMS host under `/api/v1/cms` with a Bearer JWT.
+    '/cms/branches': {
+      get: {
+        tags: ['Operator CMS'],
+        summary: 'List branches (active + inactive, with status + counts)',
+        description: 'Every branch with status, floor levels, unit/tenant/lead counts and computed portfolio fields (total/leased/available/blocked units, sqft, occupancy, MRR, net PSF).',
+        operationId: 'listBranches',
+        security: [{ bearerAuth: [] }],
+        responses: {
+          '200': openapiResponse({ type: 'array', items: { $ref: openapiSchemaRef('Branch') } }),
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+      post: {
+        tags: ['Operator CMS'],
+        summary: 'Create a branch (facility)',
+        description: 'Creates a facility. `code` (2..8 uppercase letters/digits, e.g. BM) is immutable after create and 409s on dup; `name`, `address`, `operatingHours` required, `description` optional, `status` defaults ACTIVE.',
+        operationId: 'createBranch',
+        security: [{ bearerAuth: [] }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: { $ref: openapiSchemaRef('BranchInput') },
+            },
+          },
+        },
+        responses: {
+          '201': openapiCreatedResponse({ $ref: openapiSchemaRef('Branch') }),
+          '400': openapiErrorResponse('Invalid branch payload (bad code/name/address/hours).'),
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '409': openapiErrorResponse('Branch code already exists.'),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+    },
+    '/cms/branches/{id}': {
+      put: {
+        tags: ['Operator CMS'],
+        summary: 'Update a branch (incl. ACTIVE/INACTIVE toggle)',
+        description: 'Partial update of `name`, `address`, `operatingHours`, `description`, `status`. `{ status: "INACTIVE" }` deactivates (preferred over delete — hides the branch from public reads, keeps history). `code` is immutable and never accepted here.',
+        operationId: 'updateBranch',
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          {
+            name: 'id',
+            in: 'path',
+            required: true,
+            description: 'Branch row id.',
+            schema: { type: 'string' },
+          },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: { $ref: openapiSchemaRef('BranchInput') },
+            },
+          },
+        },
+        responses: {
+          '200': openapiResponse({ $ref: openapiSchemaRef('Branch') }),
+          '400': openapiErrorResponse('Invalid branch payload (code renames rejected).'),
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '404': openapiErrorResponse('Branch not found.'),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+      delete: {
+        tags: ['Operator CMS'],
+        summary: 'Delete a branch (guarded; prefer deactivation)',
+        description: 'Hard-deletes a branch only when no Floor/Unit/Tenant/Lead/Appointment rows reference it (else 409 with counts). `?deactivate=true` converts to a reversible INACTIVE instead — the safe path for branches that still hold history.',
+        operationId: 'deleteBranch',
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          {
+            name: 'id',
+            in: 'path',
+            required: true,
+            description: 'Branch row id.',
+            schema: { type: 'string' },
+          },
+        ],
+        responses: {
+          '200': openapiResponse({
+            type: 'object',
+            required: ['id'],
+            properties: { id: { type: 'string' } },
+          }),
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '404': openapiErrorResponse('Branch not found.'),
+          '409': openapiErrorResponse('Branch still has floors/units/tenants/leads/appointments — deactivate instead.'),
           '500': openapiErrorResponse('Unexpected server error'),
         },
       },
@@ -4152,6 +4316,52 @@ export const openapiSpec = {
       PublicBranches: {
         type: 'array',
         items: { $ref: openapiSchemaRef('PublicBranch') },
+      },
+      Branch: {
+        type: 'object',
+        required: ['id', 'code', 'name', 'address', 'operatingHours', 'status'],
+        properties: {
+          id: { type: 'string', description: 'Branch row id.' },
+          code: {
+            type: 'string',
+            description: 'Immutable facility code (2..8 uppercase letters/digits, e.g. BM) — embedded in unit/door/asset codes, never renamed.',
+          },
+          name: { type: 'string' },
+          address: { type: 'string' },
+          description: {
+            type: ['string', 'null'],
+            description: 'Operator blurb for the facility (null = none).',
+          },
+          operatingHours: { type: 'string' },
+          status: {
+            type: 'string',
+            enum: ['ACTIVE', 'INACTIVE'],
+            description: 'INACTIVE branches are hidden from every public read; CMS reads keep serving them.',
+          },
+          floorCount: { type: 'integer', description: 'Floors referencing this branch (create/update responses).' },
+          unitCount: { type: 'integer', description: 'Units referencing this branch (create/update responses).' },
+        },
+      },
+      BranchInput: {
+        type: 'object',
+        properties: {
+          code: {
+            type: 'string',
+            description: 'POST only: 2..8 uppercase letters/digits (uppercased server-side, 409 on dup). Immutable — never accepted on PUT.',
+          },
+          name: { type: 'string' },
+          address: { type: 'string' },
+          operatingHours: { type: 'string' },
+          description: {
+            type: ['string', 'null'],
+            description: 'Operator blurb (null/empty clears).',
+          },
+          status: {
+            type: 'string',
+            enum: ['ACTIVE', 'INACTIVE'],
+            description: 'INACTIVE hides the branch from public reads (preferred over delete).',
+          },
+        },
       },
       PublicUnit: {
         type: 'object',

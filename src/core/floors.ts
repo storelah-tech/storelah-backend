@@ -6,6 +6,22 @@ type FloorWithRelations = Prisma.FloorGetPayload<{
   include: { branch: { select: { id: true; code: true; name: true } } };
 }>;
 
+// Floor-plan status surfaced per floor row (additive): 'none' = no plan
+// authored yet, 'draft' = CMS-only working copy, 'active' = published (the
+// only state public reads resolve). Gating for the frontend is via
+// Floor.isActive, NOT the plan status — an inactive floor hides its units
+// from every public read regardless of plan state, and a draft-only floor
+// reads as plan: null on the public surface. No extra active flag on
+// FloorPlan is needed (its DRAFT/ACTIVE lifecycle already exists).
+export type FloorPlanStatus = 'none' | 'draft' | 'active';
+
+function toPlanStatus(status: string | null | undefined): FloorPlanStatus {
+  if (!status) return 'none';
+  if (status === 'ACTIVE') return 'active';
+  if (status === 'DRAFT') return 'draft';
+  return status.toLowerCase().includes('active') ? 'active' : 'draft';
+}
+
 // Floor visibility semantics (see docs/FLOORS.md):
 //   isActive = true   → floor + its units appear in PUBLIC reads.
 //   isActive = false  → hidden from every public read path, still fully
@@ -36,6 +52,7 @@ export interface UpdateFloorInput {
 function serializeFloor(
   f: FloorWithRelations & { _count: { units: number } } & {
     liveUnits?: number;
+    planStatus?: FloorPlanStatus;
   },
 ) {
   return {
@@ -45,10 +62,17 @@ function serializeFloor(
     level: f.level,
     name: f.name,
     isActive: f.isActive,
+    planStatus: f.planStatus ?? ('none' as FloorPlanStatus),
     unitCount: f._count.units,
     liveUnitCount: f.liveUnits ?? f._count.units,
   };
 }
+
+const floorPlanStatusInclude = {
+  branch: { select: { id: true, code: true, name: true } },
+  floorPlan: { select: { status: true } },
+  _count: { select: { units: true } },
+} as const;
 
 export async function listFloors(query: FloorListQuery = {}) {
   const floors = await prisma.floor.findMany({
@@ -56,10 +80,7 @@ export async function listFloors(query: FloorListQuery = {}) {
       ...(query.branchId ? { branchId: query.branchId } : {}),
       ...(query.includeInactive ? {} : { isActive: true }),
     },
-    include: {
-      branch: { select: { id: true, code: true, name: true } },
-      _count: { select: { units: true } },
-    },
+    include: floorPlanStatusInclude,
     orderBy: [{ branch: { code: 'asc' } }, { level: 'asc' }],
   });
   // Live (non-soft-deleted) unit counts per floor for the delete guard UI.
@@ -70,7 +91,7 @@ export async function listFloors(query: FloorListQuery = {}) {
   });
   const liveByFloor = new Map(live.map((r) => [r.floorId, r._count._all]));
   return floors.map((f) =>
-    serializeFloor({ ...f, liveUnits: liveByFloor.get(f.id) ?? 0 }),
+    serializeFloor({ ...f, liveUnits: liveByFloor.get(f.id) ?? 0, planStatus: toPlanStatus(f.floorPlan?.status) }),
   );
 }
 
@@ -84,16 +105,13 @@ export async function listFloorsAdmin(branchId?: string) {
 export async function getFloor(id: string) {
   const floor = await prisma.floor.findUnique({
     where: { id },
-    include: {
-      branch: { select: { id: true, code: true, name: true } },
-      _count: { select: { units: true } },
-    },
+    include: floorPlanStatusInclude,
   });
   if (!floor) throw new AppError(404, 'NOT_FOUND', `Floor ${id} not found`);
   const liveUnitCount = await prisma.unit.count({
     where: { floorId: id, deletedAt: null },
   });
-  return serializeFloor({ ...floor, liveUnits: liveUnitCount });
+  return serializeFloor({ ...floor, liveUnits: liveUnitCount, planStatus: toPlanStatus(floor.floorPlan?.status) });
 }
 
 export async function createFloor(input: CreateFloorInput) {
@@ -106,12 +124,9 @@ export async function createFloor(input: CreateFloorInput) {
   try {
     const floor = await prisma.floor.create({
       data: { branchId: input.branchId, level: input.level, name },
-      include: {
-        branch: { select: { id: true, code: true, name: true } },
-        _count: { select: { units: true } },
-      },
+      include: floorPlanStatusInclude,
     });
-    return serializeFloor({ ...floor, liveUnits: 0 });
+    return serializeFloor({ ...floor, liveUnits: 0, planStatus: 'none' });
   } catch (e) {
     if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
       throw new AppError(
@@ -144,15 +159,12 @@ export async function updateFloor(id: string, input: UpdateFloorInput) {
     const updated = await prisma.floor.update({
       where: { id },
       data,
-      include: {
-        branch: { select: { id: true, code: true, name: true } },
-        _count: { select: { units: true } },
-      },
+      include: floorPlanStatusInclude,
     });
     const liveUnitCount = await prisma.unit.count({
       where: { floorId: id, deletedAt: null },
     });
-    return serializeFloor({ ...updated, liveUnits: liveUnitCount });
+    return serializeFloor({ ...updated, liveUnits: liveUnitCount, planStatus: toPlanStatus(updated.floorPlan?.status) });
   } catch (e) {
     if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
       throw new AppError(
@@ -186,15 +198,12 @@ export async function deleteFloor(id: string, opts: DeleteFloorOptions = {}) {
     const deactivated = await prisma.floor.update({
       where: { id },
       data: { isActive: false },
-      include: {
-        branch: { select: { id: true, code: true, name: true } },
-        _count: { select: { units: true } },
-      },
+      include: floorPlanStatusInclude,
     });
     const liveUnitCount = await prisma.unit.count({
       where: { floorId: id, deletedAt: null },
     });
-    return { ...serializeFloor({ ...deactivated, liveUnits: liveUnitCount }), deactivated: true };
+    return { ...serializeFloor({ ...deactivated, liveUnits: liveUnitCount, planStatus: toPlanStatus(deactivated.floorPlan?.status) }), deactivated: true };
   }
 
   // Guard: never orphan units and never break the append-only Unit history.

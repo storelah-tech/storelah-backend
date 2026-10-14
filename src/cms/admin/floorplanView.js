@@ -3273,7 +3273,30 @@ function fpOnArrowKey(e) {
   );
 }
 
+// The inspector is rebuilt (innerHTML) whenever the selection's geometry
+// changes — including when a typed field commits on Tab/blur. Keep keyboard
+// focus (and the text selection) on the same field across the rebuild so
+// Tab from W to H keeps typing into H instead of losing focus.
 function fpRenderSelInfo() {
+  const info = $('#fpSelInfo');
+  const a = document.activeElement;
+  let key = null;
+  if (info && a && info.contains(a) && /^(INPUT|SELECT|TEXTAREA)$/.test(a.tagName)) {
+    const d = a.dataset || {};
+    key = d.fpNum ? `[data-fp-num="${d.fpNum}"]` : d.fpArr ? `[data-fp-arr="${d.fpArr}"]` : a.id ? `#${CSS.escape(a.id)}` : null;
+  }
+  const sel = key && typeof a.selectionStart === 'number' ? [a.selectionStart, a.selectionEnd] : null;
+  fpRenderSelInfoInner();
+  if (!key || !info) return;
+  const next = info.querySelector(key);
+  if (!next || next === a) return;
+  try {
+    next.focus({ preventScroll: true });
+    if (sel && typeof next.setSelectionRange === 'function') next.setSelectionRange(0, next.value.length);
+  } catch (e) { /* noop */ }
+}
+
+function fpRenderSelInfoInner() {
   const info = $('#fpSelInfo');
   if (!info) return;
   if (state.fp.underlayMode === 'calibrate') {
@@ -4339,14 +4362,42 @@ function fpBoundaryHitAt(clientX, clientY) {
   return bestDist <= THRESHOLD ? best : null;
 }
 
+// Adopt the server's view of a saved placement (PUT /floor-plans/:floorId/
+// units/:unitId returns the serialized placement): the pending-size flag and,
+// for DRAFT units, the sqft / tier the server just derived from the drawing.
+// Without this the Δ tag, the save chip and the inspector kept showing the
+// pre-resize state, and committing the stale W/H fields wrote the old size back.
+function fpAdoptPlacement(pl, data) {
+  if (!pl || !data) return;
+  pl.areaDirty = data.areaDirty === true;
+  if (data.unit) {
+    pl.sqft = data.unit.sqft;
+    pl.status = String(data.unit.status || pl.status || '').toUpperCase();
+    if (data.unit.size) {
+      pl.sizeCode = data.unit.size.code;
+      pl.sizeName = data.unit.size.name;
+    }
+  }
+}
+
+function fpRefreshAfterSave() {
+  fpRenderCanvas();
+  // Never rebuild the inspector under a field the operator is typing in.
+  const info = $('#fpSelInfo');
+  if (!(info && info.contains(document.activeElement) && /^(INPUT|SELECT|TEXTAREA)$/.test(document.activeElement.tagName))) fpRenderSelInfo();
+  fpRenderSaveStatus();
+}
+
 async function fpPersist(pl, verb) {
   const undoPrev = pl._undoPrev || null;
   pl._undoPrev = null;
   try {
-    await fpMutate(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/units/${encodeURIComponent(pl.unitId)}`, {
+    const res = await fpMutate(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/units/${encodeURIComponent(pl.unitId)}`, {
       method: 'PUT',
       body: JSON.stringify({ x: pl.x, y: pl.y, width: pl.width, height: pl.height, stackTier: pl.stackTier || 0 }),
     });
+    fpAdoptPlacement(pl, res && res.data);
+    fpRefreshAfterSave();
     if (undoPrev) fpPushUndo({ kind: 'placement', unitId: pl.unitId, prev: { ...undoPrev, doorEdges: pl.doorEdges || null } });
     fpToast(`${verb} ${pl.unitCode} → ${pl.x},${pl.y} · ${pl.width}×${pl.height} ft`, true);
     notifyMetricsFloorChanged();
@@ -4365,11 +4416,13 @@ async function fpPersistPair(lower, upper, verb) {
   upper._undoPrev = null;
   try {
     for (const p of [lower, upper]) {
-      await fpMutate(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/units/${encodeURIComponent(p.unitId)}`, {
+      const res = await fpMutate(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/units/${encodeURIComponent(p.unitId)}`, {
         method: 'PUT',
         body: JSON.stringify({ x: p.x, y: p.y, width: p.width, height: p.height, stackTier: p.stackTier || 0 }),
       });
+      fpAdoptPlacement(p, res && res.data);
     }
+    fpRefreshAfterSave();
     for (const p of [lower, upper]) {
       const prev = undoPrevs.get(p.unitId);
       if (prev) fpPushUndo({ kind: 'placement', unitId: p.unitId, prev: { ...prev, doorEdges: p.doorEdges || null } });
@@ -7506,6 +7559,23 @@ export function fpInitEvents() {
     const num = e.target && e.target.dataset ? e.target.dataset.fpNum : null;
     if (num) {
       const target = fpSelectionTarget();
+      // Tab / Shift+Tab: commit, then move to the neighbouring field ourselves.
+      // Committing rebuilds the inspector, so the browser's own Tab move would
+      // land on a removed field and drop focus to the page (typed H was lost).
+      if (e.key === 'Tab') {
+        const order = [...$('#fpSelInfo').querySelectorAll('[data-fp-num]')].map((x) => x.dataset.fpNum);
+        const nextKey = order[order.indexOf(num) + (e.shiftKey ? -1 : 1)];
+        if (nextKey) {
+          e.preventDefault();
+          fpCommitNumField(e.target);
+          const next = $('#fpSelInfo').querySelector(`[data-fp-num="${nextKey}"]`);
+          if (next) {
+            next.focus({ preventScroll: true });
+            if (typeof next.select === 'function') next.select();
+          }
+          return;
+        }
+      }
       if (e.key === 'Enter') {
         e.preventDefault();
         fpCommitNumField(e.target);

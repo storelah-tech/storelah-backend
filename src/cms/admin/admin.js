@@ -2092,10 +2092,7 @@ async function disablePromoPlan(id, label, from) {
   }
   if (promoState.validated) delete promoState.validated[id];
   // Refresh the builder pill when the ended plan is the open working draft.
-  if (promoState.discountPlanId === id) {
-    var d = document.getElementById('discountPlanStatus');
-    if (d) { d.textContent = 'Ended'; d.className = 'pill grey'; }
-  }
+  if (promoState.discountPlanId === id) setPromoStatusPill('discountPlanStatus', 'ENDED');
   if (promoState.freePlanId === id) setPromoStatusPill('freePlanStatus', 'ENDED');
   if (promoState.codePlanId === id) setPromoStatusPill('codePlanStatus', 'ENDED');
   toast('Disabled ' + name + ' (ended)');
@@ -2512,14 +2509,14 @@ function setPromoStatusPill(elId, status) {
   const el = document.getElementById(elId);
   if (!el) return;
   const s = status || 'DRAFT';
-  const tone = s === 'ACTIVE' || s === 'VALIDATED' ? 'green' : s === 'SCHEDULED' ? 'amber' : 'grey';
+  const tone = s === 'ACTIVE' || s === 'VALIDATED' ? 'green' : s === 'SCHEDULED' || s === 'DRAFT' ? 'amber' : 'grey';
   el.textContent = s.charAt(0) + s.slice(1).toLowerCase();
   el.className = 'pill ' + tone;
 }
 
 // ---- Promotion builder scope controls (facility + floor, live data) ----
-// The discount-matrix header carries Facility / Floor / Storage-type selects
-// (#discountFacility / #discountFloorScope / #discountStorageType); the
+// The discount-matrix header carries Facility / Floor selects
+// (#discountFacility / #discountFloorScope); the
 // free-months builder carries #freeFacility. All populate from live
 // GET /branches (state.branches, same source as the sbBranch pattern) with
 // floors from GET /floors?branchId= for the selected facility. The hardcoded
@@ -2527,8 +2524,10 @@ function setPromoStatusPill(elId, status) {
 // the live fetch fails and boot refs are empty.
 //
 // Server mapping (read from core/promotionPlans.ts + routes/cms.ts — NO
-// contract change): facility → native facilityScope ([branchId] or ['ALL']),
-// storage type → native storageType. The plan schema has NO floor column, so
+// contract change): facility → native facilityScope ([branchId] or ['ALL']).
+// Storage type is intentionally unscoped (the matrix covers every size tier)
+// so the save payload omits storageType and the server treats the plan as
+// all-types. The plan schema has NO floor column, so
 // floor scope rides in the plan's EXISTING rules array as
 // { groupId: 0, field: 'floor', operator: 'equals', value: <floorId> }
 // (rules are free-form field/operator/value strings; validation only uses
@@ -2614,16 +2613,17 @@ async function refreshDiscountFloorOptions(preserve) {
 
 // Read the discount header selects into plan fields for POST/PUT
 // /promotion-plans (Save Draft, and Schedule/Publish which save first).
+// Storage type is intentionally unscoped: the matrix already covers every
+// size tier, so the payload omits storageType and the server treats the
+// plan as all-types.
 function collectDiscountScope() {
   var facSel = document.getElementById('discountFacility');
   var floorSel = document.getElementById('discountFloorScope');
-  var storeSel = document.getElementById('discountStorageType');
   var facilityScope = ['ALL'];
   if (facSel && facSel.value && !/^all$/i.test(facSel.value)) {
     var hit = matchPromoBranch(facSel.value);
     facilityScope = [hit ? hit.id : facSel.value];
   }
-  var storageType = storeSel && storeSel.value ? storeSel.value : undefined;
   var floorRules = [];
   if (floorSel && floorSel.value && !/^all$/i.test(floorSel.value)) {
     floorRules = [{ groupId: 0, field: PROMO_FLOOR_RULE_FIELD, operator: 'equals', value: floorSel.value }];
@@ -2632,7 +2632,6 @@ function collectDiscountScope() {
   var rules = preserved.concat(floorRules);
   return {
     facilityScope: facilityScope,
-    storageType: storageType,
     rules: rules,
     // Baseline loaded via Library Open: always send an explicit array (even
     // empty) so clearing a floor scope back to All wipes the stale rule.
@@ -2683,8 +2682,8 @@ function canonicalSizeCat(raw) {
 // Sets the working draft id so Save uses PUT /:id and Publish walks PATCH
 // /:id/status on the SAME row — never a copy. Cell mapping mirrors
 // saveDiscountPlan: row → size category, 4 inputs/row (commitment tiers
-// [1, 3, 6, 12]) always Standard. Scope selects (facility / floor / storage)
-// are restored from facilityScope + the floor rule + storageType so the
+// [1, 3, 6, 12]) always Standard. Scope selects (facility / floor)
+// are restored from facilityScope + the floor rule so the
 // operator sees and re-saves the same scope.
 async function populateDiscountPanel(plan) {
   if (!plan) return;
@@ -2697,7 +2696,6 @@ async function populateDiscountPanel(plan) {
   var floorRule = planRules.find(function (r) { return r.field === PROMO_FLOOR_RULE_FIELD; });
   var nameEl = document.getElementById('discountPlanName');
   const dateEl = document.getElementById('discountStartDate');
-  const statusEl = document.getElementById('discountPlanStatus');
   if (nameEl && plan.name) nameEl.value = plan.name;
   if (dateEl && plan.effectiveFrom) {
     const d = new Date(plan.effectiveFrom);
@@ -2727,13 +2725,9 @@ async function populateDiscountPanel(plan) {
       }
     });
   });
-  if (statusEl) {
-    const s = plan.status || 'DRAFT';
-    statusEl.textContent = s.charAt(0) + s.slice(1).toLowerCase();
-    statusEl.className = 'pill ' + (s === 'ACTIVE' || s === 'VALIDATED' ? 'green' : s === 'SCHEDULED' ? 'amber' : 'grey');
-  }
+  setPromoStatusPill('discountPlanStatus', plan.status || 'DRAFT');
   // Restore scope selects: facility from facilityScope (id/code/name/ALL),
-  // storage from storageType, floor from the floor rule (floor id). When the
+  // floor from the floor rule (floor id). When the
   // plan is facility-wide but carries a floor rule, follow the rule's floor
   // into its branch so the floor select can show it.
   try {
@@ -2756,18 +2750,6 @@ async function populateDiscountPanel(plan) {
     }
     var facSel = document.getElementById('discountFacility');
     if (facSel) refillScopeSelect(facSel, 'Facility: All', promoBranchRows(), facVal);
-    var storeSel = document.getElementById('discountStorageType');
-    if (storeSel && plan.storageType) {
-      var sv = String(plan.storageType);
-      var matched = Array.from(storeSel.options || []).some(function (o) { return o.value === sv; });
-      if (!matched && sv) {
-        var ro = document.createElement('option');
-        ro.value = sv;
-        ro.textContent = 'Storage: ' + sv;
-        storeSel.appendChild(ro);
-      }
-      storeSel.value = sv;
-    }
     await refreshDiscountFloorOptions(floorVal);
   } catch (e) { /* scope restore is best-effort; cells + status above already applied */ }
 }
@@ -3441,7 +3423,6 @@ function bootPromotions() {
   // POST /promotion-plans/:id/validate — the hardcoded 126-checks mock above
   // is only the first-paint skeleton until the fetch resolves) ---
   var validationModal = document.getElementById('validationModal');
-  var discountStatus = document.getElementById('discountPlanStatus');
   var discountPlanName = document.getElementById('discountPlanName');
   var discountStartDate = document.getElementById('discountStartDate');
 
@@ -3486,10 +3467,7 @@ function bootPromotions() {
       try {
         await patch('/promotion-plans/' + encodeURIComponent(pid) + '/status', { status: 'VALIDATED' });
         promoState.validated[pid] = true;
-        if (discountStatus) {
-          discountStatus.textContent = 'Validated';
-          discountStatus.className = 'pill green';
-        }
+        setPromoStatusPill('discountPlanStatus', 'VALIDATED');
         closeValidation();
         toast('Plan validated. It is ready to schedule.');
         bindPromotionsOverview().catch(function () {});
@@ -3537,10 +3515,7 @@ function bootPromotions() {
       if (discountStartDate) discountStartDate.value = new Date().toISOString().slice(0, 10);
       promoState.validated[promoState.discountPlanId] = false;
     } catch (e) { showBanner('Duplicate: ' + describeError(e)); return; }
-    if (discountStatus) {
-      discountStatus.textContent = 'Draft';
-      discountStatus.className = 'pill amber';
-    }
+    setPromoStatusPill('discountPlanStatus', 'DRAFT');
     var tab = document.querySelector('[data-tab="promo-discount-matrix"]');
     if (tab) tab.click();
     toast('Duplicated as a new editable draft');
@@ -3591,13 +3566,13 @@ function bootPromotions() {
       sizeScope: ['ALL'],
       matrixCells: matrixCells.length ? matrixCells : undefined,
     };
-    // Scope selections flow into the saved plan (facilityScope + storageType
-    // are native fields; floor scope rides the rules array — see
-    // collectDiscountScope). Schedule/Publish call saveDiscountPlan first, so
+    // Scope selections flow into the saved plan (facilityScope is a native
+    // field; floor scope rides the rules array — see
+    // collectDiscountScope). Storage type is intentionally omitted (all-types
+    // by default). Schedule/Publish call saveDiscountPlan first, so
     // they inherit scope automatically.
     var dscope = collectDiscountScope();
     payload.facilityScope = dscope.facilityScope;
-    if (dscope.storageType) payload.storageType = dscope.storageType;
     if (dscope.rules.length || dscope.hasBaseline) payload.rules = dscope.rules;
 
     try {
@@ -3612,10 +3587,7 @@ function bootPromotions() {
       toast('Save failed: ' + describeError(e));
     }
 
-    if (discountStatus) {
-      discountStatus.textContent = status;
-      discountStatus.className = 'pill ' + (status === 'Scheduled' ? 'amber' : 'grey');
-    }
+    setPromoStatusPill('discountPlanStatus', status === 'Scheduled' ? 'SCHEDULED' : 'DRAFT');
     // Refresh the library
     bindPromotionsOverview();
     return promoState.discountPlanId;
@@ -3645,10 +3617,7 @@ function bootPromotions() {
           promoState.validated[pid] = true;
         }
         await patch('/promotion-plans/' + encodeURIComponent(pid) + '/status', { status: 'SCHEDULED' });
-        if (discountStatus) {
-          discountStatus.textContent = 'Scheduled';
-          discountStatus.className = 'pill amber';
-        }
+        setPromoStatusPill('discountPlanStatus', 'SCHEDULED');
         toast('Plan scheduled');
         bindPromotionsOverview().catch(function () {});
       } catch (e) {
@@ -3680,10 +3649,7 @@ function bootPromotions() {
           var pre = null;
           try { pre = await get('/promotion-plans/' + encodeURIComponent(pid)); } catch (e) { pre = null; }
           if (pre && pre.status === 'ACTIVE') {
-            if (discountStatus) {
-              discountStatus.textContent = 'Active';
-              discountStatus.className = 'pill green';
-            }
+            setPromoStatusPill('discountPlanStatus', 'ACTIVE');
             toast('Plan is already active');
             return;
           }
@@ -3695,10 +3661,7 @@ function bootPromotions() {
         try { current = await get('/promotion-plans/' + encodeURIComponent(pid)); } catch (e) { current = null; }
         var status = current && current.status;
         if (status === 'ACTIVE') {
-          if (discountStatus) {
-            discountStatus.textContent = 'Active';
-            discountStatus.className = 'pill green';
-          }
+          setPromoStatusPill('discountPlanStatus', 'ACTIVE');
           toast('Plan is already active');
           return;
         }
@@ -3712,10 +3675,7 @@ function bootPromotions() {
           status = 'SCHEDULED';
         }
         await patch('/promotion-plans/' + encodeURIComponent(pid) + '/status', { status: 'ACTIVE' });
-        if (discountStatus) {
-          discountStatus.textContent = 'Active';
-          discountStatus.className = 'pill green';
-        }
+        setPromoStatusPill('discountPlanStatus', 'ACTIVE');
         toast('Plan is now active');
         bindPromotionsOverview().catch(function () {});
       } catch (e) {

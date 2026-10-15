@@ -351,7 +351,22 @@ const floorPlanCanvasSchema = z.object({
   // Operator-entered GFA (sqft): positive, capped server-side at 10M; null
   // clears back to unset (metrics fall back to the canvas rect); omitted keeps.
   gfaSqft: z.number().positive().max(10000000).nullish(),
+  // Operator plan label (header rename affordance): trimmed 1..80 chars
+  // server-side (empty is 400); null clears back to untitled; omitted keeps.
+  name: z.string().trim().max(80).nullish(),
 });
+
+// Authored door positions (door-move tool): per-edge door-centre fractions
+// along the edge (0..1); omitted keeps, null clears back to centred. Unknown
+// keys are stripped by zod; out-of-range values are 400 server-side.
+const floorPlanDoorOffsetsSchema = z
+  .object({
+    N: z.number().min(0).max(1).optional(),
+    S: z.number().min(0).max(1).optional(),
+    E: z.number().min(0).max(1).optional(),
+    W: z.number().min(0).max(1).optional(),
+  })
+  .nullish();
 
 const floorPlanListQuerySchema = z.object({
   branch: z.string().trim().min(1).optional(),
@@ -370,6 +385,9 @@ const floorPlanPlacementSchema = z.object({
   // placement's edges, null clears back to unauthored (AUTO_ALL_EDGES in
   // metrics), an array replaces. Additive — old clients simply omit it.
   doorEdges: z.array(z.enum(['N', 'S', 'E', 'W'])).max(4).nullish(),
+  // Authored door positions (door-move tool): omitted keeps, null clears,
+  // an object replaces (pruned to the effective authored edges server-side).
+  doorOffsets: floorPlanDoorOffsetsSchema,
 });
 
 const floorPlanBlockSchema = z.object({
@@ -1403,9 +1421,10 @@ router.get('/floor-plans/:floorId', requireAuth, async (req: Request, res: Respo
   ok(res, await getFloorPlan(String(req.params.floorId)));
 });
 
-// Upsert the plan canvas (width / height / structure / operator-entered GFA) —
-// create if absent, then update the provided fields. ALWAYS persists as DRAFT
-// (Save Canvas never publishes — see POST .../publish). 201 (created/upserted).
+// Upsert the plan canvas (width / height / structure / operator-entered GFA /
+// operator plan label) — create if absent, then update the provided fields.
+// ALWAYS persists as DRAFT (Save Canvas never publishes — see POST
+// .../publish). 201 (created/upserted).
 router.post('/floor-plans/:floorId', requireAuth, async (req: Request, res: Response) => {
   const parsed = floorPlanCanvasSchema.safeParse(req.body);
   if (!parsed.success) {
@@ -1419,6 +1438,7 @@ router.post('/floor-plans/:floorId', requireAuth, async (req: Request, res: Resp
       height: parsed.data.height,
       structure: parsed.data.structure,
       gfaSqft: parsed.data.gfaSqft,
+      name: parsed.data.name,
     }),
   );
 });
@@ -1772,6 +1792,7 @@ const floorPlanDraftPlacementSchema = z.object({
   height: z.number().positive(),
   stackTier: z.number().int().min(0).max(1).optional(),
   doorEdges: z.array(z.enum(['N', 'S', 'E', 'W'])).max(4).nullish(),
+  doorOffsets: floorPlanDoorOffsetsSchema,
 });
 
 const floorPlanDraftBlockSchema = z.object({

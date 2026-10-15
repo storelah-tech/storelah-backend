@@ -97,6 +97,7 @@ export const state = {
     wallThickness: 0.5, // default thickness (ft) for new WALL lines (follows the last thickness typed)
     objSnap: true, // snap to line endpoints/midpoints/edges and unit/block corners (toolbar #fpObjSnap)
     measureMode: false, // 📏 measure tool active (two clicks → temporary dimension; Esc clears)
+    doorMove: false, // 🚪 move-door tool active (click a door, drag along its edge; D toggles, Esc cancels)
     newUnitMode: false, // ＋ New Unit tool active (drag a rectangle → create a DRAFT unit; N toggles, Esc cancels)
     draftSpecs: {}, // unitId → { monthlyRate, sqft } typed in the new-unit form (replayed when undo re-creates a discarded draft)
     multi: [], // multi-selection [{ type: 'placement'|'block'|'marker', id }] (Shift-click / marquee / Cmd+A); 0–1 items = single selection

@@ -174,7 +174,10 @@ function serializeUnitSummary(u: PlacementUnit) {
   };
 }
 
-function serializePlacement(p: { id: string; x: number; y: number; width: number; height: number; stackTier: number; doorEdges: string | null; areaDirty?: boolean; unit: PlacementUnit }) {
+function serializePlacement(
+  p: { id: string; x: number; y: number; width: number; height: number; stackTier: number; doorEdges: string | null; doorOffsets: unknown; areaDirty?: boolean; unit: PlacementUnit },
+  opts: { publicView?: boolean } = {},
+) {
   return {
     id: p.id,
     x: p.x,
@@ -186,6 +189,10 @@ function serializePlacement(p: { id: string; x: number; y: number; width: number
     // Authored door compass edges (N/S/E/W toggles); null = unauthored
     // (metrics bridge falls back to AUTO_ALL_EDGES for this unit).
     doorEdges: doorEdgesToArray(p.doorEdges),
+    // Authored door positions along their edges (door-move tool fractions);
+    // null = all doors centred. CMS-only: public reads keep the pre-existing
+    // shape (doorEdges only) so booking output is byte-identical.
+    ...(opts.publicView ? {} : { doorOffsets: doorOffsetsToObject(p.doorOffsets) }),
     // Floor-plan unit sync: drawn area differs from Unit.sqft and will sync on publish.
     areaDirty: p.areaDirty === true,
     unit: serializeUnitSummary(p.unit),
@@ -607,6 +614,10 @@ function serializePlan(p: PlanPayload, opts: { publicView?: boolean } = {}) {
     // plans). Floor plans use the DRAFT/ACTIVE subset only — publish walks
     // DRAFT → ACTIVE directly (see publishFloorPlan).
     status: p.status,
+    // Operator plan label (CMS rename affordance). CMS-only: public reads
+    // keep the pre-existing shape (no new public fields — booking renders
+    // centred doors and floor/branch names only).
+    ...(opts.publicView ? {} : { name: p.name ?? null }),
     width: p.width,
     height: p.height,
     structure: p.structure,
@@ -614,7 +625,7 @@ function serializePlan(p: PlanPayload, opts: { publicView?: boolean } = {}) {
     floor: { id: p.floor.id, level: p.floor.level, name: p.floor.name },
     // Public reads never expose DRAFT units (unpublished floor-plan designs);
     // publish promotes them, so this only guards odd states.
-    placements: (opts.publicView ? p.placements.filter((pl) => pl.unit.status !== 'DRAFT') : p.placements).map(serializePlacement),
+    placements: (opts.publicView ? p.placements.filter((pl) => pl.unit.status !== 'DRAFT') : p.placements).map((pl) => serializePlacement(pl, opts)),
     blocks: p.blocks.map(serializeBlock),
     // Safety/facility point icons (grid-ft points) in authored order.
     markers: p.markers.map(serializeMarker),
@@ -681,6 +692,18 @@ function checkBlockName(name: string): string {
   return trimmed;
 }
 
+// Operator plan label (header rename affordance): trimmed 1..80 chars, same
+// rule as block names; null clears back to untitled. Undefined (omitted)
+// keeps the current value.
+function checkPlanName(name: string | null): string | null {
+  if (name === null) return null;
+  const trimmed = name.trim();
+  if (!trimmed || trimmed.length > 80) {
+    throw new AppError(400, 'VALIDATION', 'Plan name must be a non-empty string of at most 80 characters');
+  }
+  return trimmed;
+}
+
 // Block fill colour: null/undefined = unset (renderers fall back to the
 // default block tone); otherwise a CSS hex colour (#RGB or #RRGGBB, stored
 // uppercased). Anything else is 400 — the editor offers a fixed palette plus
@@ -730,6 +753,60 @@ export function doorEdgesToArray(stored: string | null | undefined): DoorEdge[] 
     .map((s) => s.trim())
     .filter((s) => s === 'N' || s === 'S' || s === 'E' || s === 'W') as DoorEdge[];
   return parts.length > 0 ? parts : null;
+}
+
+// Authored door positions along their edges (door-move tool): each authored
+// compass edge maps to the door-centre fraction along that edge (0..1,
+// 0.5 = centred, the legacy render). Stored as a JSON object (or NULL = all
+// centred); readers intersect with the authored doorEdges, so stale keys for
+// removed edges are ignored.
+export type DoorOffsets = Partial<Record<DoorEdge, number>>;
+
+/**
+ * Normalise authored door offsets for storage. `undefined` means "not
+ * supplied — keep the current value" (upsert endpoints); `null` clears back
+ * to centred; an object stores per-edge 0..1 fractions (rounded to 0.001).
+ * Keys outside N/S/E/W or values outside 0..1 are 400. When `edges` is given,
+ * keys for non-authored edges are pruned (toggling an edge off drops its
+ * offset); `edges: null` (unauthored) normalises any object to null since
+ * unauthored placements have no offsets — centred render.
+ */
+export function normalizeDoorOffsets(
+  input: Record<string, unknown> | null | undefined,
+  edges?: readonly string[] | null,
+): DoorOffsets | null | undefined {
+  if (input === undefined) return undefined;
+  if (input === null) return null;
+  if (typeof input !== 'object' || Array.isArray(input)) {
+    throw new AppError(400, 'VALIDATION', 'doorOffsets must be an object mapping a compass edge (N/S/E/W) to a 0..1 door position, or null to clear');
+  }
+  const out: DoorOffsets = {};
+  for (const [k, v] of Object.entries(input)) {
+    if (k !== 'N' && k !== 'S' && k !== 'E' && k !== 'W') {
+      throw new AppError(400, 'VALIDATION', `doorOffsets keys must be a subset of ["N","S","E","W"] — got ${JSON.stringify(k)}`);
+    }
+    const n = Number(v);
+    if (!Number.isFinite(n) || n < 0 || n > 1) {
+      throw new AppError(400, 'VALIDATION', `doorOffsets.${k} must be a number between 0 and 1 (door-centre fraction along the edge) — got ${JSON.stringify(v)}`);
+    }
+    out[k] = Math.round(n * 1000) / 1000;
+  }
+  if (edges === null) return null;
+  if (edges) {
+    for (const k of Object.keys(out) as DoorEdge[]) if (!edges.includes(k)) delete out[k];
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+/** Stored JSON -> per-edge offset object; malformed/empty -> null (centred). Never throws on read. */
+export function doorOffsetsToObject(stored: unknown): DoorOffsets | null {
+  if (!stored || typeof stored !== 'object' || Array.isArray(stored)) return null;
+  const out: DoorOffsets = {};
+  for (const e of DOOR_EDGE_ORDER) {
+    const n = Number((stored as Record<string, unknown>)[e]);
+    if (Number.isFinite(n) && n >= 0 && n <= 1) out[e] = Math.round(n * 1000) / 1000;
+  }
+  return Object.keys(out).length ? out : null;
 }
 
 // ---------- corridor → door inference (auto-doors) ----------
@@ -825,6 +902,10 @@ export interface UpsertFloorPlanInput {
   // capped at MAX_GFA_SQFT); null clears back to unset; omitted keeps the
   // current value. Additive — old clients simply omit it.
   gfaSqft?: number | null;
+  // Operator plan label (header rename affordance): trimmed 1..80 chars; null
+  // clears back to untitled; omitted keeps the current value. Additive — old
+  // clients simply omit it.
+  name?: string | null;
 }
 
 // Sanity cap for an operator-entered GFA (sqft): far above the largest
@@ -856,6 +937,9 @@ export async function upsertFloorPlan(floorId: string, input: UpsertFloorPlanInp
   if (input.gfaSqft !== undefined) {
     update.gfaSqft = input.gfaSqft === null ? null : checkGfaSqft(input.gfaSqft);
   }
+  if (input.name !== undefined) {
+    update.name = input.name === null ? null : checkPlanName(input.name);
+  }
 
   const create: Prisma.FloorPlanCreateInput = {
     floor: { connect: { id: floorId } },
@@ -864,6 +948,7 @@ export async function upsertFloorPlan(floorId: string, input: UpsertFloorPlanInp
     width: input.width !== undefined ? checkCanvasDim(input.width, 'width') : CANVAS_DEFAULTS.width,
     height: input.height !== undefined ? checkCanvasDim(input.height, 'height') : CANVAS_DEFAULTS.height,
     ...(input.gfaSqft !== undefined && input.gfaSqft !== null ? { gfaSqft: checkGfaSqft(input.gfaSqft) } : {}),
+    ...(input.name !== undefined && input.name !== null ? { name: checkPlanName(input.name) } : {}),
   };
   if (input.structure !== undefined) {
     create.structure = input.structure === null ? Prisma.JsonNull : (input.structure as Prisma.InputJsonValue);
@@ -954,6 +1039,11 @@ export interface PlacementGeometry {
   // placement's edges, null clears back to unauthored (AUTO_ALL_EDGES in
   // metrics), an array replaces. Additive — old clients simply omit it.
   doorEdges?: DoorEdge[] | null;
+  // Authored door positions along their edges (door-move tool): omitted keeps
+  // the placement's offsets, null clears back to centred, an object replaces
+  // (keys pruned to the effective authored edges). Additive — old clients
+  // simply omit it.
+  doorOffsets?: DoorOffsets | null;
 }
 
 // Only tiers 0 and 1 exist — lockers stack at most 2 high (upper + lower).
@@ -1232,6 +1322,10 @@ export async function setUnitPlacement(floorId: string, unitId: string, input: P
   const existing = await prisma.unitPlacement.findUnique({ where: { unitId } });
   const tier = geom.stackTier === undefined ? (existing?.stackTier ?? 0) : checkStackTier(geom.stackTier);
   const doorEdges = normalizeDoorEdges(geom.doorEdges); // undefined = keep, null = clear, CSV = replace
+  // Offsets prune to the effective authored edges (toggling an edge off drops
+  // its offset); unauthored placements stay centred. Omitted keeps.
+  const effectiveEdges = doorEdges === undefined ? doorEdgesToArray(existing?.doorEdges) : doorEdgesToArray(doorEdges);
+  const doorOffsets = normalizeDoorOffsets(geom.doorOffsets, effectiveEdges);
 
   const plan = await ensureCanvasPlan(floorId);
 
@@ -1385,6 +1479,7 @@ export async function setUnitPlacement(floorId: string, unitId: string, input: P
       stackTier: tier,
       areaDirty,
       ...(doorEdges !== undefined ? { doorEdges } : {}),
+      ...(doorOffsets !== undefined ? { doorOffsets: doorOffsets as unknown as Prisma.InputJsonValue } : {}),
     },
     update: {
       x: geom.x,
@@ -1394,6 +1489,7 @@ export async function setUnitPlacement(floorId: string, unitId: string, input: P
       stackTier: tier,
       areaDirty,
       ...(doorEdges !== undefined ? { doorEdges } : {}),
+      ...(doorOffsets !== undefined ? { doorOffsets: doorOffsets as unknown as Prisma.InputJsonValue } : {}),
     },
     include: { unit: { include: { size: true } } },
   });
@@ -1951,7 +2047,9 @@ export async function deleteFloorPlan(floorId: string) {
  *
  * Draft/publish gate: ONLY ACTIVE plans resolve. A draft-only floor reads as
  * plan: null — the exact shape booking already handles with its
- * UnitListFallback (no new public fields, no shape change).
+ * UnitListFallback (no new public fields, no shape change). CMS-only plan
+ * fields (name, doorOffsets) are stripped here — booking keeps centred doors
+ * and floor/branch names only.
  */
 export async function getPublicFloorPlan(branchCode: string, level: number) {
   const floor = await prisma.floor.findFirst({
@@ -2052,7 +2150,7 @@ export async function applyFloorPlanBatch(floorId: string, input: FloorPlanBatch
   const sizes = needSizes ? await loadSizeTiers() : [];
   const draftUpdates: Array<{ id: string; sqft: number; sizeId: string; monthlyRate: number }> = [];
   // areaDirty undefined = leave the stored flag (demoted uppers keep their rect).
-  const placementWrites: Array<{ unitId: string; x: number; y: number; width: number; height: number; stackTier: 0 | 1; doorEdges: string | null | undefined; areaDirty?: boolean }> = [];
+  const placementWrites: Array<{ unitId: string; x: number; y: number; width: number; height: number; stackTier: 0 | 1; doorEdges: string | null | undefined; doorOffsets: DoorOffsets | null | undefined; areaDirty?: boolean }> = [];
   const upUnitIds = (up.placements ?? []).map((p) => p.unitId);
   const units = upUnitIds.length
     ? await prisma.unit.findMany({ where: { id: { in: upUnitIds } }, include: { size: true } })
@@ -2086,7 +2184,11 @@ export async function applyFloorPlanBatch(floorId: string, input: FloorPlanBatch
     const explicitTier = geom.stackTier !== undefined;
     const tier = explicitTier ? checkStackTier(geom.stackTier as number) : ((existing?.stackTier ?? 0) === 1 ? 1 : 0);
     final.set(unit.id, { unitId: unit.id, unitCode: unit.unitCode, sizeCode: unit.size.code, x: geom.x, y: geom.y, width: geom.width, height: geom.height, stackTier: tier, explicitTier });
-    placementWrites.push({ unitId: unit.id, x: geom.x, y: geom.y, width: geom.width, height: geom.height, stackTier: tier, doorEdges: normalizeDoorEdges(geom.doorEdges), areaDirty });
+    // Offsets prune to the effective authored edges (explicit edges win, else
+    // the row's current edges); unauthored placements stay centred.
+    const batchDoorEdges = normalizeDoorEdges(geom.doorEdges);
+    const batchEffective = batchDoorEdges === undefined ? doorEdgesToArray(existing?.doorEdges) : doorEdgesToArray(batchDoorEdges);
+    placementWrites.push({ unitId: unit.id, x: geom.x, y: geom.y, width: geom.width, height: geom.height, stackTier: tier, doorEdges: batchDoorEdges, doorOffsets: normalizeDoorOffsets(geom.doorOffsets, batchEffective), areaDirty });
   }
   // ---- new units drawn on the canvas (created DRAFT inside the tx below) ----
   type CreateRow = {
@@ -2098,7 +2200,7 @@ export async function applyFloorPlanBatch(floorId: string, input: FloorPlanBatch
     name: string | null;
     hasAC: boolean;
     hasPillar: boolean;
-    geom: { x: number; y: number; width: number; height: number; stackTier: 0 | 1; doorEdges: string | null | undefined };
+    geom: { x: number; y: number; width: number; height: number; stackTier: 0 | 1; doorEdges: string | null | undefined; doorOffsets: DoorOffsets | null | undefined };
   };
   const createRows: CreateRow[] = [];
   if (creates.length) {
@@ -2135,7 +2237,7 @@ export async function applyFloorPlanBatch(floorId: string, input: FloorPlanBatch
         name,
         hasAC: c.hasAC ?? false,
         hasPillar: c.hasPillar ?? false,
-        geom: { ...g, stackTier: tier, doorEdges: normalizeDoorEdges(c.doorEdges) },
+        geom: { ...g, stackTier: tier, doorEdges: normalizeDoorEdges(c.doorEdges), doorOffsets: normalizeDoorOffsets(c.doorOffsets, doorEdgesToArray(normalizeDoorEdges(c.doorEdges))) },
       });
     }
   }
@@ -2162,7 +2264,7 @@ export async function applyFloorPlanBatch(floorId: string, input: FloorPlanBatch
     }
     const w = placementWrites.find((x) => x.unitId === id);
     if (w) w.stackTier = 0;
-    else placementWrites.push({ unitId: id, x: f.x, y: f.y, width: f.width, height: f.height, stackTier: 0, doorEdges: undefined });
+    else placementWrites.push({ unitId: id, x: f.x, y: f.y, width: f.width, height: f.height, stackTier: 0, doorEdges: undefined, doorOffsets: undefined });
   }
   for (const id of changed) {
     const f = final.get(id)!;
@@ -2254,9 +2356,9 @@ export async function applyFloorPlanBatch(floorId: string, input: FloorPlanBatch
             hasPillar: r.hasPillar,
           },
         });
-        const { doorEdges, ...g } = r.geom;
+        const { doorEdges, doorOffsets, ...g } = r.geom;
         await tx.unitPlacement.create({
-          data: { floorPlanId: plan.id, unitId: unit.id, ...g, ...(doorEdges !== undefined ? { doorEdges } : {}) },
+          data: { floorPlanId: plan.id, unitId: unit.id, ...g, ...(doorEdges !== undefined ? { doorEdges } : {}), ...(doorOffsets !== undefined ? { doorOffsets: doorOffsets as unknown as Prisma.InputJsonValue } : {}) },
         });
         created[r.tempId] = { id: unit.id, unitCode: unit.unitCode };
       }
@@ -2265,11 +2367,11 @@ export async function applyFloorPlanBatch(floorId: string, input: FloorPlanBatch
     if (del.markers?.length) await tx.floorPlanMarker.deleteMany({ where: { floorPlanId: plan.id, id: { in: del.markers } } });
     if (del.boundaries?.length) await tx.floorPlanBoundary.deleteMany({ where: { floorPlanId: plan.id, id: { in: del.boundaries } } });
     for (const w of placementWrites) {
-      const { doorEdges, areaDirty, ...g } = w;
+      const { doorEdges, doorOffsets, areaDirty, ...g } = w;
       await tx.unitPlacement.upsert({
         where: { unitId: w.unitId },
-        create: { floorPlanId: plan.id, ...g, ...(doorEdges !== undefined ? { doorEdges } : {}), ...(areaDirty !== undefined ? { areaDirty } : {}) },
-        update: { floorPlanId: plan.id, ...g, ...(doorEdges !== undefined ? { doorEdges } : {}), ...(areaDirty !== undefined ? { areaDirty } : {}) },
+        create: { floorPlanId: plan.id, ...g, ...(doorEdges !== undefined ? { doorEdges } : {}), ...(doorOffsets !== undefined ? { doorOffsets: doorOffsets as unknown as Prisma.InputJsonValue } : {}), ...(areaDirty !== undefined ? { areaDirty } : {}) },
+        update: { floorPlanId: plan.id, ...g, ...(doorEdges !== undefined ? { doorEdges } : {}), ...(doorOffsets !== undefined ? { doorOffsets: doorOffsets as unknown as Prisma.InputJsonValue } : {}), ...(areaDirty !== undefined ? { areaDirty } : {}) },
       });
     }
     for (const { id, doorEdges, ...b } of blockWrites) {

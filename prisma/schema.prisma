@@ -242,6 +242,10 @@ model FloorPlan {
   // publishing an ACTIVE plan is idempotent). Pre-workflow rows backfilled to
   // ACTIVE so live plans stay visible (see migration `floor_plan_status`).
   status    PlanStatus @default(DRAFT)
+  // Operator-given plan label (CMS-only working-copy name, e.g. "Level 2 —
+  // Option B"). Optional, CMS-editable while DRAFT; public reads never expose
+  // it (see serializePlan publicView). Additive, nullable, no backfill.
+  name      String?
   width     Float    @default(0) // canvas width in decimal FEET (0.001 ft precision)
   height    Float    @default(0) // canvas height in decimal FEET (0.001 ft precision)
   structure Json? // LEGACY free-form decorations (walls / corridors / entrance /
@@ -550,6 +554,13 @@ model UnitPlacement {
   // "E,S"); NULL means unauthored — the metrics bridge falls back to
   // AUTO_ALL_EDGES for that unit. Additive, nullable, no backfill needed.
   doorEdges   String?
+  // Authored door positions along their edges (door-move tool): JSON object
+  // mapping an authored compass edge to the door-centre fraction along that
+  // edge (0..1, 0.5 = centred, the legacy render). NULL = all doors centred.
+  // Only meaningful for authored edges — readers intersect with doorEdges, so
+  // stale keys for removed edges are ignored. CMS-only: public reads never
+  // expose it (see serializePlan publicView). Additive, nullable, no backfill.
+  doorOffsets Json?
   // Floor-plan unit sync (docs/FLOOR_PLAN_UNIT_SYNC_PLAN.md D2): true when the
   // drawn area changed since the last publish AND round(width × height) no
   // longer equals Unit.sqft — publish syncs Unit.sqft/size/rate from geometry and

@@ -6,8 +6,11 @@ import {
   FP_MARKER_KINDS,
   MAX_GFA_SQFT,
   boundaryPointsOf,
+  doorOffsetsToObject,
   normalizeDoorEdges,
+  normalizeDoorOffsets,
   publishFloorPlan,
+  type DoorOffsets,
   type PublishFloorPlanOptions,
 } from './floorPlans';
 import { loadContractedUnits, sameSqft, sqftForRect } from './unitSizing';
@@ -70,6 +73,9 @@ export interface DraftPlacementSnapshot {
   height: number;
   stackTier: 0 | 1;
   doorEdges: string[] | null;
+  // Authored door positions (door-move tool fractions per edge); null = all
+  // centred. Snapshots keep the OBJECT form the preview/editor consume.
+  doorOffsets: DoorOffsets | null;
 }
 
 export interface DraftBlockSnapshot {
@@ -125,6 +131,11 @@ export interface DraftPlacementInput {
   height: number;
   stackTier?: number;
   doorEdges?: string[] | null;
+  // Authored door positions (door-move tool); pruned to the authored edges on
+  // save, null clears back to centred, omitted clears too — same defaulting
+  // as doorEdges (the editor always sends explicit values; the live fallback
+  // below is the keep path).
+  doorOffsets?: Record<string, number> | null;
 }
 
 export interface DraftBlockInput {
@@ -307,8 +318,13 @@ export async function saveDraft(floorId: string, input: SaveDraftInput = {}) {
       }
       // Validates the compass subset (400 outside N/S/E/W); snapshots keep the
       // authored ARRAY form the preview consumes (publish re-encodes to CSV).
+      // Offsets prune to the authored edges (toggling an edge off drops its
+      // offset); omitted clears back to centred — same defaulting as doorEdges
+      // (the editor always sends explicit values; the live fallback below is
+      // the keep path).
       const doorCsv = normalizeDoorEdges(p.doorEdges);
       const doorArr = doorCsv == null ? null : String(doorCsv).split(',');
+      const doorOffsets = normalizeDoorOffsets(p.doorOffsets, doorArr) ?? null;
       const unit = await prisma.unit.findUnique({ where: { id: p.unitId }, include: { size: true } });
       if (!unit) throw new AppError(404, 'NOT_FOUND', `Unit ${p.unitId} not found`);
       if (unit.floorId !== floorId) {
@@ -336,6 +352,7 @@ export async function saveDraft(floorId: string, input: SaveDraftInput = {}) {
         height: p.height,
         stackTier: tier as 0 | 1,
         doorEdges: doorArr,
+        doorOffsets,
       });
     }
   } else {
@@ -355,6 +372,7 @@ export async function saveDraft(floorId: string, input: SaveDraftInput = {}) {
       height: p.height,
       stackTier: (p.stackTier === 1 ? 1 : 0) as 0 | 1,
       doorEdges: p.doorEdges ? String(p.doorEdges).split(',') : null,
+      doorOffsets: doorOffsetsToObject(p.doorOffsets),
     }));
   }
 
@@ -646,6 +664,7 @@ async function resolveDraftSnapshotRows(draft: DraftWithFloor) {
         height: r.height,
         stackTier: p.stackTier === 1 ? 1 : 0,
         doorEdges: (normalizeDoorEdges(p.doorEdges) ?? null) as string | null,
+        doorOffsets: (normalizeDoorOffsets(p.doorOffsets, p.doorEdges) ?? Prisma.JsonNull) as unknown as Prisma.InputJsonValue,
         areaDirty: (() => {
           const prev = liveByUnit.get(unitId);
           const changed = !prev || prev.areaDirty || rectAreaSqft(prev) !== rectAreaSqft(r);

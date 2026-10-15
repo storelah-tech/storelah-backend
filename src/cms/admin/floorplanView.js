@@ -53,12 +53,17 @@ const FP_BASE = 24; // px per foot at zoom 1 (BLUEPRINT SCALE: 1 grid unit = 1 f
 let fpDimsTimer = null;
 
 // ---------- toolbar groups (canonical order + audit) ----------
-// The toolbar markup (#fpToolbar in dashboard.html) is one scrolling row
-// grouped as panel → tools → options → actions → markers → view → zoom.
+// The toolbar markup (#fpToolbar in dashboard.html) is a wrapping multi-row
+// bar grouped as tools → options → actions → markers → view → zoom.
+// (OVERRIDE 2026-10-15: the old single-row-scroll spec in
+// docs/floorplan-toolbar-redesign.md is superseded — the doc is left as-is.)
 // This registry is the single source of truth for that order (operator mental
-// model: Units panel toggle; Select/New-unit/Walls/Block/Marker/Measure tools;
+// model: Select/New-unit/Walls/Block/Marker/Measure tools;
 // mode-dependent tool options; plan actions; safety markers; canvas view
-// chrome; zoom pill; shortcuts). Controls that moved to the header (Undo,
+// chrome; zoom pill; shortcuts). The Units section toggle (#fpPaletteToggle)
+// lives in the always-visible #fpPaletteBar below the toolbar — not inside
+// #fpToolbar — so it is deliberately not registered. Controls that moved to
+// the header (Undo,
 // Redo, save status, Export, Save-as-draft, Delete) or the status bar
 // (selection info, metrics, cursor readout, plan W/H/GFA inputs, Save plan
 // size) live outside #fpToolbar, so they are deliberately not registered.
@@ -70,11 +75,10 @@ let fpDimsTimer = null;
 // fpRenderUnderlayMenu, not the static toolbar chrome. Audit is console-only
 // and never blocks the editor.
 const FP_TOOLBAR_GROUPS = [
-  { id: 'panel', label: 'Units panel', tools: ['fpPaletteReopen'] },
   // Palette-chip drags need no mode (fpStartPaletteDrag never checks
   // state.fp.tool), so the old Add-Unit mode button is gone — no hidden
   // stand-in, no registry entry.
-  { id: 'tools', label: 'Tools', tools: ['fpModeSelect', 'fpNewUnitTool', 'fpBoundaryTool', 'fpAddBlock', 'fpMeasureTool'] },
+  { id: 'tools', label: 'Tools', tools: ['fpModeSelect', 'fpNewUnitTool', 'fpBoundaryTool', 'fpAddBlock', 'fpMeasureTool', 'fpDoorMove'] },
   { id: 'options', label: 'Tool options', tools: ['fpRotateGhost', 'fpLockSqft'] },
   { id: 'actions', label: 'Plan actions', tools: ['fpAutoPlace', 'fpAutoDoors', 'fpSizesBtn'] },
   { id: 'markers', label: 'Markers/Safety', tools: ['fpMarkersBtn', 'fpMarkerTools'] },
@@ -422,13 +426,26 @@ function fpSetReadout(text) {
   if (el) el.textContent = text || '';
 }
 
-// Hover readout: snapped cursor position + the active snap step.
+// Hover readout: snapped cursor position + the active snap step. While the
+// move-door tool is armed, hovering a door names it (edge + unit) so doors
+// read as grabbable; locked placements name the lock instead.
 function fpOnCanvasHover(e) {
   const canvas = $('#fpCanvas');
   if (!canvas || !canvas.contains(e.target)) return;
   if (state.fp.drawMode || state.fp.measureMode) {
     fpPenHover(e); // rubber band / measure / snap indicator own the readout
     return;
+  }
+  if (state.fp.doorMove && !fpDoorDrag && !fpLayerLocked('units') && !fpLayerHidden('units')) {
+    const hit = fpDoorHitAt(e.clientX, e.clientY);
+    if (hit) {
+      fpSetReadout(
+        fpIsOccupiedLocked(hit.pl)
+          ? `Door ${hit.edge} of ${hit.pl.unitCode} — Occupied — uneditable when live`
+          : `Door ${hit.edge} of ${hit.pl.unitCode} — drag along the edge to reposition · Esc cancels`,
+      );
+      return;
+    }
   }
   const p = fpCanvasPointAt(e.clientX, e.clientY, e);
   if (!p) return;
@@ -447,16 +464,56 @@ function fpEffectiveDoors(pl) {
   const authored = Array.isArray(pl.doorEdges) && pl.doorEdges.length ? pl.doorEdges : null;
   return { edges: authored ? authored.slice() : ['N', 'S', 'E', 'W'], authored: !!authored };
 }
+// Authored door positions (door-move tool): per-edge door-centre fractions
+// along the edge (0..1, 0.5 = centred, the legacy render). Intersected with
+// the effective edges, so stale keys for removed edges never render; null =
+// all doors centred. Defensive copy — callers may mutate the result freely.
+function fpDoorOffsetsOf(pl) {
+  const { edges } = fpEffectiveDoors(pl);
+  const src = pl && pl.doorOffsets && typeof pl.doorOffsets === 'object' && !Array.isArray(pl.doorOffsets) ? pl.doorOffsets : null;
+  if (!src) return null;
+  const out = {};
+  for (const e of edges) {
+    const n = Number(src[e]);
+    if (Number.isFinite(n) && n >= 0 && n <= 1) out[e] = Math.round(n * 1000) / 1000;
+  }
+  return Object.keys(out).length ? out : null;
+}
+// Offset-aware tick placement: a door sits centred (legacy 32% inset) unless
+// an authored offset moves its centre along the edge. Ticks stay 36% of the
+// edge; centres clamp to [18%, 82%] so a tick never overhangs a corner. The
+// in-drag edge (pl._doorDragEdge, transient, never persisted) gets a terra
+// ring so the live ghost reads while dragging.
 function fpDoorMarkersHTML(pl, u) {
   const { edges, authored } = fpEffectiveDoors(pl);
+  const offsets = fpDoorOffsetsOf(pl);
   const t = Math.max(3, Math.round(u * 0.2));
   const tone = authored ? 'authored' : 'auto';
+  const pos = (e) => {
+    const c = Math.min(0.82, Math.max(0.18, offsets && offsets[e] != null ? offsets[e] : 0.5));
+    return `${((c - 0.18) * 100).toFixed(2)}%`;
+  };
+  const hot = (e) => (pl && pl._doorDragEdge === e ? 'box-shadow:0 0 0 2px #7A3B28;' : '');
   const bits = [];
-  if (edges.includes('N')) bits.push(`<div class="fp-door fp-door-n ${tone}" style="height:${t}px" aria-hidden="true"></div>`);
-  if (edges.includes('S')) bits.push(`<div class="fp-door fp-door-s ${tone}" style="height:${t}px" aria-hidden="true"></div>`);
-  if (edges.includes('W')) bits.push(`<div class="fp-door fp-door-w ${tone}" style="width:${t}px" aria-hidden="true"></div>`);
-  if (edges.includes('E')) bits.push(`<div class="fp-door fp-door-e ${tone}" style="width:${t}px" aria-hidden="true"></div>`);
+  if (edges.includes('N')) bits.push(`<div class="fp-door fp-door-n ${tone}" style="height:${t}px;left:${pos('N')};width:36%;${hot('N')}" aria-hidden="true"></div>`);
+  if (edges.includes('S')) bits.push(`<div class="fp-door fp-door-s ${tone}" style="height:${t}px;left:${pos('S')};width:36%;${hot('S')}" aria-hidden="true"></div>`);
+  if (edges.includes('W')) bits.push(`<div class="fp-door fp-door-w ${tone}" style="width:${t}px;top:${pos('W')};height:36%;${hot('W')}" aria-hidden="true"></div>`);
+  if (edges.includes('E')) bits.push(`<div class="fp-door fp-door-e ${tone}" style="width:${t}px;top:${pos('E')};height:36%;${hot('E')}" aria-hidden="true"></div>`);
   return bits.join('');
+}
+// Normalize a server/snapshot doorOffsets value against authored edges (client
+// mirror of normalizeDoorOffsets pruning): object form only, keys outside the
+// effective edges dropped, values outside 0..1 dropped; null when empty.
+function fpNormalizeDoorOffsets(v, edges) {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+  const eff = Array.isArray(edges) && edges.length ? edges : null;
+  const out = {};
+  for (const e of ['N', 'S', 'E', 'W']) {
+    if (eff && !eff.includes(e)) continue;
+    const n = Number(v[e]);
+    if (Number.isFinite(n) && n >= 0 && n <= 1) out[e] = Math.round(n * 1000) / 1000;
+  }
+  return Object.keys(out).length ? out : null;
 }
 
 function fpNormalizeUnit(u) {
@@ -494,6 +551,9 @@ function fpNormalizePlacements(plan) {
     // Authored door compass edges (editor N/S/E/W toggles); null = unauthored
     // (metrics falls back to AUTO_ALL_EDGES for this unit).
     doorEdges: Array.isArray(p.doorEdges) && p.doorEdges.length ? p.doorEdges.slice() : null,
+    // Authored door positions (door-move tool fractions per edge); null = all
+    // centred. Pruned to the authored edges so stale keys never render.
+    doorOffsets: fpNormalizeDoorOffsets(p.doorOffsets, Array.isArray(p.doorEdges) && p.doorEdges.length ? p.doorEdges : null),
     // Unit sync: drawn area ≠ unit sqft — the unit's size updates on publish.
     areaDirty: p.areaDirty === true,
   }));
@@ -977,7 +1037,10 @@ async function fpFetch() {
     fpClampCanvasContent(d.w, d.h);
     fpRender();
     fpRenderMarkerTools();
-    fpSetPaletteCollapsed(false);
+    // Default: Units section collapsed so the canvas gets the full space —
+    // the operator expands it via the Units header toggle (the block form
+    // re-opens the section itself via fpToggleBlockForm).
+    fpSetPaletteCollapsed(true);
     notifyMetricsFloorChanged();
     fpFetchDrafts().catch(() => {});
     // The Sizes chip follows the server count (also refreshed after the
@@ -1055,20 +1118,21 @@ function fpRenderPalette() {
 
 function fpSetPaletteCollapsed(collapsed) {
   const layout = document.querySelector('#facility-floorplans .fp-layout');
+  const pane = document.getElementById('fpPalettePane');
   const toggle = $('#fpPaletteToggle');
-  const reopen = $('#fpPaletteReopen');
   if (layout) layout.classList.toggle('collapsed', collapsed);
+  // The hidden attribute mirrors the collapsed class: while collapsed the
+  // pane reserves no layout space and its chips/filter stay out of the Tab
+  // order (belt-and-braces over the .collapsed .fp-palette display:none
+  // rule). DOM order is toolbar → Units header bar → pane → canvas.
+  if (pane) pane.hidden = collapsed;
   if (toggle) {
     toggle.setAttribute('aria-expanded', String(!collapsed));
-    toggle.textContent = collapsed ? '›' : '‹';
-    toggle.title = collapsed ? 'Show the units palette to drag more units' : 'Collapse the units palette to give the canvas more space';
-  }
-  // The toolbar Units toggle is always visible (it is the palette's on/off
-  // switch): aria-pressed mirrors "palette open".
-  if (reopen) {
-    reopen.hidden = false;
-    reopen.classList.toggle('on', !collapsed);
-    reopen.setAttribute('aria-pressed', String(!collapsed));
+    // Section-header chevron (the Units header bar sits below the toolbar):
+    // ∧ open / ∨ collapsed. aria-expanded sync is the contract — the glyph
+    // is cosmetic.
+    toggle.textContent = collapsed ? '∨' : '∧';
+    toggle.title = collapsed ? 'Show the units panel to drag more units' : 'Collapse the units panel to give the canvas more room';
   }
 }
 
@@ -1077,7 +1141,7 @@ function fpPaletteCollapsed() {
 }
 
 // Palette auto-collapse policy: the unplaced-units palette collapses ONLY on
-// an explicit toggle (fpPaletteToggle / fpPaletteReopen) or a successful
+// an explicit toggle (#fpPaletteToggle) or a successful
 // palette drop (place, stack-drop, auto-place-all). Selecting, moving,
 // resizing or removing a PLACED unit must never collapse it — those paths
 // deliberately never call fpSetPaletteCollapsed. Drop-success sites collapse
@@ -1209,7 +1273,7 @@ async function fpAutoDoors() {
         body: JSON.stringify({ x: pl.x, y: pl.y, width: pl.width, height: pl.height, stackTier: pl.stackTier || 0, doorEdges: inferred }),
       });
       pl.doorEdges = res && res.data ? res.data.doorEdges : inferred;
-      fpPushUndo({ kind: 'placement', unitId: pl.unitId, prev: { x: pl.x, y: pl.y, width: pl.width, height: pl.height, stackTier: pl.stackTier || 0, doorEdges: null } });
+      fpPushUndo({ kind: 'placement', unitId: pl.unitId, prev: { x: pl.x, y: pl.y, width: pl.width, height: pl.height, stackTier: pl.stackTier || 0, doorEdges: null, doorOffsets: null } });
       applied += 1;
     } catch (err) {
       fpToast(`Auto-doors ${pl.unitCode}: ${describeError(err)}`, false);
@@ -1492,8 +1556,9 @@ function fpRenderCanvas() {
   // Line-tool affordance: crosshair while draw mode is armed (mode-gated —
   // placement/block drags only run when the tool is toggled off). An armed
   // marker (Markers/Safety group) behaves the same — the next canvas click
-  // places it, so the crosshair applies there too.
-  canvas.style.cursor = state.fp.underlayMode === 'move' ? 'move' : state.fp.drawMode || state.fp.armedMarker || state.fp.measureMode || state.fp.underlayMode || state.fp.newUnitMode ? 'crosshair' : '';
+  // places it, so the crosshair applies there too. The move-door tool shows a
+  // grab hand (grabbing mid-drag) so doors read as grabbable while armed.
+  canvas.style.cursor = fpDoorDrag ? 'grabbing' : state.fp.doorMove ? 'grab' : state.fp.underlayMode === 'move' ? 'move' : state.fp.drawMode || state.fp.armedMarker || state.fp.measureMode || state.fp.underlayMode || state.fp.newUnitMode ? 'crosshair' : '';
   if (fpNewDraft) fpRenderNewUnitGhost(canvas, u);
   // Safety/facility point icons render LAST (top of the z-order) so a marker
   // never hides under a placement.
@@ -2253,7 +2318,7 @@ function fpSetLayerProp(layer, prop, on) {
 function fpElemState(type, id) {
   if (type === 'placement') {
     const p = state.fp.placements.find((x) => x.unitId === id);
-    return p ? { unitId: p.unitId, x: p.x, y: p.y, width: p.width, height: p.height, stackTier: p.stackTier || 0, doorEdges: p.doorEdges || null } : null;
+    return p ? { unitId: p.unitId, x: p.x, y: p.y, width: p.width, height: p.height, stackTier: p.stackTier || 0, doorEdges: p.doorEdges || null, doorOffsets: p.doorOffsets ? { ...p.doorOffsets } : null } : null;
   }
   if (type === 'block') {
     const b = state.fp.blocks.find((x) => x.id === id);
@@ -3010,7 +3075,7 @@ function fpRenderMultiInfo(info) {
 const FP_SHORTCUTS = [
   ['Selection', [['Click / Shift+click', 'select / add or remove from the selection'], ['Drag on empty canvas', 'marquee select (Shift adds)'], ['Cmd/Ctrl+A', 'select all units, blocks and markers'], ['Esc', 'clear selection / cancel the current tool'], ['Delete', 'remove the selection (or the selected line vertex)']]],
   ['Move & edit', [['Arrows', 'nudge by the snap step (Shift ×10, Alt 0.01 ft)'], ['Shift while dragging', 'lock to one axis'], ['Alt while dragging', 'fine 0.01 ft snap'], ['Cmd/Ctrl+C · V · D', 'copy · paste · duplicate (blocks, markers, lines; D on a unit makes a new draft unit)'], ['Cmd/Ctrl+Z · Shift+Z (or Y)', 'undo · redo']]],
-  ['Units', [['V', 'select tool'], ['N', 'new-unit tool: drag a rectangle, then confirm tier / rate'], ['B', 'block form: name it in the panel, then Add block'], ['Enter · Esc (in the form)', 'create · cancel'], ['Delete on a NEW unit', 'discard it (undo brings it back)']]],
+  ['Units', [['V', 'select tool'], ['N', 'new-unit tool: drag a rectangle, then confirm tier / rate'], ['B', 'block form: name it in the panel, then Add block'], ['D', 'move-door tool: click a door, drag it along its wall edge'], ['Enter · Esc (in the form)', 'create · cancel'], ['Delete on a NEW unit', 'discard it (undo brings it back)']]],
   ['Lines & measure', [['L', 'line tool on / off'], ['Click · double-click / Enter', 'add vertex · finish'], ['Click first vertex / C', 'close the loop'], ['Type a number (+ Tab angle) · Enter', 'exact segment length / angle'], ['Backspace', 'remove the last vertex'], ['M', 'measure tool (two clicks)']]],
   ['View', [['K', 'open the safety-markers menu'], ['Shift+1', 'zoom to fit']]],
   ['Help', [['?', 'this sheet']]],
@@ -3501,18 +3566,24 @@ function fpRenderSelInfoInner() {
     `<button class="act-btn danger" id="fpRemoveBtn" style="padding:2px 9px;font-size:10px;">${fpIsDraftUnit(pl) ? 'Discard new unit' : 'Remove from floor'}</button>`;
 }
 
-// Persist one placement's authored door edges (null clears back to AUTO).
-// Stacked pairs share one rect and keep AUTO (their server-side door union is
-// already all edges), so toggles are singles-only.
-async function fpSaveDoors(pl, edges) {
+// Persist one placement's authored door edges (null clears back to AUTO) plus
+// its door-centre offsets (door-move tool fractions). Stacked pairs share one
+// rect and keep AUTO (their server-side door union is already all edges), so
+// toggles and moves are singles-only. `offsets` undefined = keep the current
+// offsets pruned to the new edges (toggling an edge off drops its offset);
+// null clears back to centred; an object replaces.
+async function fpSaveDoors(pl, edges, offsets) {
   const doorsPrev = Array.isArray(pl.doorEdges) ? pl.doorEdges.slice() : null;
+  const offsetsPrev = pl.doorOffsets ? { ...pl.doorOffsets } : null;
+  const nextOffsets = offsets === undefined ? fpNormalizeDoorOffsets(pl.doorOffsets, edges) : offsets;
   try {
     const res = await fpMutate(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/units/${encodeURIComponent(pl.unitId)}`, {
       method: 'PUT',
-      body: JSON.stringify({ x: pl.x, y: pl.y, width: pl.width, height: pl.height, stackTier: pl.stackTier || 0, doorEdges: edges }),
+      body: JSON.stringify({ x: pl.x, y: pl.y, width: pl.width, height: pl.height, stackTier: pl.stackTier || 0, doorEdges: edges, doorOffsets: nextOffsets }),
     });
     pl.doorEdges = res && res.data ? res.data.doorEdges : edges;
-    fpPushUndo({ kind: 'placement', unitId: pl.unitId, prev: { x: pl.x, y: pl.y, width: pl.width, height: pl.height, stackTier: pl.stackTier || 0, doorEdges: doorsPrev } });
+    pl.doorOffsets = res && res.data ? fpNormalizeDoorOffsets(res.data.doorOffsets, Array.isArray(pl.doorEdges) ? pl.doorEdges : null) : nextOffsets;
+    fpPushUndo({ kind: 'placement', unitId: pl.unitId, prev: { x: pl.x, y: pl.y, width: pl.width, height: pl.height, stackTier: pl.stackTier || 0, doorEdges: doorsPrev, doorOffsets: offsetsPrev } });
     fpRenderSelInfo();
     fpRenderCanvas();
     notifyMetricsFloorChanged();
@@ -3521,6 +3592,14 @@ async function fpSaveDoors(pl, edges) {
       true,
     );
   } catch (err) {
+    // A failed write must not leave a ghost behind: the door drag optimistically
+    // authors edges/offsets locally for the live preview, so restore the
+    // pre-write snapshot (a no-op for the toggle path, which never pre-mutates).
+    pl.doorEdges = doorsPrev;
+    pl.doorOffsets = offsetsPrev;
+    delete pl._doorDragEdge;
+    fpRenderSelInfo();
+    fpRenderCanvas();
     fpToast(`Doors ${pl.unitCode}: ${describeError(err)}`, false);
   }
 }
@@ -3550,6 +3629,158 @@ async function fpResetDoors() {
   if (!pl || fpStackMate(pl)) return;
   if (fpGuardLocked(pl)) return; // live occupied placement: doors frozen
   await fpSaveDoors(pl, null);
+}
+
+// ---------- move-door tool (reposition a door along its wall edge) ----------
+// Doors render as centred ticks (fpDoorMarkersHTML) unless an authored offset
+// moves the door centre along its edge (0..1 fraction, 0.5 = centred). The
+// tool arms via the toolbar (D): the next press on a door starts an
+// edge-constrained drag with a live ghost; release persists through the same
+// placement PUT the N/S/E/W toggles use (fpSaveDoors); Esc cancels the drag
+// (or disarms the tool). Stacked pairs keep AUTO doors (singles only) and
+// occupied-locked placements stay frozen — same guards as the toggles.
+let fpDoorDrag = null; // { pl, edge, authored, prev, move, up } while dragging
+
+// Door under the pointer (feet-space, ~10 px tolerance), or null. Corners
+// resolve to the nearest edge. Locked placements hit-test too so the hover
+// readout can name the lock (the drag itself still refuses via fpGuardLocked).
+function fpDoorHitAt(clientX, clientY) {
+  const raw = fpCanvasRawAt(clientX, clientY);
+  if (!raw) return null;
+  const tol = 10 / fpPx();
+  const segDist = (px, py, ax, ay, bx, by) => {
+    const dx = bx - ax;
+    const dy = by - ay;
+    const len2 = dx * dx + dy * dy;
+    const t = len2 > 0 ? Math.min(1, Math.max(0, ((px - ax) * dx + (py - ay) * dy) / len2)) : 0;
+    return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+  };
+  let best = null;
+  for (const pl of state.fp.placements || []) {
+    if (fpStackMate(pl)) continue; // stacked pairs stay AUTO — not draggable
+    const { edges } = fpEffectiveDoors(pl);
+    const x0 = pl.x;
+    const y0 = pl.y;
+    const x1 = pl.x + pl.width;
+    const y1 = pl.y + pl.height;
+    const cands = [];
+    if (edges.includes('N')) cands.push(['N', segDist(raw[0], raw[1], x0, y0, x1, y0)]);
+    if (edges.includes('S')) cands.push(['S', segDist(raw[0], raw[1], x0, y1, x1, y1)]);
+    if (edges.includes('W')) cands.push(['W', segDist(raw[0], raw[1], x0, y0, x0, y1)]);
+    if (edges.includes('E')) cands.push(['E', segDist(raw[0], raw[1], x1, y0, x1, y1)]);
+    for (const [edge, d] of cands) {
+      if (d <= tol && (!best || d < best.d)) best = { pl, edge, d };
+    }
+  }
+  return best ? { pl: best.pl, edge: best.edge } : null;
+}
+
+function fpDoorFraction(pl, edge, raw) {
+  const c = edge === 'N' || edge === 'S' ? (raw[0] - pl.x) / pl.width : (raw[1] - pl.y) / pl.height;
+  // Ticks are 36% of the edge — clamp the centre so a tick never overhangs.
+  return Math.round(Math.min(0.82, Math.max(0.18, c)) * 1000) / 1000;
+}
+
+// Press on a door while the tool is armed: author the edge set when needed
+// (grabbing an AUTO door authors all four edges, like toggling one off does)
+// and drag the centre along the edge. Returns true when a drag started (the
+// caller swallows the press); locked placements toast and swallow.
+function fpDoorStartDrag(e, hit) {
+  const pl = hit.pl;
+  if (fpGuardLocked(pl)) return true;
+  e.preventDefault();
+  const authored = Array.isArray(pl.doorEdges) && pl.doorEdges.length ? pl.doorEdges.slice() : ['N', 'S', 'E', 'W'];
+  const prev = {
+    x: pl.x,
+    y: pl.y,
+    width: pl.width,
+    height: pl.height,
+    stackTier: pl.stackTier || 0,
+    doorEdges: Array.isArray(pl.doorEdges) ? pl.doorEdges.slice() : null,
+    doorOffsets: pl.doorOffsets ? { ...pl.doorOffsets } : null,
+  };
+  pl.doorEdges = authored; // local authoring for the live ghost (persisted on release)
+  pl._doorDragEdge = hit.edge;
+  fpDoorDrag = { pl, edge: hit.edge, authored, prev, move: null, up: null };
+  const cur = () => (pl.doorOffsets && pl.doorOffsets[hit.edge] != null ? pl.doorOffsets[hit.edge] : 0.5);
+  const move = (ev) => {
+    const raw = fpCanvasRawAt(ev.clientX, ev.clientY);
+    if (!raw) return;
+    const c = fpDoorFraction(pl, hit.edge, raw);
+    if (c === cur()) return;
+    pl.doorOffsets = { ...(pl.doorOffsets || {}), [hit.edge]: c };
+    fpDoorDrag.moved = true;
+    fpRenderCanvas();
+    fpSetReadout(`Door ${hit.edge} of ${pl.unitCode} → ${Math.round(c * 100)}% along the edge · release saves · Esc cancels`);
+  };
+  const up = () => {
+    document.removeEventListener('pointermove', move);
+    document.removeEventListener('pointerup', up);
+    const drag = fpDoorDrag;
+    fpDoorDrag = null;
+    delete pl._doorDragEdge;
+    if (!drag) return;
+    if (!drag.moved) {
+      // A click without a drag just selects the unit — nothing to persist.
+      state.fp.selected = pl.unitId;
+      state.fp.selectedBlock = null;
+      state.fp.selectedMarker = null;
+      state.fp.selectedBoundary = null;
+      fpRenderCanvas();
+      fpRenderSelInfo();
+      return;
+    }
+    fpSaveDoors(pl, drag.authored, pl.doorOffsets ? { ...pl.doorOffsets } : null);
+  };
+  fpDoorDrag.move = move;
+  fpDoorDrag.up = up;
+  document.addEventListener('pointermove', move);
+  document.addEventListener('pointerup', up);
+  return true;
+}
+
+// Esc mid-drag: drop the ghost and restore the pre-drag edges + offsets.
+function fpCancelDoorDrag() {
+  const drag = fpDoorDrag;
+  if (!drag) return;
+  document.removeEventListener('pointermove', drag.move);
+  document.removeEventListener('pointerup', drag.up);
+  fpDoorDrag = null;
+  drag.pl.doorEdges = drag.prev.doorEdges;
+  drag.pl.doorOffsets = drag.prev.doorOffsets;
+  delete drag.pl._doorDragEdge;
+  fpRenderCanvas();
+  fpSetReadout(state.fp.doorMove ? 'Move door · click a door, drag along its edge · Esc cancels' : '');
+  fpToast('Door move cancelled.', true);
+}
+
+// Arm/disarm the move-door tool. Arming clears every competing placement mode
+// (new-unit incl. its draft, wall drawing incl. the pen draft, measure, the
+// armed marker, the block form) so exactly one tool reads as active — the
+// same one-at-a-time contract as the measure tool.
+function fpSetDoorMoveMode(on) {
+  state.fp.doorMove = !!on;
+  if (on) {
+    if (state.fp.newUnitMode) fpSetNewUnitMode(false, true);
+    else if (fpNewDraft) fpCancelNewUnit(true);
+    state.fp.drawMode = false;
+    fpResetPen();
+    if (state.fp.measureMode) fpSetMeasureMode(false);
+    state.fp.armedMarker = null;
+    fpRenderMarkerTools();
+    fpToggleBlockForm(false);
+    state.fp.tool = 'doors';
+  } else if (state.fp.tool === 'doors') {
+    state.fp.tool = 'select';
+  }
+  const btn = $('#fpDoorMove');
+  if (btn) {
+    btn.classList.toggle('on', !!on);
+    btn.setAttribute('aria-pressed', String(!!on));
+  }
+  fpRenderCanvas();
+  fpSyncModeUI();
+  fpSetReadout(on ? 'Move door · click a door, drag along its edge · Esc cancels' : '');
 }
 
 // Unplaced lockers whose footprint (either orientation) exactly matches the
@@ -3656,8 +3887,9 @@ function fpRender() {
     const unitLabel = `${state.fp.placements.length} unit${state.fp.placements.length === 1 ? '' : 's'}`;
     const blockLabel = `${state.fp.blocks.length} block${state.fp.blocks.length === 1 ? '' : 's'}`;
     const markerLabel = `${(state.fp.markers || []).length} marker${(state.fp.markers || []).length === 1 ? '' : 's'}`;
+    const planName = state.fp.plan && state.fp.plan.name ? ` · “${state.fp.plan.name}”` : '';
     sub.textContent = state.fp.plan
-      ? `${unitLabel} placed · ${blockLabel} · ${markerLabel} on a ${d.w}×${d.h} ft canvas — drag to move, corner handle to resize`
+      ? `${unitLabel} placed · ${blockLabel} · ${markerLabel} on a ${d.w}×${d.h} ft canvas${planName} — drag to move, corner handle to resize`
       : "No plan yet — set a canvas size and click Save Canvas, then drag this floor's units from the palette.";
   }
   fpSyncDimInputs(d);
@@ -4098,6 +4330,7 @@ function fpSetMeasureMode(on) {
   fpMeasure = null;
   fpSnapHint = null;
   if (on) {
+    if (state.fp.doorMove) fpSetDoorMoveMode(false); // one placement mode at a time
     if (state.fp.newUnitMode) fpSetNewUnitMode(false, true);
     state.fp.drawMode = false;
     fpResetPen();
@@ -4444,7 +4677,7 @@ async function fpPersist(pl, verb) {
     });
     fpAdoptPlacement(pl, res && res.data);
     fpRefreshAfterSave();
-    if (undoPrev) fpPushUndo({ kind: 'placement', unitId: pl.unitId, prev: { ...undoPrev, doorEdges: pl.doorEdges || null } });
+    if (undoPrev) fpPushUndo({ kind: 'placement', unitId: pl.unitId, prev: { ...undoPrev, doorEdges: pl.doorEdges || null, doorOffsets: pl.doorOffsets ? { ...pl.doorOffsets } : null } });
     fpToast(`${verb} ${pl.unitCode} → ${pl.x},${pl.y} · ${pl.width}×${pl.height} ft`, true);
     notifyMetricsFloorChanged();
   } catch (err) {
@@ -4471,7 +4704,7 @@ async function fpPersistPair(lower, upper, verb) {
     fpRefreshAfterSave();
     for (const p of [lower, upper]) {
       const prev = undoPrevs.get(p.unitId);
-      if (prev) fpPushUndo({ kind: 'placement', unitId: p.unitId, prev: { ...prev, doorEdges: p.doorEdges || null } });
+      if (prev) fpPushUndo({ kind: 'placement', unitId: p.unitId, prev: { ...prev, doorEdges: p.doorEdges || null, doorOffsets: p.doorOffsets ? { ...p.doorOffsets } : null } });
     }
     fpToast(`${verb} stack ${upper.unitCode}/${lower.unitCode} → ${lower.x},${lower.y} · ${lower.width}×${lower.height} ft`, true);
     notifyMetricsFloorChanged();
@@ -5520,6 +5753,7 @@ function fpToggleArmedMarker(kind) {
     // Arming a marker disarms every other placement mode (one at a time).
     if (state.fp.newUnitMode) fpSetNewUnitMode(false, true);
     if (state.fp.measureMode) fpSetMeasureMode(false);
+    if (state.fp.doorMove) fpSetDoorMoveMode(false);
     state.fp.drawMode = false;
     fpResetPen();
     const pencilBtn = $('#fpBoundaryTool');
@@ -5550,6 +5784,18 @@ function fpToggleArmedMarker(kind) {
 // defaultPrevented or return early, so this fallback never fights them.
 function fpOnEscapeTool(e) {
   if (e.key !== 'Escape' || e.defaultPrevented) return;
+  if (fpDoorDrag) {
+    // An in-flight door drag owns Escape: drop the ghost, keep the tool armed.
+    e.preventDefault();
+    fpCancelDoorDrag();
+    return;
+  }
+  if (state.fp.doorMove) {
+    e.preventDefault();
+    fpSetSelectMode();
+    fpToast('Door move cancelled.', true);
+    return;
+  }
   if (state.fp.armedMarker) {
     e.preventDefault();
     state.fp.armedMarker = null;
@@ -5792,6 +6038,90 @@ function fpRenderPlanStatus() {
   el.textContent = live ? '● Published · Visible' : '○ Draft — Not visible';
   el.classList.toggle('is-live', live);
   el.classList.toggle('is-draft', !live);
+}
+
+// ---------- draft plan rename (Floor Plan Library rows only) ----------
+// The live plan carries an optional operator label (FloorPlan.name, CMS-only
+// and never exposed to booking). Rename lives in the Library only: each draft
+// row's Actions cell has a Rename button that swaps the cell into an inline
+// editor (input + Save/Cancel, Enter saves, Esc cancels, empty-name rejected
+// with a toast) and persists through the existing plan-update endpoint (POST
+// /floor-plans/:floorId accepts `name` — no new route). The Library lists
+// draft versions, so the drafts-only gate is natural; the published guard
+// still runs at open/save time (a published live plan toasts instead of
+// editing) and server-side via checkPlanName/demote, untouched.
+function fpPlanIsPublished() {
+  return !!state.fp.plan && String(state.fp.plan.status || '').toUpperCase() === 'ACTIVE';
+}
+
+function fpPlanRenameGate() {
+  if (!state.fp.plan) return 'No plan yet — set a canvas size and save first.';
+  if (fpPlanIsPublished()) return "Published plans can't be renamed — edit the canvas to return it to draft first.";
+  return '';
+}
+
+// Which library row is mid-rename (draft id, or null). The rename targets the
+// live plan name (one per floor), anchored to the row the operator clicked;
+// fpRenderDrafts clears it when the row leaves the list (floor switch).
+let fpRenamingDraftId = null;
+
+function fpOpenPlanRename(draftId) {
+  const gate = fpPlanRenameGate();
+  if (gate) {
+    fpToast(gate, false);
+    return;
+  }
+  fpRenamingDraftId = draftId != null ? String(draftId) : null;
+  fpRenderDrafts();
+  const input = $('#fpDraftRenameInput');
+  if (input) {
+    try {
+      input.focus({ preventScroll: true });
+      input.select();
+    } catch (_) {
+      // Focus is cosmetic — the inline editor still renders.
+    }
+  }
+}
+
+function fpCancelPlanRename() {
+  fpRenamingDraftId = null;
+  fpRenderDrafts();
+}
+
+async function fpSavePlanName() {
+  const input = $('#fpDraftRenameInput');
+  const name = String(input ? input.value : '').trim();
+  if (!name) {
+    fpToast("Plan name can't be empty — type a name or Cancel.", false);
+    if (input) input.focus();
+    return;
+  }
+  if (name.length > 80) {
+    fpToast('Plan name must be at most 80 characters.', false);
+    if (input) input.focus();
+    return;
+  }
+  const gate = fpPlanRenameGate();
+  if (gate) {
+    fpToast(gate, false);
+    return;
+  }
+  try {
+    const res = await fpMutate(`/floor-plans/${encodeURIComponent(state.fp.floorId)}`, {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+    });
+    const saved = res && res.data && res.data.name != null ? String(res.data.name) : name;
+    if (state.fp.plan) state.fp.plan.name = saved;
+    fpRenamingDraftId = null;
+    fpRenderDrafts(); // exit the inline editor
+    fpRenderPlanStatus();
+    fpRender(); // refresh the designer sub-line suffix too
+    fpToast(`Plan renamed to “${saved}”.`, true);
+  } catch (err) {
+    fpToast('Rename plan: ' + describeError(err), false);
+  }
 }
 
 // All designer writes funnel through fpMutate (never raw request()): the
@@ -6154,18 +6484,36 @@ function fpRenderDrafts() {
   fpRenderLibraryScope();
   if (sub) {
     sub.textContent = fpDrafts.length
-      ? `${fpDrafts.length} saved version${fpDrafts.length === 1 ? '' : 's'} — view, load into the editor, publish, or delete`
+      ? `${fpDrafts.length} saved version${fpDrafts.length === 1 ? '' : 's'} — view, load into the editor, publish, rename, or delete`
       : 'No saved versions yet — Save as draft freezes the current canvas as v1';
   }
   if (!fpDrafts.length) {
+    fpRenamingDraftId = null; // nothing to edit — drop any stale inline editor
     tb.innerHTML = '<tr><td colspan="6" class="t-type">No draft versions saved for this floor yet.</td></tr>';
     return;
   }
+  if (fpRenamingDraftId != null && !fpDrafts.some((d) => d.id != null && String(d.id) === String(fpRenamingDraftId))) {
+    fpRenamingDraftId = null; // the edited row left the list (floor switch) — back to buttons
+  }
+  const planName = state.fp.plan && state.fp.plan.name ? String(state.fp.plan.name) : '';
   tb.innerHTML = fpDrafts
     .map((d) => {
       const live = String(d.status || '').toUpperCase() === 'ACTIVE';
       const c = d.counts || {};
       const when = d.createdAt ? new Date(d.createdAt).toLocaleString() : '—';
+      const renaming = fpRenamingDraftId != null && d.id != null && String(d.id) === String(fpRenamingDraftId);
+      // Rename is Library-only: per-row inline editor (input + Save/Cancel)
+      // reusing the .tb-btn/.tbl-search table classes — no new CSS. Escaped
+      // throughout (escapeHtml in markup, textContent toasts).
+      const actions = renaming
+        ? `<input type="text" id="fpDraftRenameInput" class="tbl-search" maxlength="80" autocomplete="off" spellcheck="false" value="${escapeHtml(planName)}" placeholder="Plan name" aria-label="Plan name for draft version ${escapeHtml(d.version)}" style="width:150px;"> ` +
+          `<button class="tb-btn primary" data-fp-draft-act="rename-save" data-fp-draft-id="${escapeHtml(d.id)}" title="Save the plan name">Save</button> ` +
+          `<button class="tb-btn ghost" data-fp-draft-act="rename-cancel" data-fp-draft-id="${escapeHtml(d.id)}" title="Cancel renaming">Cancel</button>`
+        : `<button class="tb-btn ghost" data-fp-draft-act="rename" data-fp-draft-id="${escapeHtml(d.id)}" title="Rename plan name (draft v${escapeHtml(d.version)}) — available while the plan is a draft" aria-label="Rename plan name for draft version ${escapeHtml(d.version)}">Rename</button> ` +
+          `<button class="tb-btn ghost" data-fp-draft-act="publish" data-fp-draft-id="${escapeHtml(d.id)}" title="Publish this version — a confirm shows what goes live, what goes back to draft, and what will be skipped">Publish</button> ` +
+          `<button class="tb-btn ghost" data-fp-draft-act="load" data-fp-draft-id="${escapeHtml(d.id)}" title="Load this version into the editable canvas (live plan unchanged)">Load</button> ` +
+          `<button class="tb-btn ghost" data-fp-draft-act="view" data-fp-draft-id="${escapeHtml(d.id)}">View</button> ` +
+          `<button class="tb-btn danger" data-fp-draft-act="delete" data-fp-draft-id="${escapeHtml(d.id)}">Delete</button>`;
       return (
         '<tr>' +
         `<td><strong>v${escapeHtml(d.version)}</strong>${d.id && d.id === fpLoadedDraftId ? ' <span class="pill amber">editing</span>' : ''}</td>` +
@@ -6175,10 +6523,7 @@ function fpRenderDrafts() {
         `${escapeHtml(c.boundaries || 0)} lines · ${escapeHtml(c.markers || 0)} markers</td>` +
         `<td class="t-type">${escapeHtml(when)}${d.createdBy ? ' · ' + escapeHtml(d.createdBy) : ''}</td>` +
         '<td style="white-space:nowrap">' +
-        `<button class="tb-btn ghost" data-fp-draft-act="publish" data-fp-draft-id="${escapeHtml(d.id)}" title="Publish this version — a confirm shows what goes live, what goes back to draft, and what will be skipped">Publish</button> ` +
-        `<button class="tb-btn ghost" data-fp-draft-act="load" data-fp-draft-id="${escapeHtml(d.id)}" title="Load this version into the editable canvas (live plan unchanged)">Load</button> ` +
-        `<button class="tb-btn ghost" data-fp-draft-act="view" data-fp-draft-id="${escapeHtml(d.id)}">View</button> ` +
-        `<button class="tb-btn danger" data-fp-draft-act="delete" data-fp-draft-id="${escapeHtml(d.id)}">Delete</button>` +
+        actions +
         '</td></tr>'
       );
     })
@@ -6262,6 +6607,7 @@ async function fpLoadDraft(draftId) {
       height: p.height,
       stackTier: p.stackTier === 1 ? 1 : 0,
       doorEdges: Array.isArray(p.doorEdges) && p.doorEdges.length ? p.doorEdges.slice() : null,
+      doorOffsets: fpNormalizeDoorOffsets(p.doorOffsets, Array.isArray(p.doorEdges) && p.doorEdges.length ? p.doorEdges : null),
     }));
     state.fp.unplaced = [...pool.values()].filter((u) => !placedIds.has(u.id)).map(fpNormalizeUnit);
     state.fp.blocks = (Array.isArray(d.blocks) ? d.blocks : []).map((b) => ({
@@ -6478,6 +6824,7 @@ async function fpSaveDraft() {
       height: p.height,
       stackTier: p.stackTier || 0,
       doorEdges: p.doorEdges || null,
+      doorOffsets: p.doorOffsets ? { ...p.doorOffsets } : null,
     })),
     blocks: state.fp.blocks || [],
     boundaries: state.fp.boundaries || [],
@@ -6567,6 +6914,7 @@ function fpSetNewUnitMode(on, quiet) {
   const next = !!on;
   if (next) {
     if (state.fp.measureMode) fpSetMeasureMode(false);
+    if (state.fp.doorMove) fpSetDoorMoveMode(false); // one placement mode at a time
     state.fp.drawMode = false;
     fpResetPen();
     state.fp.armedMarker = null;
@@ -7197,11 +7545,13 @@ function fpOnCanvasWheel(e) {
 // fpRenderSelInfo: boundary line, then marker, then decoration block, then
 // unit placement.
 // fpDeletePlan (whole-plan delete) is NEVER bound here.
-// Tool shortcuts: V select, N new unit, L walls, B block form, M measure,
-// K opens the Markers menu, Shift+1 zoom-to-fit; Esc clears a measurement
-// (then leaves the measure tool). Same guards as Delete: never while typing
-// in an input/select/textarea/contenteditable, never with Cmd/Ctrl/Alt held
-// (so Cmd/Ctrl+V still pastes, Shift+1 is plain Shift, not a modifier combo).
+// Tool shortcuts: V select, N new unit, L walls, B block form, D move door,
+// M measure, K opens the Markers menu, Shift+1 zoom-to-fit; Esc clears a
+// measurement (then leaves the measure tool). Same guards as Delete: never
+// while typing in an input/select/textarea/contenteditable, never with
+// Cmd/Ctrl/Alt held (so Cmd/Ctrl+V still pastes, Shift+1 is plain Shift, not
+// a modifier combo). Plain D is free: Cmd/Ctrl+D (duplicate/new draft unit)
+// needs the modifier, C (close loop) only fires mid-draft in fpPenKey.
 function fpOnToolKey(e) {
   if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey) return;
   const t = e.target;
@@ -7239,6 +7589,9 @@ function fpOnToolKey(e) {
   } else if (e.key === 'b' || e.key === 'B') {
     e.preventDefault();
     $('#fpAddBlock')?.click();
+  } else if (e.key === 'd' || e.key === 'D') {
+    e.preventDefault();
+    $('#fpDoorMove')?.click();
   } else if (e.key === 'k' || e.key === 'K') {
     e.preventDefault();
     fpSetMarkersMenu(true);
@@ -7320,6 +7673,7 @@ function fpEffectiveMode() {
   if (state.fp.drawMode) return 'draw';
   if (state.fp.measureMode) return 'measure';
   if (state.fp.newUnitMode) return 'newunit';
+  if (state.fp.doorMove) return 'doors';
   if (state.fp.tool === 'add') return 'add';
   if (state.fp.tool === 'block') return 'block';
   return 'select';
@@ -7338,9 +7692,11 @@ function fpSyncModeUI() {
         ? 'MODE: MOVE UNDERLAY'
         : mode === 'marker'
       ? `MODE: MARKER — ${fpMarkerDef(state.fp.armedMarker).label.toUpperCase()}`
-      : mode === 'measure'
-        ? 'MODE: MEASURE'
-        : mode === 'draw'
+        : mode === 'measure'
+          ? 'MODE: MEASURE'
+          : mode === 'doors'
+            ? 'MODE: MOVE DOOR'
+          : mode === 'draw'
         ? `MODE: DRAW ${fpLineKindLabel(fpPenKind()).toUpperCase()}`
         : mode === 'newunit'
           ? 'MODE: NEW UNIT — DRAG A RECTANGLE'
@@ -7358,6 +7714,8 @@ function fpSyncModeUI() {
           ? 'Name it in the panel, then Add block'
           : mode === 'marker'
             ? 'Click the canvas to place · Esc cancels'
+            : mode === 'doors'
+              ? 'Click a door, drag along its edge · release saves · Esc cancels'
             : mode === 'measure'
               ? 'Click two points · Esc clears'
               : '';
@@ -7383,6 +7741,7 @@ function fpSyncModeUI() {
   set('#fpModeSelect', mode === 'select');
   set('#fpNewUnitTool', mode === 'newunit');
   set('#fpMeasureTool', mode === 'measure');
+  set('#fpDoorMove', mode === 'doors');
   set('#fpMarkersBtn', mode === 'marker');
   // pencil toggle / block form); mirror the effective mode here so the tools
   // read as one active tool.
@@ -7406,6 +7765,7 @@ function fpSyncModeUI() {
 // is required.
 function fpSetSelectMode() {
   if (state.fp.measureMode) fpSetMeasureMode(false);
+  if (state.fp.doorMove) fpSetDoorMoveMode(false);
   if (state.fp.newUnitMode) fpSetNewUnitMode(false, true);
   else if (fpNewDraft) fpCancelNewUnit(true);
   state.fp.drawMode = false;
@@ -7431,11 +7791,12 @@ function fpSetMarkersMenu(open) {
 // Snap / zoom-picker / plan-settings / ⋯ popovers: one open at a time, Esc or
 // outside pointer closes. Wired by id in fpInitEvents(); the Layers, Markers,
 // Underlay and Export menus keep their own existing closers.
-// Floating menus must open above the canvas: the toolbar keeps its single-row
-// in-bar scroll (overflow-x:auto, never wraps), which clips
-// absolutely-positioned popovers, so every open menu is pinned with
+// Floating menus must open above the canvas: every open menu is pinned with
 // position:fixed (see .fp-menu.fp-fixed in dashboard.html) at its anchor's
-// viewport rect, flipping up / right-aligning near viewport edges. DOM order
+// viewport rect, flipping up / right-aligning near viewport edges. (The bar
+// used to scroll in-bar, which also forced the fixed pattern — since
+// 2026-10-15 it wraps with overflow:visible and the fixed pattern is kept
+// for the flip/alignment behavior.) DOM order
 // is untouched, so Tab order stays in visual order and :focus-visible rings
 // keep working; Esc + outside-pointer closers are unchanged.
 function fpAnchorMenu(btnSel, menu) {
@@ -7525,8 +7886,8 @@ function fpWirePopover(btnId, menuId) {
 // Native `title` never fires on the icon-only buttons: the pointer lands on
 // the inner svg/use icon content (not the titled <button>), and Undo/Redo
 // are disabled at boot (empty stacks — disabled buttons receive no mouse
-// events, so no native title either). A pure-CSS ::after is impossible too:
-// the single-row bar keeps overflow-x:auto (never wraps), which clips it. So
+// events, so no native title either). A pure-CSS ::after is avoided (it
+// cannot flip near edges and clips inside scrollable ancestors). So
 // one position:fixed bubble (.fp-tip in dashboard.html, aria-hidden so screen
 // readers keep using the intact aria-labels), anchored by JS with the same
 // flip-near-edges pattern as fpAnchorMenu. Scope: every titled control in
@@ -7655,7 +8016,7 @@ function fpInitTips() {
 
 export function fpInitEvents() {
   // Wiring follows the toolbar groups in canonical order (see
-  // FP_TOOLBAR_GROUPS): panel → tools → options → actions → markers → view → zoom.
+  // FP_TOOLBAR_GROUPS): tools → options → actions → markers → view → zoom.
   // --- Group: header (branch/floor scope + undo/redo, save status, export, ⋯, publish) ---
   $('#fpBranch').addEventListener('change', async (e) => {
     const next = e.target.value;
@@ -7679,6 +8040,9 @@ export function fpInitEvents() {
   $('#fpSaveDraft').addEventListener('click', fpSaveDraft);
   $('#fpPublishPlan').addEventListener('click', fpPublishPlan);
   $('#fpDeletePlan').addEventListener('click', fpDeletePlan);
+  // Draft plan rename lives in the Floor Plan Library rows only (per-row
+  // inline editor via the #fpDraftsBody delegation below) — no Designer
+  // header wiring remains.
   // --- Group: options (tool options strip) — palette ghost orientation + sqft lock ---
   // Orientation toggle for rectangular palette ghosts (placement-time only).
   const rotBtn = $('#fpRotateGhost');
@@ -7737,6 +8101,7 @@ export function fpInitEvents() {
     syncPencilBtn();
     pencilBtn.addEventListener('click', () => {
       if (state.fp.newUnitMode) fpSetNewUnitMode(false, true);
+      if (state.fp.doorMove) fpSetDoorMoveMode(false); // one placement mode at a time
       state.fp.drawMode = !state.fp.drawMode;
       fpResetPen();
       if (state.fp.drawMode && state.fp.measureMode) fpSetMeasureMode(false);
@@ -7798,7 +8163,7 @@ export function fpInitEvents() {
   document.addEventListener('keydown', fpOnArrowKey);
   // Escape cancels an armed marker (the line tool owns its own mid-draft Escape).
   document.addEventListener('keydown', fpOnEscapeTool);
-  // --- Group: panel (palette drag + toggle) + blocks (block form) + actions ---
+  // --- Group: units section (palette drag + section-header toggle) + blocks (block form) + actions ---
   $('#fpPalette').addEventListener('pointerdown', (e) => {
     const chip = e.target.closest('.fp-unit-chip');
     if (!chip) return;
@@ -7808,12 +8173,14 @@ export function fpInitEvents() {
     e.stopPropagation();
     fpSetPaletteCollapsed(!fpPaletteCollapsed());
   });
-  // Toolbar Units toggle: always visible, mirrors palette-open state.
-  $('#fpPaletteReopen')?.addEventListener('click', () => fpSetPaletteCollapsed(!fpPaletteCollapsed()));
+  // Move-door tool: arms the edge-constrained door drag (D toggles, Esc
+  // cancels). Registered in FP_TOOLBAR_GROUPS (audit-silence).
+  $('#fpDoorMove')?.addEventListener('click', () => fpSetDoorMoveMode(!state.fp.doorMove));
   $('#fpAddBlock').addEventListener('click', () => {
     if (state.fp.newUnitMode) fpSetNewUnitMode(false, true);
     else if (fpNewDraft) fpCancelNewUnit(true);
     if (state.fp.measureMode) fpSetMeasureMode(false);
+    if (state.fp.doorMove) fpSetDoorMoveMode(false); // one placement mode at a time
     state.fp.drawMode = false;
     fpResetPen();
     state.fp.armedMarker = null;
@@ -7995,6 +8362,16 @@ export function fpInitEvents() {
       const canvas = $('#fpCanvas');
       if (canvas && canvas.contains(e.target) && e.button === 0 && !fpNewDraft) fpNewUnitPointerDown(e);
       return;
+    }
+    // Move-door tool: a press on a door starts an edge-constrained drag with
+    // a live ghost; anything else falls through to the normal chain below
+    // (the tool stays armed until Select, another tool, or Esc).
+    if (state.fp.doorMove && !fpLayerLocked('units') && !fpLayerHidden('units')) {
+      const canvas = $('#fpCanvas');
+      if (canvas && canvas.contains(e.target) && e.button === 0) {
+        const hit = fpDoorHitAt(e.clientX, e.clientY);
+        if (hit && fpDoorStartDrag(e, hit)) return;
+      }
     }
     // Selected line: its vertex / midpoint handles win over everything below
     // (handles can sit on top of units and blocks).
@@ -8200,7 +8577,8 @@ export function fpInitEvents() {
   $('#unitShowFloorPlan').addEventListener('click', fpViewOpen);
   $('#fpViewClose').addEventListener('click', fpViewClose);
   $('#fpViewCloseBtn').addEventListener('click', fpViewClose);
-  // Draft versions table (Publish / Load / View / Delete per saved version).
+  // Draft versions table (Rename / Publish / Load / View / Delete per saved
+  // version; the rename editor's Save/Cancel ride the same delegation).
   $('#fpDraftsBody')?.addEventListener('click', (e) => {
     const btn = e.target && e.target.closest ? e.target.closest('[data-fp-draft-act]') : null;
     if (!btn) return;
@@ -8210,6 +8588,24 @@ export function fpInitEvents() {
     else if (act === 'view') fpViewDraft(id);
     else if (act === 'publish') fpPublishDraftFromLibrary(id);
     else if (act === 'delete') fpDeleteDraft(id);
+    else if (act === 'rename') fpOpenPlanRename(id);
+    else if (act === 'rename-save') fpSavePlanName().catch(() => {});
+    else if (act === 'rename-cancel') fpCancelPlanRename();
+  });
+  // Library inline rename: Enter saves, Esc cancels. The input owns both keys
+  // (stopPropagation keeps designer tool shortcuts away from the name field).
+  $('#fpDraftsBody')?.addEventListener('keydown', (e) => {
+    const t = e.target;
+    if (!t || t.id !== 'fpDraftRenameInput') return;
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      e.stopPropagation();
+      fpSavePlanName().catch(() => {});
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      fpCancelPlanRename();
+    }
   });
   // Floor Plan Library → Designer cross-link: plain subtab navigation (the
   // Designer handler lazy-loads via fpOpen, same as clicking the subtab).

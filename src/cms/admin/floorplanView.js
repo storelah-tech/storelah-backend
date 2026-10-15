@@ -53,29 +53,33 @@ const FP_BASE = 24; // px per foot at zoom 1 (BLUEPRINT SCALE: 1 grid unit = 1 f
 let fpDimsTimer = null;
 
 // ---------- toolbar groups (canonical order + audit) ----------
-// The toolbar markup (#fpToolbar in dashboard.html) groups tools as
-// units → mode → markers → canvas → plan → view → info. This registry is the single
-// source of truth for that order (operator mental model: Units = unit
-// placement (palette toggle adjacent to the palette, auto-place, rotate,
-// sqft lock); Select/Draw = draw; Blocks = decoration blocks;
-// Markers/Safety = markers; Labels/readouts = info; canvas + plan + view are
-// the canvas-size, GFA and zoom chrome around them; save/delete plan actions
-// live in the header with delete last).
+// The toolbar markup (#fpToolbar in dashboard.html) is one scrolling row
+// grouped as panel → tools → options → actions → markers → view → zoom.
+// This registry is the single source of truth for that order (operator mental
+// model: Units panel toggle; Select/New-unit/Walls/Block/Marker/Measure tools;
+// mode-dependent tool options; plan actions; safety markers; canvas view
+// chrome; zoom pill; shortcuts). Controls that moved to the header (Undo,
+// Redo, save status, Export, Save-as-draft, Delete) or the status bar
+// (selection info, metrics, cursor readout, plan W/H/GFA inputs, Save plan
+// size) live outside #fpToolbar, so they are deliberately not registered.
 // fpAuditToolbar() runs once at boot: every registered tool must exist, and
 // every button inside #fpToolbar must be registered — an unregistered button
-// is a future dead tool, so it warns instead of silently lingering. Audit is
-// console-only and never blocks the editor.
+// is a future dead tool, so it warns instead of silently lingering. Buttons
+// rendered dynamically into #fpUnderlayPanel (Calibrate/Move/Rotate/Remove
+// only exist while an underlay is loaded) are skipped — they are owned by
+// fpRenderUnderlayMenu, not the static toolbar chrome. Audit is console-only
+// and never blocks the editor.
 const FP_TOOLBAR_GROUPS = [
-  { id: 'units', label: 'Units', tools: ['fpPaletteReopen', 'fpAutoPlace', 'fpAutoDoors', 'fpUndoBtn', 'fpRedoBtn', 'fpRotateGhost', 'fpLockSqft', 'fpSizesBtn'] },
-  // Studio ribbon: the Select/Add-Unit/Draw-Wall/Add-Block segmented control.
-  // fpBoundaryTool (line tool) + fpAddBlock (block form) are the Draw/Block
-  // segments — no duplicate buttons, one handler each.
-  { id: 'mode', label: 'Mode', tools: ['fpModeSelect', 'fpModeAddUnit', 'fpNewUnitTool', 'fpBoundaryTool', 'fpMeasureTool', 'fpAddBlock'] },
+  { id: 'panel', label: 'Units panel', tools: ['fpPaletteReopen'] },
+  // Palette-chip drags need no mode (fpStartPaletteDrag never checks
+  // state.fp.tool), so the old Add-Unit mode button is gone — no hidden
+  // stand-in, no registry entry.
+  { id: 'tools', label: 'Tools', tools: ['fpModeSelect', 'fpNewUnitTool', 'fpBoundaryTool', 'fpAddBlock', 'fpMeasureTool'] },
+  { id: 'options', label: 'Tool options', tools: ['fpRotateGhost', 'fpLockSqft'] },
+  { id: 'actions', label: 'Plan actions', tools: ['fpAutoPlace', 'fpAutoDoors', 'fpSizesBtn'] },
   { id: 'markers', label: 'Markers/Safety', tools: ['fpMarkersBtn', 'fpMarkerTools'] },
-  { id: 'canvas', label: 'Canvas', tools: ['fpWidth', 'fpHeight'] },
-  { id: 'plan', label: 'Plan', tools: ['fpGfa', 'fpBoundaryMetrics'] },
-  { id: 'view', label: 'View', tools: ['fpZoomOut', 'fpZoomIn', 'fpZoomPreset', 'fpGridToggle', 'fpSnapStep', 'fpObjSnap', 'fpLayersBtn', 'fpUnderlayBtn', 'fpUnderlayCalib', 'fpUnderlayMove', 'fpUnderlayRot', 'fpUnderlayRemove', 'fpExportBtn', 'fpExportGo', 'fpShortcutsBtn'] },
-  { id: 'info', label: 'Labels', tools: ['fpSelInfo'] },
+  { id: 'view', label: 'View', tools: ['fpLayersBtn', 'fpUnderlayBtn', 'fpGridToggle', 'fpObjSnap', 'fpSnapStep', 'fpSnapStepBtn', 'fpShortcutsBtn'] },
+  { id: 'zoom', label: 'Zoom', tools: ['fpZoomOut', 'fpZoomLbl', 'fpZoomPreset', 'fpZoomIn'] },
 ];
 
 function fpAuditToolbar() {
@@ -91,6 +95,7 @@ function fpAuditToolbar() {
       if (!wrap) console.warn(`[floorplan] toolbar markup is missing the "${g.id}" (${g.label}) group wrapper`);
     }
     for (const btn of bar.querySelectorAll('button[id]')) {
+      if (btn.closest('#fpUnderlayPanel')) continue; // dynamic underlay actions
       if (!known.has(btn.id)) console.warn(`[floorplan] unregistered toolbar button #${btn.id} — register it in FP_TOOLBAR_GROUPS or remove it`);
     }
   } catch (err) {
@@ -331,7 +336,15 @@ function fpSetSnapStep(v) {
   }
   const sel = $('#fpSnapStep');
   if (sel) sel.value = String(state.fp.snapStep);
+  fpSyncSnapStepBtn();
   fpRenderCanvas(); // the minor grid follows the snap step
+}
+
+// Snap split control (toolbar View group): the step button's visible label
+// mirrors the real #fpSnapStep select so the two never disagree.
+function fpSyncSnapStepBtn() {
+  const lbl = $('#fpSnapStepLbl');
+  if (lbl) lbl.textContent = `${fpSnapStep()} ft`;
 }
 
 // Shift-constrained line end: 0°, 45° or 90° from the start point.
@@ -687,16 +700,20 @@ function fpBoundaryMetricsLocal() {
 
 const fpFmt1 = (n) => Number(n || 0).toLocaleString('en-SG', { maximumFractionDigits: 1 });
 
-// Toolbar strip showing the live marked-area UFA/NLA (parity preview of the
-// server boundaryMetrics on plan reads). Explicit "no marked area" state —
-// never fabricated.
+// Status-bar metrics (plain text, not a badge — it isn't clickable): the live
+// marked-area UFA/NLA (parity preview of the server boundaryMetrics on plan
+// reads) plus the marker count. Explicit "no marked area" state — never
+// fabricated. #fpMarkersCount keeps its id so fpRenderMarkerTools() keeps it
+// in sync after every place/remove.
 function fpRenderBoundaryMetrics() {
   const el = $('#fpBoundaryMetrics');
   if (!el) return;
   const mm = fpBoundaryMetricsLocal();
-  el.textContent = mm.boundaryClosed
+  const n = (state.fp.markers || []).length;
+  const base = mm.boundaryClosed
     ? `Marked ${fpFmt1(mm.facilityAreaSqft)} sqft · Blocks ${fpFmt1(mm.blockAreaSqft)} · UFA ${fpFmt1(mm.ufa)} · NLA ${fpFmt1(mm.nla)}`
     : 'No marked area — draw a line (3+ vertices, then close the loop) to measure UFA/NLA';
+  el.innerHTML = `${escapeHtml(base)} · Markers <span id="fpMarkersCount">${n}</span>`;
 }
 
 function fpCanvasDims() {
@@ -755,6 +772,19 @@ function fpParseGfa(v) {
   const n = Number(t);
   if (!Number.isFinite(n) || n <= 0 || n > 10000000) return { ok: false, value: null };
   return { ok: true, value: Math.round(n * 10) / 10 };
+}
+
+// Status-bar Plan button label ("Plan 70 × 80 ft · GFA 5,600" or
+// "GFA not set"). Refreshed on every fpRender, so floor loads, live W/H
+// resizes and saves all land here.
+function fpUpdatePlanBtn() {
+  const lbl = $('#fpPlanLbl');
+  if (!lbl) return;
+  const d = fpCanvasDims();
+  const g = state.fp.gfa;
+  lbl.textContent =
+    `Plan ${formatFt(d.w)} × ${formatFt(d.h)} ft · ` +
+    (g != null ? `GFA ${Number(g).toLocaleString('en-SG', { maximumFractionDigits: 1 })}` : 'GFA not set');
 }
 
 function fpClampCanvasContent(w, h) {
@@ -929,6 +959,7 @@ async function fpFetch() {
   if (!state.fp.floorId) {
     fpRender();
     fpFetchDrafts().catch(() => {});
+    fpRefreshMismatchCount().catch(() => {});
     return;
   }
   try {
@@ -949,6 +980,9 @@ async function fpFetch() {
     fpSetPaletteCollapsed(false);
     notifyMetricsFloorChanged();
     fpFetchDrafts().catch(() => {});
+    // The Sizes chip follows the server count (also refreshed after the
+    // reconcile modal closes and after publish, which refetches here).
+    fpRefreshMismatchCount().catch(() => {});
   } catch (err) {
     fpToast('Load floor plan: ' + describeError(err), false);
   }
@@ -1029,7 +1063,13 @@ function fpSetPaletteCollapsed(collapsed) {
     toggle.textContent = collapsed ? '›' : '‹';
     toggle.title = collapsed ? 'Show the units palette to drag more units' : 'Collapse the units palette to give the canvas more space';
   }
-  if (reopen) reopen.hidden = !collapsed;
+  // The toolbar Units toggle is always visible (it is the palette's on/off
+  // switch): aria-pressed mirrors "palette open".
+  if (reopen) {
+    reopen.hidden = false;
+    reopen.classList.toggle('on', !collapsed);
+    reopen.setAttribute('aria-pressed', String(!collapsed));
+  }
 }
 
 function fpPaletteCollapsed() {
@@ -1815,8 +1855,11 @@ function fpRenderUnderlayMenu() {
   if (!el) return;
   const ul = state.fp.underlay;
   const btn = $('#fpUnderlayBtn');
-  if (btn) btn.classList.toggle('on', !!ul && ul.visible);
-  const file = `<label class="act-btn" style="padding:3px 9px;font-size:11px;cursor:pointer;">${ul ? 'Replace…' : '⤒ Upload drawing…'}<input type="file" id="fpUnderlayFile" accept="image/png,image/jpeg,image/webp,application/pdf,.pdf" hidden></label>`;
+  if (btn) {
+    btn.classList.toggle('on', !!ul && ul.visible);
+    btn.setAttribute('aria-pressed', String(!!ul && ul.visible));
+  }
+  const file = `<label class="act-btn" style="padding:3px 9px;font-size:11px;cursor:pointer;">${ul ? 'Replace…' : 'Upload drawing…'}<input type="file" id="fpUnderlayFile" accept="image/png,image/jpeg,image/webp,application/pdf,.pdf" hidden></label>`;
   if (!ul) {
     el.innerHTML = `<div class="t-type" style="max-width:260px;white-space:normal;margin-bottom:6px;">Trace over the architect's plan: upload a PNG / JPEG / WebP or a PDF (page 1). It stays CMS-only — never shown to customers.</div>${file}`;
     return;
@@ -1832,9 +1875,9 @@ function fpRenderUnderlayMenu() {
         `<span class="fp-num-lbl">opacity</span><input type="range" min="5" max="100" step="5" data-fp-ul="opacity" value="${Math.round(ul.opacity * 100)}" aria-label="Underlay opacity" style="width:90px;">`,
     ) +
     row(
-      `<button class="act-btn${state.fp.underlayMode === 'calibrate' ? ' primary' : ''}" id="fpUnderlayCalib" style="padding:2px 9px;font-size:11px;"${ul.locked ? ' disabled' : ''} title="Click two features of a known distance on the drawing, then type that distance">📐 Calibrate</button>` +
-        `<button class="act-btn${state.fp.underlayMode === 'move' ? ' primary' : ''}" id="fpUnderlayMove" style="padding:2px 9px;font-size:11px;"${ul.locked ? ' disabled' : ''} title="Drag the drawing into place">✥ Move</button>` +
-        `<button class="act-btn" id="fpUnderlayRot" style="padding:2px 9px;font-size:11px;"${ul.locked ? ' disabled' : ''} title="Rotate 90° clockwise">↻ 90°</button>`,
+      `<button class="act-btn${state.fp.underlayMode === 'calibrate' ? ' primary' : ''}" id="fpUnderlayCalib" style="padding:2px 9px;font-size:11px;"${ul.locked ? ' disabled' : ''} title="Click two features of a known distance on the drawing, then type that distance">Calibrate</button>` +
+        `<button class="act-btn${state.fp.underlayMode === 'move' ? ' primary' : ''}" id="fpUnderlayMove" style="padding:2px 9px;font-size:11px;"${ul.locked ? ' disabled' : ''} title="Drag the drawing into place">Move</button>` +
+        `<button class="act-btn" id="fpUnderlayRot" style="padding:2px 9px;font-size:11px;"${ul.locked ? ' disabled' : ''} title="Rotate 90° clockwise">90°</button>`,
     ) +
     row(num('offsetX', 'X', ul.offsetX, 'Underlay left edge, feet') + num('offsetY', 'Y', ul.offsetY, 'Underlay top edge, feet') + num('rotation', '∠', ul.rotation, 'Rotation in degrees (clockwise)')) +
     row(file + `<button class="act-btn danger" id="fpUnderlayRemove" style="padding:2px 9px;font-size:11px;">Remove</button>`);
@@ -2967,8 +3010,9 @@ function fpRenderMultiInfo(info) {
 const FP_SHORTCUTS = [
   ['Selection', [['Click / Shift+click', 'select / add or remove from the selection'], ['Drag on empty canvas', 'marquee select (Shift adds)'], ['Cmd/Ctrl+A', 'select all units, blocks and markers'], ['Esc', 'clear selection / cancel the current tool'], ['Delete', 'remove the selection (or the selected line vertex)']]],
   ['Move & edit', [['Arrows', 'nudge by the snap step (Shift ×10, Alt 0.01 ft)'], ['Shift while dragging', 'lock to one axis'], ['Alt while dragging', 'fine 0.01 ft snap'], ['Cmd/Ctrl+C · V · D', 'copy · paste · duplicate (blocks, markers, lines; D on a unit makes a new draft unit)'], ['Cmd/Ctrl+Z · Shift+Z (or Y)', 'undo · redo']]],
-  ['Units', [['N', 'new-unit tool: drag a rectangle, then confirm tier / rate'], ['Enter · Esc (in the form)', 'create · cancel'], ['Delete on a NEW unit', 'discard it (undo brings it back)']]],
+  ['Units', [['V', 'select tool'], ['N', 'new-unit tool: drag a rectangle, then confirm tier / rate'], ['B', 'block form: name it in the panel, then Add block'], ['Enter · Esc (in the form)', 'create · cancel'], ['Delete on a NEW unit', 'discard it (undo brings it back)']]],
   ['Lines & measure', [['L', 'line tool on / off'], ['Click · double-click / Enter', 'add vertex · finish'], ['Click first vertex / C', 'close the loop'], ['Type a number (+ Tab angle) · Enter', 'exact segment length / angle'], ['Backspace', 'remove the last vertex'], ['M', 'measure tool (two clicks)']]],
+  ['View', [['K', 'open the safety-markers menu'], ['Shift+1', 'zoom to fit']]],
   ['Help', [['?', 'this sheet']]],
 ];
 
@@ -3619,6 +3663,7 @@ function fpRender() {
   fpSyncDimInputs(d);
   fpSyncGfaInput();
   fpRenderBoundaryMetrics();
+  fpUpdatePlanBtn();
   const st = $('#fpStructure');
   if (st) st.value = state.fp.structure ? JSON.stringify(state.fp.structure, null, 2) : '';
   const legacy = $('#fpLegacyNote');
@@ -4053,6 +4098,7 @@ function fpSetMeasureMode(on) {
   fpMeasure = null;
   fpSnapHint = null;
   if (on) {
+    if (state.fp.newUnitMode) fpSetNewUnitMode(false, true);
     state.fp.drawMode = false;
     fpResetPen();
     state.fp.armedMarker = null;
@@ -5471,7 +5517,9 @@ function fpRenderMarkerTools() {
 function fpToggleArmedMarker(kind) {
   state.fp.armedMarker = state.fp.armedMarker === kind ? null : kind;
   if (state.fp.armedMarker) {
-    // Arming a marker disarms the line tool (one placement mode at a time).
+    // Arming a marker disarms every other placement mode (one at a time).
+    if (state.fp.newUnitMode) fpSetNewUnitMode(false, true);
+    if (state.fp.measureMode) fpSetMeasureMode(false);
     state.fp.drawMode = false;
     fpResetPen();
     const pencilBtn = $('#fpBoundaryTool');
@@ -5485,6 +5533,7 @@ function fpToggleArmedMarker(kind) {
   const menu = $('#fpMarkersMenu');
   if (menu && state.fp.armedMarker) {
     menu.hidden = true;
+    fpUnanchorMenu(menu);
     $('#fpMarkersBtn')?.setAttribute('aria-expanded', 'false');
   }
   fpRenderMarkerTools();
@@ -5494,15 +5543,30 @@ function fpToggleArmedMarker(kind) {
 
 // Escape cancels an armed marker placement (module-level so it coexists with
 // the line tool's own transient Escape handler, which only fires mid-draft).
+// With no marker armed, Esc is the global tool reset: close any floating menu
+// and return a stray tool (line tool armed with no draft, block form, …) to
+// Select. Owners that consume Esc first (pen draft, measure/new-unit,
+// underlay, shortcut sheet, multi-selection, modals, text entry) set
+// defaultPrevented or return early, so this fallback never fights them.
 function fpOnEscapeTool(e) {
   if (e.key !== 'Escape' || e.defaultPrevented) return;
-  if (!state.fp.armedMarker) return;
-  e.preventDefault();
-  state.fp.armedMarker = null;
-  fpRenderMarkerTools();
-  fpRenderCanvas();
-  fpToast('Marker placement cancelled.', true);
-  fpSyncModeUI();
+  if (state.fp.armedMarker) {
+    e.preventDefault();
+    state.fp.armedMarker = null;
+    fpRenderMarkerTools();
+    fpRenderCanvas();
+    fpToast('Marker placement cancelled.', true);
+    fpSyncModeUI();
+    return;
+  }
+  const t = e.target;
+  if (t && typeof t.closest === 'function' && t.closest('input, textarea, select, [contenteditable]')) return;
+  const viewModal = $('#fpViewModal');
+  if (viewModal && !viewModal.hidden) return;
+  const confirmModal = $('#confirmModal');
+  if (confirmModal && !confirmModal.hidden) return;
+  fpCloseAllMenus();
+  if (fpEffectiveMode() !== 'select' && !fpPen) fpSetSelectMode();
 }
 
 async function fpPlaceMarker(kind, gx, gy) {
@@ -6507,6 +6571,7 @@ function fpSetNewUnitMode(on, quiet) {
     fpResetPen();
     state.fp.armedMarker = null;
     state.fp.tool = 'select';
+    fpToggleBlockForm(false);
     fpRenderMarkerTools();
   }
   if (!next && fpNewDraft) fpCancelNewUnit(true);
@@ -6775,6 +6840,29 @@ async function fpDuplicateUnit(pl) {
 // plan owned sizes (old 15% / 2% bands). Per unit: "Use drawing" flags it so
 // the next publish sets the unit's sqft from the drawing; "Fit drawing"
 // resizes the drawing to the unit's sqft. Never automatic.
+// Size-mismatch chip (toolbar Actions group): amber "N size mismatches",
+// hidden when N = 0. Same endpoint fpOpenReconcile() reads; refreshed on
+// floor load (fpFetch), after the reconcile modal closes, and after publish
+// (which refetches). Click still opens the reconcile modal.
+async function fpRefreshMismatchCount() {
+  const btn = $('#fpSizesBtn');
+  if (!btn || !state.fp.floorId || !state.fp.plan) {
+    if (btn) btn.hidden = true;
+    return;
+  }
+  let rows = [];
+  try {
+    rows = await get(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/size-mismatches`);
+  } catch (_) {
+    btn.hidden = true; // endpoint hiccup: hide rather than show a stale count
+    return;
+  }
+  const n = Array.isArray(rows) ? rows.length : 0;
+  btn.hidden = n === 0;
+  const lbl = $('#fpSizesText');
+  if (lbl) lbl.textContent = `${n} size mismatch${n === 1 ? '' : 'es'}`;
+  btn.setAttribute('aria-label', `${n} size mismatch${n === 1 ? '' : 'es'} — open the reconcile review`);
+}
 async function fpOpenReconcile() {
   if (!state.fp.floorId || !state.fp.plan) {
     fpToast('Open a floor with a plan first.', false);
@@ -6849,6 +6937,7 @@ async function fpOpenReconcile() {
   const close = () => {
     modal.hidden = true;
     document.removeEventListener('keydown', onKey, true);
+    fpRefreshMismatchCount().catch(() => {}); // fixes inside re-count the chip
   };
   const onKey = (ev) => {
     if (ev.key === 'Escape') {
@@ -7108,8 +7197,11 @@ function fpOnCanvasWheel(e) {
 // fpRenderSelInfo: boundary line, then marker, then decoration block, then
 // unit placement.
 // fpDeletePlan (whole-plan delete) is NEVER bound here.
-// Tool shortcuts: L toggles the line tool, M the measure tool; Esc clears a
-// measurement (then leaves the measure tool). Same guards as Delete.
+// Tool shortcuts: V select, N new unit, L walls, B block form, M measure,
+// K opens the Markers menu, Shift+1 zoom-to-fit; Esc clears a measurement
+// (then leaves the measure tool). Same guards as Delete: never while typing
+// in an input/select/textarea/contenteditable, never with Cmd/Ctrl/Alt held
+// (so Cmd/Ctrl+V still pastes, Shift+1 is plain Shift, not a modifier combo).
 function fpOnToolKey(e) {
   if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey) return;
   const t = e.target;
@@ -7132,6 +7224,9 @@ function fpOnToolKey(e) {
       fpRenderCanvas();
       fpMeasureReadout(null);
     } else fpSetMeasureMode(false);
+  } else if (e.key === 'v' || e.key === 'V') {
+    e.preventDefault();
+    $('#fpModeSelect')?.click();
   } else if (e.key === 'l' || e.key === 'L') {
     e.preventDefault();
     $('#fpBoundaryTool')?.click();
@@ -7141,6 +7236,16 @@ function fpOnToolKey(e) {
   } else if (e.key === 'n' || e.key === 'N') {
     e.preventDefault();
     fpSetNewUnitMode(!state.fp.newUnitMode);
+  } else if (e.key === 'b' || e.key === 'B') {
+    e.preventDefault();
+    $('#fpAddBlock')?.click();
+  } else if (e.key === 'k' || e.key === 'K') {
+    e.preventDefault();
+    fpSetMarkersMenu(true);
+    $('#fpMarkersBtn')?.focus();
+  } else if (e.shiftKey && e.key === '!') {
+    e.preventDefault();
+    fpZoomFit();
   } else if (e.key === 'Escape' && (fpNewDraft || state.fp.newUnitMode)) {
     e.preventDefault();
     if (fpNewDraft) fpCancelNewUnit();
@@ -7205,9 +7310,9 @@ function fpStudioToast(msg, ok) {
   }
 }
 
-// Effective Studio mode for the segmented control + MODE badge. Placement
-// modes (armed marker, line tool) win over the sticky tool so the badge is
-// always truthful; block mode sticks while its form is open.
+// Effective Studio mode for the toolbar + tool-options strip. Placement
+// modes (armed marker, line tool) win over the sticky tool so the mode text
+// is always truthful; block mode sticks while its form is open.
 function fpEffectiveMode() {
   if (state.fp.underlayMode === 'calibrate') return 'calibrate';
   if (state.fp.underlayMode === 'move') return 'underlay';
@@ -7220,30 +7325,54 @@ function fpEffectiveMode() {
   return 'select';
 }
 
-// Highlight the active Mode segment, sync aria-pressed, and paint the
-// workspace MODE: badge. Null-safe so it can run on every fpRender().
+// Highlight the active tool, sync aria-pressed, and fill the contextual
+// #fpToolOptions strip (mode text + the buttons each mode owns). Null-safe so
+// it can run on every fpRender(). Exactly one tool reads as active: the mode
+// buttons are mutually exclusive by construction of fpEffectiveMode().
 function fpSyncModeUI() {
   const mode = fpEffectiveMode();
-  const badge = $('#fpModeIndicator');
-  if (badge) {
-    badge.textContent =
-      mode === 'calibrate'
-        ? 'MODE: CALIBRATE UNDERLAY'
-        : mode === 'underlay'
-          ? 'MODE: MOVE UNDERLAY'
-          : mode === 'marker'
-        ? 'MODE: MARKER'
-        : mode === 'measure'
-          ? 'MODE: MEASURE'
-          : mode === 'draw'
-          ? `MODE: DRAW ${fpLineKindLabel(fpPenKind()).toUpperCase()}`
-          : mode === 'newunit'
-            ? 'MODE: NEW UNIT — DRAG A RECTANGLE'
+  const label =
+    mode === 'calibrate'
+      ? 'MODE: CALIBRATE UNDERLAY'
+      : mode === 'underlay'
+        ? 'MODE: MOVE UNDERLAY'
+        : mode === 'marker'
+      ? `MODE: MARKER — ${fpMarkerDef(state.fp.armedMarker).label.toUpperCase()}`
+      : mode === 'measure'
+        ? 'MODE: MEASURE'
+        : mode === 'draw'
+        ? `MODE: DRAW ${fpLineKindLabel(fpPenKind()).toUpperCase()}`
+        : mode === 'newunit'
+          ? 'MODE: NEW UNIT — DRAG A RECTANGLE'
           : mode === 'add'
             ? 'MODE: ADD UNIT'
             : mode === 'block'
               ? 'MODE: BLOCK'
               : 'MODE: SELECT';
+  const hint =
+    mode === 'add' || mode === 'newunit'
+      ? 'Drag a rectangle to draw it'
+      : mode === 'draw'
+        ? 'Click to add points · Enter finish · C close · type a length'
+        : mode === 'block'
+          ? 'Name it in the panel, then Add block'
+          : mode === 'marker'
+            ? 'Click the canvas to place · Esc cancels'
+            : mode === 'measure'
+              ? 'Click two points · Esc clears'
+              : '';
+  const opts = $('#fpToolOptions');
+  if (opts) {
+    const text = opts.querySelector('.fp-mode-text');
+    if (text) text.textContent = label;
+    const hintEl = opts.querySelector('.fp-hint');
+    if (hintEl) hintEl.textContent = hint;
+    // The buttons live here (moved, never cloned): Lock area only applies to
+    // Select, Rotate only to rectangle drawing.
+    const lock = $('#fpLockSqft');
+    if (lock) lock.hidden = mode !== 'select';
+    const rot = $('#fpRotateGhost');
+    if (rot) rot.hidden = !(mode === 'add' || mode === 'newunit');
   }
   const set = (id, on) => {
     const b = $(id);
@@ -7252,10 +7381,11 @@ function fpSyncModeUI() {
     b.setAttribute('aria-pressed', String(on));
   };
   set('#fpModeSelect', mode === 'select');
-  set('#fpModeAddUnit', mode === 'add');
   set('#fpNewUnitTool', mode === 'newunit');
-  // fpBoundaryTool/fpAddBlock keep their own .on sync (pencil toggle / block
-  // form); mirror the effective mode here so the segmented control reads as one.
+  set('#fpMeasureTool', mode === 'measure');
+  set('#fpMarkersBtn', mode === 'marker');
+  // pencil toggle / block form); mirror the effective mode here so the tools
+  // read as one active tool.
   const pencil = $('#fpBoundaryTool');
   if (pencil) {
     pencil.classList.toggle('on', mode === 'draw');
@@ -7268,17 +7398,265 @@ function fpSyncModeUI() {
   }
 }
 
+// Select is the neutral tool: entering it clears every competing placement
+// mode (new-unit drag incl. its draft, wall drawing incl. the pen draft,
+// measure, the armed marker) and the block form, so exactly one tool reads as
+// active. The old Add-Unit mode button stays deleted (palette drags need no
+// mode) — Select clears state.fp.newUnitMode directly, so no hidden stand-in
+// is required.
+function fpSetSelectMode() {
+  if (state.fp.measureMode) fpSetMeasureMode(false);
+  if (state.fp.newUnitMode) fpSetNewUnitMode(false, true);
+  else if (fpNewDraft) fpCancelNewUnit(true);
+  state.fp.drawMode = false;
+  fpResetPen();
+  state.fp.armedMarker = null;
+  state.fp.tool = 'select';
+  fpToggleBlockForm(false);
+  fpSetMarkersMenu(false);
+  fpRenderMarkerTools();
+  fpRenderCanvas();
+  fpSyncModeUI();
+}
+
 function fpSetMarkersMenu(open) {
   const menu = $('#fpMarkersMenu');
   if (!menu) return;
   menu.hidden = !open;
   $('#fpMarkersBtn')?.setAttribute('aria-expanded', String(!!open));
+  if (open) fpAnchorMenu('#fpMarkersBtn', menu);
+  else fpUnanchorMenu(menu);
+}
+
+// Snap / zoom-picker / plan-settings / ⋯ popovers: one open at a time, Esc or
+// outside pointer closes. Wired by id in fpInitEvents(); the Layers, Markers,
+// Underlay and Export menus keep their own existing closers.
+// Floating menus must open above the canvas: the toolbar keeps its single-row
+// in-bar scroll (overflow-x:auto, never wraps), which clips
+// absolutely-positioned popovers, so every open menu is pinned with
+// position:fixed (see .fp-menu.fp-fixed in dashboard.html) at its anchor's
+// viewport rect, flipping up / right-aligning near viewport edges. DOM order
+// is untouched, so Tab order stays in visual order and :focus-visible rings
+// keep working; Esc + outside-pointer closers are unchanged.
+function fpAnchorMenu(btnSel, menu) {
+  const btn = btnSel instanceof Element ? btnSel : $(btnSel);
+  if (!btn || !menu) return;
+  menu.classList.add('fp-fixed');
+  const r = btn.getBoundingClientRect();
+  const mw = menu.offsetWidth || 220;
+  const mh = menu.offsetHeight || 200;
+  const pad = 6;
+  // Prefer below the anchor; flip above when there is no room (or when the
+  // menu skin already opens upward, e.g. the status-bar Plan menu).
+  const below = window.innerHeight - r.bottom - pad;
+  const openUp = menu.classList.contains('fp-menu-up') || below < mh + pad;
+  // Prefer left-aligned; right-align when it would overflow the viewport.
+  const overRight = r.left + mw > window.innerWidth - pad;
+  menu.style.left = `${Math.max(pad, overRight ? r.right - mw : r.left)}px`;
+  menu.style.top = openUp ? `${Math.max(pad, r.top - mh - pad)}px` : `${r.bottom + pad}px`;
+  menu.style.bottom = 'auto';
+  menu.style.right = 'auto';
+}
+function fpUnanchorMenu(menu) {
+  if (!menu) return;
+  menu.classList.remove('fp-fixed');
+  menu.style.left = '';
+  menu.style.top = '';
+  menu.style.bottom = '';
+  menu.style.right = '';
+}
+// Every floating menu (popovers + Layers/Markers/Underlay/Export): one open
+// at a time; toolbar-scroll or viewport-resize closes them so a fixed menu
+// never detaches from its anchor.
+function fpCloseAllMenus() {
+  fpClosePopovers();
+  for (const [btnId, menuId] of [
+    ['#fpMarkersBtn', '#fpMarkersMenu'],
+    ['#fpLayersBtn', '#fpLayersMenu'],
+    ['#fpUnderlayBtn', '#fpUnderlayMenu'],
+    ['#fpExportBtn', '#fpExportMenu'],
+  ]) {
+    const menu = $(menuId);
+    if (menu && !menu.hidden) {
+      menu.hidden = true;
+      fpUnanchorMenu(menu);
+    }
+    $(btnId)?.setAttribute('aria-expanded', 'false');
+  }
+}
+
+// Snap / zoom-picker / plan-settings / ⋯ popovers: one open at a time, Esc or
+// outside pointer closes. Wired by id in fpInitEvents(); the Layers, Markers,
+// Underlay and Export menus keep their own existing closers.
+const FP_POPOVERS = [
+  ['#fpSnapStepBtn', '#fpSnapMenu'],
+  ['#fpZoomLbl', '#fpZoomMenu'],
+  ['#fpPlanBtn', '#fpPlanMenu'],
+  ['#fpMoreBtn', '#fpMoreMenu'],
+];
+function fpClosePopovers() {
+  for (const [btnId, menuId] of FP_POPOVERS) {
+    const menu = $(menuId);
+    if (menu) {
+      menu.hidden = true;
+      fpUnanchorMenu(menu);
+    }
+    $(btnId)?.setAttribute('aria-expanded', 'false');
+  }
+}
+function fpWirePopover(btnId, menuId) {
+  const btn = $(btnId);
+  const menu = $(menuId);
+  if (!btn || !menu) return;
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const open = menu.hidden;
+    fpClosePopovers();
+    menu.hidden = !open;
+    btn.setAttribute('aria-expanded', String(open));
+    if (open) fpAnchorMenu(btn, menu);
+    else fpUnanchorMenu(menu);
+  });
+  menu.addEventListener('pointerdown', (e) => e.stopPropagation());
+  menu.addEventListener('click', (e) => e.stopPropagation());
+}
+
+// ---------- floating control tooltips (toolbar + header + status bar) ----------
+// Native `title` never fires on the icon-only buttons: the pointer lands on
+// the inner svg/use icon content (not the titled <button>), and Undo/Redo
+// are disabled at boot (empty stacks — disabled buttons receive no mouse
+// events, so no native title either). A pure-CSS ::after is impossible too:
+// the single-row bar keeps overflow-x:auto (never wraps), which clips it. So
+// one position:fixed bubble (.fp-tip in dashboard.html, aria-hidden so screen
+// readers keep using the intact aria-labels), anchored by JS with the same
+// flip-near-edges pattern as fpAnchorMenu. Scope: every titled control in
+// #fpToolbar, the header .fp-top-actions and the .fp-statusbar (Units
+// toggle, Select, New unit, Walls, Block, Marker, Measure, Auto-place,
+// Auto-doors, Sizes, Layers, Underlay, Grid, Snap, Zoom, Shortcuts, Undo,
+// Redo, Export, More, Publish, Plan + their menu items). The existing title
+// text is reused verbatim, so the "Name  Shortcut" format is unchanged.
+let fpTipCurrent = null;
+function fpTipEl() {
+  const designer = document.querySelector('#facility-floorplans');
+  if (!designer) return null;
+  let tip = designer.querySelector(':scope > .fp-tip');
+  if (!tip) {
+    tip = document.createElement('div');
+    tip.className = 'fp-tip';
+    tip.setAttribute('aria-hidden', 'true');
+    tip.hidden = true;
+    designer.appendChild(tip);
+  }
+  return tip;
+}
+// Move title → data-tip so the unreliable native bubble becomes the single
+// custom one (no double tooltips). Idempotent and lazy: also runs on first
+// hover/focus, so dynamically rendered menu items (marker kinds, underlay
+// actions) are covered without a MutationObserver.
+function fpTipText(el) {
+  if (!el || typeof el.getAttribute !== 'function') return '';
+  if (el.hasAttribute('data-tip')) return el.getAttribute('data-tip') || '';
+  const t = el.getAttribute('title');
+  if (t == null) return '';
+  el.setAttribute('data-tip', t);
+  el.removeAttribute('title');
+  return t;
+}
+function fpShowTip(anchor) {
+  const tip = fpTipEl();
+  const text = fpTipText(anchor);
+  if (!tip || !text || !anchor.isConnected) return;
+  tip.textContent = text;
+  tip.hidden = false;
+  // Measure then pin: above the anchor, flipped below when there is no room;
+  // clamped horizontally so the bubble never causes page scroll or shift.
+  const r = anchor.getBoundingClientRect();
+  const tw = tip.offsetWidth || 200;
+  const th = tip.offsetHeight || 28;
+  const pad = 8;
+  const cx = Math.min(Math.max(r.left + r.width / 2, tw / 2 + pad), Math.max(tw / 2 + pad, window.innerWidth - tw / 2 - pad));
+  const above = r.top - th - pad;
+  tip.style.left = `${Math.max(pad, cx - tw / 2)}px`;
+  tip.style.top = above >= pad ? `${above}px` : `${r.bottom + pad}px`;
+  tip.classList.add('show');
+}
+function fpHideTip() {
+  if (fpTipCurrent) fpTipCurrent = null;
+  const designer = document.querySelector('#facility-floorplans');
+  const tip = designer && designer.querySelector(':scope > .fp-tip');
+  if (tip) {
+    tip.classList.remove('show');
+    tip.hidden = true;
+  }
+}
+// Resolve the titled control under the pointer even when the hit element is
+// the inner svg/use (icon-only buttons) or a disabled button (Undo/Redo at
+// boot, which dispatch no mouse events themselves): fall back to
+// elementFromPoint, which hit-tests both.
+function fpTipAnchorFromEvent(e) {
+  const bar = e.currentTarget instanceof Element ? e.currentTarget : null;
+  const within = (el) => el && bar && bar.contains(el);
+  const fromTarget = e.target && e.target.closest ? e.target.closest('[data-tip],[title]') : null;
+  if (within(fromTarget)) return fromTarget;
+  if (e.clientX == null || e.clientY == null) return null;
+  const under = document.elementFromPoint(e.clientX, e.clientY);
+  const viaPoint = under && under.closest ? under.closest('[data-tip],[title]') : null;
+  return within(viaPoint) ? viaPoint : null;
+}
+function fpInitTips() {
+  const bars = ['#fpToolbar', '#facility-floorplans .fp-top-actions', '#facility-floorplans .fp-statusbar']
+    .map((s) => document.querySelector(s))
+    .filter(Boolean);
+  if (!bars.length) return;
+  // Boot migration so the very first hover already reads data-tip (lazy
+  // migration in fpTipText covers anything rendered later).
+  for (const bar of bars) {
+    for (const el of bar.querySelectorAll('[title]')) fpTipText(el);
+  }
+  for (const bar of bars) {
+    bar.addEventListener('mouseover', (e) => {
+      const anchor = fpTipAnchorFromEvent(e);
+      if (anchor === fpTipCurrent) return;
+      fpTipCurrent = anchor;
+      if (anchor) fpShowTip(anchor);
+      else fpHideTip();
+    });
+    bar.addEventListener('mouseout', (e) => {
+      if (!fpTipCurrent) return;
+      const to = e.relatedTarget;
+      if (to && fpTipCurrent.contains(to)) return;
+      fpHideTip();
+    });
+    // Keyboard parity: buttons show the tip on focus-visible; text inputs and
+    // selects keep hover-only so the bubble never covers what is being typed.
+    bar.addEventListener('focusin', (e) => {
+      const anchor = e.target && e.target.closest ? e.target.closest('[data-tip],[title]') : null;
+      if (!anchor || !bar.contains(anchor)) return;
+      if (anchor.tagName !== 'BUTTON') return;
+      try {
+        if (!anchor.matches(':focus-visible')) return;
+      } catch (_) {
+        // Older engine without :focus-visible — show on focus anyway.
+      }
+      fpTipCurrent = anchor;
+      fpShowTip(anchor);
+    });
+    bar.addEventListener('focusout', fpHideTip);
+    // A fixed bubble detaches from its anchor on scroll/activation — hide it.
+    bar.addEventListener('scroll', fpHideTip, { capture: true, passive: true });
+    bar.addEventListener('click', fpHideTip, { capture: true });
+  }
+  window.addEventListener('scroll', fpHideTip, true);
+  window.addEventListener('resize', fpHideTip);
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') fpHideTip();
+  });
 }
 
 export function fpInitEvents() {
   // Wiring follows the toolbar groups in canonical order (see
-  // FP_TOOLBAR_GROUPS): units → mode → markers → canvas → plan → view → info.
-  // --- Group: header (branch/floor scope + save/delete plan actions, delete last) ---
+  // FP_TOOLBAR_GROUPS): panel → tools → options → actions → markers → view → zoom.
+  // --- Group: header (branch/floor scope + undo/redo, save status, export, ⋯, publish) ---
   $('#fpBranch').addEventListener('change', async (e) => {
     const next = e.target.value;
     e.target.value = state.fp.branchCode; // hold until the unsaved guard resolves
@@ -7301,7 +7679,7 @@ export function fpInitEvents() {
   $('#fpSaveDraft').addEventListener('click', fpSaveDraft);
   $('#fpPublishPlan').addEventListener('click', fpPublishPlan);
   $('#fpDeletePlan').addEventListener('click', fpDeletePlan);
-  // --- Group: units (Units) — palette ghost orientation + sqft lock ---
+  // --- Group: options (tool options strip) — palette ghost orientation + sqft lock ---
   // Orientation toggle for rectangular palette ghosts (placement-time only).
   const rotBtn = $('#fpRotateGhost');
   const syncRotBtn = () => {
@@ -7324,9 +7702,10 @@ export function fpInitEvents() {
   const lockBtn = $('#fpLockSqft');
   const syncLockBtn = () => {
     if (!lockBtn) return;
+    // State reads through .on + aria-pressed (the "Lock area" label + lock
+    // icon are static markup) — never textContent, which would wipe the icon.
     lockBtn.classList.toggle('on', state.fp.lockSqft);
     lockBtn.setAttribute('aria-pressed', String(state.fp.lockSqft));
-    lockBtn.textContent = state.fp.lockSqft ? '🔒 sqft' : '🔓 sqft';
   };
   if (lockBtn) {
     syncLockBtn();
@@ -7357,6 +7736,7 @@ export function fpInitEvents() {
   if (pencilBtn) {
     syncPencilBtn();
     pencilBtn.addEventListener('click', () => {
+      if (state.fp.newUnitMode) fpSetNewUnitMode(false, true);
       state.fp.drawMode = !state.fp.drawMode;
       fpResetPen();
       if (state.fp.drawMode && state.fp.measureMode) fpSetMeasureMode(false);
@@ -7418,7 +7798,7 @@ export function fpInitEvents() {
   document.addEventListener('keydown', fpOnArrowKey);
   // Escape cancels an armed marker (the line tool owns its own mid-draft Escape).
   document.addEventListener('keydown', fpOnEscapeTool);
-  // --- Group: units (palette drag, palette toggle, auto-place) + blocks (block form) ---
+  // --- Group: panel (palette drag + toggle) + blocks (block form) + actions ---
   $('#fpPalette').addEventListener('pointerdown', (e) => {
     const chip = e.target.closest('.fp-unit-chip');
     if (!chip) return;
@@ -7428,11 +7808,20 @@ export function fpInitEvents() {
     e.stopPropagation();
     fpSetPaletteCollapsed(!fpPaletteCollapsed());
   });
-  $('#fpPaletteReopen')?.addEventListener('click', () => fpSetPaletteCollapsed(false));
+  // Toolbar Units toggle: always visible, mirrors palette-open state.
+  $('#fpPaletteReopen')?.addEventListener('click', () => fpSetPaletteCollapsed(!fpPaletteCollapsed()));
   $('#fpAddBlock').addEventListener('click', () => {
+    if (state.fp.newUnitMode) fpSetNewUnitMode(false, true);
+    else if (fpNewDraft) fpCancelNewUnit(true);
+    if (state.fp.measureMode) fpSetMeasureMode(false);
+    state.fp.drawMode = false;
+    fpResetPen();
+    state.fp.armedMarker = null;
+    fpRenderMarkerTools();
     fpToggleBlockForm(true);
-    // Studio Mode segment follows the block form.
+    // Tool options follow the block form.
     state.fp.tool = 'block';
+    fpRenderCanvas();
     fpSyncModeUI();
   });
   const fpAutoBtn = $('#fpAutoPlace');
@@ -7455,6 +7844,8 @@ export function fpInitEvents() {
     if (!menu) return;
     menu.hidden = !menu.hidden;
     $('#fpLayersBtn').setAttribute('aria-expanded', String(!menu.hidden));
+    if (!menu.hidden) fpAnchorMenu('#fpLayersBtn', menu);
+    else fpUnanchorMenu(menu);
   });
   $('#fpLayersMenu')?.addEventListener('click', (e) => e.stopPropagation());
   $('#fpLayersMenu')?.addEventListener('change', (e) => {
@@ -7467,11 +7858,13 @@ export function fpInitEvents() {
     const menu = $('#fpLayersMenu');
     if (menu && !menu.hidden) {
       menu.hidden = true;
+      fpUnanchorMenu(menu);
       $('#fpLayersBtn')?.setAttribute('aria-expanded', 'false');
     }
   });
   $('#fpShortcutsBtn')?.addEventListener('click', () => fpToggleShortcutSheet());
-  // 🗺 Underlay + ⤓ Export dropdowns (same open/close pattern as Layers).
+  // Underlay + Export dropdowns (same open/close pattern as Layers; Export
+  // now lives in the header but the wiring is location-agnostic).
   fpWireUnderlayPanel();
   fpRenderUnderlayMenu();
   for (const [btnId, menuId] of [['#fpUnderlayBtn', '#fpUnderlayMenu'], ['#fpExportBtn', '#fpExportMenu']]) {
@@ -7481,18 +7874,35 @@ export function fpInitEvents() {
       if (!menu) return;
       menu.hidden = !menu.hidden;
       $(btnId).setAttribute('aria-expanded', String(!menu.hidden));
-      if (!menu.hidden && menuId === '#fpUnderlayMenu') fpRenderUnderlayMenu();
+      if (!menu.hidden) {
+        if (menuId === '#fpUnderlayMenu') fpRenderUnderlayMenu();
+        fpAnchorMenu(btnId, menu);
+      } else fpUnanchorMenu(menu);
     });
     $(menuId)?.addEventListener('pointerdown', (e) => e.stopPropagation());
     document.addEventListener('pointerdown', () => {
       const menu = $(menuId);
       if (menu && !menu.hidden) {
         menu.hidden = true;
+        fpUnanchorMenu(menu);
         $(btnId)?.setAttribute('aria-expanded', 'false');
       }
     });
   }
   $('#fpExportGo')?.addEventListener('click', () => fpExport());
+  // Snap split, zoom picker, plan settings + ⋯ popovers.
+  for (const [btnId, menuId] of FP_POPOVERS) fpWirePopover(btnId, menuId);
+  document.addEventListener('pointerdown', (e) => {
+    if (e.target?.closest?.('#fpSnapMenu, #fpZoomMenu, #fpPlanMenu, #fpMoreMenu, #fpSnapStepBtn, #fpZoomLbl, #fpPlanBtn, #fpMoreBtn')) return;
+    fpClosePopovers();
+  });
+  // A fixed menu never scrolls with its anchor: toolbar-scroll or a viewport
+  // resize closes every floating menu instead of leaving it detached.
+  $('#fpToolbar')?.addEventListener('scroll', () => fpCloseAllMenus(), { passive: true });
+  window.addEventListener('resize', () => fpCloseAllMenus());
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') fpClosePopovers();
+  });
   document.addEventListener('keydown', (e) => {
     // Ctrl/Cmd+Z undoes the last designer draw/move/delete (not while typing
     // in an input, and not when the block-name field owns Enter/Escape).
@@ -7806,40 +8216,16 @@ export function fpInitEvents() {
   $('#fpLibraryOpenDesigner')?.addEventListener('click', () => {
     document.querySelector('[data-tabs="facility"] [data-tab="facility-floorplans"]')?.click();
   });
-  // --- Studio ribbon: Mode segments (Select / Add Unit) ---
-  // Draw Wall + Add Block reuse #fpBoundaryTool / #fpAddBlock above, so the
-  // segmented control has one handler per tool and the audit stays green.
+  // --- Toolbar: tools (Select / New unit; Walls + Block + Measure above) ---
+  // One handler per tool; fpSyncModeUI keeps exactly one reading as active.
+  // Select is the neutral tool (see fpSetSelectMode): it clears the new-unit,
+  // draw, measure and marker modes, so clicking it always lands on Select.
   $('#fpModeSelect')?.addEventListener('click', () => {
-    if (state.fp.measureMode) fpSetMeasureMode(false);
-    state.fp.tool = 'select';
-    state.fp.drawMode = false;
-    fpResetPen();
-    state.fp.armedMarker = null;
-    const pencilBtn = $('#fpBoundaryTool');
-    if (pencilBtn) {
-      pencilBtn.classList.remove('on');
-      pencilBtn.setAttribute('aria-pressed', 'false');
-    }
-    fpSetMarkersMenu(false);
-    fpRenderMarkerTools();
-    fpRenderCanvas();
-    fpSyncModeUI();
+    fpSetSelectMode();
   });
   $('#fpNewUnitTool')?.addEventListener('click', () => fpSetNewUnitMode(!state.fp.newUnitMode));
   $('#fpSizesBtn')?.addEventListener('click', () => fpOpenReconcile());
-  $('#fpModeAddUnit')?.addEventListener('click', () => {
-    fpSetNewUnitMode(false, true);
-    state.fp.tool = 'add';
-    state.fp.drawMode = false;
-    fpResetPen();
-    state.fp.armedMarker = null;
-    fpSetPaletteCollapsed(false);
-    fpRenderMarkerTools();
-    fpRenderCanvas();
-    fpSyncModeUI();
-    fpToast('Add-unit mode — drag a unit chip from the palette onto the canvas.', true);
-  });
-  // --- Studio ribbon: Markers dropdown (outside-click closes) ---
+  // --- Toolbar: Markers dropdown (outside-click closes) ---
   $('#fpMarkersBtn')?.addEventListener('click', (e) => {
     e.stopPropagation();
     fpSetMarkersMenu($('#fpMarkersMenu')?.hidden !== false);
@@ -7850,7 +8236,10 @@ export function fpInitEvents() {
       fpSetMarkersMenu(false);
     }
   });
-  // --- Studio ribbon: Zoom presets + grid toggle ---
+  // --- Toolbar: zoom picker + grid toggle ---
+  // The visible percentage IS the preset picker (it toggles #fpZoomMenu);
+  // the native #fpZoomPreset select stays mounted (hidden) so fpZoomLabel()
+  // keeps syncing it and its change path stays intact.
   $('#fpZoomPreset')?.addEventListener('change', (e) => {
     const v = String(e.target.value);
     if (v === 'fit') fpZoomFit();
@@ -7862,9 +8251,26 @@ export function fpInitEvents() {
       }
     }
   });
-  // Snap step selector (View group) + live cursor readout.
+  $('#fpZoomMenu')?.addEventListener('click', (e) => {
+    const opt = e.target && e.target.closest ? e.target.closest('[data-zoom]') : null;
+    if (!opt) return;
+    const v = String(opt.dataset.zoom);
+    if (v === 'fit') fpZoomFit();
+    else {
+      const n = Number(v);
+      if (Number.isFinite(n)) {
+        state.fp.scale = Math.min(3, Math.max(0.4, n));
+        fpRenderCanvas();
+      }
+    }
+    fpClosePopovers();
+  });
+  // Snap step selector (View group) + live cursor readout. The select is the
+  // real control inside the snap popover, so its change listeners keep firing;
+  // the split button only mirrors its label.
   fpLoadSnapStep();
   if ($('#fpSnapStep')) $('#fpSnapStep').value = String(fpSnapStep());
+  fpSyncSnapStepBtn();
   $('#fpSnapStep')?.addEventListener('change', (e) => fpSetSnapStep(e.target.value));
   // Measure tool, object-snap toggle (Phase 3).
   $('#fpMeasureTool')?.addEventListener('click', () => fpSetMeasureMode(!state.fp.measureMode));
@@ -7894,5 +8300,6 @@ export function fpInitEvents() {
   fpRenderMarkerTools();
   fpRenderBlockFormSwatches();
   fpSyncModeUI();
+  fpInitTips();
   fpAuditToolbar();
 }

@@ -1,0 +1,367 @@
+<title>Floor Plan Toolbar Mockup</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&display=swap">
+<style>
+/* Layout: two stacked "studio" frames (current vs proposed), each with header, toolbar, canvas strip, status bar.
+   Single light theme on purpose: it mirrors the light-only StoreLah CMS (tokens copied from dashboard.html). */
+:root{
+  --cream:#f7f3ec; --paper:#fffdfa; --white:#fff; --ink:#20241f; --muted:#6f746d; --light:#a0a59c;
+  --line:#e6e0d7; --line2:#ede8e2; --olive:#334437; --olive2:#526557; --sage:#dfe7dd;
+  --terra:#c97952; --terra2:#aa5d3c; --terra-light:#f7e2d7; --amber:#b9802a; --amber-light:#faebcf;
+  --red:#c9574e; --red-light:#f8dfdc; --unit:#dfe7dd; --unit-line:#526557; --hover:#f1ece4;
+  --font: Manrope, system-ui, -apple-system, "Segoe UI", sans-serif;
+  color-scheme: light;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--cream);color:var(--ink);font-family:var(--font);font-size:13px;line-height:1.45}
+.page{max-width:1320px;margin:0 auto;padding-block:28px 48px;padding-inline:16px;display:flex;flex-direction:column;gap:28px}
+h1{font-size:22px;font-weight:800;margin:0;letter-spacing:-.01em;text-wrap:balance}
+.lede{color:var(--muted);margin:6px 0 0;max-width:70ch}
+.tabs{display:inline-flex;gap:2px;background:var(--white);border:1px solid var(--line);border-radius:10px;padding:3px}
+.tabs button{border:0;background:transparent;font:700 12px var(--font);color:var(--muted);padding:7px 14px;border-radius:7px;cursor:pointer}
+.tabs button[aria-selected="true"]{background:var(--olive);color:#fff}
+.section-h{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+.section-h h2{font-size:12px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;margin:0;color:var(--olive2)}
+.section-h span{color:var(--muted);font-size:12px}
+
+/* ---------- studio frame ---------- */
+.studio{background:var(--paper);border:1px solid var(--line);border-radius:16px;box-shadow:0 10px 30px rgba(46,47,40,.08);overflow:hidden;min-width:0}
+.hdr{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.logo{width:28px;height:28px;border-radius:8px;background:var(--terra);color:#fff;font-weight:800;display:grid;place-items:center;font-size:14px}
+.brand{font-weight:800;font-size:14px;margin-right:6px}
+.sel{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);background:var(--white);border-radius:8px;padding:5px 9px;font:700 12px var(--font);color:var(--ink);cursor:pointer}
+.pill{display:inline-flex;align-items:center;gap:6px;background:var(--sage);color:var(--olive);border-radius:999px;padding:4px 10px;font-weight:700;font-size:11px}
+.pill::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--olive)}
+.spacer{flex:1}
+.btn{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);background:var(--white);border-radius:8px;padding:6px 11px;font:700 12px var(--font);color:var(--ink);cursor:pointer;white-space:nowrap}
+.btn:hover{background:var(--hover)}
+.btn.primary{background:var(--terra);border-color:var(--terra);color:#fff}
+.btn.primary:hover{background:var(--terra2)}
+.btn.danger{background:var(--red-light);border-color:transparent;color:var(--red)}
+button:focus-visible,.sel:focus-visible{outline:2px solid var(--terra);outline-offset:2px}
+.saved{color:var(--muted);font-size:12px;display:inline-flex;align-items:center;gap:5px;font-variant-numeric:tabular-nums}
+.saved svg{color:var(--olive2)}
+
+svg.i{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round;flex:none}
+svg.i.sm{width:13px;height:13px}
+
+/* ---------- proposed toolbar ---------- */
+.tb{display:flex;align-items:center;gap:6px;padding:6px 10px;border-bottom:1px solid var(--line);background:var(--white);overflow-x:auto;scrollbar-width:thin}
+.grp{display:flex;align-items:center;gap:2px;flex:none}
+.div{width:1px;height:22px;background:var(--line);margin:0 6px;flex:none}
+.ib{position:relative;display:inline-flex;align-items:center;justify-content:center;gap:6px;height:32px;min-width:32px;padding:0 8px;border:1px solid transparent;border-radius:7px;background:transparent;color:var(--ink);font:600 12px var(--font);cursor:pointer;white-space:nowrap}
+.ib.icon{padding:0;width:32px}
+.ib:hover{background:var(--hover)}
+.ib[aria-pressed="true"]{background:var(--sage);color:var(--olive)}
+.tools .ib[aria-pressed="true"]{background:var(--olive);color:#fff}
+.ib .caret{opacity:.55}
+.ib.warn{background:var(--amber-light);color:#7a5418;font-weight:700}
+.ib.warn:hover{background:#f5dfb6}
+.ctx{display:flex;align-items:center;gap:6px;padding-left:4px;color:var(--muted);font-size:11px;font-weight:700;flex:none}
+.ctx .lbl{text-transform:uppercase;letter-spacing:.07em;font-size:10px;color:var(--light)}
+.zoom{display:flex;align-items:center;border:1px solid var(--line);border-radius:8px;height:32px;flex:none}
+.zoom .ib{height:30px;border-radius:6px}
+.zoom .val{font:700 12px var(--font);font-variant-numeric:tabular-nums;min-width:58px;justify-content:center}
+.split{display:flex;align-items:center;flex:none}
+.split .ib:first-child{border-radius:7px 0 0 7px}
+.split .ib:last-child{border-radius:0 7px 7px 0;padding:0 6px;font-variant-numeric:tabular-nums;color:var(--muted)}
+
+/* tooltip */
+[data-tip]:hover::after,[data-tip]:focus-visible::after{content:attr(data-tip);position:absolute;top:calc(100% + 6px);left:50%;transform:translateX(-50%);background:var(--ink);color:#fff;font:600 11px var(--font);padding:5px 8px;border-radius:6px;white-space:nowrap;z-index:20;pointer-events:none}
+@media (prefers-reduced-motion:no-preference){[data-tip]:hover::after{animation:tip .12s ease-out}}
+@keyframes tip{from{opacity:0}to{opacity:1}}
+
+/* popover */
+.pop-wrap{position:relative;flex:none}
+.pop{position:absolute;top:calc(100% + 6px);right:0;background:var(--white);border:1px solid var(--line);border-radius:10px;box-shadow:0 12px 28px rgba(32,36,31,.14);padding:10px;min-width:220px;z-index:30;display:flex;flex-direction:column;gap:8px}
+.pop h4{margin:0;font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--light)}
+.pop label{display:flex;align-items:center;justify-content:space-between;gap:10px;font-weight:600;font-size:12px}
+.pop input[type=number]{width:80px;border:1px solid var(--line);border-radius:6px;padding:5px 7px;font:600 12px var(--font);font-variant-numeric:tabular-nums}
+.opt{display:flex;flex-direction:column;gap:2px}
+.opt button{display:flex;justify-content:space-between;border:0;background:transparent;padding:6px 8px;border-radius:6px;font:600 12px var(--font);color:var(--ink);cursor:pointer;font-variant-numeric:tabular-nums}
+.opt button:hover{background:var(--hover)}
+.opt button[aria-checked="true"]{background:var(--sage);color:var(--olive)}
+
+/* canvas */
+.stage{position:relative;background:#f3efe8;padding:14px;min-height:220px;overflow:hidden}
+.board{position:relative;height:200px;border:1px solid var(--line);background-color:#fff;
+  background-image:linear-gradient(var(--line2) 1px,transparent 1px),linear-gradient(90deg,var(--line2) 1px,transparent 1px);
+  background-size:20px 20px}
+.board.nogrid{background-image:none}
+.u{position:absolute;background:var(--unit);border:2px solid var(--unit-line);display:grid;place-items:center;text-align:center;font-size:10px;font-weight:800;color:var(--olive);line-height:1.2}
+.u small{display:block;font-weight:600;color:var(--muted);font-size:9px}
+.u.on{outline:2px solid var(--terra);outline-offset:2px}
+.u.on::after{content:"";position:absolute;right:-6px;bottom:-6px;width:9px;height:9px;background:var(--white);border:2px solid var(--terra)}
+.badge-old{position:absolute;top:22px;left:22px;background:var(--ink);color:#fff;font-size:10px;font-weight:800;letter-spacing:.06em;padding:5px 9px;border-radius:6px;z-index:2}
+
+/* status bar */
+.status{display:flex;align-items:center;gap:14px;padding:7px 14px;border-top:1px solid var(--line);background:var(--white);font-size:11.5px;color:var(--muted);flex-wrap:wrap;font-variant-numeric:tabular-nums}
+.status b{color:var(--ink);font-weight:700}
+.status .sep{width:1px;height:14px;background:var(--line)}
+.status .ib{height:24px;font-size:11.5px;color:var(--muted);padding:0 6px}
+
+/* ---------- current (before) toolbar replica ---------- */
+.old-tb{display:flex;flex-direction:column;gap:8px;padding:12px;background:#faf8f4;border-bottom:1px solid var(--line);overflow-x:auto}
+.old-row{display:flex;align-items:center;gap:6px;flex:none}
+.old-lbl{font-size:10px;font-weight:800;letter-spacing:.08em;color:var(--muted);width:58px;flex:none}
+.ob{border:1.5px solid var(--line);background:var(--white);border-radius:9px;padding:7px 12px;font:700 11px var(--font);color:var(--ink);white-space:nowrap;cursor:default}
+.ob.on{border-color:var(--olive);background:var(--sage);color:var(--olive)}
+.ob.mode{border-color:var(--terra);background:var(--terra-light);color:var(--terra2)}
+.ob.dis{color:var(--light)}
+.oin{border:1.5px solid var(--line);background:var(--white);border-radius:9px;padding:7px 10px;font:600 11px var(--font);width:80px;color:var(--ink)}
+.ometric{background:var(--sage);color:var(--olive);border:1px solid #c9d6c6;border-radius:9px;padding:6px 10px;font-weight:700;font-size:11px;white-space:nowrap}
+.ocount{display:inline-grid;place-items:center;width:18px;height:18px;border-radius:50%;background:var(--olive);color:#fff;font-size:10px;margin-left:6px}
+
+/* changes list */
+.changes{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;counter-reset:c}
+.chg{background:var(--white);border:1px solid var(--line);border-radius:12px;padding:12px 14px;min-width:0}
+.chg h3{margin:0 0 4px;font-size:13px;font-weight:800;display:flex;gap:8px;align-items:baseline}
+.chg h3::before{counter-increment:c;content:counter(c);font-size:11px;color:var(--terra2);font-variant-numeric:tabular-nums}
+.chg p{margin:0;color:var(--muted);font-size:12.5px}
+kbd{font:700 10px var(--font);background:var(--line2);border-radius:4px;padding:1px 5px;color:var(--ink)}
+.note{font-size:12px;color:var(--muted)}
+</style>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-select" viewBox="0 0 24 24"><path d="M5 3l14 7-6 2-2 6z"/></symbol>
+  <symbol id="i-unit" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M12 8v8M8 12h8"/></symbol>
+  <symbol id="i-wall" viewBox="0 0 24 24"><path d="M4 20V8l8-4 8 4v12"/><circle cx="4" cy="20" r="1.4"/><circle cx="20" cy="20" r="1.4"/><circle cx="12" cy="4" r="1.4"/></symbol>
+  <symbol id="i-block" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="1.5"/><path d="M4 12l8-8M4 20L20 4M12 20l8-8"/></symbol>
+  <symbol id="i-marker" viewBox="0 0 24 24"><path d="M12 21s-7-6.2-7-11.5a7 7 0 0114 0C19 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.4"/></symbol>
+  <symbol id="i-measure" viewBox="0 0 24 24"><path d="M3 16.5L16.5 3 21 7.5 7.5 21z"/><path d="M7 12.5l2 2M10 9.5l1.5 1.5M13 6.5l2 2"/></symbol>
+  <symbol id="i-undo" viewBox="0 0 24 24"><path d="M9 14L4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 010 11H11"/></symbol>
+  <symbol id="i-redo" viewBox="0 0 24 24"><path d="M15 14l5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 000 11H13"/></symbol>
+  <symbol id="i-rotate" viewBox="0 0 24 24"><path d="M20 12a8 8 0 11-2.4-5.7L20 8.5"/><path d="M20 3.5v5h-5"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7.5a4 4 0 018 0V11"/></symbol>
+  <symbol id="i-place" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M17.5 14v7M14 17.5h7"/></symbol>
+  <symbol id="i-door" viewBox="0 0 24 24"><path d="M3 21h18M6 21V4h12v17"/><path d="M14.5 12.5h.01"/></symbol>
+  <symbol id="i-warn" viewBox="0 0 24 24"><path d="M12 4L2.5 20h19z"/><path d="M12 10v4.5M12 17.5h.01"/></symbol>
+  <symbol id="i-layers" viewBox="0 0 24 24"><path d="M12 3l9 5-9 5-9-5z"/><path d="M3 13l9 5 9-5"/></symbol>
+  <symbol id="i-underlay" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="M21 15l-5-5L5 21"/></symbol>
+  <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18M15 3v18"/></symbol>
+  <symbol id="i-snap" viewBox="0 0 24 24"><path d="M5 4h4v7a3 3 0 006 0V4h4v7a7 7 0 01-14 0z"/><path d="M5 8h4M15 8h4"/></symbol>
+  <symbol id="i-minus" viewBox="0 0 24 24"><path d="M5 12h14"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-caret" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></symbol>
+  <symbol id="i-export" viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></symbol>
+  <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M4 12.5l5 5L20 6.5"/></symbol>
+  <symbol id="i-settings" viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></symbol>
+  <symbol id="i-kbd" viewBox="0 0 24 24"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/></symbol>
+  <symbol id="i-palette" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></symbol>
+</svg>
+
+<div class="page">
+  <header>
+    <h1>Floor Plan Designer toolbar</h1>
+    <p class="lede">The current toolbar compared with the proposed one, using the same CMS colours and font. The proposed version works: try the tools, hover for tooltips, and open Snap, zoom and Plan settings.</p>
+  </header>
+
+  <div class="tabs" role="tablist" aria-label="Which toolbar to show">
+    <button role="tab" id="tab-both" aria-selected="true" data-view="both">Both</button>
+    <button role="tab" id="tab-new" aria-selected="false" data-view="new">Proposed</button>
+    <button role="tab" id="tab-old" aria-selected="false" data-view="old">Current</button>
+  </div>
+
+  <!-- ===================== PROPOSED ===================== -->
+  <section id="v-new" style="display:flex;flex-direction:column;gap:10px">
+    <div class="section-h"><h2>Proposed</h2><span>Header for the whole document, one row of tools, info in the status bar</span></div>
+    <div class="studio">
+      <div class="hdr">
+        <span class="logo">S</span><span class="brand">StoreLah Studio</span>
+        <button class="sel" type="button">SW · Sembawang <svg class="i sm"><use href="#i-caret"/></svg></button>
+        <button class="sel" type="button">Level 1 <svg class="i sm"><use href="#i-caret"/></svg></button>
+        <span class="pill">Published · Visible</span>
+        <span class="spacer"></span>
+        <div class="grp">
+          <button class="ib icon" type="button" data-tip="Undo  ⌘Z" aria-label="Undo"><svg class="i"><use href="#i-undo"/></svg></button>
+          <button class="ib icon" type="button" data-tip="Redo  ⇧⌘Z" aria-label="Redo" disabled style="opacity:.4"><svg class="i"><use href="#i-redo"/></svg></button>
+        </div>
+        <span class="saved"><svg class="i sm"><use href="#i-check"/></svg>Saved 3:58 pm</span>
+        <button class="btn" type="button"><svg class="i sm"><use href="#i-export"/></svg>Export</button>
+        <button class="ib icon" type="button" data-tip="Save draft · Delete plan" aria-label="More"><svg class="i"><use href="#i-more"/></svg></button>
+        <button class="btn primary" type="button">Publish</button>
+      </div>
+
+      <div class="tb" role="toolbar" aria-label="Floor plan tools">
+        <div class="grp" title="">
+          <button class="ib icon" type="button" id="paletteBtn" aria-pressed="true" data-tip="Units panel" aria-label="Units panel"><svg class="i"><use href="#i-palette"/></svg></button>
+        </div>
+        <span class="div"></span>
+        <div class="grp tools" id="tools">
+          <button class="ib icon" type="button" data-tool="select" aria-pressed="true" data-tip="Select  V" aria-label="Select"><svg class="i"><use href="#i-select"/></svg></button>
+          <button class="ib icon" type="button" data-tool="unit" aria-pressed="false" data-tip="New unit  N" aria-label="New unit"><svg class="i"><use href="#i-unit"/></svg></button>
+          <button class="ib icon" type="button" data-tool="wall" aria-pressed="false" data-tip="Draw walls  L" aria-label="Draw walls"><svg class="i"><use href="#i-wall"/></svg></button>
+          <button class="ib icon" type="button" data-tool="block" aria-pressed="false" data-tip="Block (lift, stairs…)  B" aria-label="Block"><svg class="i"><use href="#i-block"/></svg></button>
+          <button class="ib icon" type="button" data-tool="marker" aria-pressed="false" data-tip="Safety marker  K" aria-label="Safety marker"><svg class="i"><use href="#i-marker"/></svg></button>
+          <button class="ib icon" type="button" data-tool="measure" aria-pressed="false" data-tip="Measure  M" aria-label="Measure"><svg class="i"><use href="#i-measure"/></svg></button>
+        </div>
+        <span class="div"></span>
+        <div class="ctx" id="ctx" aria-live="polite"></div>
+        <span class="spacer" style="min-width:12px"></span>
+        <div class="grp">
+          <button class="ib" type="button" data-tip="Place all 2 unplaced units"><svg class="i"><use href="#i-place"/></svg>Auto-place</button>
+          <button class="ib" type="button" data-tip="Infer doors from corridor edges"><svg class="i"><use href="#i-door"/></svg>Auto-doors</button>
+          <button class="ib warn" type="button" data-tip="Drawn size ≠ unit size: review"><svg class="i"><use href="#i-warn"/></svg>2 size mismatches</button>
+        </div>
+        <span class="div"></span>
+        <div class="grp">
+          <button class="ib icon" type="button" data-tip="Layers" aria-label="Layers"><svg class="i"><use href="#i-layers"/></svg></button>
+          <button class="ib icon" type="button" data-tip="Underlay drawing" aria-label="Underlay"><svg class="i"><use href="#i-underlay"/></svg></button>
+          <button class="ib icon" type="button" id="gridBtn" aria-pressed="true" data-tip="Grid" aria-label="Grid"><svg class="i"><use href="#i-grid"/></svg></button>
+          <div class="pop-wrap split">
+            <button class="ib icon" type="button" id="snapBtn" aria-pressed="true" data-tip="Snap to objects" aria-label="Snap to objects"><svg class="i"><use href="#i-snap"/></svg></button>
+            <button class="ib" type="button" id="snapStepBtn" aria-haspopup="true" aria-expanded="false" aria-label="Snap step"><span id="snapVal">0.1 ft</span><svg class="i sm caret"><use href="#i-caret"/></svg></button>
+            <div class="pop" id="snapPop" hidden>
+              <h4>Snap step</h4>
+              <div class="opt" role="menu" id="snapOpts"></div>
+              <span class="note">Hold <kbd>Alt</kbd> for 0.01 ft · <kbd>Shift</kbd> locks the axis</span>
+            </div>
+          </div>
+        </div>
+        <span class="div"></span>
+        <div class="pop-wrap">
+          <div class="zoom">
+            <button class="ib icon" type="button" id="zOut" data-tip="Zoom out  −" aria-label="Zoom out"><svg class="i"><use href="#i-minus"/></svg></button>
+            <button class="ib val" type="button" id="zVal" aria-haspopup="true" aria-expanded="false">100%</button>
+            <button class="ib icon" type="button" id="zIn" data-tip="Zoom in  +" aria-label="Zoom in"><svg class="i"><use href="#i-plus"/></svg></button>
+          </div>
+          <div class="pop" id="zPop" hidden style="min-width:150px">
+            <div class="opt" role="menu" id="zOpts"></div>
+          </div>
+        </div>
+        <button class="ib icon" type="button" data-tip="Keyboard shortcuts  ?" aria-label="Keyboard shortcuts"><svg class="i"><use href="#i-kbd"/></svg></button>
+      </div>
+
+      <div class="stage">
+        <div class="board" id="boardNew"></div>
+      </div>
+
+      <div class="status">
+        <span id="selInfo"><b>SW-01-05</b> Medium · 6.0 × 12.0 ft · 72 sqft</span>
+        <span class="sep"></span>
+        <span>Marked <b>3,392</b> sqft</span><span>UFA <b>3,392</b></span><span>NLA <b>2,541.9</b></span><span>Blocks <b>0</b></span><span>Markers <b>0</b></span>
+        <span class="spacer"></span>
+        <span>x 12.8 · y 1.2 ft</span>
+        <span class="sep"></span>
+        <div class="pop-wrap">
+          <button class="ib" type="button" id="planBtn" aria-haspopup="true" aria-expanded="false"><svg class="i sm"><use href="#i-settings"/></svg>Plan 70 × 80 ft · GFA not set</button>
+          <div class="pop" id="planPop" hidden style="bottom:calc(100% + 6px);top:auto">
+            <h4>Plan settings</h4>
+            <label for="pw">Width (ft)<input type="number" id="pw" value="70" step="0.1"></label>
+            <label for="ph">Height (ft)<input type="number" id="ph" value="80" step="0.1"></label>
+            <label for="pg">GFA (sqft)<input type="number" id="pg" placeholder="e.g. 5600" step="0.1"></label>
+            <span class="note">If GFA is empty, metrics use the canvas size.</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== CURRENT ===================== -->
+  <section id="v-old" style="display:flex;flex-direction:column;gap:10px">
+    <div class="section-h"><h2>Current</h2><span>Recreated from the 15 Oct screenshot (static)</span></div>
+    <div class="studio">
+      <div class="hdr">
+        <span class="logo">S</span><span class="brand">StoreLah Studio</span>
+        <span class="sel">SW · Sembawang ▾</span><span class="sel">Level 1 — Level 1 ▾</span>
+        <span class="pill">Published · Visible</span>
+        <span class="spacer"></span>
+        <span class="btn">Save Canvas</span><span class="btn">Save as draft</span><span class="btn primary">Publish</span><span class="btn danger">🗑</span>
+      </div>
+      <div class="old-tb">
+        <div class="old-row">
+          <span class="old-lbl">CANVAS</span><span class="oin">70</span><span>×</span><span class="oin">80</span><span class="note">ft GFA</span><span class="oin" style="width:100px;color:var(--light)">e.g. 5600</span><span class="note">sqft</span>
+          <span class="ometric">Marked 3,392 sqft · Blocks 0 · UFA 3,392 · NLA 2,541.9</span>
+          <span class="old-lbl" style="margin-left:10px;width:auto">MODE</span>
+          <span class="ob mode">Select</span><span class="ob">Add Unit</span><span class="ob">＋ New Unit</span><span class="ob">✎ Draw</span><span class="ob">📏 Measure</span><span class="ob">＋ Add Block</span>
+        </div>
+        <div class="old-row">
+          <span class="old-lbl">QUICK</span>
+          <span class="ob">☰ Units</span><span class="ob">⤵ Auto-place all</span><span class="ob">🚪 Auto-doors</span><span class="ob dis">↩ Undo</span><span class="ob dis">↪ Redo</span><span class="ob">⟳ Rotate</span><span class="ob">⚖ Sizes</span><span class="ob">🔓 sqft</span>
+          <span class="old-lbl" style="margin-left:10px;width:auto">MARKERS</span><span class="ob">📍 Markers<span class="ocount">0</span></span>
+        </div>
+        <div class="old-row">
+          <span class="old-lbl">ZOOM</span>
+          <span class="ob">−</span><span class="note">100%</span><span class="ob">+</span><span class="ob" style="width:90px">100% ▾</span><span class="ob on">Grid</span><span class="ob">Snap 0.1 ft ▾</span><span class="ob on">⌖ Snap</span><span class="ob">☰ Layers</span><span class="ob">🗺 Underlay</span><span class="ob">⤓ Export</span><span class="ob">▬</span>
+        </div>
+      </div>
+      <div class="status" style="border-top:0;border-bottom:1px solid var(--line)"><span>✓ Saved 03:58 pm</span><span class="spacer"></span><span>x 12.8 · y 1.2 ft · snap 0.1 ft</span></div>
+      <div class="stage">
+        <span class="badge-old">MODE: SELECT</span>
+        <div class="board" id="boardOld"></div>
+      </div>
+    </div>
+  </section>
+
+  <section style="display:flex;flex-direction:column;gap:12px">
+    <div class="section-h"><h2>What changed</h2><span>In the order I'd build it</span></div>
+    <div class="changes">
+      <div class="chg"><h3>Groups by job</h3><p>Tools, actions on the plan, view controls and zoom each get their own cluster. No "Quick" or "Zoom" labels covering unrelated buttons.</p></div>
+      <div class="chg"><h3>One icon set</h3><p>Matching line icons in place of mixed emoji and symbols. Fixes the shortcuts button that shows as ▬, and the two ☰ buttons.</p></div>
+      <div class="chg"><h3>Clear active tool</h3><p>Buttons have no borders until hovered. The current tool is the only filled dark button, so the MODE: SELECT badge can go.</p></div>
+      <div class="chg"><h3>Plan info in the status bar</h3><p>Canvas size and GFA move into a Plan settings popover. The Marked/UFA/NLA figures move next to the cursor position.</p></div>
+      <div class="chg"><h3>No duplicate controls</h3><p>One zoom control (− 100% +). One Snap button with its step in the same dropdown. Rotate and Lock area appear only for the tool that uses them.</p></div>
+      <div class="chg"><h3>Simpler header</h3><p>Undo/Redo and save status sit next to Publish. Save draft and Delete move into the ⋯ menu, away from the main button.</p></div>
+    </div>
+  </section>
+</div>
+
+<script>
+(function(){
+  // canvas sample units (ft → px at 4px/ft scale-ish)
+  var units=[["SW-01-01","Small",30,40,60,70],["SW-01-02","Small",92,40,60,70],["SW-01-03","Locker",154,40,34,40],["SW-01-04","Locker",190,40,34,40],
+    ["SW-01-05","Medium",226,40,70,118],["SW-01-06","Small",298,40,60,70],["SW-01-07","Large",360,40,118,140],["SW-01-08","Large",480,40,118,140],["SW-01-09","Small",600,40,60,70],["SW-01-13","Locker",168,84,34,40]];
+  function draw(id,sel){var b=document.getElementById(id);b.innerHTML=units.map(function(u){
+    return '<div class="u'+(sel&&u[0]==="SW-01-05"?' on':'')+'" style="left:'+u[2]+'px;top:'+u[3]+'px;width:'+u[4]+'px;height:'+u[5]+'px">'+u[0]+'<small>'+u[1]+'</small></div>';}).join('');}
+  draw('boardNew',true);draw('boardOld',false);
+
+  // tool switching + context options
+  var ctxMap={
+    select:'<span class="lbl">Select</span><button class="ib" type="button" aria-pressed="false" data-tip="Resize keeps the unit\'s sqft" id="lockBtn"><svg class="i"><use href="#i-lock"/></svg>Lock area</button>',
+    unit:'<span class="lbl">New unit</span><button class="ib" type="button" data-tip="Swap W × H  R"><svg class="i"><use href="#i-rotate"/></svg>Rotate</button><span>Drag a rectangle to draw it</span>',
+    wall:'<span class="lbl">Walls</span><span>Click to add points · <kbd>Enter</kbd> finish · <kbd>C</kbd> close · type a length</span>',
+    block:'<span class="lbl">Block</span><span>Pick a name and colour in the panel, then drag</span>',
+    marker:'<span class="lbl">Marker</span><button class="ib" type="button">Fire extinguisher<svg class="i sm caret"><use href="#i-caret"/></svg></button><span>Click to place</span>',
+    measure:'<span class="lbl">Measure</span><span>Click two points · <kbd>Esc</kbd> clears</span>'};
+  var ctx=document.getElementById('ctx');
+  function setTool(t){document.querySelectorAll('#tools [data-tool]').forEach(function(b){b.setAttribute('aria-pressed',String(b.dataset.tool===t));});ctx.innerHTML=ctxMap[t];
+    var lock=document.getElementById('lockBtn');if(lock)lock.onclick=toggle;}
+  function toggle(){this.setAttribute('aria-pressed',String(this.getAttribute('aria-pressed')!=='true'));}
+  document.querySelectorAll('#tools [data-tool]').forEach(function(b){b.onclick=function(){setTool(b.dataset.tool);};});
+  setTool('select');
+  var keys={v:'select',n:'unit',l:'wall',b:'block',k:'marker',m:'measure'};
+  document.addEventListener('keydown',function(e){if(e.target.tagName==='INPUT'||e.metaKey||e.ctrlKey)return;var t=keys[e.key.toLowerCase()];if(t)setTool(t);});
+
+  document.getElementById('paletteBtn').onclick=toggle;
+  document.getElementById('snapBtn').onclick=toggle;
+  var grid=document.getElementById('gridBtn');grid.onclick=function(){toggle.call(grid);document.getElementById('boardNew').classList.toggle('nogrid',grid.getAttribute('aria-pressed')!=='true');};
+
+  // popovers
+  function pop(btnId,popId){var btn=document.getElementById(btnId),p=document.getElementById(popId);
+    btn.addEventListener('click',function(e){e.stopPropagation();var open=p.hidden;closeAll();p.hidden=!open;btn.setAttribute('aria-expanded',String(open));});
+    p.addEventListener('click',function(e){e.stopPropagation();});}
+  function closeAll(){['snapPop','zPop','planPop'].forEach(function(id){document.getElementById(id).hidden=true;});
+    ['snapStepBtn','zVal','planBtn'].forEach(function(id){document.getElementById(id).setAttribute('aria-expanded','false');});}
+  document.addEventListener('click',closeAll);
+  document.addEventListener('keydown',function(e){if(e.key==='Escape')closeAll();});
+  pop('snapStepBtn','snapPop');pop('zVal','zPop');pop('planBtn','planPop');
+
+  function opts(elId,list,cur,onPick){var el=document.getElementById(elId);
+    function render(){el.innerHTML=list.map(function(o){return '<button type="button" role="menuitemradio" aria-checked="'+(o[0]===cur)+'" data-v="'+o[0]+'">'+o[1]+(o[2]?'<span style="color:var(--light)">'+o[2]+'</span>':'')+'</button>';}).join('');}
+    el.addEventListener('click',function(e){var b=e.target.closest('button');if(!b)return;cur=b.dataset.v;render();onPick(cur);closeAll();});render();}
+  opts('snapOpts',[['1','1 ft'],['0.5','0.5 ft'],['0.25','0.25 ft'],['0.1','0.1 ft'],['0.05','0.05 ft'],['0.01','0.01 ft']],'0.1',function(v){document.getElementById('snapVal').textContent=v+' ft';});
+  var z=100,zVal=document.getElementById('zVal');
+  function setZ(v){z=Math.max(25,Math.min(400,v));zVal.textContent=z+'%';}
+  opts('zOpts',[['50','50%'],['75','75%'],['100','100%'],['150','150%'],['fit','Fit canvas','⇧1']],'100',function(v){setZ(v==='fit'?82:+v);});
+  document.getElementById('zIn').onclick=function(){setZ(z+25);};
+  document.getElementById('zOut').onclick=function(){setZ(z-25);};
+  ['pw','ph','pg'].forEach(function(id){document.getElementById(id).addEventListener('input',function(){
+    var g=document.getElementById('pg').value;document.getElementById('planBtn').lastChild.textContent='Plan '+document.getElementById('pw').value+' × '+document.getElementById('ph').value+' ft · '+(g?'GFA '+Number(g).toLocaleString():'GFA not set');});});
+
+  // view tabs
+  document.querySelectorAll('.tabs button').forEach(function(b){b.onclick=function(){
+    document.querySelectorAll('.tabs button').forEach(function(x){x.setAttribute('aria-selected',String(x===b));});
+    var v=b.dataset.view;document.getElementById('v-new').hidden=v==='old';document.getElementById('v-old').hidden=v==='new';};});
+})();
+</script>

@@ -167,7 +167,14 @@ function openPage(id) {
   }
   else if (id === 'promotions') { bootPromotions(); bindPromotionsOverview(); }
   else if (id === 'billing') bindBilling();
-  else if (id === 'settings') bindSettings();
+  else if (id === 'settings') {
+    bindSettings();
+    // closeAllViews() strips .active from every .module-panel, so restore the
+    // settings tab (keeps the operator's selected tab across page visits).
+    const tab = document.querySelector('[data-tabs="settings"] [data-tab].active') ||
+      document.querySelector('[data-tabs="settings"] [data-tab]');
+    if (tab) tab.click();
+  }
   else if (id === 'facilities') {
     syncFacilityDashboard();
     updateFacilityBadge().catch(() => {});
@@ -1719,7 +1726,7 @@ const SET_ICON_PAINT = SET_SVG_OPEN + '<path d="M9.53 16.122a3 3 0 0 0-5.78 1.12
 const SET_ICON_COG = SET_SVG_OPEN + '<path d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.324.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 0 1 1.37.49l1.296 2.247a1.125 1.125 0 0 1-.26 1.431l-1.003.827c-.293.24-.438.613-.431.992a6.759 6.759 0 0 1 0 .255c-.007.378.138.75.43.99l1.005.828c.424.35.534.954.26 1.43l-1.298 2.247a1.125 1.125 0 0 1-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.57 6.57 0 0 1-.22.128c-.331.183-.581.495-.644.869l-.213 1.28c-.09.543-.56.941-1.11.941h-2.594c-.55 0-1.02-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 0 1-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 0 1-1.369-.49l-1.297-2.247a1.125 1.125 0 0 1 .26-1.431l1.004-.827c.292-.24.437-.613.43-.992a6.932 6.932 0 0 1 0-.255c.007-.378-.138-.75-.43-.99l-1.004-.828a1.125 1.125 0 0 1-.26-1.43l1.297-2.247a1.125 1.125 0 0 1 1.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.087.22-.128.332-.183.582-.495.644-.869l.214-1.28Z"/><path d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z"/></svg>';
 const SETTINGS_GROUPS = [
   {
-    title: 'Notifications', icon: SET_ICON_BELL, sub: 'Booking alerts and reminder timing.',
+    title: 'Notifications', icon: SET_ICON_BELL, tab: 'general', sub: 'Booking alerts and reminder timing.',
     keys: [
       { key: 'notifications.emailBookingAlerts', kind: 'boolean', label: 'Email booking alerts', desc: 'Email operators when a new booking arrives.' },
       { key: 'notifications.whatsappBookingAlerts', kind: 'boolean', label: 'WhatsApp booking alerts', desc: 'Ping operators on WhatsApp for new bookings.' },
@@ -1727,15 +1734,15 @@ const SETTINGS_GROUPS = [
     ],
   },
   {
-    title: 'Booking', icon: SET_ICON_CALENDAR, sub: 'How bookings are confirmed and bounded.',
+    title: 'Booking limits', icon: SET_ICON_CALENDAR, tab: 'booking', sub: 'Checkout windows and confirmation — stay/identity policy lives under Booking rules.',
     keys: [
-      { key: 'booking.autoConfirm', kind: 'boolean', label: 'Auto-confirm bookings', desc: 'Confirm paid bookings without operator review.' },
-      { key: 'booking.minAdvanceHours', kind: 'number', label: 'Min advance booking (hrs)', desc: 'Earliest a move-in can be booked, in hours from now.' },
-      { key: 'booking.maxStayMonths', kind: 'number', label: 'Max stay length (months)', desc: 'Longest single booking allowed, in months.' },
+      { key: 'booking.autoConfirm', kind: 'boolean', label: 'Auto-confirm paid bookings (checkout)', desc: 'Confirm paid bookings without operator review. Checkout timing only — identity policy is a Booking rule.' },
+      { key: 'booking.minAdvanceHours', kind: 'number', label: 'Min advance notice (hrs · checkout)', desc: 'Earliest a move-in can be booked, in hours from now. Booking-window limit — separate from the quote-hold rule.' },
+      { key: 'booking.maxStayMonths', kind: 'number', label: 'Max stay cap (months · checkout)', desc: 'Longest single booking allowed, in months. Upper checkout bound — the minimum-stay floor is a Booking rule.' },
     ],
   },
   {
-    title: 'Billing', icon: SET_ICON_BANKNOTES, sub: 'Grace periods, fees and invoice numbering.',
+    title: 'Billing', icon: SET_ICON_BANKNOTES, tab: 'booking', sub: 'Checkout-side grace, tax display and invoice numbering.',
     keys: [
       { key: 'billing.graceDays', kind: 'number', label: 'Payment grace period (days)', desc: 'Days after the due date before an invoice counts as overdue.' },
       { key: 'billing.lateFeeEnabled', kind: 'boolean', label: 'Late fees', desc: 'Apply late fees to invoices past the grace period.' },
@@ -1744,14 +1751,14 @@ const SETTINGS_GROUPS = [
     ],
   },
   {
-    title: 'Display', icon: SET_ICON_PAINT, sub: 'Currency and formats shown across the CMS.',
+    title: 'Display', icon: SET_ICON_PAINT, tab: 'general', sub: 'Currency and formats shown across the CMS.',
     keys: [
       { key: 'display.currency', kind: 'select', label: 'Currency', desc: 'Currency shown across the CMS and invoices.', options: ['SGD', 'USD', 'MYR'] },
       { key: 'display.dateFormat', kind: 'select', label: 'Date format', desc: 'Date format used across the CMS.', options: ['DD/MM/YYYY', 'MM/DD/YYYY', 'YYYY-MM-DD'] },
     ],
   },
   {
-    title: 'Operations', icon: SET_ICON_COG, sub: 'Platform-wide operational switches.',
+    title: 'Operations', icon: SET_ICON_COG, tab: 'general', sub: 'Platform-wide operational switches.',
     keys: [
       { key: 'operations.maintenanceMode', kind: 'boolean', label: 'Maintenance mode', desc: 'Pause new bookings while maintenance is underway.' },
       { key: 'operations.supportContact', kind: 'text', label: 'Support contact', desc: 'Support email or phone shown to customers.' },
@@ -1762,18 +1769,49 @@ const SETTINGS_GROUPS = [
 const settingsState = { original: {}, draft: {}, loaded: false };
 let settingsEventsWired = false;
 
-function markSettingsDirty() {
+// Phase 1 tabs: scalar groups render into two grids — General tab
+// (#settingsGrid) and Booking & billing tab (#settingsBookingGrid). Each tab
+// has its own Save button + dirty-dot, but both PUT the same /settings diff
+// filtered to their tab's keys (no endpoint change).
+function groupTabForKey(key) {
+  for (const g of SETTINGS_GROUPS) {
+    if (g.keys.some((k) => k.key === key)) return g.tab || 'general';
+  }
+  return 'general';
+}
+
+function settingsChangedByTab() {
+  const byTab = { general: {}, booking: {} };
+  for (const [k, v] of Object.entries(settingsState.draft)) {
+    if (!Object.is(v, settingsState.original[k])) byTab[groupTabForKey(k)][k] = v;
+  }
+  return byTab;
+}
+
+function refreshSettingsDirty() {
+  const byTab = settingsChangedByTab();
+  const hasGeneral = Object.keys(byTab.general).length > 0;
+  const hasBooking = Object.keys(byTab.booking).length > 0;
   const btn = $('#settingsSaveBtn');
   const dot = $('#settingsDirty');
-  if (btn) btn.disabled = false;
-  if (dot) dot.classList.add('show');
+  if (btn) btn.disabled = !hasGeneral;
+  if (dot) dot.classList.toggle('show', hasGeneral);
+  const bBtn = $('#settingsBookingSaveBtn');
+  const bDot = $('#settingsBookingDirty');
+  if (bBtn) bBtn.disabled = !hasBooking;
+  if (bDot) bDot.classList.toggle('show', hasBooking);
+}
+
+function markSettingsDirty() {
+  refreshSettingsDirty();
 }
 
 function markSettingsClean() {
   const btn = $('#settingsSaveBtn');
-  const dot = $('#settingsDirty');
-  if (btn) { btn.disabled = true; btn.textContent = 'Save changes'; }
-  if (dot) dot.classList.remove('show');
+  const bBtn = $('#settingsBookingSaveBtn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Save general settings'; }
+  if (bBtn) { bBtn.disabled = true; bBtn.textContent = 'Save booking & billing'; }
+  refreshSettingsDirty();
 }
 
 function settingControlHtml(spec, value) {
@@ -1793,16 +1831,23 @@ function settingControlHtml(spec, value) {
   return '<input type="text" class="set-input" data-setting-key="' + key + '" value="' + escapeHtml(String(value ?? '')) + '" maxlength="120" aria-label="' + escapeHtml(spec.label) + '">';
 }
 
-function renderSettings() {
-  const grid = $('#settingsGrid');
-  if (!grid) return;
-  grid.innerHTML = SETTINGS_GROUPS.map((g) =>
-    '<div class="card auto set-card"><div class="auto-icon">' + g.icon + '</div><h3>' + escapeHtml(g.title) + '</h3><p>' + escapeHtml(g.sub) + '</p>' +
+function settingsCardHtml(g) {
+  return '<div class="card auto set-card"><div class="auto-icon">' + g.icon + '</div><h3>' + escapeHtml(g.title) + '</h3><p>' + escapeHtml(g.sub) + '</p>' +
     '<div class="set-rows">' + g.keys.map((spec) =>
       '<div class="set-row"><div><b>' + escapeHtml(spec.label) + '</b><small>' + escapeHtml(spec.desc) + '</small></div>' +
       settingControlHtml(spec, settingsState.draft[spec.key]) + '</div>',
-    ).join('') + '</div></div>',
-  ).join('');
+    ).join('') + '</div></div>';
+}
+
+function renderSettings() {
+  const grid = $('#settingsGrid');
+  const bookingGrid = $('#settingsBookingGrid');
+  if (grid) {
+    grid.innerHTML = SETTINGS_GROUPS.filter((g) => (g.tab || 'general') === 'general').map(settingsCardHtml).join('');
+  }
+  if (bookingGrid) {
+    bookingGrid.innerHTML = SETTINGS_GROUPS.filter((g) => g.tab === 'booking').map(settingsCardHtml).join('');
+  }
   wireSettingsEvents();
 }
 
@@ -1821,8 +1866,8 @@ function readSettingInput(el, spec) {
 
 function wireSettingsEvents() {
   if (settingsEventsWired) return;
-  const grid = $('#settingsGrid');
-  if (!grid) return;
+  const grids = [$('#settingsGrid'), $('#settingsBookingGrid')].filter(Boolean);
+  if (!grids.length) return;
   settingsEventsWired = true;
   const toggle = (sw) => {
     const key = sw.dataset.settingKey;
@@ -1834,14 +1879,6 @@ function wireSettingsEvents() {
     if (state) state.textContent = settingsState.draft[key] ? 'On' : 'Off';
     markSettingsDirty();
   };
-  grid.addEventListener('click', (e) => {
-    const sw = e.target.closest('.sw[data-setting-key]');
-    if (sw) toggle(sw);
-  });
-  grid.addEventListener('keydown', (e) => {
-    const sw = e.target.closest && e.target.closest('.sw[data-setting-key]');
-    if (sw && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); toggle(sw); }
-  });
   const onEdit = (e) => {
     const el = e.target.closest && e.target.closest('[data-setting-key]');
     if (!el || el.classList.contains('sw')) return;
@@ -1850,14 +1887,26 @@ function wireSettingsEvents() {
     settingsState.draft[spec.key] = readSettingInput(el, spec);
     markSettingsDirty();
   };
-  grid.addEventListener('input', onEdit);
-  grid.addEventListener('change', onEdit);
+  for (const grid of grids) {
+    grid.addEventListener('click', (e) => {
+      const sw = e.target.closest('.sw[data-setting-key]');
+      if (sw) toggle(sw);
+    });
+    grid.addEventListener('keydown', (e) => {
+      const sw = e.target.closest && e.target.closest('.sw[data-setting-key]');
+      if (sw && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); toggle(sw); }
+    });
+    grid.addEventListener('input', onEdit);
+    grid.addEventListener('change', onEdit);
+  }
 }
 
 async function bindSettings() {
   const grid = $('#settingsGrid');
   const saveBtn = $('#settingsSaveBtn');
-  if (saveBtn) saveBtn.onclick = saveSettings;
+  if (saveBtn) saveBtn.onclick = () => saveSettings('general');
+  const bookingSaveBtn = $('#settingsBookingSaveBtn');
+  if (bookingSaveBtn) bookingSaveBtn.onclick = () => saveSettings('booking');
   if (!grid) return;
   try {
     const data = await get('/settings');
@@ -1881,16 +1930,16 @@ async function bindSettings() {
   document.querySelector('#settings #extrasAddonsCard')?.remove();
 }
 
-async function saveSettings() {
+async function saveSettings(scope) {
   if (!settingsState.loaded) return;
   const banner = $('#settingsBanner');
   if (banner) banner.hidden = true;
-  const changed = {};
-  for (const [k, v] of Object.entries(settingsState.draft)) {
-    if (!Object.is(v, settingsState.original[k])) changed[k] = v;
-  }
+  const byTab = settingsChangedByTab();
+  const changed = scope ? { ...(byTab[scope] || {}) } : { ...byTab.general, ...byTab.booking };
   if (!Object.keys(changed).length) { toast('No changes to save'); return; }
-  const btn = $('#settingsSaveBtn');
+  const isBooking = scope === 'booking';
+  const btn = isBooking ? $('#settingsBookingSaveBtn') : $('#settingsSaveBtn');
+  const btnLabel = isBooking ? 'Save booking & billing' : 'Save general settings';
   if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
   try {
     const saved = await put('/settings', changed);
@@ -1903,7 +1952,8 @@ async function saveSettings() {
     const msg = describeError(e);
     if (banner) { banner.textContent = 'Save failed: ' + msg; banner.hidden = false; }
     toast('Save failed: ' + msg);
-    if (btn) { btn.disabled = false; btn.textContent = 'Save changes'; }
+    if (btn) btn.textContent = btnLabel;
+    refreshSettingsDirty();
   }
 }
 
@@ -1947,11 +1997,18 @@ async function bindPromotionsOverview() {
         var delBtn = p.status === 'DRAFT'
           ? '<button class="btn" data-del-plan="' + escapeHtml(p.id) + '" data-del-label="' + escapeHtml(codeLabel) + '" title="Delete this draft plan">Delete</button>'
           : '<button class="btn" disabled title="Only draft plans can be deleted">Delete</button>';
+        // ACTIVE → ENDED and SCHEDULED → ENDED are the only server-supported
+        // off-states (PLAN_TRANSITIONS in core/promotionPlans.ts; no PAUSED /
+        // CANCELLED / ARCHIVED exists), so live plans get a Disable/End action
+        // that PATCHes .../status ENDED with a confirm.
+        var endBtn = (p.status === 'ACTIVE' || p.status === 'SCHEDULED')
+          ? '<button class="btn" data-end-plan="' + escapeHtml(p.id) + '" data-end-label="' + escapeHtml(codeLabel) + '" data-end-from="' + p.status + '" title="End this ' + p.status.toLowerCase() + ' plan now (status → ENDED)">' + (p.status === 'ACTIVE' ? 'Disable' : 'End') + '</button>'
+          : '';
         libRows.push('<tr><td><b>' + escapeHtml(codeLabel) + '</b><br><small>' + escapeHtml(p.name || '') + ' · v' + (p.version || 1) + '</small></td>' +
           '<td>' + benefitLabel + '</td><td>' + eligibility + '</td><td>' + commitment + '</td>' +
           '<td>' + validFrom + validTo + '</td><td>' + usage + '</td><td>' + effDisc + '</td>' +
           '<td><span class="pill ' + statusColor + '">' + p.status + '</span></td>' +
-          '<td><button class="btn" data-tab-jump="' + tabJump + '" data-open-plan="' + escapeHtml(p.id) + '" data-plan-kind="' + p.kind + '" title="Open this plan in its builder">Open</button> ' + delBtn + '</td></tr>');
+          '<td><button class="btn" data-tab-jump="' + tabJump + '" data-open-plan="' + escapeHtml(p.id) + '" data-plan-kind="' + p.kind + '" title="Open this plan in its builder">Open</button> ' + delBtn + (endBtn ? ' ' + endBtn : '') + '</td></tr>');
       });
       // Legacy promotions
       (promos || []).forEach(function (p) {
@@ -1967,6 +2024,11 @@ async function bindPromotionsOverview() {
       libBody.querySelectorAll('[data-del-plan]').forEach(function (b) {
         b.addEventListener('click', function () {
           deletePromoPlan(b.dataset.delPlan, b.dataset.delLabel).catch(function () {});
+        });
+      });
+      libBody.querySelectorAll('[data-end-plan]').forEach(function (b) {
+        b.addEventListener('click', function () {
+          disablePromoPlan(b.dataset.endPlan, b.dataset.endLabel, b.dataset.endFrom).catch(function () {});
         });
       });
     }
@@ -1994,11 +2056,49 @@ async function deletePromoPlan(id, label) {
   }
   // Drop stale working-draft pointers at the deleted plan so the builders
   // cannot PUT against a plan that no longer exists.
+  var clearedDiscount = promoState.discountPlanId === id;
   ['discountPlanId', 'freePlanId', 'codePlanId'].forEach(function (k) {
     if (promoState[k] === id) promoState[k] = null;
   });
+  if (clearedDiscount) promoState.discountRules = null;
   if (promoState.validated) delete promoState.validated[id];
   toast('Deleted draft plan ' + name);
+  bindPromotionsOverview().catch(function () {});
+  bindPromoHistory().catch(function () {});
+  bindPromoDashboardCharts().catch(function () {});
+}
+
+// Promotion Library: Disable / End-now for ACTIVE + SCHEDULED plans via
+// PATCH /promotion-plans/:id/status { status: 'ENDED' } — the only
+// server-supported off-state (PLAN_TRANSITIONS: ACTIVE → ENDED,
+// SCHEDULED → ENDED; ENDED is terminal). Failures (e.g. a stale row whose
+// plan already ended) surface through showBanner via describeError.
+async function disablePromoPlan(id, label, from) {
+  if (!id) return;
+  var name = label || 'plan';
+  var fromLabel = (from || 'live').toLowerCase();
+  var okConfirm = await confirmDialog({
+    title: 'Disable ' + name + '?',
+    message: 'This ends the ' + fromLabel + ' plan now (status → ENDED). Past redemptions are kept; the plan stops applying to new bookings. Ended plans cannot be reactivated — use History → Restore as draft for a new draft.',
+    confirmLabel: from === 'SCHEDULED' ? 'End schedule' : 'Disable now',
+    danger: true,
+  });
+  if (!okConfirm) return;
+  try {
+    await patch('/promotion-plans/' + encodeURIComponent(id) + '/status', { status: 'ENDED' });
+  } catch (e) {
+    showBanner('Disable: ' + describeError(e));
+    return;
+  }
+  if (promoState.validated) delete promoState.validated[id];
+  // Refresh the builder pill when the ended plan is the open working draft.
+  if (promoState.discountPlanId === id) {
+    var d = document.getElementById('discountPlanStatus');
+    if (d) { d.textContent = 'Ended'; d.className = 'pill grey'; }
+  }
+  if (promoState.freePlanId === id) setPromoStatusPill('freePlanStatus', 'ENDED');
+  if (promoState.codePlanId === id) setPromoStatusPill('codePlanStatus', 'ENDED');
+  toast('Disabled ' + name + ' (ended)');
   bindPromotionsOverview().catch(function () {});
   bindPromoHistory().catch(function () {});
   bindPromoDashboardCharts().catch(function () {});
@@ -2030,6 +2130,7 @@ const promoState = {
   freePlanId: null, // FREE_MONTHS working draft
   codePlanId: null, // PROMO_CODE working draft
   validated: {}, // planId -> true after PATCH .../status VALIDATED
+  discountRules: null, // non-floor rules carried by the open discount plan (preserved on save)
 };
 
 // Generic data-tab-jump handler (Phase 0 cross-cutting fix): ~12 promo buttons
@@ -2222,6 +2323,45 @@ function populateFreePanel(plan) {
     const needle = plan.minStayPct === 0 ? 'No minimum' : plan.minStayPct + '%';
     Array.from(f.exitSel[1].options || []).forEach((o) => { if (o.text.indexOf(needle) === 0) f.exitSel[1].value = o.value || o.text; });
   }
+  // Scope round-trip (Library Open): facility from facilityScope (live
+  // branches, ids preferred — collectFreeMonthsPayload writes ids), storage
+  // type + size categories from their fields. Unknown values are retained via
+  // refillScopeSelect so re-saving never widens scope silently.
+  if (f.facilitySel) {
+    var fScope = Array.isArray(plan.facilityScope) ? plan.facilityScope : ['ALL'];
+    var fVal = 'ALL';
+    if (fScope.length && !/^all$/i.test(String(fScope[0]))) {
+      var fh = matchPromoBranch(fScope[0]);
+      fVal = fh ? fh.id : String(fScope[0]);
+    }
+    refillScopeSelect(f.facilitySel, 'All facilities', promoBranchRows(), fVal);
+  }
+  if (f.storageSel && plan.storageType) {
+    var stv = String(plan.storageType);
+    var stKnown = Array.from(f.storageSel.options || []).some(function (o) { return o.value === stv || o.text === stv; });
+    if (!stKnown) {
+      var so = document.createElement('option');
+      so.value = stv;
+      so.textContent = stv;
+      f.storageSel.appendChild(so);
+    }
+    Array.from(f.storageSel.options || []).forEach(function (o) { if (o.value === stv || o.text === stv) f.storageSel.value = o.value || o.text; });
+  }
+  if (f.sizeSel && plan.sizeScope) {
+    var zScope = Array.isArray(plan.sizeScope) ? plan.sizeScope.map(String) : [];
+    var zVal = null;
+    if (!zScope.length || zScope.some(function (s) { return /^all$/i.test(s); })) zVal = 'All eligible sizes';
+    else if (zScope.indexOf('MEDIUM') >= 0 && zScope.indexOf('LARGE') >= 0 && zScope.indexOf('XL') >= 0) zVal = 'MEDIUM, LARGE and XL';
+    if (zVal) {
+      Array.from(f.sizeSel.options || []).forEach(function (o) { if (o.text === zVal || o.value === zVal) f.sizeSel.value = o.value || o.text; });
+    } else {
+      var zo = document.createElement('option');
+      zo.value = zScope.join(', ');
+      zo.textContent = zScope.join(', ');
+      f.sizeSel.appendChild(zo);
+      f.sizeSel.value = zo.value;
+    }
+  }
 }
 
 // ---- Promo-code builder persistence (kind PROMO_CODE + rules round-trip) ----
@@ -2377,6 +2517,158 @@ function setPromoStatusPill(elId, status) {
   el.className = 'pill ' + tone;
 }
 
+// ---- Promotion builder scope controls (facility + floor, live data) ----
+// The discount-matrix header carries Facility / Floor / Storage-type selects
+// (#discountFacility / #discountFloorScope / #discountStorageType); the
+// free-months builder carries #freeFacility. All populate from live
+// GET /branches (state.branches, same source as the sbBranch pattern) with
+// floors from GET /floors?branchId= for the selected facility. The hardcoded
+// Woodlands/Ubi/Jurong East options in markup survive ONLY as a fallback when
+// the live fetch fails and boot refs are empty.
+//
+// Server mapping (read from core/promotionPlans.ts + routes/cms.ts — NO
+// contract change): facility → native facilityScope ([branchId] or ['ALL']),
+// storage type → native storageType. The plan schema has NO floor column, so
+// floor scope rides in the plan's EXISTING rules array as
+// { groupId: 0, field: 'floor', operator: 'equals', value: <floorId> }
+// (rules are free-form field/operator/value strings; validation only uses
+// facilityScope × sizeScope for overlap, so the extra rule is inert there).
+var PROMO_FLOOR_RULE_FIELD = 'floor';
+var PROMO_DEMO_BRANCHES = ['Woodlands', 'Ubi', 'Jurong East'];
+
+function promoBranchRows() {
+  return (state.branches || []).map(function (b) {
+    return { value: b.id, label: b.name + ' (' + b.code + ')' };
+  });
+}
+
+// Match one stored facilityScope entry to a live branch. Stored values are
+// branch ids (both builders write ids), but codes/names round-trip too.
+function matchPromoBranch(val) {
+  var v = String(val == null ? '' : val).trim();
+  if (!v || /^all$/i.test(v)) return null;
+  var list = state.branches || [];
+  return list.find(function (b) { return b.id === v; })
+    || list.find(function (b) { return b.code === v || b.name === v; })
+    || null;
+}
+
+// Refill a scope <select> with an "All" option + rows, then restore
+// `selected` (matched by value, then by label). An unknown stored value is
+// retained as an explicit option so re-saving a Library-opened plan never
+// silently widens scope when a facility/floor was deleted.
+function refillScopeSelect(sel, allLabel, rows, selected) {
+  if (!sel) return;
+  var want = selected !== undefined ? selected : sel.value;
+  var html = '<option value="ALL">' + escapeHtml(allLabel) + '</option>' +
+    (rows || []).map(function (r) {
+      return '<option value="' + escapeHtml(r.value) + '">' + escapeHtml(r.label) + '</option>';
+    }).join('');
+  var known = !want || /^all$/i.test(String(want)) || (rows || []).some(function (r) {
+    return String(r.value) === String(want) || String(r.label) === String(want);
+  });
+  if (!known) html += '<option value="' + escapeHtml(want) + '">' + escapeHtml(String(want) + ' (unavailable — pick a new scope)') + '</option>';
+  sel.innerHTML = html;
+  var done = false;
+  Array.from(sel.options || []).forEach(function (o) {
+    if (!done && (o.value === String(want) || o.text === String(want))) { sel.value = o.value; done = true; }
+  });
+  if (!done) sel.value = 'ALL';
+}
+
+function promoFloorLabel(f) {
+  return 'L' + f.level + (f.name ? ' · ' + f.name : '');
+}
+
+// Live floors for one facility: GET /floors?branchId= (activeOnly=1; the
+// route takes branchId, not branch) with a state.floors fallback. Empty when
+// the facility is ALL or the fetch fails (caller renders All-only).
+async function promoFloorsForBranch(branchId) {
+  if (!branchId || /^all$/i.test(String(branchId))) return [];
+  var live = null;
+  try { live = await get('/floors?branchId=' + encodeURIComponent(branchId) + '&activeOnly=1'); } catch (e) { live = null; }
+  if (Array.isArray(live) && live.length) return live;
+  return (state.floors || []).filter(function (f) { return f.branchId === branchId && f.isActive !== false; });
+}
+
+// Refresh the discount floor select for the currently chosen facility.
+// `preserve`: floor id to keep selected (Library Open); defaults to the
+// current selection, reset to ALL when the operator changes facility.
+async function refreshDiscountFloorOptions(preserve) {
+  var floorSel = document.getElementById('discountFloorScope');
+  var facSel = document.getElementById('discountFacility');
+  if (!floorSel || !facSel) return;
+  var want = preserve !== undefined ? preserve : floorSel.value;
+  var branch = matchPromoBranch(facSel.value);
+  if (!branch) {
+    refillScopeSelect(floorSel, 'Floor: All', [], want);
+    return;
+  }
+  var floors = [];
+  try { floors = await promoFloorsForBranch(branch.id); } catch (e) { floors = []; }
+  var rows = (floors || []).slice().sort(function (a, b) { return a.level - b.level; }).map(function (f) {
+    return { value: f.id, label: 'Floor: ' + promoFloorLabel(f) };
+  });
+  refillScopeSelect(floorSel, 'Floor: All in ' + branch.code, rows, want);
+}
+
+// Read the discount header selects into plan fields for POST/PUT
+// /promotion-plans (Save Draft, and Schedule/Publish which save first).
+function collectDiscountScope() {
+  var facSel = document.getElementById('discountFacility');
+  var floorSel = document.getElementById('discountFloorScope');
+  var storeSel = document.getElementById('discountStorageType');
+  var facilityScope = ['ALL'];
+  if (facSel && facSel.value && !/^all$/i.test(facSel.value)) {
+    var hit = matchPromoBranch(facSel.value);
+    facilityScope = [hit ? hit.id : facSel.value];
+  }
+  var storageType = storeSel && storeSel.value ? storeSel.value : undefined;
+  var floorRules = [];
+  if (floorSel && floorSel.value && !/^all$/i.test(floorSel.value)) {
+    floorRules = [{ groupId: 0, field: PROMO_FLOOR_RULE_FIELD, operator: 'equals', value: floorSel.value }];
+  }
+  var preserved = promoState.discountRules || [];
+  var rules = preserved.concat(floorRules);
+  return {
+    facilityScope: facilityScope,
+    storageType: storageType,
+    rules: rules,
+    // Baseline loaded via Library Open: always send an explicit array (even
+    // empty) so clearing a floor scope back to All wipes the stale rule.
+    hasBaseline: promoState.discountRules != null,
+  };
+}
+
+var promoScopeWired = false;
+// Fill all builder scope selects from live data (idempotent: bootPromotions
+// re-runs on every promotions visit; selections are preserved across refills).
+function initPromoScopeControls() {
+  var facSel = document.getElementById('discountFacility');
+  var floorSel = document.getElementById('discountFloorScope');
+  var freeFac = document.getElementById('freeFacility');
+  if (facSel) {
+    var cur = facSel.value || 'ALL';
+    var mh = matchPromoBranch(cur);
+    refillScopeSelect(facSel, 'Facility: All', promoBranchRows(), mh ? mh.id : cur);
+  }
+  if (freeFac) {
+    var fcur = freeFac.value || 'ALL';
+    var fmh = matchPromoBranch(fcur);
+    refillScopeSelect(freeFac, 'All facilities', promoBranchRows(), fmh ? fmh.id : fcur);
+  }
+  if (!promoScopeWired) {
+    promoScopeWired = true;
+    if (facSel) {
+      facSel.addEventListener('change', function () {
+        refreshDiscountFloorOptions('ALL').catch(function () {});
+      });
+    }
+  }
+  // Floor options follow the (possibly just-restored) facility selection.
+  if (facSel && floorSel) refreshDiscountFloorOptions().catch(function () {});
+}
+
 // Canonical size-category mapping for the discount-matrix builder (mirrors
 // core/promotionPlans.ts toCanonicalSizeCategory): new writes use LOCKER /
 // SMALL / MEDIUM / LARGE / XL / XXL; legacy XS / S / M / L rows read as
@@ -2391,12 +2683,19 @@ function canonicalSizeCat(raw) {
 // Sets the working draft id so Save uses PUT /:id and Publish walks PATCH
 // /:id/status on the SAME row — never a copy. Cell mapping mirrors
 // saveDiscountPlan: row → size category, 4 inputs/row (commitment tiers
-// [1, 3, 6, 12]) always Standard.
-function populateDiscountPanel(plan) {
+// [1, 3, 6, 12]) always Standard. Scope selects (facility / floor / storage)
+// are restored from facilityScope + the floor rule + storageType so the
+// operator sees and re-saves the same scope.
+async function populateDiscountPanel(plan) {
   if (!plan) return;
   promoState.discountPlanId = plan.id;
   promoState.validated[plan.id] = plan.status !== 'DRAFT';
-  const nameEl = document.getElementById('discountPlanName');
+  var planRules = Array.isArray(plan.rules) ? plan.rules : [];
+  // Stash non-floor rules so collectDiscountScope() preserves them on save
+  // (discount plans carry no code-builder rules, but never drop data).
+  promoState.discountRules = planRules.filter(function (r) { return r.field !== PROMO_FLOOR_RULE_FIELD; });
+  var floorRule = planRules.find(function (r) { return r.field === PROMO_FLOOR_RULE_FIELD; });
+  var nameEl = document.getElementById('discountPlanName');
   const dateEl = document.getElementById('discountStartDate');
   const statusEl = document.getElementById('discountPlanStatus');
   if (nameEl && plan.name) nameEl.value = plan.name;
@@ -2433,6 +2732,44 @@ function populateDiscountPanel(plan) {
     statusEl.textContent = s.charAt(0) + s.slice(1).toLowerCase();
     statusEl.className = 'pill ' + (s === 'ACTIVE' || s === 'VALIDATED' ? 'green' : s === 'SCHEDULED' ? 'amber' : 'grey');
   }
+  // Restore scope selects: facility from facilityScope (id/code/name/ALL),
+  // storage from storageType, floor from the floor rule (floor id). When the
+  // plan is facility-wide but carries a floor rule, follow the rule's floor
+  // into its branch so the floor select can show it.
+  try {
+    var scope = Array.isArray(plan.facilityScope) ? plan.facilityScope : ['ALL'];
+    var facVal = 'ALL';
+    if (scope.length && !/^all$/i.test(String(scope[0]))) {
+      var sh = matchPromoBranch(scope[0]);
+      facVal = sh ? sh.id : String(scope[0]);
+    }
+    var floorVal = 'ALL';
+    if (floorRule && floorRule.value) {
+      floorVal = String(floorRule.value);
+      if (/^all$/i.test(facVal)) {
+        var ff = (state.floors || []).find(function (x) { return x.id === floorVal; });
+        if (ff) {
+          var fb = (state.branches || []).find(function (b) { return b.id === ff.branchId; });
+          if (fb) facVal = fb.id;
+        }
+      }
+    }
+    var facSel = document.getElementById('discountFacility');
+    if (facSel) refillScopeSelect(facSel, 'Facility: All', promoBranchRows(), facVal);
+    var storeSel = document.getElementById('discountStorageType');
+    if (storeSel && plan.storageType) {
+      var sv = String(plan.storageType);
+      var matched = Array.from(storeSel.options || []).some(function (o) { return o.value === sv; });
+      if (!matched && sv) {
+        var ro = document.createElement('option');
+        ro.value = sv;
+        ro.textContent = 'Storage: ' + sv;
+        storeSel.appendChild(ro);
+      }
+      storeSel.value = sv;
+    }
+    await refreshDiscountFloorOptions(floorVal);
+  } catch (e) { /* scope restore is best-effort; cells + status above already applied */ }
 }
 
 // Library Open → load the exact plan into its builder (GET /promotion-plans/:id
@@ -2449,7 +2786,7 @@ async function openPromoPlan(id, kind) {
   }
   if (!plan) return;
   const k = kind || plan.kind;
-  if (k === 'DISCOUNT_MATRIX') populateDiscountPanel(plan);
+  if (k === 'DISCOUNT_MATRIX') await populateDiscountPanel(plan);
   else if (k === 'FREE_MONTHS') populateFreePanel(plan);
   else populateCodePanel(plan);
   toast('Opened ' + (plan.name || plan.code || plan.id));
@@ -3187,6 +3524,11 @@ function bootPromotions() {
       if (result && result.id) {
         promoState.discountPlanId = result.id;
         promoState.validated[result.id] = false;
+        // The server copies rules (incl. any floor rule) onto the duplicate —
+        // carry the non-floor baseline so the next save preserves scope data.
+        if (Array.isArray(result.rules)) {
+          promoState.discountRules = result.rules.filter(function (r) { return r.field !== PROMO_FLOOR_RULE_FIELD; });
+        }
       }
       if (discountPlanName) {
         var base = discountPlanName.value.replace(/^Copy of /, '');
@@ -3249,6 +3591,14 @@ function bootPromotions() {
       sizeScope: ['ALL'],
       matrixCells: matrixCells.length ? matrixCells : undefined,
     };
+    // Scope selections flow into the saved plan (facilityScope + storageType
+    // are native fields; floor scope rides the rules array — see
+    // collectDiscountScope). Schedule/Publish call saveDiscountPlan first, so
+    // they inherit scope automatically.
+    var dscope = collectDiscountScope();
+    payload.facilityScope = dscope.facilityScope;
+    if (dscope.storageType) payload.storageType = dscope.storageType;
+    if (dscope.rules.length || dscope.hasBaseline) payload.rules = dscope.rules;
 
     try {
       if (promoState.discountPlanId) {
@@ -3398,6 +3748,7 @@ function bootPromotions() {
   // sets the working draft id so Save/Publish stay in place, never a copy).
   installPromoOpenHandler();
   ensurePromoSaveBars();
+  initPromoScopeControls();
   loadFreeMonthsPlan().catch(function () {});
   loadCodePlan().catch(function () {});
   bindPromoPerformance().catch(function () {});
@@ -3632,6 +3983,20 @@ function wireEvents() {
       });
       activateSide('billing', this.dataset.tab);
       if (this.dataset.tab === 'bill-overview') bindBilling();
+    });
+  });
+  // Settings tabs (data-tabs="settings") — mirrors the billing pattern:
+  // General / Booking & billing / Fees & deposits / Team & access /
+  // Facilities panels. Every section binds at load so tab switches are
+  // pure show/hide with no refetch.
+  document.querySelectorAll('[data-tabs="settings"] [data-tab]').forEach((b) => {
+    b.addEventListener('click', function () {
+      document.querySelectorAll('[data-tabs="settings"] [data-tab]').forEach((x) => x.classList.remove('active'));
+      this.classList.add('active');
+      document.querySelectorAll('#settings > .module-panel').forEach((p) => {
+        p.classList.toggle('active', p.id === this.dataset.tab);
+      });
+      activateSide('settings', this.dataset.tab);
     });
   });
   // Promo tabs

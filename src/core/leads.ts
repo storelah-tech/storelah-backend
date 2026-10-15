@@ -487,7 +487,7 @@ export interface PublicLeadInput {
   purpose?: 'personal' | 'business' | null;
   companyName?: string | null;
   uen?: string | null;
-  // Either a Branch.code (BM/WD/UB, case-insensitive) or a raw branch cuid.
+  // Either a Branch.code (SW/WD/UB, case-insensitive) or a raw branch cuid.
   branchCode?: string | null;
   preferredBranchId?: string | null;
   preferredSize?: string | null;

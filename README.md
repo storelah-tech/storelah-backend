@@ -53,7 +53,7 @@ Default admin: `admin@storelah.sg` / `password`.
 | --- | --- | --- |
 | POST | `/login` | `{ email, password }` → `{ token, user }` |
 | GET | `/summary` | KPIs, monthly revenue, occupancy by branch, revenue by size |
-| GET | `/units/map?branch=BM&level=1` | unit-map grid + legend for a floor |
+| GET | `/units/map?branch=SW&level=1` | unit-map grid + legend for a floor |
 | GET | `/units/:code` | unit detail + tenant + rate history |
 | POST | `/units/:code/rate` | `{ newRate, effectiveDate?, reason? }` — create a `RateChange` & update |
 | GET | `/tenants` | list of tenants (with unit/size/rate/status) |

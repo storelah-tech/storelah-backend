@@ -15,9 +15,9 @@ Every `Unit` row has two identifiers:
 - **`unitCode`** is auto-generated at creation as a **4-digit numeric code**,
   e.g. `1001` (next free code above the global MAX across all rows, deleted
   included, starting at 1001; range 1001–9999). It is immutable, globally
-  unique, and the only key used for lookups, relations, map cells, and codegen.
-  Pre-4-digit legacy codes (`BM-01-01` style) keep working everywhere — they are
-  only replaced by the opt-in rename script
+   unique, and the only key used for lookups, relations, map cells, and codegen.
+   Pre-4-digit legacy codes (`SW-01-01` style; pre-rename `BM-01-01` rows keep
+   working everywhere) — they are only replaced by the opt-in rename script
   (`scripts/backfill-unit-codes-4digit.ts`, `--dry-run` first); codegen itself
   never renames. FKs always point at `Unit.id`, never at the code (see that
   script's header for the full safety note).
@@ -31,8 +31,8 @@ Every `Unit` row has two identifiers:
    existing codes, never from names.
 2. **Never let `name` leak into the map.** Map cells show the short code (identity), never the
    display name. Do not change map rendering to show names. (Short code = the
-   full code for 4-digit codes, which have no dashes; legacy `BM-01-01` codes
-   shorten to their trailing segments.)
+   full code for 4-digit codes, which have no dashes; legacy `SW-01-01` codes
+   (pre-rename `BM-01-01` rows alike) shorten to their trailing segments.)
 3. **Normalize before storing:** `name` is trimmed; empty/whitespace-only values are stored as
    `NULL` (which triggers the code fallback). Max length 80.
 4. **Serialize with the fallback:** every API serializer returns `name: unit.name ?? unit.unitCode`

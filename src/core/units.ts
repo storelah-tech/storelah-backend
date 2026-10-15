@@ -42,7 +42,8 @@ export interface UpdateUnitInput {
 // re-assigned), starting at 1001. FKs (UnitPlacement.unitId, Tenant.unitId,
 // Booking/Invoice.unitId) all point at Unit.id, never at the code, so codes
 // are cosmetic identity only; Lead.unitCode is a loose (non-FK) reference.
-// Legacy BM-01-01 codes are left untouched by codegen; the opt-in rename lives
+// Legacy branch-prefixed codes (SW-01-01 style; pre-rename BM-01-01 rows
+// keep working) are left untouched by codegen; the opt-in rename lives
 // in scripts/backfill-unit-codes-4digit.ts (dry-run first).
 
 const FOUR_DIGIT_RE = /^\d{4}$/;
@@ -294,8 +295,8 @@ export async function createUnit(input: CreateUnitInput) {
 
   // 4-digit codegen: next free code above the MAX 4-digit code across ALL
   // rows (deliberately no deletedAt filter — codes of soft-deleted units are
-  // never reused, keeping the sequence monotonic). Legacy BM-01-01 codes never
-  // match /^\d{4}$/ so they neither collide nor disturb the sequence.
+  // never reused, keeping the sequence monotonic). Legacy SW-01-01 codes (and
+  // pre-rename BM-01-01 rows) never match /^\d{4}$/ so they neither collide nor disturb the sequence.
   let unitCode: string;
   if (input.unitCode !== undefined) {
     const explicit = input.unitCode.trim();
@@ -541,8 +542,8 @@ export async function getUnitMap(branchCode: string, level: number, opts?: UnitM
     units: visible.map((u) => ({
       id: u.unitCode,
       code: u.unitCode,
-      // Legacy BM-01-01 codes shorten to the trailing segments; 4-digit codes
-      // have no dashes and shorten to themselves.
+      // Legacy SW-01-01 codes (pre-rename BM-01-01 rows keep working) shorten
+      // to the trailing segments; 4-digit codes have no dashes and shorten to themselves.
       short: u.unitCode.includes('-') ? u.unitCode.split('-').slice(1).join('-') : u.unitCode,
       size: u.size.name,
       sizeCode: u.size.code,
@@ -904,7 +905,7 @@ export async function importUnits(csvText: string): Promise<UnitImportReport> {
         (branchCode ? await prisma.branch.findUnique({ where: { code: branchCode } }) : null) ??
         (branchRaw ? await prisma.branch.findUnique({ where: { id: branchRaw } }).catch(() => null) : null);
       if (!branch) {
-        rows.push(fail(rowNum, `unknown branch ${JSON.stringify(branchRaw)} (use branch code, e.g. BM)`));
+        rows.push(fail(rowNum, `unknown branch ${JSON.stringify(branchRaw)} (use branch code, e.g. SW)`));
         continue;
       }
       let floor = null;

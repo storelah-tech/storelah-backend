@@ -26,7 +26,7 @@ code changes marked `[backend-agent]`). Landing is done; booking is waiting on T
   available for console checks).** `api.storelah.sg` and `cms.storelah.sg` both resolve to
   API Gateway regional endpoints in ap-southeast-1 and serve HTTPS with valid ACM certs:
   - `https://api.storelah.sg/health` → `{ ok: true, service: 'storelah-cms', time }`
-  - `https://api.storelah.sg/api/v1/public/branches` → seeded Neon rows (BM/UB/WD) —
+  - `https://api.storelah.sg/api/v1/public/branches` → seeded Neon rows (SW/UB/WD) —
     **confirms Prisma reached Neon through the pooled URL and the cloud DB was seeded**
   - `https://api.storelah.sg/` and `/docs` → Swagger UI docs for the booking API; `/admin` → 404;
     `cms.storelah.sg/` (and `/admin`) → 200 CMS dashboard
@@ -655,7 +655,7 @@ ApiCname:
 ```bash
 curl -s https://api.storelah.sg/health                        # { ok: true, service: 'storelah-cms', time }
 curl -s https://api.storelah.sg/api/v1/public/branches         # { data: [...] }
-curl -s "https://api.storelah.sg/api/v1/public/units/map?branch=BM&level=1"
+curl -s "https://api.storelah.sg/api/v1/public/units/map?branch=SW&level=1"
 curl -s https://api.storelah.sg/api/v1/public/promotions       # { data: [...] }
 curl -s -X POST https://api.storelah.sg/api/v1/public/promotions/validate \
   -H 'content-type: application/json' -d '{"code":"ANY10","rate":100,"months":6}'

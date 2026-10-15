@@ -107,8 +107,63 @@ async function resolvePreview() {
 
 // ---------- business rules (P1 item 7) ----------
 
+// Phase 0 label disambiguation (display-only, keys untouched): the booking.*
+// rules read like duplicates of the booking.* checkout scalars, so the visible
+// labels/subs spell out the policy-vs-checkout split. Server defs in
+// src/core/businessRules.ts are intentionally unchanged (no contract change).
+const RULE_DISPLAY = {
+  'booking.minStayDays': {
+    label: 'Minimum stay (days · policy floor)',
+    description: 'Shortest bookable stay, in days. Policy floor — the Max stay cap checkout setting bounds the other end.',
+  },
+  'booking.holdHours': {
+    label: 'Quote hold window (hrs · lead hold)',
+    description: 'Hours a quoted unit is held for the lead before release. Lead-hold policy — separate from Min advance notice.',
+  },
+  'booking.maxUnitsPerCustomer': {
+    label: 'Max units per customer (policy cap)',
+    description: 'Most active units one customer may hold at once.',
+  },
+  'booking.requireIDVerification': {
+    label: 'Require ID verification (move-in gate)',
+    description: 'Block move-in until the tenant identity is verified. Identity gate — separate from Auto-confirm paid bookings.',
+  },
+  'booking.moveOutNoticeDays': {
+    label: 'Move-out notice period (days)',
+    description: 'Days of notice a tenant must give before the last day.',
+  },
+};
+const RULE_CAT_TITLES = { booking: 'Booking rules', org: 'Policy' };
+const RULE_CAT_SUBS = {
+  booking: 'Stay, hold, identity and move-out policy — saved via Save rules',
+  org: 'Organisation-wide policy — saved via Save rules',
+};
+
 let rulesDraft = {};
 let rulesLoaded = false;
+
+function markRulesDirty() {
+  const btn = $('#businessRulesSaveBtn');
+  const dot = $('#businessRulesDirty');
+  if (btn) btn.disabled = false;
+  if (dot) dot.classList.add('show');
+}
+
+function markRulesClean() {
+  const btn = $('#businessRulesSaveBtn');
+  const dot = $('#businessRulesDirty');
+  if (btn) { btn.disabled = true; btn.textContent = 'Save rules'; }
+  if (dot) dot.classList.remove('show');
+}
+
+function toggleRuleSwitch(sw) {
+  const key = sw.dataset.ruleKey;
+  if (!key || !(key in rulesDraft)) return;
+  rulesDraft[key] = !rulesDraft[key];
+  sw.classList.toggle('on', !!rulesDraft[key]);
+  sw.setAttribute('aria-checked', String(!!rulesDraft[key]));
+  markRulesDirty();
+}
 
 export async function bindBusinessRulesSection() {
   const wrap = $('#businessRulesBody');
@@ -119,17 +174,26 @@ export async function bindBusinessRulesSection() {
     rulesLoaded = true;
     const cats = {};
     for (const r of rows) (cats[r.category] = cats[r.category] || []).push(r);
-    wrap.innerHTML = Object.entries(cats).map(([cat, list]) =>
-      `<div class="t-type" style="margin:6px 2px;text-transform:uppercase;">${escapeHtml(cat)}</div>` +
-      list.map((r) => {
-        const ctl = r.kind === 'boolean'
-          ? `<span class="sw${rulesDraft[r.key] ? ' on' : ''}" data-rule-key="${escapeHtml(r.key)}" role="switch" tabindex="0"><i></i></span>`
-          : r.kind === 'number'
-            ? `<input type="number" class="set-input num" data-rule-key="${escapeHtml(r.key)}" value="${escapeHtml(String(rulesDraft[r.key] ?? ''))}">`
-            : `<input type="text" class="set-input" data-rule-key="${escapeHtml(r.key)}" value="${escapeHtml(String(rulesDraft[r.key] ?? ''))}" maxlength="120">`;
-        return `<div class="set-row"><div><b>${escapeHtml(r.label)}</b><small>${escapeHtml(r.description)}${r.customized ? '' : ' · default'}</small></div><div class="set-ctl">${ctl}</div></div>`;
-      }).join(''),
-    ).join('');
+    const order = Object.keys(cats).sort((a, b) =>
+      (a === 'booking' ? -1 : b === 'booking' ? 1 : a.localeCompare(b)));
+    wrap.innerHTML = order.map((cat) => {
+      const list = cats[cat];
+      const title = RULE_CAT_TITLES[cat] || cat;
+      const sub = RULE_CAT_SUBS[cat] ? ' — ' + RULE_CAT_SUBS[cat] : '';
+      return `<div class="rules-cat t-type">${escapeHtml(title)}${escapeHtml(sub)}</div>` +
+        list.map((r) => {
+          const disp = RULE_DISPLAY[r.key] || {};
+          const label = disp.label || r.label;
+          const desc = disp.description || r.description;
+          const ctl = r.kind === 'boolean'
+            ? `<span class="sw${rulesDraft[r.key] ? ' on' : ''}" data-rule-key="${escapeHtml(r.key)}" role="switch" aria-checked="${!!rulesDraft[r.key]}" aria-label="${escapeHtml(label)}" tabindex="0"><i></i></span>`
+            : r.kind === 'number'
+              ? `<input type="number" class="set-input num" data-rule-key="${escapeHtml(r.key)}" aria-label="${escapeHtml(label)}" value="${escapeHtml(String(rulesDraft[r.key] ?? ''))}">`
+              : `<input type="text" class="set-input" data-rule-key="${escapeHtml(r.key)}" aria-label="${escapeHtml(label)}" value="${escapeHtml(String(rulesDraft[r.key] ?? ''))}" maxlength="120">`;
+          return `<div class="set-row"><div><b>${escapeHtml(label)}</b><small>${escapeHtml(desc)}${r.customized ? '' : ' · default'}</small></div><div class="set-ctl">${ctl}</div></div>`;
+        }).join('');
+    }).join('');
+    markRulesClean();
   } catch (e) {
     wrap.innerHTML = '<div class="section-empty">Business rules failed to load: ' + escapeHtml(describeError(e)) + '</div>';
   }
@@ -137,6 +201,8 @@ export async function bindBusinessRulesSection() {
 
 async function saveBusinessRules() {
   if (!rulesLoaded) return;
+  const btn = $('#businessRulesSaveBtn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
   try {
     const saved = await put('/business-rules', rulesDraft);
     rulesDraft = Object.fromEntries((saved || []).map((r) => [r.key, r.value]));
@@ -144,6 +210,8 @@ async function saveBusinessRules() {
     await bindBusinessRulesSection();
   } catch (e) {
     showBanner('Business rules: ' + describeError(e));
+    if (btn) btn.textContent = 'Save rules';
+    markRulesDirty();
   }
 }
 
@@ -287,19 +355,23 @@ export function wireSettingsExt() {
   $('#ff-add')?.addEventListener('click', () => submitFeeForm().catch(() => {}));
   $('#fr-resolveBtn')?.addEventListener('click', () => resolvePreview().catch(() => {}));
   // Business-rules controls: delegate on the section container (re-rendered).
+  // Mirrors the scalar markSettingsDirty pattern: any edit lights the rules
+  // dirty-dot and enables Save rules; switches keep keyboard/aria parity
+  // with the scalar .sw controls (aria-checked + Enter/Space).
   $('#businessRulesSection')?.addEventListener('click', (e) => {
     const sw = e.target.closest('.sw[data-rule-key]');
-    if (sw) {
-      const key = sw.dataset.ruleKey;
-      rulesDraft[key] = !rulesDraft[key];
-      sw.classList.toggle('on', !!rulesDraft[key]);
-    }
+    if (sw) toggleRuleSwitch(sw);
+  });
+  $('#businessRulesSection')?.addEventListener('keydown', (e) => {
+    const sw = e.target.closest && e.target.closest('.sw[data-rule-key]');
+    if (sw && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); toggleRuleSwitch(sw); }
   });
   $('#businessRulesSection')?.addEventListener('input', (e) => {
     const el = e.target.closest && e.target.closest('[data-rule-key]');
     if (!el || el.classList.contains('sw')) return;
     const key = el.dataset.ruleKey;
     rulesDraft[key] = el.type === 'number' ? (el.value === '' ? '' : Number(el.value)) : el.value;
+    markRulesDirty();
   });
   $('#businessRulesSaveBtn')?.addEventListener('click', () => saveBusinessRules().catch(() => {}));
   // Users section.

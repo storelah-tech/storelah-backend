@@ -78,7 +78,7 @@ describe('move-in edge cases', () => {
     const res = await api
       .post('/api/v1/customer/bookings')
       .set('Authorization', `Bearer ${token}`)
-      .send({ unitCode: 'BM-01-99', moveInDate: futureMoveInISO(), durationMonths: 1 });
+      .send({ unitCode: 'SW-01-99', moveInDate: futureMoveInISO(), durationMonths: 1 });
     expect(res.status).toBe(404);
     expect(res.body.error.code).toBe('NOT_FOUND');
   });

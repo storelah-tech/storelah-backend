@@ -64,10 +64,10 @@ router.get('/units', async (req: Request, res: Response) => {
 });
 
 router.get('/units/map', async (req: Request, res: Response) => {
-  const branch = (req.query.branch as string) || 'BM';
+  const branch = (req.query.branch as string) || 'SW';
   const level = Number(req.query.level) || 1;
   // Additive size/near-lift filters — same contract as the admin map read path
-  // (GET /api/v1/cms/units/map). Omitted by default so the BM/L1 response keeps
+  // (GET /api/v1/cms/units/map). Omitted by default so the SW/L1 response keeps
   // every existing key; booking readers ignore the new `sizes`/`sizeInfo` keys.
   const size = typeof req.query.size === 'string' && req.query.size.trim() ? req.query.size.trim() : undefined;
   const nearLift = req.query.nearLift === '1' || req.query.nearLift === 'true';

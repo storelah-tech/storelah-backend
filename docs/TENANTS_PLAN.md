@@ -76,7 +76,7 @@ Mirror the Units view structure exactly.
 ## 4. Verification (curl-only)
 
 1. `pnpm check` clean. Frozen files byte-identical (`git diff` empty on `src/cms/dashboard.html`, `src/cms/data-layer.js`).
-2. **Baseline first:** capture `GET /tenants` count and `GET /units?status=AVAILABLE&perPage=200` set (expected 8: BM-01-04/08/13/18/23/26, UB-01-01, WD-01-01). Record before/after.
+2. **Baseline first:** capture `GET /tenants` count and `GET /units?status=AVAILABLE&perPage=200` set (expected 8: SW-01-04/08/13/18/23/26, UB-01-01, WD-01-01). Record before/after.
 3. Live curl round-trips (auth: `GET /api/cms/config` → `POST /api/cms/login` → Bearer):
    - Create tenant w/ `unitId` of an AVAILABLE unit → 201, unit shows as its unit, psf = rate/sqft.
    - Create tenant w/ `unitId` of an OCCUPIED unit → 400 VALIDATION (Gap 2). Create w/ deleted unit's id → 400.

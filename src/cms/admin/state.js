@@ -65,7 +65,7 @@ export const state = {
   perPage: 10,
   total: 0,
   totalPages: 1,
-  branchCode: 'BM', // drives map + table filter (sidebar branch switcher)
+  branchCode: 'SW', // drives map + table filter (sidebar branch switcher)
   level: 1, // drives map + table filter (floor tabs)
   statusFilter: '',
   // Units-toolbar explicit filters (override the sidebar scope while set).
@@ -78,7 +78,7 @@ export const state = {
   selectedCode: null,
   // floor-plan editor state (facility setup view)
   fp: {
-    branchCode: 'BM',
+    branchCode: 'SW',
     floorId: null, // selected floor row id
     plan: null, // plan object (or null when none exists)
     branchName: '',

@@ -2,7 +2,7 @@
 //
 // Every spec calls resetDb() first (truncate + cascade on the ISOLATED test
 // DB only — see test-db.ts), then seedMoveInWorld() to build a pinned world:
-// branch BM, floor L1 (authored plan with real placements) + floor L2
+// branch SW, floor L1 (authored plan with real placements) + floor L2
 // (plan-less, for the plan:null empty state), and one unit per edge case with
 // pinned unitCodes. Emails are unique per test (`e2e+<uuid>@test.local`) so
 // Customer/Tenant uniqueness never collides across tests.
@@ -16,15 +16,15 @@ import { assertSafeTestDb } from './test-db';
 export const api = request(app);
 
 export const PIN = {
-  branchCode: 'BM',
+  branchCode: 'SW',
   level: 1,
   planlessLevel: 2,
-  rentableUnit: 'BM-01-01',
-  guestUnit: 'BM-01-02',
-  occupiedUnit: 'BM-01-03',
-  blockedUnit: 'BM-01-04',
-  deletedUnit: 'BM-01-05',
-  maintenanceUnit: 'BM-01-06',
+  rentableUnit: 'SW-01-01',
+  guestUnit: 'SW-01-02',
+  occupiedUnit: 'SW-01-03',
+  blockedUnit: 'SW-01-04',
+  deletedUnit: 'SW-01-05',
+  maintenanceUnit: 'SW-01-06',
 } as const;
 
 export function uniqueEmail(): string {
@@ -54,7 +54,7 @@ export interface MoveInWorld {
 }
 
 /**
- * Pinned world: SMALL size, branch BM with floors L1 (plan + placements) and
+ * Pinned world: SMALL size, branch SW with floors L1 (plan + placements) and
  * L2 (no plan), and one unit per scenario. All units are 50 sqft with 5×10 ft
  * placement rects (1 grid unit = 1 ft) at non-overlapping positions.
  */
@@ -74,8 +74,8 @@ export async function seedMoveInWorld(): Promise<MoveInWorld> {
   const branch = await prisma.branch.create({
     data: {
       code: PIN.branchCode,
-      name: 'Bukit Merah (E2E)',
-      address: '11 Jalan Bukit Merah, Singapore 159478',
+      name: 'Sembawang (E2E)',
+      address: 'Admirax, Sembawang',
       operatingHours: '9am – 9pm daily',
     },
   });

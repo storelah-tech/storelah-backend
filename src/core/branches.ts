@@ -189,7 +189,7 @@ function normalizeBranchCode(raw: string): string {
     throw new AppError(
       400,
       'VALIDATION',
-      `Branch code must be 2..8 uppercase letters/digits (e.g. BM, WD, UB) — got ${JSON.stringify(raw)}`,
+      `Branch code must be 2..8 uppercase letters/digits (e.g. SW, WD, UB) — got ${JSON.stringify(raw)}`,
     );
   }
   return code;

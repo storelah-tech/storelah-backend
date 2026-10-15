@@ -229,7 +229,7 @@
         get('/action-items').catch(function () { return []; }),
         get('/tenants').catch(function () { return []; }),
         get('/branches').catch(function () { return []; }),
-        get('/units/map?branch=BM&level=1').catch(function () { return null; }),
+        get('/units/map?branch=SW&level=1').catch(function () { return null; }),
       ]);
       bindCommandStats(summary, leadsData, actions);
       bindFunnel(leadsData);
@@ -265,7 +265,7 @@
   if (bCtx) {
     new Chart(bCtx.getContext('2d'), {
       type: 'bar',
-      data: { labels: ['Bukit Merah', 'Woodlands', 'Ubi'], datasets: [{ data: [87.5,91.2,82.0], backgroundColor: ['#c97952','#526557','#547b8d'], borderRadius: 7, borderSkipped: false }] },
+      data: { labels: ['Sembawang', 'Woodlands', 'Ubi'], datasets: [{ data: [87.5,91.2,82.0], backgroundColor: ['#c97952','#526557','#547b8d'], borderRadius: 7, borderSkipped: false }] },
       options: { indexAxis: 'y', responsive: true, plugins: { legend: { display: false } }, scales: { x: { grid: { color: '#ede8e2' }, max: 100, ticks: { font: { family: 'Manrope', size: 10 }, color: '#6f746d', callback: function (v) { return v + '%'; } } }, y: { grid: { display: false }, ticks: { font: { family: 'Manrope', size: 10 }, color: '#20241f' } } } }
     });
   }

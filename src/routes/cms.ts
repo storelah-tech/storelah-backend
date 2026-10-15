@@ -460,7 +460,7 @@ router.get('/summary', requireAuth, async (_req: Request, res: Response) => {
 });
 
 router.get('/units/map', requireAuth, async (req: Request, res: Response) => {
-  const branch = (req.query.branch as string) || 'BM';
+  const branch = (req.query.branch as string) || 'SW';
   const level = Number(req.query.level) || 1;
   // P1 item 3: map filters — ?size=SMALL and ?nearLift=1.
   const size = typeof req.query.size === 'string' && req.query.size.trim() ? req.query.size.trim() : undefined;
@@ -1374,7 +1374,7 @@ router.delete('/appointments/:id', requireAuth, async (req: Request, res: Respon
 // All plan reads/placement writes never touch Unit rows; placement reads join
 // unit and filter deletedAt == null (soft-delete rule).
 
-// List plans across branches/floors (optionally ?branch=BM&level=1), each with
+// List plans across branches/floors (optionally ?branch=SW&level=1), each with
 // placements + unit summaries.
 router.get('/floor-plans', requireAuth, async (req: Request, res: Response) => {
   const parsed = floorPlanListQuerySchema.safeParse(req.query);

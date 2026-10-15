@@ -148,7 +148,7 @@ model Customer {
 
 model Branch {
   id              String       @id @default(cuid())
-  code            String       @unique // BM / WD / UB
+  code            String       @unique // SW / WD / UB
   name            String
   address         String
   description     String?

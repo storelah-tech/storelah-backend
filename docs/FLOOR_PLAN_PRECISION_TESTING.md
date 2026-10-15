@@ -161,7 +161,7 @@ Each step lists what to do and what you should see.
 | 1 | **🗺 Underlay** → Upload a PNG/JPEG/WebP or a **PDF**. | Image appears at 50% opacity, scaled to the canvas width. PDF page 1 is rasterised in the browser (up to 4000 px). |
 | 2 | **📐 Calibrate**: click both ends of a dimension you know on the drawing; type its real length; Enter. | Image rescales; the first point stays put. **📏 Measure** a *second* known dimension: within 0.1% (verified: 30.000 ft on a 30 ft wall). |
 | 3 | **✥ Move**, ↻ 90°, X/Y, opacity slider, show / lock. | Each applies and persists; lock disables Calibrate / Move. |
-| 4 | Log out, or call `GET /api/v1/cms/floor-plans/:id/underlay/image` without a token. | 401. The public read (`/api/v1/public/floor-plans/BM/1`) contains no `underlay`. |
+| 4 | Log out, or call `GET /api/v1/cms/floor-plans/:id/underlay/image` without a token. | 401. The public read (`/api/v1/public/floor-plans/SW/1`) contains no `underlay`. |
 | 5 | **⤓ Export** → PDF, **Fit A3**. | Downloads `…-1to100.pdf`; page is exactly **297 × 420 mm**; print at **100% / Actual size** and measure the scale bar with a ruler: at 1:100 every 10 ft is 30.48 mm (a 70 ft-wide plan gets a 20 ft bar = 60.96 mm). |
 | 6 | Export SVG at **1:100**; PNG at **Fit A4**. | SVG sheet = canvas ft × 304.8 / 100 + margins (70 × 80 ft → 237.36 × 297.84 mm). PNG 200 dpi (A4 → 1654 × 2339 px). |
 | 7 | Check any export. | Title block (branch, level, date, UFA/NLA), scale bar, north arrow, legend; guide lines absent. |
@@ -172,14 +172,14 @@ Publish the plan in the CMS first (the public read only serves ACTIVE plans).
 
 | # | Do | Expect |
 | --- | --- | --- |
-| 1 | Pick a size → Continue → **Floor plan** view. | Decimal units at exact positions (e.g. BM-01-01 centred at 8.565, 4.171 ft); neighbours flush. |
+| 1 | Pick a size → Continue → **Floor plan** view. | Decimal units at exact positions (e.g. SW-01-01 centred at 8.565, 4.171 ft); neighbours flush. |
 | 2 | Look at walls / partitions. | WALL drawn at real thickness (0.75 ft → 25.5 px at 100%), PARTITION thin dashed, no GUIDE lines. |
 | 3 | A plan with a closed wall loop and interior partitions. | The cream floor fill follows the **Boundary** outline only. |
 
 Quick API check:
 
 ```bash
-curl -s http://localhost:4100/api/v1/public/floor-plans/BM/1 | python3 -m json.tool | grep -E '"kind"|"thickness"|underlay'
+curl -s http://localhost:4100/api/v1/public/floor-plans/SW/1 | python3 -m json.tool | grep -E '"kind"|"thickness"|underlay'
 ```
 
 Expect `BOUNDARY` / `PENCIL` / `WALL` / `PARTITION` kinds (never `GUIDE`), a

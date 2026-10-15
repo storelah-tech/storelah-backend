@@ -38,7 +38,7 @@ const MAX_ITEMS = 50;
 
 export const DEFAULT_TICKER_ITEMS: string[] = [
   '24/7 secure access across all StoreLah facilities',
-  'From lockers to large units — Bukit Merah · Woodlands · Ubi',
+  'From lockers to large units — Sembawang · Woodlands · Ubi',
   'CCTV-monitored floors with individual unit alarms',
   'Flexible month-to-month stays, no long lock-in',
   'Book a free viewing in under 60 seconds',
@@ -49,7 +49,7 @@ export const DEFAULT_HERO_SLIDES: HeroSlide[] = [
   {
     id: 'slide-1',
     tag: 'Self storage',
-    label: 'Bukit Merah · Woodlands · Ubi',
+    label: 'Sembawang · Woodlands · Ubi',
     headline: 'Storage that fits your life',
     sub: 'Clean, secure units from lockers to large rooms — from a few dollars a month.',
     cta: 'Get a quote',
@@ -92,7 +92,7 @@ export const DEFAULT_TESTIMONIALS: Testimonial[] = [
   },
   {
     name: 'Priya Nair',
-    context: 'Stored with Bukit Merah · 6 months',
+    context: 'Stored with Sembawang · 6 months',
     quote: 'Staff helped us pick the right size and the whole booking took minutes. Highly recommended.',
     stars: 4,
     img: '/images/customer-3.jpg',

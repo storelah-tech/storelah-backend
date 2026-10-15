@@ -44,7 +44,7 @@ Handover verdict (§10, §19): the dashboard had *no login, no RBAC, no tenant i
 | Surface (handover §10) | Backend implemented | UI bound in `data-layer.js` |
 |---|---|---|
 | 1 Overview KPIs | ✅ `GET /summary` (`core/summary.ts`) | ✅ KPIs + revenue/branch charts |
-| 2 Unit map | ✅ `GET /units/map` (`core/units.ts`) | ✅ BM Level 1 cells re-synced |
+| 2 Unit map | ✅ `GET /units/map` (`core/units.ts`) | ✅ SW Level 1 cells re-synced |
 | 3 Unit management | ⚠️ `GET /units/:code` exists | ❌ detail panel static |
 | 4 Rate management | ✅ `POST /units/:code/rate` (`core/rates.ts`) | ❌ no POST call in data layer |
 | 5 Tenants | ✅ `GET /tenants` (`core/tenants.ts`) | ✅ table bound |

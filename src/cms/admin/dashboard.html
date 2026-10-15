@@ -616,7 +616,10 @@ main{min-width:0;display:flex;flex-direction:column;min-height:100vh}
 .fp-view-empty{font-size:12px;font-weight:700;color:var(--muted);text-align:center;background:var(--cream);border:1.5px dashed var(--line);border-radius:9px;padding:44px 16px}
 
 /* Settings page — grouped cards mirroring the automation pattern (.card.auto + .sw) */
-#settingsGrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+#settingsGrid,#settingsBookingGrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.settings-note{margin:2px 2px 12px}
+.sec-actions{display:flex;gap:7px;align-items:center}
+.rules-cat{margin:6px 2px;text-transform:uppercase}
 .set-card h3{margin:13px 0 4px;font-size:15px}
 .set-card>p{margin:0 0 4px;color:var(--muted);font-size:12px}
 .set-row{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 0;border-top:1px solid var(--line)}
@@ -822,7 +825,7 @@ body.lead-drawer-open{overflow-x:hidden}
   .record-list{border:0;max-height:260px}
   .record-detail{padding:14px}
   .summary-strip,.aging{grid-template-columns:1fr 1fr}
-  #settingsGrid{grid-template-columns:1fr}
+  #settingsGrid,#settingsBookingGrid{grid-template-columns:1fr}
   .kpi-strip{grid-template-columns:repeat(2,1fr)}
   .charts-row,.two-col{grid-template-columns:1fr}
   .ud-stats{grid-template-columns:repeat(2,1fr)}
@@ -867,13 +870,13 @@ body.lead-drawer-open{overflow-x:hidden}
   </div>
   <div class="nav-group">StoreLah platform</div>
   <button class="nav active" data-core-page="command"><svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 8l7-6 7 6"/><path d="M4 7v7a1 1 0 001 1h3"/><path d="M11 15h3a1 1 0 001-1V9"/><path d="M9 15V9"/></svg> <span>Overview</span></button>
-  <button class="nav" data-core-page="leads"><svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h14l-5.5 6.5V15l-3 1.5v-7L2 3z"/></svg> <span>Leads Management</span><i class="badge" id="leadsBadge">0</i></button>
-  <button class="nav" data-core-page="customers"><svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 9a3 3 0 100-6 3 3 0 000 6z"/><path d="M3 17c0-3.3 2.7-6 6-6s6 2.7 6 6"/></svg> <span>Customer Management</span></button>
-  <button class="nav" data-core-page="facilities"><svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="6" height="6" rx="1"/><rect x="10" y="2" width="6" height="6" rx="1"/><rect x="2" y="10" width="6" height="6" rx="1"/><rect x="10" y="10" width="6" height="6" rx="1"/></svg> <span>Facilities Management</span><i class="badge" id="facilityBadge">0</i></button>
+  <button class="nav" data-core-page="leads"><svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h14l-5.5 6.5V15l-3 1.5v-7L2 3z"/></svg> <span>Leads</span><i class="badge" id="leadsBadge">0</i></button>
+  <button class="nav" data-core-page="customers"><svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 9a3 3 0 100-6 3 3 0 000 6z"/><path d="M3 17c0-3.3 2.7-6 6-6s6 2.7 6 6"/></svg> <span>Customers</span></button>
+  <button class="nav" data-core-page="facilities"><svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="6" height="6" rx="1"/><rect x="10" y="2" width="6" height="6" rx="1"/><rect x="2" y="10" width="6" height="6" rx="1"/><rect x="10" y="10" width="6" height="6" rx="1"/></svg> <span>Facilities</span><i class="badge" id="facilityBadge">0</i></button>
   <button class="nav" data-core-page="extras"><svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 1.5l6 2.5v5c0 4-2.7 6.5-6 7.5-3.3-1-6-3.5-6-7.5V4L9 1.5z"/><path d="M9 6v4M7 8h4"/></svg> <span>Protection &amp; Addons</span></button>
   <button class="nav" data-core-page="promotions"><svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 2.5H10l5.5 5.5-7.5 7.5-5.5-5.5V2.5z"/><circle cx="6.6" cy="6.6" r="1.3"/></svg> <span>Discount &amp; Promotion</span></button>
-  <button class="nav" data-core-page="billing"><svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="14" height="9" rx="1.5"/><circle cx="9" cy="9.5" r="2"/><path d="M5.5 7.2v.01M12.5 11.8v.01"/></svg> <span>Finance Management</span></button>
-  <button class="nav" data-core-page="content"><svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="14" height="14" rx="2"/><path d="M2 6.5h14M6.5 6.5V16"/></svg> <span>Content Management</span></button>
+  <button class="nav" data-core-page="billing"><svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="14" height="9" rx="1.5"/><circle cx="9" cy="9.5" r="2"/><path d="M5.5 7.2v.01M12.5 11.8v.01"/></svg> <span>Finance</span></button>
+  <button class="nav" data-core-page="content"><svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="14" height="14" rx="2"/><path d="M2 6.5h14M6.5 6.5V16"/></svg> <span>Content</span></button>
   <button class="nav" data-core-page="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg> <span>Global Settings</span></button>
   <div class="side-foot"><div class="user"><div class="avatar" id="userAvatar">FZ</div><div><b id="userName">Faisal</b><br><small id="userRole">Administrator</small></div></div></div>
 </aside>
@@ -1369,7 +1372,7 @@ body.lead-drawer-open{overflow-x:hidden}
         <div class="card">
           <div class="card-head">
             <div><h3>Discount plan builder</h3><small style="color:var(--muted)">Create a reusable, versioned percentage plan</small></div>
-            <div class="actions"><span class="pill amber" id="discountPlanStatus">Draft</span><button class="filter">Facility: Woodlands</button><button class="filter">Storage type: Self Storage</button><button class="btn" data-duplicate-plan>Duplicate</button><button class="btn" data-tab-jump="promo-history">History</button></div>
+            <div class="actions"><span class="pill amber" id="discountPlanStatus">Draft</span><select class="tbl-select" id="discountFacility" title="Facility scope — saved into the plan on Save Draft / Schedule / Publish"><option value="ALL">Facility: All</option></select><select class="tbl-select" id="discountFloorScope" title="Floor scope — saved into the plan on Save Draft / Schedule / Publish"><option value="ALL">Floor: All</option></select><select class="tbl-select" id="discountStorageType" title="Storage type — saved into the plan on Save Draft / Schedule / Publish"><option value="">Storage: All types</option><option value="Self Storage" selected>Storage: Self Storage</option><option value="Business Storage">Storage: Business Storage</option><option value="Wine Storage">Storage: Wine Storage</option></select><button class="btn" data-duplicate-plan>Duplicate</button><button class="btn" data-tab-jump="promo-history">History</button></div>
           </div>
           <div class="card-body">
             <div class="form-grid" style="margin-bottom:14px">
@@ -1417,7 +1420,7 @@ body.lead-drawer-open{overflow-x:hidden}
                 <div class="field"><label>Plan name</label><input id="freePlanName" value="Stay 12, Pay 10"></div>
                 <div class="field"><label>Free months</label><select id="freeMonthCount"><option value="1">1 free month</option><option value="2" selected>2 free months</option><option value="3">3 free months</option><option value="custom">Custom</option></select></div>
                 <div class="field"><label>Required commitment</label><select id="freeCommitment"><option>1 month</option><option>3 months</option><option>6 months</option><option selected>12 months</option></select></div>
-                <div class="field"><label>Facility</label><select><option>All facilities</option><option selected>Woodlands</option><option>Ubi</option><option>Jurong East</option></select></div>
+                <div class="field"><label>Facility</label><select id="freeFacility"><option>All facilities</option><option selected>Woodlands</option><option>Ubi</option><option>Jurong East</option></select></div>
                 <div class="field"><label>Storage type</label><select><option>Self Storage</option><option>Business Storage</option><option>Wine Storage</option></select></div>
                 <div class="field"><label>Size categories</label><select><option>All eligible sizes</option><option selected>MEDIUM, LARGE and XL</option><option>Choose individually…</option></select></div>
               </div>
@@ -1648,62 +1651,76 @@ body.lead-drawer-open{overflow-x:hidden}
          number/text/select controls. Rows are rendered by bindSettings()
          (admin.js) from GET /settings; the Save bar PUTs the diff. -->
     <section class="page" id="settings">
-      <div class="head"><div><h1>Global Settings</h1><p>Business rules, fees, alerts and platform-wide policies. Changes apply app-wide on save.</p></div><div class="actions"><span class="dirty-dot" id="settingsDirty"><i></i>Unsaved changes</span><button class="primary" id="settingsSaveBtn" disabled>Save changes</button></div></div>
+      <div class="head"><div><h1>Global Settings</h1><p>Business rules, fees, alerts and platform-wide policies. General cards save via the header button; every other tab saves separately.</p></div><div class="actions"><span class="dirty-dot" id="settingsDirty"><i></i>Unsaved general changes</span><button class="primary" id="settingsSaveBtn" disabled>Save general settings</button></div></div>
       <div class="modal-alert" id="settingsBanner" hidden></div>
-      <div id="settingsGrid"></div>
+      <div class="subtabs" data-tabs="settings"><button class="active" data-tab="settings-general">General</button><button data-tab="settings-booking">Booking &amp; billing</button><button data-tab="settings-fees">Fees &amp; deposits</button><button data-tab="settings-team">Team &amp; access</button><button data-tab="settings-facilities">Facilities</button></div>
+      <div class="module-panel active" id="settings-general">
+        <div class="sec-sub settings-note">Alerts, display and operations cards. The header Save general settings button applies to this tab only.</div>
+        <div id="settingsGrid"></div>
+      </div>
+      <div class="module-panel" id="settings-booking">
+        <div class="sec-hdr"><div><div class="sec-title">Booking &amp; billing settings</div><div class="sec-sub">Checkout limits · saved here via PUT /settings — separate from the Booking rules policies below</div></div><div class="sec-actions"><span class="dirty-dot" id="settingsBookingDirty"><i></i>Unsaved changes</span><button class="tb-btn primary" id="settingsBookingSaveBtn" disabled>Save booking &amp; billing</button></div></div>
+        <div id="settingsBookingGrid"></div>
+        <!-- Business rules (P1 item 7): org + booking rules beyond the 3 booking scalars -->
+        <div class="tbl-card" id="businessRulesSection" style="margin-top:16px;">
+          <div class="sec-hdr"><div><div class="sec-title">Business rules</div><div class="sec-sub">Org + booking policies · typed values · saved together via Save rules — header and booking Saves do not apply here</div></div><div class="sec-actions"><span class="dirty-dot" id="businessRulesDirty"><i></i>Unsaved rule changes</span><button class="tb-btn primary" id="businessRulesSaveBtn" disabled>Save rules</button></div></div>
+          <div id="businessRulesBody"></div>
+        </div>
+      </div>
+      <div class="module-panel" id="settings-fees">
+        <!-- Fees & deposits (P1 item 5): Global → Facility → Product → Exception chain -->
+        <div class="tbl-card" id="feesSection">
+          <div class="sec-hdr"><div><div class="sec-title">Fees &amp; deposits</div><div class="sec-sub">Global → Facility → Product → Exception priority · scalar settings untouched · saves immediately on add/delete — header Save does not apply here</div></div></div>
+          <table class="data-tbl" id="feesTable"><thead><tr><th>Key</th><th>Scope</th><th>Target</th><th>Amount</th><th>Active</th><th></th></tr></thead><tbody id="feesBody"></tbody></table>
+          <div class="tbl-toolbar" style="margin-top:10px;flex-wrap:wrap;">
+            <select id="ff-kind" class="tbl-select"><option value="FEE">Fee</option><option value="DEPOSIT">Deposit</option></select>
+            <input type="text" id="ff-key" class="tbl-search" placeholder="Key — e.g. deposit" style="max-width:150px;">
+            <select id="ff-scope" class="tbl-select"><option value="GLOBAL">Global</option><option value="FACILITY">Facility</option><option value="PRODUCT">Product</option><option value="EXCEPTION">Exception</option></select>
+            <select id="ff-branch" class="tbl-select"><option value="">— facility —</option></select>
+            <select id="ff-size" class="tbl-select"><option value="">— size —</option></select>
+            <select id="ff-tenant" class="tbl-select"><option value="">— tenant —</option></select>
+            <select id="ff-amountKind" class="tbl-select"><option value="FLAT">Flat $</option><option value="PCT">% of rate</option><option value="MONTHS">× months</option></select>
+            <input type="number" id="ff-amount" class="tbl-search" placeholder="Amount" min="0" step="0.01" style="max-width:110px;">
+            <input type="text" id="ff-note" class="tbl-search" placeholder="Note (optional)" style="max-width:150px;">
+            <button class="tb-btn primary" id="ff-add">+ Add rule</button>
+          </div>
+          <div class="tbl-toolbar" style="margin-top:6px;flex-wrap:wrap;">
+            <span class="t-type">Effective-rule preview:</span>
+            <select id="fr-kind" class="tbl-select"><option value="FEE">Fee</option><option value="DEPOSIT">Deposit</option></select>
+            <input type="text" id="fr-key" class="tbl-search" placeholder="Key — e.g. deposit" value="deposit" style="max-width:150px;">
+            <select id="fr-branch" class="tbl-select"><option value="">— facility —</option></select>
+            <select id="fr-size" class="tbl-select"><option value="">— size —</option></select>
+            <button class="tb-btn ghost" id="fr-resolveBtn">Resolve</button>
+            <span class="t-type" id="fr-result"></span>
+          </div>
+        </div>
+      </div>
+      <div class="module-panel" id="settings-team">
+        <div class="tbl-card" id="usersSection">
+          <div class="sec-hdr"><div><div class="sec-title">Users &amp; roles</div><div class="sec-sub">Facility scoping + verified grants · empty grants = legacy role behavior · saves immediately — header Save does not apply here</div></div></div>
+          <table class="data-tbl" id="usersTable"><thead><tr><th>Operator</th><th>Facilities</th><th>Grants</th><th></th></tr></thead><tbody id="usersBody"></tbody></table>
+          <div class="tbl-toolbar" style="margin-top:10px;flex-wrap:wrap;">
+            <input type="email" id="uf-email" class="tbl-search" placeholder="Email" style="max-width:200px;">
+            <input type="text" id="uf-name" class="tbl-search" placeholder="Name" style="max-width:150px;">
+            <input type="password" id="uf-password" class="tbl-search" placeholder="Password (8+ chars)" style="max-width:150px;">
+            <select id="uf-role" class="tbl-select"><option value="MANAGER">Manager</option><option value="OWNER">Owner</option><option value="VIEWER">Viewer</option></select>
+            <button class="tb-btn primary" id="uf-add">+ Add operator</button>
+          </div>
+          <div class="t-type" style="padding:8px 2px;" id="usersNote">Facility access editor: pick branches or All facilities per operator. Grants gate go-live approvals, fee/rule writes and user admin — only for operators that hold at least one grant.</div>
+        </div>
+      </div>
       <!-- Facilities (branches): list, create, edit, activate/deactivate.
            Branch codes are immutable after create (embedded in unit/door/asset
            codes); retiring a facility is status INACTIVE (hidden from booking).
            Floors stay managed on the Facilities → Floors tab (one clear path);
            the per-row Floors button jumps there filtered to the branch. -->
+      <div class="module-panel" id="settings-facilities">
+        <div class="sec-sub settings-note">Facilities save immediately — header Save does not apply here. Floors stay managed under Facilities → Floors.</div>
       <div class="tbl-card" id="branchesSection" style="margin-top:16px;">
-        <div class="sec-hdr"><div><div class="sec-title">Facilities</div><div class="sec-sub" id="branchesSub">Branches per facility · inactive hidden from booking</div></div><div style="display:flex;gap:7px;"><button class="tb-btn primary" id="addBranchBtn">+ Add Facility</button></div></div>
+        <div class="sec-hdr"><div><div class="sec-title">Facilities</div><div class="sec-sub" id="branchesSub">Branches per facility · inactive hidden from booking · saves immediately — header Save does not apply here</div></div><div style="display:flex;gap:7px;"><button class="tb-btn primary" id="addBranchBtn">+ Add Facility</button></div></div>
         <div class="modal-alert" id="branchesBanner" hidden></div>
         <table class="data-tbl" id="branchesTable"><thead><tr><th>Code</th><th>Address</th><th>Floors · Units</th><th>Status</th><th></th></tr></thead><tbody id="branchesBody"></tbody></table>
       </div>
-      <!-- Fees & deposits (P1 item 5): Global → Facility → Product → Exception chain -->
-      <div class="tbl-card" id="feesSection" style="margin-top:16px;">
-        <div class="sec-hdr"><div><div class="sec-title">Fees &amp; deposits</div><div class="sec-sub">Global → Facility → Product → Exception priority · scalar settings untouched</div></div></div>
-        <table class="data-tbl" id="feesTable"><thead><tr><th>Key</th><th>Scope</th><th>Target</th><th>Amount</th><th>Active</th><th></th></tr></thead><tbody id="feesBody"></tbody></table>
-        <div class="tbl-toolbar" style="margin-top:10px;flex-wrap:wrap;">
-          <select id="ff-kind" class="tbl-select"><option value="FEE">Fee</option><option value="DEPOSIT">Deposit</option></select>
-          <input type="text" id="ff-key" class="tbl-search" placeholder="Key — e.g. deposit" style="max-width:150px;">
-          <select id="ff-scope" class="tbl-select"><option value="GLOBAL">Global</option><option value="FACILITY">Facility</option><option value="PRODUCT">Product</option><option value="EXCEPTION">Exception</option></select>
-          <select id="ff-branch" class="tbl-select"><option value="">— facility —</option></select>
-          <select id="ff-size" class="tbl-select"><option value="">— size —</option></select>
-          <select id="ff-tenant" class="tbl-select"><option value="">— tenant —</option></select>
-          <select id="ff-amountKind" class="tbl-select"><option value="FLAT">Flat $</option><option value="PCT">% of rate</option><option value="MONTHS">× months</option></select>
-          <input type="number" id="ff-amount" class="tbl-search" placeholder="Amount" min="0" step="0.01" style="max-width:110px;">
-          <input type="text" id="ff-note" class="tbl-search" placeholder="Note (optional)" style="max-width:150px;">
-          <button class="tb-btn primary" id="ff-add">+ Add rule</button>
-        </div>
-        <div class="tbl-toolbar" style="margin-top:6px;flex-wrap:wrap;">
-          <span class="t-type">Effective-rule preview:</span>
-          <select id="fr-kind" class="tbl-select"><option value="FEE">Fee</option><option value="DEPOSIT">Deposit</option></select>
-          <input type="text" id="fr-key" class="tbl-search" placeholder="Key — e.g. deposit" value="deposit" style="max-width:150px;">
-          <select id="fr-branch" class="tbl-select"><option value="">— facility —</option></select>
-          <select id="fr-size" class="tbl-select"><option value="">— size —</option></select>
-          <button class="tb-btn ghost" id="fr-resolveBtn">Resolve</button>
-          <span class="t-type" id="fr-result"></span>
-        </div>
-      </div>
-      <!-- Business rules (P1 item 7): org + booking rules beyond the 3 booking scalars -->
-      <div class="tbl-card" id="businessRulesSection" style="margin-top:16px;">
-        <div class="sec-hdr"><div><div class="sec-title">Business rules</div><div class="sec-sub">Org + booking policies · typed values · saved together</div></div><div style="display:flex;gap:7px;"><button class="tb-btn primary" id="businessRulesSaveBtn">Save rules</button></div></div>
-        <div id="businessRulesBody"></div>
-      </div>
-      <!-- Users & roles (P1 item 6): facility scoping + verified permissions -->
-      <div class="tbl-card" id="usersSection" style="margin-top:16px;">
-        <div class="sec-hdr"><div><div class="sec-title">Users &amp; roles</div><div class="sec-sub">Facility scoping + verified grants · empty grants = legacy role behavior</div></div></div>
-        <table class="data-tbl" id="usersTable"><thead><tr><th>Operator</th><th>Facilities</th><th>Grants</th><th></th></tr></thead><tbody id="usersBody"></tbody></table>
-        <div class="tbl-toolbar" style="margin-top:10px;flex-wrap:wrap;">
-          <input type="email" id="uf-email" class="tbl-search" placeholder="Email" style="max-width:200px;">
-          <input type="text" id="uf-name" class="tbl-search" placeholder="Name" style="max-width:150px;">
-          <input type="password" id="uf-password" class="tbl-search" placeholder="Password (8+ chars)" style="max-width:150px;">
-          <select id="uf-role" class="tbl-select"><option value="MANAGER">Manager</option><option value="OWNER">Owner</option><option value="VIEWER">Viewer</option></select>
-          <button class="tb-btn primary" id="uf-add">+ Add operator</button>
-        </div>
-        <div class="t-type" style="padding:8px 2px;" id="usersNote">Facility access editor: pick branches or All facilities per operator. Grants gate go-live approvals, fee/rule writes and user admin — only for operators that hold at least one grant.</div>
       </div>
     </section>
 
@@ -1770,8 +1787,8 @@ body.lead-drawer-open{overflow-x:hidden}
     <div class="modal-hint" id="branchModalHint" hidden></div>
     <form id="branchForm" novalidate>
       <div class="form-grid">
-        <div class="field"><label for="bf-code">Code (immutable)</label><input type="text" id="bf-code" name="code" maxlength="8" placeholder="e.g. BM" style="text-transform:uppercase;"><div class="field-err" id="be-code"></div></div>
-        <div class="field"><label for="bf-name">Name</label><input type="text" id="bf-name" name="name" maxlength="120" placeholder="e.g. Bukit Merah"><div class="field-err" id="be-name"></div></div>
+        <div class="field"><label for="bf-code">Code (immutable)</label><input type="text" id="bf-code" name="code" maxlength="8" placeholder="e.g. SW" style="text-transform:uppercase;"><div class="field-err" id="be-code"></div></div>
+        <div class="field"><label for="bf-name">Name</label><input type="text" id="bf-name" name="name" maxlength="120" placeholder="e.g. Sembawang"><div class="field-err" id="be-name"></div></div>
         <div class="field full"><label for="bf-address">Address</label><input type="text" id="bf-address" name="address" maxlength="500" placeholder="Street address"><div class="field-err" id="be-address"></div></div>
         <div class="field"><label for="bf-hours">Operating hours</label><input type="text" id="bf-hours" name="hours" maxlength="200" placeholder="Mon–Sun 7am–11pm"><div class="field-err" id="be-hours"></div></div>
         <div class="field"><label for="bf-active">Active (visible to booking)</label><input type="checkbox" id="bf-active" name="active" checked><div class="field-err" id="be-active"></div></div>

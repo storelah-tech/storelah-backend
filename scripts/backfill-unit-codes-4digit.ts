@@ -1,6 +1,6 @@
 /**
- * One-time backfill: rename legacy unit codes (BM-01-01 style) to 4-digit
- * numeric codes (1001…), globally unique.
+ * One-time backfill: rename legacy unit codes (SW-01-01 style; pre-rename
+ * BM-01-01 rows keep working) to 4-digit numeric codes (1001…), globally unique.
  *
  *   pnpm dlx tsx scripts/backfill-unit-codes-4digit.ts --dry-run   # preview only (DEFAULT)
  *   pnpm dlx tsx scripts/backfill-unit-codes-4digit.ts --apply     # perform the rename

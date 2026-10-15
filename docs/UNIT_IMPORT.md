@@ -25,7 +25,7 @@ code,branch,level,size,sqft,rate,status,hasAC,hasPillar,name
 | Column    | Required | Format / notes                                                                 |
 | --------- | -------- | ------------------------------------------------------------------------------ |
 | `code`    | No       | 4-digit code (e.g. `1001`). Blank = mint the next free code.                   |
-| `branch`  | Yes      | Branch **code** (e.g. `BM`) or branch id.                                      |
+| `branch`  | Yes      | Branch **code** (e.g. `SW`) or branch id.                                      |
 | `level`   | No       | Floor level integer (e.g. `1`). Blank = branch's lowest floor.                 |
 | `size`    | Yes      | UnitSize **code** (e.g. `SMALL`) or size id.                                   |
 | `sqft`    | Yes      | Positive integer.                                                              |
@@ -39,8 +39,8 @@ code,branch,level,size,sqft,rate,status,hasAC,hasPillar,name
 
 ```csv
 code,branch,level,size,sqft,rate,status,hasAC,hasPillar,name
-1001,BM,1,SMALL,24,95,AVAILABLE,yes,no,
-,BM,1,LOCKER,9,38,AVAILABLE,no,no,
+1001,SW,1,SMALL,24,95,AVAILABLE,yes,no,
+,SW,1,LOCKER,9,38,AVAILABLE,no,no,
 ,WD,2,MEDIUM,60,210,RESERVED,yes,yes,Corner unit
 ```
 
@@ -52,7 +52,7 @@ code,branch,level,size,sqft,rate,status,hasAC,hasPillar,name
     http://localhost:4000/api/v1/cms/units/import/template
   curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
     -d @- http://localhost:4000/api/v1/cms/units/import <<'EOF'
-  {"csv":"code,branch,level,size,sqft,rate,status,hasAC,hasPillar,name\n1001,BM,1,SMALL,24,95,AVAILABLE,yes,no,\n"}
+  {"csv":"code,branch,level,size,sqft,rate,status,hasAC,hasPillar,name\n1001,SW,1,SMALL,24,95,AVAILABLE,yes,no,\n"}
   EOF
   ```
 

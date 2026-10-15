@@ -209,7 +209,7 @@ export async function submitBranchForm(e) {
     if (branchMode === 'create') {
       const code = $('#bf-code').value.trim().toUpperCase();
       if (!/^[A-Z0-9]{2,8}$/.test(code)) {
-        $('#be-code').textContent = 'Code must be 2..8 uppercase letters/digits (e.g. BM)';
+        $('#be-code').textContent = 'Code must be 2..8 uppercase letters/digits (e.g. SW)';
         $('#bf-code').classList.add('err');
         return;
       }

@@ -879,7 +879,7 @@ export async function upsertFloorPlan(floorId: string, input: UpsertFloorPlanInp
 }
 
 export interface ListFloorPlansQuery {
-  branch?: string; // branch code, e.g. 'BM'
+  branch?: string; // branch code, e.g. 'SW'
   level?: number; // floor level 1..4
 }
 

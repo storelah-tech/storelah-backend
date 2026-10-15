@@ -16,7 +16,7 @@ const day = (offsetDays: number, h = 9, min = 0) => {
 };
 
 async function main() {
-  const branch = (await prisma.branch.findFirst({ where: { code: 'BM' } })) ??
+  const branch = (await prisma.branch.findFirst({ where: { code: 'SW' } })) ??
     (await prisma.branch.findFirst());
   if (!branch) throw new Error('No branches found — run pnpm db:seed first');
   const branchId = branch.id;

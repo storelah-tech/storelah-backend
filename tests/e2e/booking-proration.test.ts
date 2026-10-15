@@ -6,7 +6,7 @@
 //
 // Pinned calendar: October 2026 has 31 days (move-in 15th → 17/31 incl. the
 // move-in day), November 2026 has 30 days (move-in 1st → full month).
-// Pinned rentable unit BM-01-01 is rate S$120 (SMALL).
+// Pinned rentable unit SW-01-01 is rate S$120 (SMALL).
 //
 // Expected values (hand-computed frontend formula):
 //   full-month, no promos/extras ......... 120

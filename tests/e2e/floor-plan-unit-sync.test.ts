@@ -443,7 +443,7 @@ describe('floor-plan unit sync — publish (DB)', () => {
 
 // ---------------------------------------------------------------------------
 // Phase 3: units drawn on the plan (DRAFT), discard, DRAFT exclusion.
-// Fixture codes are legacy BM-01-xx, so the first minted 4-digit code is 1001.
+// Fixture codes are legacy SW-01-xx, so the first minted 4-digit code is 1001.
 // SMALL band 30–80; MARKET_PSF.SMALL = 4.8.
 // ---------------------------------------------------------------------------
 

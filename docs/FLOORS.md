@@ -49,7 +49,7 @@ the per-unit `softDeleteUnit` guards. Deactivation achieves the product goal
 
 ## Cleanup record — 2026-09-20: keep L1 only
 
-Live DB held 12 floors (BM/WD/UB × L1–L4), 841 Unit rows (840 live, 696
+Live DB held 12 floors (SW/WD/UB × L1–L4), 841 Unit rows (840 live, 696
 browseable AVAILABLE/RESERVED).
 
 - L2–L4 per branch: 70 live units each (46 AVAILABLE + 12 RESERVED + 12
@@ -83,7 +83,7 @@ existing key (`size` name string, `sizeCode`, `sqft`, `rate`, `psf`, `status`,
   `{ code, name, total, byStatus: { occupied, available, reserved, overdue,
   maintenance, blocked, inactive } }`.
 - Public map accepts the same optional `?size=` / `?nearLift=` filters as the
-  admin map (defaults omitted → unchanged BM/L1 browseable-units response).
+  admin map (defaults omitted → unchanged SW/L1 browseable-units response).
 
 Admin unit-map convention (see `SIZE_COLOR` in `src/cms/admin/constants.js` —
 colours mirror the psf-chart size series):

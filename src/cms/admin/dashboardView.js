@@ -290,7 +290,7 @@ export function initCharts() {
   if (bCtx && !Chart.getChart('branchChart')) {
     new Chart(bCtx, {
       type: 'bar',
-      data: { labels: ['Bukit Merah', 'Woodlands', 'Ubi'], datasets: [{ data: [87.5, 91.2, 82.0], backgroundColor: ['#c97952', '#526557', '#547b8d'], borderRadius: 7, borderSkipped: false }] },
+      data: { labels: ['Sembawang', 'Woodlands', 'Ubi'], datasets: [{ data: [87.5, 91.2, 82.0], backgroundColor: ['#c97952', '#526557', '#547b8d'], borderRadius: 7, borderSkipped: false }] },
       options: { indexAxis: 'y', responsive: true, plugins: { legend: { display: false } }, scales: { x: { grid: { color: '#ede8e2' }, ticks: { font: { family: 'Manrope', size: 10 }, color: '#6f746d', callback: (v) => v + '%' }, max: 100 }, y: { grid: { display: false }, ticks: { font: { family: 'Manrope', size: 10 }, color: '#20241f' } } } },
     });
   }

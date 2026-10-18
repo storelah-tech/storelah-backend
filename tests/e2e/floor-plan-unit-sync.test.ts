@@ -327,6 +327,25 @@ describe('floor-plan unit sync — publish (DB)', () => {
     expect(large.code).toBe('LARGE');
   });
 
+  it('a tier choice publishes with the preview token (no STALE_PREVIEW — FPP-08)', async () => {
+    await prisma.unitSize.create({ data: { code: 'LARGE', name: 'Large', sqftFrom: 120, sqftTo: 120, sortOrder: 4 } });
+    await setUnitPlacement(world.floorId, rentable, { x: 40, y: 30, width: 8, height: 8 }); // 64 → SMALL
+    const preview = await buildSizeSyncPlan(world.floorId);
+    const large = await prisma.unitSize.findUnique({ where: { code: 'LARGE' } });
+    // Exactly what the publish review sends: the preview token + the override.
+    const { sizeSync } = await publishFloorPlanWithSync(world.floorId, {
+      token: preview.token,
+      choices: [{ unitId: rentable, ratePolicy: 'KEEP_PSF', sizeId: large!.id }],
+    });
+    expect(sizeSync.changed[0]).toMatchObject({ newSqft: 64, newSize: 'LARGE' });
+    expect((await prisma.unit.findUnique({ where: { id: rentable } }))!.sizeId).toBe(large!.id);
+    // The token itself ignores choices: same plan state → same token.
+    await setUnitPlacement(world.floorId, rentable, { x: 40, y: 30, width: 8, height: 9 });
+    const a = await buildSizeSyncPlan(world.floorId);
+    const b = await buildSizeSyncPlan(world.floorId, { choices: [{ unitId: rentable, sizeId: large!.id }] });
+    expect(b.token).toBe(a.token);
+  });
+
   it('an unknown tier choice is refused and nothing is written', async () => {
     await setUnitPlacement(world.floorId, rentable, { x: 40, y: 30, width: 8, height: 8 });
     await expectAppError(publishFloorPlan(world.floorId, { choices: [{ unitId: rentable, sizeId: 'nope' }] }), 400, 'VALIDATION');

@@ -122,6 +122,7 @@ export async function buildSizeSyncPlan(
   const contracted = await loadContractedUnits(placements.map((p) => p.unitId), db);
   const out: SizeSyncPlan = { token: '', changes: [], unchanged: [], newUnits: [], blockers: [], placementCount, emptyPlan: placementCount === 0 };
 
+  const tokenChanges: string[] = [];
   for (const p of placements) {
     const u = p.unit;
     if (u.status === 'DRAFT') {
@@ -172,9 +173,13 @@ export async function buildSizeSyncPlan(
       ratePreview: { KEEP_PSF: keepPsfRate(oldRate, u.sqft, newSqft), KEEP_RATE: oldRate },
       defaultPolicy: 'KEEP_PSF',
     });
+    // Token parts use the system-resolved tier, never the operator override:
+    // the token fingerprints the plan state the preview showed, so publishing
+    // with a tier choice must reproduce the preview's token (FPP-08).
+    tokenChanges.push(`${u.id}:${u.sqft}>${newSqft}:${oldRate}:${resolved?.size?.id ?? '-'}:${u.status}`);
   }
   out.token = hashToken([
-    ...out.changes.map((c) => `${c.unitId}:${c.oldSqft}>${c.newSqft}:${c.oldRate}:${c.newSize?.id ?? '-'}:${c.status}`),
+    ...tokenChanges,
     ...out.newUnits.map((n) => `new:${n.unitId}`),
     ...out.blockers.map((b) => `block:${b.unitId}:${b.code}`),
   ]);

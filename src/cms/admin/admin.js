@@ -2815,9 +2815,9 @@ async function validatePromoPlan(kind) {
 async function schedulePromoPlan(kind) {
   const tab = PROMO_PUBLISH_TABS[kind];
   if (!tab) return;
-  let pid = promoState[tab.idKey] || await tab.save();
-  if (!pid) return;
-  pid = promoState[tab.idKey];
+  // Always save first so the scheduled plan matches the builder (R-PR2);
+  // a failed save (validation / 409 PLAN_LOCKED) stops here with a banner.
+  const pid = await tab.save();
   if (!pid) return;
   try {
     if (!promoState.validated[pid]) {
@@ -2837,9 +2837,9 @@ async function schedulePromoPlan(kind) {
 // Publish = walk the plan to ACTIVE through the state machine (DRAFT →
 // VALIDATED → SCHEDULED → ACTIVE as needed). Server re-validates on the
 // VALIDATED edge, so blockers surface instead of slipping through.
-// In-place only: saves via PUT /:id when a working draft id exists (POST only
-// for a genuinely new plan), then PATCHes /:id/status on the SAME id — never
-// duplicate/restore. Double-click guarded; a second Publish on ACTIVE is a
+// In-place only: always saves first — PUT /:id when a working draft id exists
+// (POST only for a genuinely new plan) — then PATCHes /:id/status on the SAME
+// id; never duplicate/restore. Double-click guarded; a second Publish on ACTIVE is a
 // harmless no-op toast (checked BEFORE saving so the live plan is untouched).
 const promoPublishBusy = {};
 async function publishPromoPlan(kind) {
@@ -2851,15 +2851,20 @@ async function publishPromoPlan(kind) {
   if (btn) btn.disabled = true;
   try {
     let pid = promoState[tab.idKey];
+    let pre = null;
     if (pid) {
-      let pre = null;
       try { pre = await get('/promotion-plans/' + encodeURIComponent(pid)); } catch (e) { pre = null; }
       if (pre && pre.status === 'ACTIVE') {
         setPromoStatusPill(tab.pillId, 'ACTIVE');
         toast(tab.label + ' is already active');
         return;
       }
-    } else {
+    }
+    // Save the builder before walking the status chain so the published plan
+    // matches what is on screen (R-PR2 — previously an existing draft was
+    // published without its unsaved edits). A SCHEDULED plan is locked and is
+    // published exactly as scheduled.
+    if (!(pre && pre.status === 'SCHEDULED')) {
       pid = await tab.save();
       if (!pid) return;
     }
@@ -3584,7 +3589,10 @@ function bootPromotions() {
       }
       toast('Plan saved: ' + name);
     } catch (e) {
-      toast('Save failed: ' + describeError(e));
+      // Failed saves (e.g. 409 PLAN_LOCKED on a live plan) must stop the
+      // Schedule / Publish chain — callers abort on null.
+      showBanner('Save failed: ' + describeError(e));
+      return null;
     }
 
     setPromoStatusPill('discountPlanStatus', status === 'Scheduled' ? 'SCHEDULED' : 'DRAFT');
@@ -3596,8 +3604,9 @@ function bootPromotions() {
   document.querySelectorAll('[data-save-discount-plan]').forEach(function (b) {
     if (b.dataset.wired) return;
     b.dataset.wired = '1';
-    b.addEventListener('click', function () {
-      saveDiscountPlan('Draft');
+    b.addEventListener('click', async function () {
+      // Stay on the builder when the save fails (banner explains why).
+      if (!(await saveDiscountPlan('Draft'))) return;
       var tab = document.querySelector('[data-tab="promo-library"]');
       if (tab) tab.click();
     });
@@ -3608,8 +3617,7 @@ function bootPromotions() {
     b.addEventListener('click', async function () {
       // Schedule = save draft, then VALIDATED (if needed) → SCHEDULED through
       // the status state machine. Blockers reject with a surfaced error.
-      await saveDiscountPlan('Draft');
-      var pid = promoState.discountPlanId;
+      var pid = await saveDiscountPlan('Draft');
       if (!pid) return;
       try {
         if (!promoState.validated[pid]) {
@@ -3654,9 +3662,13 @@ function bootPromotions() {
             return;
           }
         }
-        await saveDiscountPlan('Draft');
-        pid = promoState.discountPlanId;
-        if (!pid) return;
+        // A SCHEDULED plan is locked (server 409 PLAN_LOCKED on edit): publish
+        // it exactly as scheduled. Every other state saves the builder first so
+        // the published plan matches what is on screen.
+        if (!(pre && pre.status === 'SCHEDULED')) {
+          pid = await saveDiscountPlan('Draft');
+          if (!pid) return;
+        }
         var current = null;
         try { current = await get('/promotion-plans/' + encodeURIComponent(pid)); } catch (e) { current = null; }
         var status = current && current.status;

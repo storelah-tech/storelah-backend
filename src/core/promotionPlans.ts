@@ -12,6 +12,10 @@ export interface RuleInput { groupId: number; field: string; operator: string; v
 // The 1-month tier is additive — existing 3/6/12 plans validate unchanged.
 export const ALLOWED_COMMITMENT_MONTHS = [1, 3, 6, 12] as const;
 
+// Statuses whose content (cells, scope, dates, rules…) may still be edited via
+// updatePlan(). Everything else is locked — see updatePlan().
+export const EDITABLE_PLAN_STATUSES: readonly PlanStatus[] = ['DRAFT', 'VALIDATED'];
+
 // Canonical discount-matrix size categories, unified with the booking
 // frontend: LOCKER, SMALL, MEDIUM, LARGE, XL (+ XXL, retained — it pre-exists
 // in builder/matrix rows and is NOT invented here). Legacy single-letter
@@ -264,6 +268,21 @@ export async function createPlan(input: PlanInput) {
 export async function updatePlan(id: string, input: Partial<PlanInput>) {
   const existing = await prisma.promotionPlan.findUnique({ where: { id }, include: INCLUDE });
   if (!existing) throw new AppError(404, 'NOT_FOUND', `Promotion plan ${id} not found`);
+  // Live rules are never edited in place: only DRAFT / VALIDATED plans take
+  // content edits (VALIDATED → SCHEDULED re-validates). SCHEDULED, ACTIVE and
+  // ENDED are locked — corrections go through Duplicate / Restore as draft
+  // (or SCHEDULED → DRAFT first), so checkout prices never change silently.
+  if (!EDITABLE_PLAN_STATUSES.includes(existing.status as PlanStatus)) {
+    throw new AppError(
+      409,
+      'PLAN_LOCKED',
+      `Plan "${existing.name}" is ${existing.status} and can't be edited — ` +
+        (existing.status === 'SCHEDULED'
+          ? 'move it back to draft first, or duplicate it.'
+          : 'duplicate it (or restore a version as a new draft) to make changes.'),
+      { status: existing.status },
+    );
+  }
 
   if (input.code && input.code !== existing.code) {
     const clash = await prisma.promotionPlan.findUnique({ where: { code: input.code } });
@@ -532,14 +551,12 @@ export interface SampleBooking { unitCode: string; branch: string; monthlyRate: 
 export interface PlanOverlap { planId: string; planName: string; status: string; effectiveFrom: Date; effectiveTo: Date | null }
 
 // DIFFICULTY LOG (validation engine simplifications — see return Note):
-// 1. Rate floors are per (facility, size) but matrix cells are per (size
-//    CATEGORY, access, commitment) and UnitSize codes (LOCKER/SMALL/...) do not
-//    map 1:1 to categories (LOCKER/SMALL/MEDIUM/LARGE/XL/XXL canonical, legacy
-//    XS/S/M/L aliased in toCanonicalSizeCategory). So floors are applied against a
-//    REPRESENTATIVE base rate (median available-unit monthlyRate, fallback $300)
-//    rather than per-unit exact pricing. A global safeguard (null facility/size)
-//    applies to every plan; a scoped one applies when the plan scope includes
-//    ALL or overlaps textually — approximate, documented in each check message.
+// 1. Rate floors are checked worst-case: for every discounted (size category,
+//    pct) pair, the cheapest AVAILABLE unit of that category inside the plan's
+//    facility scope ∩ the safeguard's facility/size is priced (unit size codes
+//    are canonicalized via toCanonicalSizeCategory). Access type and commitment
+//    are not unit attributes, so every cell of a category prices against the
+//    same cheapest unit. Plans with no available units in scope skip the check.
 // 2. Overlap detection compares date-range × facilityScope × sizeScope only
 //    (string lists with "ALL" wildcard). Eligibility RULES (PromoRule rows) are
 //    not evaluated for overlap — rule semantics (AND/OR groups over customer
@@ -639,29 +656,59 @@ export async function validatePlan(id: string) {
   }
 
   // --- 2. Rate-floor checks vs SafeguardRule ---
+  // Each safeguard is checked against the CHEAPEST available unit the plan
+  // actually discounts (PRM-05): per matrix cell (size category × pct) — or the
+  // headline % over the size scope for other kinds — narrowed to the plan's
+  // facility scope ∩ the safeguard's facility/size. A generic median base let
+  // cheap units slip below the floor.
   const safeguards = await prisma.safeguardRule.findMany({ include: { branch: true, unitSize: true } });
   if (safeguards.length && headlinePct > 0) {
-    // Representative base: median monthlyRate of available units, else $300.
-    const rateRows = await prisma.unit.findMany({
+    const facilityScope = Array.isArray(plan.facilityScope) ? (plan.facilityScope as unknown[]).map(String) : ['ALL'];
+    const allFacilities = facilityScope.length === 0 || facilityScope.some((f) => /^all$/i.test(f));
+    // Scope entries are branch ids (builder) or codes (legacy) — accept both.
+    const planCovers = (b: { id: string; code: string }) =>
+      allFacilities || facilityScope.includes(b.id) || facilityScope.includes(b.code);
+    const sizeScope = Array.isArray(plan.sizeScope) ? (plan.sizeScope as unknown[]).map(String) : ['ALL'];
+    const scopedSizes = sizeScope.some((x) => /^all$/i.test(x)) ? null : sizeScope.map(toCanonicalSizeCategory);
+    // Discounted (size, pct) pairs; size null = every size in scope.
+    const pairs: Array<{ size: string | null; pct: number }> =
+      plan.kind === 'DISCOUNT_MATRIX'
+        ? plan.matrixCells.map((c) => ({ size: toCanonicalSizeCategory(c.sizeCategory), pct: toNum(c.discountPct) }))
+        : (scopedSizes ?? [null]).map((size) => ({ size, pct: headlinePct }));
+    const units = await prisma.unit.findMany({
       where: { deletedAt: null, status: 'AVAILABLE' },
-      select: { monthlyRate: true },
-      take: 200,
+      select: { monthlyRate: true, sizeId: true, branch: { select: { id: true, code: true } }, size: { select: { code: true, name: true } } },
     });
-    const rates = rateRows.map((r) => toNum(r.monthlyRate)).sort((a, b) => a - b);
-    const base = rates.length ? rates[Math.floor(rates.length / 2)] : 300;
-    const facilityScope = (plan.facilityScope as unknown as string[]) ?? ['ALL'];
-    const inScope = (ruleBranchCode: string | null) =>
-      !ruleBranchCode || facilityScope.includes('ALL') || facilityScope.includes(ruleBranchCode);
     for (const s of safeguards) {
-      const code = (s as any).branch?.code ?? null;
-      if (!inScope(code)) continue;
+      const code = s.branch?.code ?? null;
+      if (s.branch && !planCovers(s.branch)) continue;
       const floor = toNum(s.minEffectiveRate);
-      const effective = base * (1 - headlinePct / 100);
-      const scopeLabel = code ? `facility ${code}` : 'global floor';
-      if (effective < floor) {
-        push('blocker', `Rate floor breach (${scopeLabel}): ${headlinePct}% off $${base}/mo → $${effective.toFixed(2)} below $${floor}/mo floor`);
+      const scopeLabel = (code ? `facility ${code}` : 'global floor') + (s.unitSize ? ` · ${s.unitSize.code}` : '');
+      // Worst case across pairs: lowest effective rate after discount.
+      let worst: { effective: number; base: number; pct: number; size: string } | null = null;
+      for (const pr of pairs) {
+        if (!(pr.pct > 0)) continue;
+        let minBase: number | null = null;
+        let minSize = '';
+        for (const u of units) {
+          if (!planCovers(u.branch)) continue;
+          if (s.facilityId && u.branch.id !== s.facilityId) continue;
+          if (s.sizeId && u.sizeId !== s.sizeId) continue;
+          const cat = toCanonicalSizeCategory(u.size?.code ?? u.size?.name ?? '');
+          if (pr.size && cat !== pr.size) continue;
+          const rate = toNum(u.monthlyRate);
+          if (minBase == null || rate < minBase) { minBase = rate; minSize = cat; }
+        }
+        if (minBase == null) continue;
+        const effective = minBase * (1 - pr.pct / 100);
+        if (!worst || effective < worst.effective) worst = { effective, base: minBase, pct: pr.pct, size: minSize };
+      }
+      if (!worst) {
+        push('pass', `Rate floor (${scopeLabel}): no available units in scope to price — check skipped`);
+      } else if (worst.effective < floor) {
+        push('blocker', `Rate floor breach (${scopeLabel}): ${worst.pct}% off cheapest ${worst.size} unit $${worst.base}/mo → $${worst.effective.toFixed(2)} below $${floor}/mo floor`);
       } else {
-        push('pass', `Rate floor holds (${scopeLabel}): $${effective.toFixed(2)} ≥ $${floor}/mo floor at $${base}/mo base`);
+        push('pass', `Rate floor holds (${scopeLabel}): worst case $${worst.effective.toFixed(2)} ≥ $${floor}/mo floor (${worst.pct}% off cheapest ${worst.size} unit $${worst.base}/mo)`);
       }
       const threshold = s.requiresApprovalAbove != null ? toNum(s.requiresApprovalAbove) : null;
       if (threshold != null && headlinePct >= threshold) {

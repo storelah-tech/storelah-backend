@@ -343,6 +343,29 @@ Tests: `npx vitest run tests/e2e/promotion-plans tests/e2e/floor-plan` → 88/88
 pass. With the source fixes stashed, the 6 targeted new tests fail. Still open:
 defects #1–#4, #6, #9, #11–#14 (need owner decisions or are low priority).
 
+### 1C.3b Owner decisions applied (2026-10-18, same branch, uncommitted)
+
+| Decision | Implementation | Verified |
+| --- | --- | --- |
+| R-FP1: keep the last published floor plan visible while editing | Every publish stores the public view on `FloorPlan.publishedSnapshot` (+ `publishedAt`, migration `20261018000000_floor_plan_published_snapshot`). A DRAFT plan with a snapshot is served publicly, with unit status refreshed live and deleted/inactive/moved units dropped. Legacy ACTIVE plans are captured lazily on public read and by `scripts/backfill-floorplan-snapshots.ts`. Designer badge: "Unpublished changes — customers see last published". Deleting the plan or deactivating the floor/facility still hides it | 6 e2e tests; clone: edit after publish → public still served at the old position; backfill captured 15 plans |
+| Promotions #1–#5, #9 fixed before launch | **Checkout** applies a plan only if it is ACTIVE, inside its dates, and its facility / floor (/ size) scope covers the unit. **Free-month plans** price bookings that meet the commitment: month 1 free waives today's rent; the free months are listed in `breakdown.appliedPromotion` and recorded. **CMS promo codes** sync a linked redeemable `Promotion` row (benefit % / S$, dates, caps) and redeem at checkout and at `/promotions/validate` (optional `unitCode` for the scope check); `redemptionCap` / `usagePerCustomer` are enforced. **Scheduling:** due SCHEDULED plans activate and expired plans end lazily before pricing/listing, and a future-dated Publish stays SCHEDULED (409 NOT_YET_EFFECTIVE → "scheduled" toast). "Schedule next month" now sets the 1st of next month. Every plan-priced booking records a `PromotionRedemption` (#12). The public feed lists only live plans, with additive `kind`, `facilities`, `floors`, `effectiveFrom/To`, `freeMonths` | 14 new e2e tests; clone: UB-only plan 18% at UB / 0% at WD; expired plan 0% and auto-ENDED; scheduled plan auto-activated → 7%; SMALL code 20% first month; free months SMALL×12 → $0 due today, perf applied=1 |
+| #5: live plans must be disabled before editing | ACTIVE → DRAFT allowed as **Disable** (versioned "Disabled for editing"); stops applying at checkout at once; edit; Publish re-validates. Library: "Disable to edit" / "Unschedule" + "End". Restore refused on live plans (409); same-status PATCH is a no-op (#14) | e2e; clone API + UI (Library Disable → DRAFT) |
+
+**Booking app follow-up (separate repo, not done here):** the booking summary
+computes its own price from the public feed. For full parity it must (a) skip
+plans whose `facilities` / `floors` don't cover the selected unit, (b) show
+`freeMonths` plans (month 1 free → $0 rent today), and (c) send `unitCode`
+to `/promotions/validate`. Until then, for scoped plans and free-month plans
+the booking screen can show a different figure from the invoice; Stripe
+charges the server figure.
+
+**Deploy order (prod):** run migration `20261018000000_floor_plan_published_snapshot`
+(direct Neon URL), deploy the Lambda code, then run
+`scripts/backfill-floorplan-snapshots.ts`. Each step needs owner authorization.
+**Config note:** the global $80/mo rate floor is above locker list prices
+($61–$84), so any all-sizes promotion that includes lockers is blocked by
+validation. Scope promotions by size, or add a LOCKER-specific floor.
+
 ### 1C.3 Owner decisions needed
 
 1. R-FP1: should a published floor plan stay visible while it's being edited?

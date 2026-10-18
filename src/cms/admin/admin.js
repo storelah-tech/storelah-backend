@@ -2001,8 +2001,12 @@ async function bindPromotionsOverview() {
         // off-states (PLAN_TRANSITIONS in core/promotionPlans.ts; no PAUSED /
         // CANCELLED / ARCHIVED exists), so live plans get a Disable/End action
         // that PATCHes .../status ENDED with a confirm.
+        // Live plans are locked (server 409 PLAN_LOCKED). To change one:
+        // Disable (ACTIVE → DRAFT, stops applying at checkout) / Unschedule
+        // (SCHEDULED → DRAFT) → edit → publish again. End = permanent stop.
         var endBtn = (p.status === 'ACTIVE' || p.status === 'SCHEDULED')
-          ? '<button class="btn" data-end-plan="' + escapeHtml(p.id) + '" data-end-label="' + escapeHtml(codeLabel) + '" data-end-from="' + p.status + '" title="End this ' + p.status.toLowerCase() + ' plan now (status → ENDED)">' + (p.status === 'ACTIVE' ? 'Disable' : 'End') + '</button>'
+          ? '<button class="btn" data-disable-plan="' + escapeHtml(p.id) + '" data-end-label="' + escapeHtml(codeLabel) + '" data-end-from="' + p.status + '" title="Move back to draft so it can be edited, then publish again">' + (p.status === 'ACTIVE' ? 'Disable to edit' : 'Unschedule') + '</button> ' +
+            '<button class="btn" data-end-plan="' + escapeHtml(p.id) + '" data-end-label="' + escapeHtml(codeLabel) + '" data-end-from="' + p.status + '" title="End this ' + p.status.toLowerCase() + ' plan permanently (status → ENDED)">End</button>'
           : '';
         libRows.push('<tr><td><b>' + escapeHtml(codeLabel) + '</b><br><small>' + escapeHtml(p.name || '') + ' · v' + (p.version || 1) + '</small></td>' +
           '<td>' + benefitLabel + '</td><td>' + eligibility + '</td><td>' + commitment + '</td>' +
@@ -2029,6 +2033,11 @@ async function bindPromotionsOverview() {
       libBody.querySelectorAll('[data-end-plan]').forEach(function (b) {
         b.addEventListener('click', function () {
           disablePromoPlan(b.dataset.endPlan, b.dataset.endLabel, b.dataset.endFrom).catch(function () {});
+        });
+      });
+      libBody.querySelectorAll('[data-disable-plan]').forEach(function (b) {
+        b.addEventListener('click', function () {
+          draftPromoPlan(b.dataset.disablePlan, b.dataset.endLabel, b.dataset.endFrom).catch(function () {});
         });
       });
     }
@@ -2078,9 +2087,9 @@ async function disablePromoPlan(id, label, from) {
   var name = label || 'plan';
   var fromLabel = (from || 'live').toLowerCase();
   var okConfirm = await confirmDialog({
-    title: 'Disable ' + name + '?',
-    message: 'This ends the ' + fromLabel + ' plan now (status → ENDED). Past redemptions are kept; the plan stops applying to new bookings. Ended plans cannot be reactivated — use History → Restore as draft for a new draft.',
-    confirmLabel: from === 'SCHEDULED' ? 'End schedule' : 'Disable now',
+    title: 'End ' + name + '?',
+    message: 'This ends the ' + fromLabel + ' plan permanently (status → ENDED). Past redemptions are kept; the plan stops applying to new bookings. To change a plan and publish it again, use "Disable to edit" instead.',
+    confirmLabel: from === 'SCHEDULED' ? 'End schedule' : 'End now',
     danger: true,
   });
   if (!okConfirm) return;
@@ -2095,7 +2104,39 @@ async function disablePromoPlan(id, label, from) {
   if (promoState.discountPlanId === id) setPromoStatusPill('discountPlanStatus', 'ENDED');
   if (promoState.freePlanId === id) setPromoStatusPill('freePlanStatus', 'ENDED');
   if (promoState.codePlanId === id) setPromoStatusPill('codePlanStatus', 'ENDED');
-  toast('Disabled ' + name + ' (ended)');
+  toast('Ended ' + name);
+  bindPromotionsOverview().catch(function () {});
+  bindPromoHistory().catch(function () {});
+  bindPromoDashboardCharts().catch(function () {});
+}
+
+// Library: "Disable to edit" (ACTIVE → DRAFT) / "Unschedule" (SCHEDULED →
+// DRAFT). The plan stops applying at checkout immediately, becomes editable
+// in its builder, and goes live again only through Publish (re-validated).
+async function draftPromoPlan(id, label, from) {
+  if (!id) return;
+  var name = label || 'plan';
+  var live = from === 'ACTIVE';
+  var okConfirm = await confirmDialog({
+    title: (live ? 'Disable ' : 'Unschedule ') + name + '?',
+    message: live
+      ? 'The plan stops applying to new bookings now and moves back to draft so you can edit it. Publish it again when the changes are ready (it is re-validated).'
+      : 'The plan moves back to draft so you can edit it. Schedule or publish it again when ready.',
+    confirmLabel: live ? 'Disable to edit' : 'Unschedule',
+    danger: live,
+  });
+  if (!okConfirm) return;
+  try {
+    await patch('/promotion-plans/' + encodeURIComponent(id) + '/status', { status: 'DRAFT' });
+  } catch (e) {
+    showBanner((live ? 'Disable: ' : 'Unschedule: ') + describeError(e));
+    return;
+  }
+  if (promoState.validated) delete promoState.validated[id];
+  if (promoState.discountPlanId === id) setPromoStatusPill('discountPlanStatus', 'DRAFT');
+  if (promoState.freePlanId === id) setPromoStatusPill('freePlanStatus', 'DRAFT');
+  if (promoState.codePlanId === id) setPromoStatusPill('codePlanStatus', 'DRAFT');
+  toast((live ? 'Disabled ' : 'Unscheduled ') + name + ' — edit it, then publish again');
   bindPromotionsOverview().catch(function () {});
   bindPromoHistory().catch(function () {});
   bindPromoDashboardCharts().catch(function () {});
@@ -2421,6 +2462,9 @@ function collectCodePlanPayload() {
     name,
     code: code || undefined,
     description: 'BENEFIT: ' + benefit + ' ' + value,
+    // Structured benefit → the linked redeemable Promotion row (checkout).
+    benefitType: benefit === 'dollar' ? 'DOLLAR' : benefit === 'credits' ? 'CREDITS' : 'PERCENTAGE',
+    benefitValue: Number.isFinite(parseFloat(value)) ? parseFloat(value) : undefined,
     effectiveFrom: (dates[0] && dates[0].value ? dates[0].value : new Date().toISOString().slice(0, 10)) + 'T00:00:00.000Z',
     effectiveTo: dates[1] && dates[1].value ? dates[1].value + 'T00:00:00.000Z' : undefined,
     facilityScope: ['ALL'],
@@ -2477,7 +2521,13 @@ function populateCodePanel(plan) {
     const preview = document.getElementById('codePreview');
     if (preview) preview.textContent = plan.code;
   }
-  if (valueEl && plan.description) {
+  if (valueEl && plan.benefit && plan.benefit.value != null) {
+    valueEl.value = plan.benefit.value;
+    const want = plan.benefit.type === 'DOLLAR' ? 'dollar' : plan.benefit.type === 'CREDITS' ? 'credits' : 'percentage';
+    document.querySelectorAll('#benefitChoices .choice').forEach(function (c) {
+      c.classList.toggle('active', c.dataset && c.dataset.benefit === want);
+    });
+  } else if (valueEl && plan.description) {
     const m = /^BENEFIT:\s+\w+\s+(.+)$/.exec(plan.description);
     if (m) valueEl.value = m[1];
   }
@@ -2892,6 +2942,13 @@ async function publishPromoPlan(kind) {
     toast(tab.label + ' is now active');
     bindPromotionsOverview().catch(function () {});
   } catch (e) {
+    // Future start date: the plan stays SCHEDULED and goes live on its own.
+    if (e && e.code === 'NOT_YET_EFFECTIVE') {
+      setPromoStatusPill(tab.pillId, 'SCHEDULED');
+      toast(e.message);
+      bindPromotionsOverview().catch(function () {});
+      return;
+    }
     showBanner('Publish: ' + describeError(e));
   } finally {
     promoPublishBusy[kind] = false;
@@ -3101,7 +3158,7 @@ async function bindPromoPerformance() {
     if (body) {
       body.innerHTML = perf.plans.length ? '<table class="staff"><tr><th>Plan</th><th>Applied</th><th>Discount cost</th><th>Cap used</th><th>Budget used</th><th>Revenue</th><th>Retention</th></tr>' +
         perf.plans.map((p) => '<tr><td><b>' + escapeHtml(p.planName) + '</b><br><small>' + p.kind + ' · ' + p.status + '</small></td><td>' + p.applied + '</td><td>$' + p.discountCost.toLocaleString() + '</td><td>' + (p.capUsedPct != null ? p.capUsedPct + '%' : '—') + '</td><td>' + (p.budgetUsedPct != null ? p.budgetUsedPct + '%' : '—') + '</td><td>—</td><td>—</td></tr>').join('') +
-        '</table><div class="rulebox" style="margin-top:10px"><b>Note:</b> revenue and retention need invoice/tenure joins (follow-up). Redemptions are recorded via POST /promotion-plans/:id/redemptions — booking-time auto-link is follow-up (no booking-create route exists in this service).</div>'
+        '</table><div class="rulebox" style="margin-top:10px"><b>Note:</b> revenue and retention need invoice/tenure joins (follow-up). Bookings priced by a plan (discount %, free months or plan promo code) record a redemption automatically; manual entries via POST /promotion-plans/:id/redemptions are still possible.</div>'
         : '<div class="section-empty">No plans yet — performance appears once plans and redemptions exist.</div>';
     }
   }
@@ -3617,6 +3674,17 @@ function bootPromotions() {
     b.addEventListener('click', async function () {
       // Schedule = save draft, then VALIDATED (if needed) → SCHEDULED through
       // the status state machine. Blockers reject with a surfaced error.
+      // "Schedule next month": a start date of today or earlier moves to the
+      // 1st of next month (a later date the operator picked is kept). The
+      // plan then goes live by itself on that date (server syncPlanSchedule).
+      var startEl = document.getElementById('discountStartDate');
+      if (startEl) {
+        var todayIso = new Date().toISOString().slice(0, 10);
+        if (!startEl.value || startEl.value <= todayIso) {
+          var nm = new Date(); nm.setDate(1); nm.setMonth(nm.getMonth() + 1);
+          startEl.value = nm.getFullYear() + '-' + String(nm.getMonth() + 1).padStart(2, '0') + '-01';
+        }
+      }
       var pid = await saveDiscountPlan('Draft');
       if (!pid) return;
       try {
@@ -3626,7 +3694,7 @@ function bootPromotions() {
         }
         await patch('/promotion-plans/' + encodeURIComponent(pid) + '/status', { status: 'SCHEDULED' });
         setPromoStatusPill('discountPlanStatus', 'SCHEDULED');
-        toast('Plan scheduled');
+        toast('Plan scheduled — goes live ' + (startEl && startEl.value ? startEl.value : 'on its start date'));
         bindPromotionsOverview().catch(function () {});
       } catch (e) {
         showBanner('Schedule: ' + describeError(e));
@@ -3691,6 +3759,13 @@ function bootPromotions() {
         toast('Plan is now active');
         bindPromotionsOverview().catch(function () {});
       } catch (e) {
+        if (e && e.code === 'NOT_YET_EFFECTIVE') {
+          // Future start date: stays SCHEDULED, goes live on its own.
+          setPromoStatusPill('discountPlanStatus', 'SCHEDULED');
+          toast(e.message);
+          bindPromotionsOverview().catch(function () {});
+          return;
+        }
         showBanner('Publish: ' + describeError(e));
         openValidation();
       } finally {

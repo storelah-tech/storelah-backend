@@ -4,7 +4,7 @@ import { ok, created, fail } from '../lib/http';
 import { listPublicBranches } from '../core/branches';
 import { getUnitMap, listPublicUnits } from '../core/units';
 import { listActivePromotions, validatePromotion, DEFAULT_PROMO_TYPE, DEFAULT_PROMO_SCOPE } from '../core/promotions';
-import { listActivePublicPromotionPlans } from '../core/promotionPlans';
+import { listActivePublicPromotionPlans, syncPlanSchedule } from '../core/promotionPlans';
 import { getPublicFloorPlan } from '../core/floorPlans';
 import { listProtectionPlans, listAddons } from '../core/extras';
 import { getPublicSettings } from '../core/settings';
@@ -100,9 +100,13 @@ const validateSchema = z.object({
   code: z.string().min(1),
   rate: z.number().nonnegative(),
   months: z.number().int().positive().default(1),
+  // Optional (additive): the unit being booked, so scoped plan codes can be
+  // checked against its facility / floor / size.
+  unitCode: z.string().trim().min(1).max(40).optional(),
 });
 
 router.post('/promotions/validate', async (req: Request, res: Response) => {
+  await syncPlanSchedule();
   const parsed = validateSchema.safeParse(req.body);
   if (!parsed.success) {
     // Invalid input is reported as an invalid promo, not an error response.
@@ -118,7 +122,7 @@ router.post('/promotions/validate', async (req: Request, res: Response) => {
     });
     return;
   }
-  ok(res, await validatePromotion(parsed.data.code, parsed.data.rate, parsed.data.months));
+  ok(res, await validatePromotion(parsed.data.code, parsed.data.rate, parsed.data.months, parsed.data.unitCode));
 });
 
 // PUBLIC discount-plan matrix for the booking frontend Expected Stay tiles

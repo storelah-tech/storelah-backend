@@ -108,7 +108,16 @@ export interface PlanInput {
   matrixCells?: CellInput[];
   freeMonths?: FreeInput[];
   rules?: RuleInput[];
+  // PROMO_CODE benefit (stored on the linked, redeemable Promotion row —
+  // see syncLinkedPromotion). PERCENTAGE = % off, DOLLAR = S$ off.
+  benefitType?: CodeBenefitType;
+  benefitValue?: number;
 }
+
+export type CodeBenefitType = 'PERCENTAGE' | 'DOLLAR' | 'FREE_MONTHS' | 'CREDITS';
+// Benefits checkout can price today (CREDITS needs a wallet, FREE_MONTHS via
+// code is the FREE_MONTHS plan kind) — validatePlan blocks the rest.
+export const CHECKOUT_CODE_BENEFITS: readonly CodeBenefitType[] = ['PERCENTAGE', 'DOLLAR'];
 
 function serialize(plan: any) {
   return {
@@ -134,6 +143,11 @@ function serialize(plan: any) {
     earlyExitTreatment: plan.earlyExitTreatment,
     minStayPct: plan.minStayPct,
     version: plan.version,
+    // PROMO_CODE benefit, read back from the linked Promotion row.
+    benefit: (() => {
+      const promo = (plan.promotions || [])[0];
+      return promo ? { type: promo.benefitType ?? (promo.discountType === 'FLAT' ? 'DOLLAR' : 'PERCENTAGE'), value: toNum(promo.discountValue) } : null;
+    })(),
     matrixCells: (plan.matrixCells || []).map((c: any) => ({
       id: c.id,
       // Lenient: legacy XS rows read as LOCKER (backward-compat).
@@ -178,6 +192,7 @@ const INCLUDE = {
 } as const;
 
 export async function listPlans(opts?: { from?: Date; to?: Date }) {
+  await syncPlanSchedule();
   const effectiveFrom: { gte?: Date; lte?: Date } = {};
   if (opts?.from) effectiveFrom.gte = opts.from;
   if (opts?.to) effectiveFrom.lte = opts.to;
@@ -195,10 +210,18 @@ export async function getPlan(id: string) {
   return serialize(row);
 }
 
+async function assertCodeFreeForPlan(code: string, planId?: string) {
+  const promo = await prisma.promotion.findUnique({ where: { code } });
+  if (promo && (!planId || promo.planId !== planId)) {
+    throw new AppError(409, 'CONFLICT', `Promo code ${code} is already used by another promotion`);
+  }
+}
+
 export async function createPlan(input: PlanInput) {
   if (input.code) {
     const existing = await prisma.promotionPlan.findUnique({ where: { code: input.code } });
     if (existing) throw new AppError(409, 'CONFLICT', `Plan code ${input.code} already exists`);
+    await assertCodeFreeForPlan(input.code);
   }
 
   const plan = await prisma.promotionPlan.create({
@@ -262,6 +285,10 @@ export async function createPlan(input: PlanInput) {
     include: INCLUDE,
   });
 
+  if (plan.kind === 'PROMO_CODE') {
+    await syncLinkedPromotion(plan.id, input);
+    return getPlan(plan.id);
+  }
   return serialize(plan);
 }
 
@@ -279,7 +306,9 @@ export async function updatePlan(id: string, input: Partial<PlanInput>) {
       `Plan "${existing.name}" is ${existing.status} and can't be edited — ` +
         (existing.status === 'SCHEDULED'
           ? 'move it back to draft first, or duplicate it.'
-          : 'duplicate it (or restore a version as a new draft) to make changes.'),
+          : existing.status === 'ACTIVE'
+            ? 'disable it first (it stops applying at checkout), edit, then publish again.'
+            : 'restore a version as a new draft, or duplicate it, to make changes.'),
       { status: existing.status },
     );
   }
@@ -287,6 +316,7 @@ export async function updatePlan(id: string, input: Partial<PlanInput>) {
   if (input.code && input.code !== existing.code) {
     const clash = await prisma.promotionPlan.findUnique({ where: { code: input.code } });
     if (clash) throw new AppError(409, 'CONFLICT', `Plan code ${input.code} already exists`);
+    await assertCodeFreeForPlan(input.code, id);
   }
 
   if (input.matrixCells !== undefined) {
@@ -364,7 +394,112 @@ export async function updatePlan(id: string, input: Partial<PlanInput>) {
     },
   });
 
+  if (plan.kind === 'PROMO_CODE') {
+    await syncLinkedPromotion(plan.id, input);
+    return getPlan(plan.id);
+  }
   return serialize(plan);
+}
+
+// --- Linked promo-code row (PROMO_CODE plans) ---
+//
+// Checkout and POST /public/promotions/validate redeem codes from the
+// Promotion table. A PROMO_CODE plan owns exactly one linked Promotion row
+// (planId) that mirrors its code, benefit, dates and caps; it is `active` only
+// while the plan is ACTIVE. Called after every create / update / status change
+// / restore so the redeemable row can never drift from the plan (R-PR6).
+const PLAN_TO_PROMO_STATUS: Record<PlanStatus, 'DRAFT' | 'SCHEDULED' | 'ACTIVE' | 'ENDED'> = {
+  DRAFT: 'DRAFT', VALIDATED: 'DRAFT', SCHEDULED: 'SCHEDULED', ACTIVE: 'ACTIVE', ENDED: 'ENDED',
+};
+
+export async function syncLinkedPromotion(planId: string, input?: Partial<PlanInput>): Promise<void> {
+  const plan = await prisma.promotionPlan.findUnique({ where: { id: planId }, include: { promotions: true } });
+  if (!plan || plan.kind !== 'PROMO_CODE') return;
+  const linked = plan.promotions[0] ?? null;
+  if (!plan.code) {
+    // No customer-facing code yet → nothing redeemable.
+    if (linked) await prisma.promotion.update({ where: { id: linked.id }, data: { active: false, status: 'DRAFT' } });
+    return;
+  }
+  const clash = await prisma.promotion.findUnique({ where: { code: plan.code } });
+  if (clash && clash.planId !== plan.id) {
+    throw new AppError(409, 'CONFLICT', `Promo code ${plan.code} is already used by another promotion`);
+  }
+  const benefitType = (input?.benefitType ?? linked?.benefitType ?? 'PERCENTAGE') as CodeBenefitType;
+  const benefitValue = input?.benefitValue ?? (linked ? toNum(linked.discountValue) : 0);
+  const data = {
+    code: plan.code,
+    name: plan.name,
+    description: plan.description,
+    discountType: benefitType === 'DOLLAR' ? ('FLAT' as const) : ('PERCENTAGE' as const),
+    discountValue: benefitValue,
+    benefitType,
+    startDate: plan.effectiveFrom,
+    endDate: plan.effectiveTo,
+    active: plan.status === 'ACTIVE',
+    status: PLAN_TO_PROMO_STATUS[plan.status as PlanStatus],
+    applyTo: plan.appliesTo,
+    usagePerCustomer: plan.usagePerCustomer,
+    redemptionCap: plan.redemptionCap,
+    stackingRule: plan.stackingRule,
+    planId: plan.id,
+  };
+  if (linked) await prisma.promotion.update({ where: { id: linked.id }, data });
+  else await prisma.promotion.create({ data });
+}
+
+// --- Schedule sync (lazy activation / expiry, no cron) ---
+//
+// There is no scheduler in the Lambda, so date-driven transitions run lazily
+// before every read that prices or lists promotions (checkout quote/booking,
+// public feeds, CMS lists): SCHEDULED plans whose effectiveFrom has passed go
+// ACTIVE, and ACTIVE/SCHEDULED plans whose effectiveTo has passed go ENDED.
+// Each transition goes through setPlanStatus (versioned, changedBy
+// 'Scheduler'). Cheap: one indexed query when nothing is due.
+export async function syncPlanSchedule(now: Date = new Date()): Promise<{ activated: string[]; ended: string[] }> {
+  const activated: string[] = [];
+  const ended: string[] = [];
+  const due = await prisma.promotionPlan.findMany({
+    where: {
+      OR: [
+        { status: { in: ['ACTIVE', 'SCHEDULED'] }, effectiveTo: { lte: now } },
+        { status: 'SCHEDULED', effectiveFrom: { lte: now } },
+      ],
+    },
+    select: { id: true, status: true, effectiveFrom: true, effectiveTo: true },
+  });
+  for (const p of due) {
+    try {
+      if (p.effectiveTo && p.effectiveTo <= now) {
+        await setPlanStatus(p.id, 'ENDED', { changedBy: 'Scheduler', now });
+        ended.push(p.id);
+      } else if (p.status === 'SCHEDULED' && p.effectiveFrom <= now) {
+        await setPlanStatus(p.id, 'ACTIVE', { changedBy: 'Scheduler', now });
+        activated.push(p.id);
+      }
+    } catch {
+      // A concurrent request already moved it — the next read re-checks.
+    }
+  }
+  return { activated, ended };
+}
+
+/** True when the plan's facility scope covers this unit's branch (ids or codes). */
+export function planCoversBranch(facilityScope: unknown, branch: { id: string; code: string }): boolean {
+  const scope = Array.isArray(facilityScope) ? facilityScope.map(String) : ['ALL'];
+  return scope.length === 0 || scope.some((f) => /^all$/i.test(f)) || scope.includes(branch.id) || scope.includes(branch.code);
+}
+
+/** True when the plan's size scope covers this canonical size category. */
+export function planCoversSize(sizeScope: unknown, sizeCategory: string): boolean {
+  const scope = Array.isArray(sizeScope) ? sizeScope.map(String) : ['ALL'];
+  return scope.length === 0 || scope.some((x) => /^all$/i.test(x)) || scope.map(toCanonicalSizeCategory).includes(sizeCategory);
+}
+
+/** Floor rules ({ field: 'floor', operator: 'equals', value: floorId }) — none = every floor. */
+export function planCoversFloor(rules: ReadonlyArray<{ field: string; operator: string; value: string }>, floorId: string | null): boolean {
+  const floors = rules.filter((r) => r.field === 'floor' && r.operator === 'equals').map((r) => r.value);
+  return floors.length === 0 || (floorId != null && floors.includes(floorId));
 }
 
 // --- Status / approval state machine ---
@@ -386,15 +521,21 @@ export async function updatePlan(id: string, input: Partial<PlanInput>) {
 //   without rows keep the legacy label-only behavior.
 // - SCHEDULED → ENDED and ACTIVE → ENDED: early termination.
 // - VALIDATED → DRAFT and SCHEDULED → DRAFT: safe rollback for rework.
-//   ACTIVE → DRAFT is FORBIDDEN (a live plan must END, never silently revert);
-//   ENDED is terminal (restore-as-draft creates a NEW draft version instead).
+// - ACTIVE → DRAFT = "Disable" (owner decision 2026-10-18): a live plan is
+//   never edited in place (updatePlan locks it), so changing one is
+//   Disable (stops applying at checkout immediately, versioned) → edit →
+//   re-publish through validation. ENDED stays terminal (restore-as-draft
+//   turns it back into a DRAFT for reuse).
+// - SCHEDULED → ACTIVE also happens automatically once effectiveFrom is
+//   reached, and ACTIVE/SCHEDULED → ENDED once effectiveTo passes — see
+//   syncPlanSchedule() (lazy, run before every pricing/listing read).
 // - Any other edge (e.g. DRAFT → ACTIVE, DRAFT → SCHEDULED, ENDED → anything)
 //   is rejected with 400 INVALID_TRANSITION.
 const PLAN_TRANSITIONS: Record<PlanStatus, PlanStatus[]> = {
   DRAFT: ['VALIDATED'],
   VALIDATED: ['SCHEDULED', 'DRAFT'],
   SCHEDULED: ['ACTIVE', 'ENDED', 'DRAFT'],
-  ACTIVE: ['ENDED'],
+  ACTIVE: ['ENDED', 'DRAFT'],
   ENDED: [],
 };
 
@@ -405,13 +546,15 @@ export function allowedTransitions(from: PlanStatus): PlanStatus[] {
 export async function setPlanStatus(
   id: string,
   status: PlanStatus,
-  opts?: { changedBy?: string; approverRole?: string; actorId?: string },
+  opts?: { changedBy?: string; approverRole?: string; actorId?: string; now?: Date },
 ) {
   const existing = await prisma.promotionPlan.findUnique({ where: { id }, include: INCLUDE });
   if (!existing) throw new AppError(404, 'NOT_FOUND', `Promotion plan ${id} not found`);
 
   const from = existing.status as PlanStatus;
-  if (from !== status && !allowedTransitions(from).includes(status)) {
+  // Same-status PATCH is a no-op (no phantom version row).
+  if (from === status) return serialize(existing);
+  if (!allowedTransitions(from).includes(status)) {
     throw new AppError(
       400,
       'INVALID_TRANSITION',
@@ -425,7 +568,7 @@ export async function setPlanStatus(
   // have permission rows at all. Actors without rows keep the legacy behavior
   // (free-text approverRole label, no check), so existing auth flows never
   // break. Import is lazy to avoid a core/users ⇄ core/promotionPlans cycle.
-  if ((status === 'SCHEDULED' || status === 'ACTIVE') && from !== status && opts?.actorId) {
+  if ((status === 'SCHEDULED' || status === 'ACTIVE') && opts?.actorId) {
     const { requirePermission } = await import('./users');
     await requirePermission(opts.actorId, 'promotions.approve');
   }
@@ -443,6 +586,15 @@ export async function setPlanStatus(
     }
   }
 
+  // A plan cannot be made ACTIVE before its start date — it stays SCHEDULED
+  // and syncPlanSchedule() activates it on effectiveFrom (Publish of a
+  // future-dated plan therefore ends as "scheduled", never ACTIVE-but-idle).
+  if (status === 'ACTIVE' && existing.effectiveFrom > (opts?.now ?? new Date())) {
+    throw new AppError(409, 'NOT_YET_EFFECTIVE',
+      `Plan "${existing.name}" starts ${existing.effectiveFrom.toISOString().slice(0, 10)} — it stays scheduled and goes live automatically on that date.`,
+      { effectiveFrom: existing.effectiveFrom });
+  }
+
   const changedBy = opts?.changedBy ?? 'Operator';
   const newVersion = existing.version + 1;
 
@@ -451,6 +603,7 @@ export async function setPlanStatus(
     data: { status, version: newVersion },
     include: INCLUDE,
   });
+  await syncLinkedPromotion(id);
 
   await prisma.promotionVersion.create({
     data: {
@@ -458,12 +611,12 @@ export async function setPlanStatus(
       version: newVersion,
       snapshot: { status, approverRole: opts?.approverRole ?? null } as unknown as Prisma.InputJsonValue,
       changedBy,
-      changeSummary: `Status changed from ${from} to ${status}` +
+      changeSummary: (from === 'ACTIVE' && status === 'DRAFT' ? 'Disabled for editing (ACTIVE → DRAFT)' : `Status changed from ${from} to ${status}`) +
         (opts?.approverRole ? ` (approver role: ${opts.approverRole})` : ''),
     },
   });
 
-  return serialize(plan);
+  return serialize((await prisma.promotionPlan.findUnique({ where: { id }, include: INCLUDE })) ?? plan);
 }
 
 export async function duplicatePlan(id: string) {
@@ -542,6 +695,7 @@ export async function deletePlan(id: string) {
   if (existing.status !== 'DRAFT') {
     throw new AppError(400, 'INVALID_STATUS', 'Only draft plans can be deleted');
   }
+  await prisma.promotion.deleteMany({ where: { planId: id } });
   await prisma.promotionPlan.delete({ where: { id } });
   return { id };
 }
@@ -651,6 +805,17 @@ export async function validatePlan(id: string) {
 
   if (plan.kind === 'PROMO_CODE') {
     if (!plan.code) push('blocker', 'Promo code is required for PROMO_CODE plans');
+    // Benefit lives on the linked Promotion row (syncLinkedPromotion).
+    const promo = await prisma.promotion.findFirst({ where: { planId: plan.id } });
+    const bType = (promo?.benefitType ?? null) as CodeBenefitType | null;
+    const bValue = promo ? toNum(promo.discountValue) : 0;
+    if (!promo || !(bValue > 0)) push('blocker', 'Benefit value is required (e.g. 10 for 10% or S$10 off)');
+    else if (!bType || !CHECKOUT_CODE_BENEFITS.includes(bType)) push('blocker', `Benefit "${bType ?? 'unknown'}" can't be applied at checkout yet — use % or S$ off`);
+    else if (bType === 'PERCENTAGE' && bValue > 100) push('blocker', 'Percentage benefit must be 100% or less');
+    else {
+      push('pass', `Benefit: ${bType === 'PERCENTAGE' ? bValue + '% off' : 'S$' + bValue + ' off'}`);
+      if (bType === 'PERCENTAGE') headlinePct = bValue;
+    }
     if (plan.rules.length === 0) push('warning', 'No eligibility rules defined — plan applies to all');
     else push('pass', `${plan.rules.length} eligibility rule(s) defined`);
   }
@@ -935,6 +1100,13 @@ export async function restoreVersion(planId: string, version: number, changedBy 
     where: { planId_version: { planId, version } },
   });
   if (!row) throw new AppError(404, 'NOT_FOUND', `Version ${version} of plan ${planId} not found`);
+  // Restoring rewrites the plan as a DRAFT — never allowed on a live plan
+  // (that would silently drop it from checkout and change it in place).
+  if (plan.status === 'ACTIVE' || plan.status === 'SCHEDULED') {
+    throw new AppError(409, 'PLAN_LOCKED',
+      `Plan "${plan.name}" is ${plan.status} — ${plan.status === 'ACTIVE' ? 'disable' : 'move it back to draft'} first, then restore a version.`,
+      { status: plan.status });
+  }
   const snap = (row.snapshot ?? {}) as Record<string, unknown>;
 
   // Nested restores replace wholesale (same semantics as updatePlan).
@@ -1000,17 +1172,18 @@ export async function restoreVersion(planId: string, version: number, changedBy 
       changeSummary: `Restored v${version} as new draft`,
     },
   });
+  if (updated.kind === 'PROMO_CODE') {
+    await syncLinkedPromotion(planId);
+    return getPlan(planId);
+  }
   return serialize(updated);
 }
 
 // --- Performance aggregation + redemptions ---
 //
-// DIFFICULTY: there is no booking-create route in the CMS (bookings are read
-// via core/finance.ts listBookings; creation happens in the booking app), so
-// no server-side hook could auto-link bookings → plans. Redemptions are
-// therefore recorded explicitly via POST /promotion-plans/:id/redemptions
-// (operator or booking-app client). Wiring auto-link at booking time is a
-// follow-up once a booking-create path exists in this service.
+// Redemptions are recorded automatically by createCustomerBooking
+// (core/customers.ts) for every booking a plan priced (2026-10-18); manual
+// entries via POST /promotion-plans/:id/redemptions remain available.
 export async function recordRedemption(
   planId: string,
   input: { bookingId?: string; code?: string; amount: number },
@@ -1114,15 +1287,50 @@ export async function getPerformance() {
 // frontend can disambiguate the two access tiers sharing a size × month key).
 // No auth, no PII, no CMS behaviour change.
 export async function listActivePublicPromotionPlans() {
+  await syncPlanSchedule();
+  const now = new Date();
   const rows = await prisma.promotionPlan.findMany({
-    where: { status: 'ACTIVE' },
-    include: { matrixCells: true },
+    // Live plans only: ACTIVE and inside the effective window (2026-10-18).
+    where: {
+      status: 'ACTIVE',
+      effectiveFrom: { lte: now },
+      OR: [{ effectiveTo: null }, { effectiveTo: { gt: now } }],
+    },
+    include: { matrixCells: true, freeMonths: true, rules: true },
     orderBy: { createdAt: 'asc' },
   });
+  const branches = await prisma.branch.findMany({ select: { id: true, code: true } });
+  const codeOf = new Map(branches.map((b) => [b.id, b.code]));
   return rows.map((p) => ({
     id: p.id,
     name: p.name,
     status: p.status,
+    // --- additive scope fields (booking parity for scoped plans) ---
+    kind: p.kind,
+    effectiveFrom: p.effectiveFrom,
+    effectiveTo: p.effectiveTo,
+    // Branch codes the plan covers; null = every facility.
+    facilities: (() => {
+      const scope = Array.isArray(p.facilityScope) ? (p.facilityScope as unknown[]).map(String) : ['ALL'];
+      return scope.length === 0 || scope.some((f) => /^all$/i.test(f)) ? null : scope.map((f) => codeOf.get(f) ?? f);
+    })(),
+    // Floor ids the plan is limited to; null = every floor.
+    floors: (() => {
+      const f = p.rules.filter((r) => r.field === 'floor' && r.operator === 'equals').map((r) => r.value);
+      return f.length ? f : null;
+    })(),
+    ...(p.kind === 'FREE_MONTHS'
+      ? {
+          freeMonths: {
+            commitmentMonths: p.commitmentMonths,
+            sizes: Array.isArray(p.sizeScope) && !(p.sizeScope as unknown[]).some((x) => /^all$/i.test(String(x)))
+              ? (p.sizeScope as unknown[]).map((x) => toCanonicalSizeCategory(x))
+              : null,
+            // 1-based month numbers that are rent-free.
+            months: p.freeMonths.filter((f) => f.free).map((f) => f.monthIndex + 1).sort((a, b) => a - b),
+          },
+        }
+      : {}),
     cells: p.matrixCells
       .map((c) => ({
         // Canonical on the wire; legacy XS rows read as LOCKER.

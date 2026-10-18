@@ -1646,7 +1646,7 @@ body.lead-drawer-open{overflow-x:hidden}
             <tr><td><b>v4</b></td><td>Longer Stay Plan</td><td>1 Sep–30 Sep 2026</td><td>Commercial Team · 28 Aug</td><td>September facility pricing</td><td><span class="pill green">Active</span></td><td><button class="btn">Compare</button></td></tr>
             <tr><td><b>v3</b></td><td>Longer Stay Plan</td><td>1 Jun–31 Aug 2026</td><td>Nur Aisyah · 27 May</td><td>Added premium-access rules</td><td><span class="pill grey">Ended</span></td><td><button class="btn" data-duplicate-plan>Restore as new draft</button></td></tr>
           </tbody></table></div>
-          <div class="card-body"><div class="rulebox"><b>History rule:</b> an Active or Ended version is never overwritten. Restoring or editing one always creates a new Draft, preserving approvals, timestamps and the original values.</div></div>
+          <div class="card-body"><div class="rulebox"><b>History rule:</b> live (Active or Scheduled) plans are locked — to change one, use <b>Disable to edit</b> (or Unschedule) in the Promotions library, edit the draft, then publish again; every step is a new version. Ended plans can be restored as a draft. Scheduled plans go live, and plans with an end date end, automatically on their dates.</div></div>
         </div>
       </div>
 
@@ -1691,7 +1691,7 @@ body.lead-drawer-open{overflow-x:hidden}
                 <div style="display:flex;align-items:center;gap:10px"><span class="pill amber">Manager</span><div><b>Discount 25–40% or overlap detected</b><br><small>Requires commercial manager</small></div></div>
                 <div style="display:flex;align-items:center;gap:10px"><span class="pill red">Commercial/Finance</span><div><b>Discount &gt; 40% or conflict with contracted rate</b><br><small>Requires Commercial/Finance director</small></div></div>
               </div>
-              <div class="rulebox"><b>Approval note:</b> approvals are logged to the version audit. A scheduled plan cannot be edited by a non-admin without manager override.</div>
+              <div class="rulebox"><b>Approval note:</b> approvals are logged to the version audit. Live and scheduled plans cannot be edited in place — disable or unschedule them first.</div>
             </div>
           </div>
         </div>

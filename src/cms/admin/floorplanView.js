@@ -6018,7 +6018,8 @@ function fpRenderBlockFormSwatches() {
 }
 
 // Draft/publish pill (header, next to Save Canvas): Save Canvas and every
-// other designer write persist as DRAFT (CMS-only, invisible to booking);
+// other designer write persist as DRAFT (CMS-only; booking keeps the last
+// published snapshot, if any — R-FP1);
 // only Publish exposes the plan publicly. textContent-only (escaped by
 // nature); no layout/CSS changes — reuses the existing .t-type tone.
 function fpRenderPlanStatus() {
@@ -6035,7 +6036,15 @@ function fpRenderPlanStatus() {
   }
   const st = String(state.fp.plan.status || 'DRAFT').toUpperCase();
   const live = st === 'ACTIVE';
-  el.textContent = live ? '● Published · Visible' : '○ Draft — Not visible';
+  // A draft of a previously published plan keeps the last published version
+  // live for customers (R-FP1) — say so instead of "Not visible".
+  const servedSnapshot = !live && !!state.fp.plan.publishedAt;
+  el.textContent = live
+    ? '● Published · Visible'
+    : servedSnapshot
+      ? '○ Unpublished changes — customers see last published'
+      : '○ Draft — Not visible';
+  el.title = servedSnapshot ? 'Last published ' + new Date(state.fp.plan.publishedAt).toLocaleString() : '';
   el.classList.toggle('is-live', live);
   el.classList.toggle('is-draft', !live);
 }
@@ -6225,8 +6234,8 @@ async function fpPublishPlan() {
     const pubOk = await confirmDialog({
       title: isEmpty ? 'Publish an EMPTY floor plan?' : 'Publish this floor plan?',
       message: isEmpty
-        ? `0 units will go live — customers will see an empty floor. ${unitLine} Further edits return it to draft until re-published.`
-        : `${unitLine} The current draft becomes visible to the booking frontend. Further edits return it to draft until re-published.`,
+        ? `0 units will go live — customers will see an empty floor. ${unitLine} Later edits stay in draft — customers keep seeing this published version until you publish again.`
+        : `${unitLine} The current draft becomes visible to the booking frontend. Later edits stay in draft — customers keep seeing this published version until you publish again.`,
       confirmLabel: isEmpty ? 'Publish empty plan' : 'Publish',
       danger: isEmpty,
       requireCheck: isEmpty ? 'I understand customers will see an empty floor' : undefined,
@@ -6297,7 +6306,7 @@ function fpOpenPublishReview(floorId, preview) {
     (preview.newUnits.length
       ? `<p class="fp-pub-note">${preview.newUnits.length} new unit${preview.newUnits.length === 1 ? '' : 's'} become${preview.newUnits.length === 1 ? 's' : ''} available: ${preview.newUnits.map((n) => `<b>${escapeHtml(n.unitCode)}</b> (${n.sqft} sqft, ${fpMoney(n.rate)})`).join(', ')}.</p>`
       : '') +
-    '<p class="fp-pub-note">The plan also becomes visible to the booking frontend. Further edits return it to draft until re-published.</p>';
+    '<p class="fp-pub-note">The plan also becomes visible to the booking frontend. Later edits stay in draft — customers keep seeing this published version until you publish again.</p>';
 
   const changeBy = new Map(preview.changes.map((c) => [c.unitId, c]));
   const refreshRow = (unitId) => {

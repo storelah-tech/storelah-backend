@@ -4,7 +4,7 @@ import { AccountType, Customer, Prisma, TenantStatus } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { toNum } from '../lib/format';
 import { AppError } from '../lib/http';
-import { toCanonicalSizeCategory } from './promotionPlans';
+import { planCoversBranch, planCoversFloor, planCoversSize, syncPlanSchedule, toCanonicalSizeCategory } from './promotionPlans';
 import { resolvePromoDueTodayScope } from './promotions';
 import { CustomerJwtPayload, signCustomerToken } from '../middleware/auth';
 
@@ -627,11 +627,14 @@ export async function getCustomerPortal(payload: CustomerJwtPayload) {
 // schedule — it contributes 0 by design. Money intermediates go through
 // `toNum` (2dp); the integer steps use Math.round exactly like the frontend.
 //
-// Promo precedence: the ACTIVE promotion-plan DISCOUNT MATRIX wins first — an
-// exact (sizeCategory from unit.size, commitmentMonths from durationMonths)
-// cell discounts the rent (integer-rounded discounted rent, largest pct across
-// ACTIVE plans / accessTypes sharing the key). Only when NO exact cell (or no
-// positive pct) exists does the legacy promo-code path below run — its
+// Promo precedence: eligible promotion PLANS first — ACTIVE, inside their
+// effective dates, facility/floor scope covering the unit (2026-10-18). A
+// DISCOUNT MATRIX exact (sizeCategory, commitmentMonths) cell discounts the
+// rent (largest pct across eligible plans); a FREE_MONTHS plan whose
+// commitment the booking meets makes its listed months rent-free (month 1 →
+// waived today). If both apply the larger total saving wins — one rent
+// promotion per agreement. Only when no plan applies does the promo-code path
+// below run (plan-linked codes also need their plan live/in scope/under cap) — its
 // validation mirrors validatePromotion() in core/promotions.ts (active + date
 // window + minMonths), and its scope is classified by
 // resolvePromoDueTodayScope() (RECURRING vs first-month buckets, sourced from
@@ -768,63 +771,118 @@ export function quoteDueToday(args: {
     totalDays,
   };
 }
+// Plan (or plan-linked code) that priced a booking — recorded as a
+// PromotionRedemption by createCustomerBooking.
+export interface AppliedPromotion {
+  planId: string;
+  kind: 'DISCOUNT_MATRIX' | 'FREE_MONTHS' | 'PROMO_CODE';
+  code: string | null;
+  // 1-based month numbers of the agreement that are rent-free (FREE_MONTHS).
+  freeMonths?: number[];
+}
+
 async function computeServerDueToday(
   tx: Prisma.TransactionClient,
-  unit: { monthlyRate: Prisma.Decimal | number; size?: { code: string; name: string } | null },
+  unit: {
+    monthlyRate: Prisma.Decimal | number;
+    size?: { code: string; name: string } | null;
+    branchId?: string;
+    floorId?: string | null;
+  },
   input: CreateBookingInput,
-): Promise<DueTodayQuote> {
+  opts: { customerEmail?: string | null } = {},
+): Promise<DueTodayQuote & { applied: AppliedPromotion | null }> {
   const base = toNum(unit.monthlyRate);
+  const now = new Date();
+  const months = Number(input.durationMonths);
 
-  // ACTIVE promotion-plan matrix FIRST: exact
-  // (sizeCategory, commitmentMonths) wins over the legacy promo-code path.
-  // The matrix pct is recurring by construction (it discounts the monthly
-  // rent), feeding the frontend's discPrice step.
+  // Promotion-plan eligibility (owner decision 2026-10-18 — fix before
+  // launch): a plan prices a booking only while it is ACTIVE, inside its
+  // effective dates, and its facility / floor (/ size) scope covers the unit.
+  // syncPlanSchedule() has already promoted due SCHEDULED plans and ended
+  // expired ones before this transaction.
+  const branch = unit.branchId
+    ? await tx.branch.findUnique({ where: { id: unit.branchId }, select: { id: true, code: true } })
+    : null;
+  const inWindow = (p: { effectiveFrom: Date; effectiveTo: Date | null }) =>
+    p.effectiveFrom <= now && (!p.effectiveTo || p.effectiveTo > now);
+  const inScope = (p: { facilityScope: unknown; rules: Array<{ field: string; operator: string; value: string }> }) =>
+    (!branch || planCoversBranch(p.facilityScope, branch)) && planCoversFloor(p.rules, unit.floorId ?? null);
+
   let discountPct = 0;
   let planApplied = false;
+  let applied: AppliedPromotion | null = null;
+  let firstMonthAmt = 0;
   const sizeCategory = toCanonicalSizeCategory(unit.size?.code ?? unit.size?.name ?? '');
-  if (sizeCategory && Number.isFinite(input.durationMonths)) {
-    const plans = await tx.promotionPlan.findMany({
-      where: { status: 'ACTIVE' },
-      include: { matrixCells: true },
+  if (sizeCategory && Number.isFinite(months)) {
+    // 1) DISCOUNT MATRIX: exact (sizeCategory, commitmentMonths) cell, best %
+    //    across eligible ACTIVE plans. Recurring by construction.
+    const matrixPlans = await tx.promotionPlan.findMany({
+      where: { status: 'ACTIVE', kind: 'DISCOUNT_MATRIX' },
+      include: { matrixCells: true, rules: true },
     });
     let bestPct: number | null = null;
-    for (const p of plans) {
+    let bestMatrixPlan: string | null = null;
+    for (const p of matrixPlans) {
+      if (!inWindow(p) || !inScope(p)) continue;
       for (const c of p.matrixCells) {
-        if (
-          toCanonicalSizeCategory(c.sizeCategory) === sizeCategory &&
-          c.commitmentMonths === input.durationMonths
-        ) {
+        if (toCanonicalSizeCategory(c.sizeCategory) === sizeCategory && c.commitmentMonths === months) {
           const pct = toNum(c.discountPct);
-          if (bestPct == null || pct > bestPct) bestPct = pct;
+          if (bestPct == null || pct > bestPct) { bestPct = pct; bestMatrixPlan = p.id; }
         }
       }
     }
-    if (bestPct != null && bestPct > 0) {
-      discountPct = bestPct;
+    // 2) FREE MONTHS: plan whose commitment the booking meets; free month
+    //    indices (0-based) inside the booked duration are rent-free.
+    const freePlans = await tx.promotionPlan.findMany({
+      where: { status: 'ACTIVE', kind: 'FREE_MONTHS' },
+      include: { freeMonths: true, rules: true },
+    });
+    let bestFree: { planId: string; idx: number[] } | null = null;
+    for (const p of freePlans) {
+      if (!inWindow(p) || !inScope(p) || !planCoversSize(p.sizeScope, sizeCategory)) continue;
+      if (months < (p.commitmentMonths ?? 0)) continue;
+      const idx = p.freeMonths.filter((f) => f.free && f.monthIndex >= 0 && f.monthIndex < months).map((f) => f.monthIndex).sort((a, b) => a - b);
+      if (idx.length && (!bestFree || idx.length > bestFree.idx.length)) bestFree = { planId: p.id, idx };
+    }
+    // One rent promotion per agreement: the larger total saving over the
+    // booked duration wins (ties → matrix, the established path).
+    const matrixValue = bestPct != null && bestPct > 0 ? (base * bestPct / 100) * months : 0;
+    const freeValue = bestFree ? base * bestFree.idx.length : 0;
+    if (freeValue > matrixValue && bestFree) {
       planApplied = true;
+      applied = { planId: bestFree.planId, kind: 'FREE_MONTHS', code: null, freeMonths: bestFree.idx.map((i) => i + 1) };
+      // Month 1 free → the whole first (prorated) month is waived today; later
+      // free months are recorded on the redemption for recurring billing.
+      if (bestFree.idx.includes(0)) firstMonthAmt = base;
+    } else if (matrixValue > 0 && bestMatrixPlan) {
+      discountPct = bestPct!;
+      planApplied = true;
+      applied = { planId: bestMatrixPlan, kind: 'DISCOUNT_MATRIX', code: null };
     }
   }
 
-  // Legacy promo-code path (never stacks with the matrix): scope-split to
-  // match the frontend — RECURRING promos reduce the monthly rent before
-  // proration, FIRST_MONTH / ONE_TIME / DUE_TODAY promos reduce the prorated
-  // first month after proration. A PERCENTAGE promo defines the rate
-  // (discPrice step) when recurring; when first-month-scoped it is valued on
-  // the base with the same math as validatePromotion() and applied
-  // post-proration instead (never both — no double count).
+  // 3) Promo code (never stacks with a plan above). Codes live in the
+  // Promotion table; plan-linked codes (PROMO_CODE plans, synced by
+  // syncLinkedPromotion) additionally need their plan ACTIVE, in scope and
+  // within its redemption caps.
   let recurringFixedAmt = 0;
-  let firstMonthAmt = 0;
   if (!planApplied) {
     const code = input.promoCode?.trim();
     if (code) {
-      const now = new Date();
-      const promo = await tx.promotion.findUnique({ where: { code }, include: { plan: true } });
-      const usable =
+      const promo = await tx.promotion.findUnique({ where: { code }, include: { plan: { include: { rules: true } } } });
+      let usable =
         !!promo &&
         promo.active &&
         (!promo.startDate || promo.startDate <= now) &&
         (!promo.endDate || promo.endDate >= now) &&
         (promo.minMonths == null || input.durationMonths >= promo.minMonths);
+      if (usable && promo!.plan) {
+        const plan = promo!.plan;
+        usable = plan.status === 'ACTIVE' && inWindow(plan) && inScope(plan) &&
+          (!sizeCategory || planCoversSize(plan.sizeScope, sizeCategory)) &&
+          (await planHasCapacity(tx, plan, opts.customerEmail ?? null));
+      }
       if (usable) {
         const value = toNum(promo!.discountValue);
         const scope = resolvePromoDueTodayScope({
@@ -844,6 +902,7 @@ async function computeServerDueToday(
         } else {
           firstMonthAmt = value;
         }
+        if (promo!.planId) applied = { planId: promo!.planId, kind: 'PROMO_CODE', code: promo!.code };
       }
     }
   }
@@ -881,7 +940,7 @@ async function computeServerDueToday(
     }
   }
 
-  return quoteDueToday({
+  const quote = quoteDueToday({
     base,
     discountPct,
     recurringFixedAmt,
@@ -890,6 +949,29 @@ async function computeServerDueToday(
     addons,
     moveInDate: input.moveInDate,
   });
+  return { ...quote, applied };
+}
+
+// Redemption caps for plan-linked codes: redemptionCap counts redemptions of
+// non-cancelled bookings; usagePerCustomer counts this customer's (by email).
+async function planHasCapacity(
+  tx: Prisma.TransactionClient,
+  plan: { id: string; redemptionCap: number | null; usagePerCustomer: number | null },
+  customerEmail: string | null,
+): Promise<boolean> {
+  if (plan.redemptionCap == null && plan.usagePerCustomer == null) return true;
+  const reds = await tx.promotionRedemption.findMany({ where: { planId: plan.id, bookingId: { not: null } }, select: { bookingId: true } });
+  if (!reds.length) return true;
+  const bookings = await tx.booking.findMany({
+    where: { id: { in: reds.map((r) => r.bookingId!) }, status: { not: 'CANCELLED' } },
+    select: { tenant: { select: { email: true } } },
+  });
+  if (plan.redemptionCap != null && bookings.length >= plan.redemptionCap) return false;
+  if (plan.usagePerCustomer != null && customerEmail) {
+    const mine = bookings.filter((b) => (b.tenant.email ?? '').toLowerCase() === customerEmail.toLowerCase()).length;
+    if (mine >= plan.usagePerCustomer) return false;
+  }
+  return true;
 }
 
 // --- Booking creation ----------------------------------------------------
@@ -913,6 +995,9 @@ export async function createCustomerBooking(customer: Customer, input: CreateBoo
   if (Number.isNaN(moveInDate.getTime())) {
     throw new AppError(400, 'VALIDATION', 'Invalid moveInDate');
   }
+  // Date-driven promotion transitions (activate due SCHEDULED, end expired)
+  // before pricing — there is no cron (see syncPlanSchedule).
+  await syncPlanSchedule();
 
   return prisma.$transaction(async (tx) => {
     const unit = await tx.unit.findUnique({
@@ -1027,7 +1112,7 @@ export async function createCustomerBooking(customer: Customer, input: CreateBoo
     // → accepted but the SERVER figure is still invoiced (never the client
     // hint); below it (beyond 1-cent float tolerance) → 400 with an enriched
     // breakdown so the frontend can refresh-and-retry without guessing.
-    const quote = await computeServerDueToday(tx, unit, input);
+    const quote = await computeServerDueToday(tx, unit, input, { customerEmail: customer.email });
     const dueToday = quote.total;
     // TEMP-TEST: price guard disabled for Stripe E2E — restore before launch.
     // Any client totalDueToday hint passes; invoicing below still uses server dueToday.
@@ -1065,6 +1150,21 @@ export async function createCustomerBooking(customer: Customer, input: CreateBoo
       },
     });
 
+    // Record which plan priced this booking (Performance "applied", code
+    // redemption caps). Amount = what the customer saves: the monthly saving
+    // for a matrix %, the first-month/recurring saving for a code, or the
+    // rent of every free month for a free-months plan.
+    if (quote.applied) {
+      const a = quote.applied;
+      const amount =
+        a.kind === 'FREE_MONTHS'
+          ? toNum(quote.base * (a.freeMonths?.length ?? 0))
+          : toNum(quote.promoDiscount + quote.firstMonthDiscount);
+      await tx.promotionRedemption.create({
+        data: { planId: a.planId, bookingId: booking.id, code: a.code, amount },
+      });
+    }
+
     return {
       bookingRef: booking.bookingRef,
       status: booking.status,
@@ -1089,6 +1189,8 @@ export async function createCustomerBooking(customer: Customer, input: CreateBoo
         addons: quote.addons,
         remainingDays: quote.remainingDays,
         totalDays: quote.totalDays,
+        // Additive: the promotion plan that priced this booking (null = none).
+        appliedPromotion: quote.applied,
       },
     };
   });

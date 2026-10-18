@@ -618,6 +618,9 @@ function serializePlan(p: PlanPayload, opts: { publicView?: boolean } = {}) {
     // keep the pre-existing shape (no new public fields — booking renders
     // centred doors and floor/branch names only).
     ...(opts.publicView ? {} : { name: p.name ?? null }),
+    // CMS-only: when the last publish happened. A DRAFT plan with a
+    // publishedAt is still visible to customers as that published version.
+    ...(opts.publicView ? {} : { publishedAt: p.publishedAt ? p.publishedAt.toISOString() : null }),
     width: p.width,
     height: p.height,
     structure: p.structure,
@@ -1132,6 +1135,68 @@ export async function ensureCanvasPlan(floorId: string) {
 // no-op write (no updatedAt churn); a published plan edited mid-life demotes
 // to DRAFT, so corrections are always edit-draft + re-publish and nothing
 // ever auto-promotes to ACTIVE.
+// ---------- published snapshot (R-FP1) ----------
+//
+// Publishing freezes the public view (serializePlan publicView JSON) on the
+// plan row. markDraft only flips status, so while a published plan is being
+// edited the public read serves this snapshot instead of plan: null — the
+// customer floor plan never goes dark mid-edit. Unit facts are refreshed at
+// read time (see refreshSnapshotUnits), geometry stays as published.
+
+type PublicPlanView = ReturnType<typeof serializePlan>;
+
+async function storePublishedSnapshot(
+  db: Prisma.TransactionClient | typeof prisma,
+  full: PlanPayload,
+): Promise<PublicPlanView> {
+  const view = serializePlan(full, { publicView: true });
+  await db.floorPlan.update({
+    where: { id: full.id },
+    data: { publishedSnapshot: view as unknown as Prisma.InputJsonValue, publishedAt: new Date() },
+  });
+  return view;
+}
+
+/**
+ * Re-join a snapshot's placements to live units: drop units that were since
+ * deleted, deactivated, returned to DRAFT or moved to another floor, and
+ * replace each unit summary (status, sqft, size, name) with the live row so a
+ * unit booked after publish shows as taken. Branch/floor labels refresh too.
+ */
+async function refreshSnapshotUnits(
+  snap: PublicPlanView,
+  floor: { id: string; level: number; name: string | null; branchId: string; branch: { code: string; name: string } },
+): Promise<PublicPlanView> {
+  const ids = (snap.placements || []).map((pl) => pl.unit.id);
+  const units = ids.length
+    ? await prisma.unit.findMany({ where: { id: { in: ids } }, include: { size: true } })
+    : [];
+  const live = new Map(units.map((u) => [u.id, u]));
+  const placements = (snap.placements || []).flatMap((pl) => {
+    const u = live.get(pl.unit.id);
+    if (!u || u.deletedAt || u.floorId !== floor.id || u.status === 'INACTIVE' || u.status === 'DRAFT') return [];
+    return [{ ...pl, unit: serializeUnitSummary(u as unknown as PlacementUnit) }];
+  });
+  return {
+    ...snap,
+    status: 'ACTIVE',
+    branch: { id: floor.branchId, code: floor.branch.code, name: floor.branch.name },
+    floor: { id: floor.id, level: floor.level, name: floor.name },
+    placements,
+  } as PublicPlanView;
+}
+
+/** Capture a snapshot for every ACTIVE plan that has none (one-off after the
+ * 20261018000000 migration; idempotent). Returns the floor ids captured. */
+export async function backfillPublishedSnapshots(): Promise<string[]> {
+  const rows = await prisma.floorPlan.findMany({
+    where: { status: 'ACTIVE', publishedSnapshot: { equals: Prisma.AnyNull } },
+    include: planInclude,
+  });
+  for (const row of rows) await storePublishedSnapshot(prisma, row);
+  return rows.map((r) => r.floorId);
+}
+
 async function markDraft(planId: string): Promise<void> {
   await prisma.floorPlan.updateMany({
     where: { id: planId, status: { not: 'DRAFT' } },
@@ -1185,6 +1250,8 @@ export async function publishFloorPlanWithSync(
   if (!plan) throw new AppError(404, 'NOT_FOUND', `No floor plan exists for floor ${floorId} — save a canvas first`);
   if (plan.status === 'ACTIVE') {
     const full = await prisma.floorPlan.findUniqueOrThrow({ where: { floorId }, include: planInclude });
+    // Legacy ACTIVE plans (published before snapshots existed) get one now.
+    if (!plan.publishedSnapshot) await storePublishedSnapshot(prisma, full);
     return { plan: serializePlan(full), sizeSync: { changed: [], promoted: [] } };
   }
   if (plan.status !== 'DRAFT') {
@@ -1230,6 +1297,8 @@ export async function publishFloorPlanWithSync(
       data: { status: 'ACTIVE' },
       include: planInclude,
     });
+    // Freeze what customers now see; served while later edits are drafted.
+    await storePublishedSnapshot(tx, published);
     return { published, sizeSync };
   });
   return { plan: serializePlan(published), sizeSync };
@@ -2045,8 +2114,9 @@ export async function deleteFloorPlan(floorId: string) {
  * unitCode/name/size/status, soft-deleted AND inactive units filtered out. No
  * tenant/PII/rates anywhere (serializePlan is public-safe).
  *
- * Draft/publish gate: ONLY ACTIVE plans resolve. A draft-only floor reads as
- * plan: null — the exact shape booking already handles with its
+ * Draft/publish gate: an ACTIVE plan resolves live; a plan back in DRAFT for
+ * edits resolves its last published snapshot (R-FP1); a never-published floor
+ * reads as plan: null — the exact shape booking already handles with its
  * UnitListFallback (no new public fields, no shape change). CMS-only plan
  * fields (name, doorOffsets) are stripped here — booking keeps centred doors
  * and floor/branch names only.
@@ -2065,11 +2135,22 @@ export async function getPublicFloorPlan(branchCode: string, level: number) {
     throw new AppError(404, 'NOT_FOUND', `Floor ${level} not found at branch ${branchCode}`);
   }
 
-  const plan = await prisma.floorPlan.findFirst({ where: { floorId: floor.id, status: 'ACTIVE' }, include: planInclude });
+  // ACTIVE → the live plan. DRAFT with a published snapshot → the last
+  // published version (R-FP1: edits never take the floor offline). Never
+  // published → plan: null (booking's UnitListFallback).
+  const row = await prisma.floorPlan.findUnique({ where: { floorId: floor.id }, include: planInclude });
+  let view: PublicPlanView | null = null;
+  if (row && row.status === 'ACTIVE') {
+    view = serializePlan(row, { publicView: true });
+    // Lazily capture legacy ACTIVE plans so their first edit stays visible.
+    if (!row.publishedSnapshot) await storePublishedSnapshot(prisma, row).catch(() => undefined);
+  } else if (row && row.publishedSnapshot) {
+    view = await refreshSnapshotUnits(row.publishedSnapshot as unknown as PublicPlanView, floor);
+  }
   return {
     branch: { id: floor.branchId, code: floor.branch.code, name: floor.branch.name },
     floor: { id: floor.id, level: floor.level, name: floor.name },
-    plan: plan ? serializePlan(plan, { publicView: true }) : null,
+    plan: view,
   };
 }
 // ---------- batch edits (precision Phase 4) ----------

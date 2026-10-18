@@ -1948,6 +1948,9 @@ const planSchema = z.object({
     operator: z.string().min(1),
     value: z.string().min(1),
   })).optional(),
+  // PROMO_CODE benefit — persisted on the linked redeemable Promotion row.
+  benefitType: z.enum(['PERCENTAGE', 'DOLLAR', 'FREE_MONTHS', 'CREDITS']).optional(),
+  benefitValue: z.number().nonnegative().max(100000).optional(),
 });
 
 const planUpdateSchema = planSchema.partial();

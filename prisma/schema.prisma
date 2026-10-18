@@ -258,6 +258,13 @@ model FloorPlan {
   // canvas-derived rect (width x height, gfaSource 'CANVAS'). Additive,
   // nullable, never fabricated — see docs/FLOOR_PLAN_MODEL.md.
   gfaSqft   Float?
+  // Last-published public view (serializePlan publicView JSON), written by
+  // every publish. While the plan is back in DRAFT for edits, the public read
+  // keeps serving this snapshot (unit status/visibility refreshed live) so
+  // customers never lose the floor plan mid-edit (R-FP1). NULL = never
+  // published since this column existed (lazily captured from ACTIVE reads).
+  publishedSnapshot Json?
+  publishedAt       DateTime?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

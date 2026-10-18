@@ -264,7 +264,7 @@ export interface PromotionValidationResult {
 // Returns { valid: false } (not an error) for unknown / inactive / out-of-window
 // / below-minMonths codes. STORELAH10 → discountAmt = 10% of rate.
 // Discount math is unchanged; only the additive type/scope fields are new.
-export async function validatePromotion(code: string, rate: number, months: number): Promise<PromotionValidationResult> {
+export async function validatePromotion(code: string, rate: number, months: number, unitCode?: string): Promise<PromotionValidationResult> {
   const invalid = {
     valid: false,
     discountAmt: 0,
@@ -274,9 +274,23 @@ export async function validatePromotion(code: string, rate: number, months: numb
     durationScope: DEFAULT_PROMO_SCOPE,
   };
   // Include the backing plan so plan-backed codes resolve type/scope from it.
-  const promo = await prisma.promotion.findUnique({ where: { code }, include: { plan: true } });
+  const promo = await prisma.promotion.findUnique({ where: { code }, include: { plan: { include: { rules: true } } } });
   if (!promo || !isWithinWindow(promo)) return invalid;
   if (promo.minMonths != null && months < promo.minMonths) return invalid;
+  // Plan-linked codes (CMS promo-code builder): the plan must be live, and —
+  // when the caller says which unit — its facility / floor / size scope must
+  // cover it (checkout re-checks the same, plus redemption caps).
+  if (promo.plan) {
+    const now = new Date();
+    const plan = promo.plan;
+    if (plan.status !== 'ACTIVE' || plan.effectiveFrom > now || (plan.effectiveTo && plan.effectiveTo <= now)) return invalid;
+    if (unitCode) {
+      const unit = await prisma.unit.findUnique({ where: { unitCode }, include: { size: true, branch: true } });
+      const { planCoversBranch, planCoversFloor, planCoversSize, toCanonicalSizeCategory } = await import('./promotionPlans');
+      if (!unit || !planCoversBranch(plan.facilityScope, unit.branch) || !planCoversFloor(plan.rules, unit.floorId) ||
+        !planCoversSize(plan.sizeScope, toCanonicalSizeCategory(unit.size?.code ?? ''))) return invalid;
+    }
+  }
 
   const value = toNum(promo.discountValue);
   const discountAmt =

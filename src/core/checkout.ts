@@ -52,6 +52,16 @@ function stripe(): Stripe {
   return stripeClient;
 }
 
+/** Shared Stripe client (also used by core/invoicePayments.ts). */
+export function getStripe(): Stripe {
+  return stripe();
+}
+
+/** BOOKING_APP_URL without a trailing slash (503 when unset). */
+export function getBookingAppUrl(): string {
+  return bookingAppUrl();
+}
+
 function bookingAppUrl(): string {
   const base = process.env.BOOKING_APP_URL;
   if (!base) {
@@ -326,12 +336,17 @@ export async function getCheckoutSessionStatus(sessionId: string): Promise<{
   status: string;
   paymentStatus: string;
   bookingRef: string | null;
+  kind: 'booking' | 'invoice';
+  invoiceNo: string | null;
 }> {
   const session = await stripe().checkout.sessions.retrieve(sessionId);
   return {
     status: session.status ?? 'unknown',
     paymentStatus: session.payment_status ?? 'unknown',
     bookingRef: session.metadata?.bookingRef ?? null,
+    // --- appended (additive): portal invoice sessions (core/invoicePayments.ts) ---
+    kind: session.metadata?.kind === 'invoice' ? 'invoice' : 'booking',
+    invoiceNo: session.metadata?.invoiceNo ?? null,
   };
 }
 

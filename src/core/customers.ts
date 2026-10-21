@@ -6,6 +6,7 @@ import { toNum } from '../lib/format';
 import { AppError } from '../lib/http';
 import { planCoversBranch, planCoversFloor, planCoversSize, syncPlanSchedule, toCanonicalSizeCategory } from './promotionPlans';
 import { resolvePromoDueTodayScope } from './promotions';
+import { resolveSupportContact } from './emails';
 import { CustomerJwtPayload, signCustomerToken } from '../middleware/auth';
 
 export interface RegisterCustomerInput {
@@ -555,22 +556,48 @@ export async function getCustomerPortal(payload: CustomerJwtPayload) {
     }
   }
 
-  const invoices = tenant
+  // Invoices across EVERY Tenant row for this email (one row per paid unit),
+  // not just the first — multi-unit customers see all their billing.
+  const tenantIds = customer.email
     ? (
-        await prisma.invoice.findMany({
-          where: { tenantId: tenant.id },
-          orderBy: { dueDate: 'desc' },
+        await prisma.tenant.findMany({
+          where: { email: { equals: customer.email, mode: 'insensitive' } },
+          select: { id: true },
         })
-      ).map((i) => ({
-        id: i.id,
-        no: i.invoiceNo,
-        amount: toNum(i.amount),
-        dueDate: i.dueDate,
-        status: i.status,
-        billedMonth: i.billedMonth,
-        method: i.method,
-      }))
+      ).map((t) => t.id)
     : [];
+  const invoiceRows = tenantIds.length
+    ? await prisma.invoice.findMany({
+        where: { tenantId: { in: tenantIds } },
+        include: { unit: { select: { unitCode: true } } },
+        orderBy: { dueDate: 'desc' },
+      })
+    : [];
+  // First invoice of a still-unpaid booking (same tenant + unit): the portal
+  // pays it through the booking checkout, so it carries that bookingRef.
+  const pendingBookings = tenantIds.length
+    ? await prisma.booking.findMany({
+        where: { tenantId: { in: tenantIds }, status: 'PENDING_PAYMENT' },
+        select: { bookingRef: true, tenantId: true, unitId: true },
+      })
+    : [];
+  const invoices = invoiceRows.map((i) => ({
+    id: i.id,
+    no: i.invoiceNo,
+    amount: toNum(i.amount),
+    dueDate: i.dueDate,
+    status: i.status,
+    billedMonth: i.billedMonth,
+    method: i.method,
+    // --- appended (additive, Phase 2 portal payments) ---
+    unitCode: i.unit.unitCode,
+    paidAt: i.paidAt,
+    payable: i.status === 'DUE' || i.status === 'OVERDUE',
+    bookingRef:
+      i.status === 'PAID'
+        ? null
+        : (pendingBookings.find((b) => b.tenantId === i.tenantId && b.unitId === i.unitId)?.bookingRef ?? null),
+  }));
 
   const bookings = await listCustomerBookings(payload);
 
@@ -595,6 +622,8 @@ export async function getCustomerPortal(payload: CustomerJwtPayload) {
       : null,
     // --- appended (additive): every unit this customer rents ---
     units,
+    // --- appended (additive): live operations.supportContact setting ---
+    support: { contact: await resolveSupportContact() },
   };
 }
 
@@ -1286,18 +1315,34 @@ export async function submitCustomerRequest(payload: CustomerJwtPayload, input: 
 
 export async function submitCustomerNotice(payload: CustomerJwtPayload, input: { unitId: string; lastDay: string }) {
   const customer = await loadCustomer(payload);
-  const tenant = customer.email
-    ? await prisma.tenant.findFirst({
-        where: { email: { equals: customer.email, mode: 'insensitive' } },
+
+  // GET /portal exposes units with `id` = unitCode, so accept either the
+  // unit's DB id or its code. Soft-deleted units never resolve.
+  const ref = input.unitId.trim();
+  const unit = ref
+    ? await prisma.unit.findFirst({
+        where: { OR: [{ id: ref }, { unitCode: ref }], deletedAt: null },
+        select: { id: true },
       })
     : null;
 
-  const belongsToCustomer =
-    !!tenant &&
-    (tenant.unitId === input.unitId ||
-      !!(await prisma.booking.findFirst({ where: { tenantId: tenant.id, unitId: input.unitId } })));
+  // Ownership across EVERY Tenant row for this email (one per paid unit):
+  // the tenant currently on the unit, else one with a booking for it.
+  const tenants = customer.email && unit
+    ? await prisma.tenant.findMany({
+        where: { email: { equals: customer.email, mode: 'insensitive' } },
+      })
+    : [];
+  let tenant = unit ? (tenants.find((t) => t.unitId === unit.id) ?? null) : null;
+  if (!tenant && unit && tenants.length) {
+    const booking = await prisma.booking.findFirst({
+      where: { tenantId: { in: tenants.map((t) => t.id) }, unitId: unit.id },
+      orderBy: { createdAt: 'desc' },
+    });
+    tenant = booking ? (tenants.find((t) => t.id === booking.tenantId) ?? null) : null;
+  }
 
-  if (!belongsToCustomer || !tenant) {
+  if (!unit || !tenant) {
     throw new AppError(404, 'NOT_FOUND', 'Unit not found for this customer');
   }
 
@@ -1307,11 +1352,11 @@ export async function submitCustomerNotice(payload: CustomerJwtPayload, input: {
   }
 
   // Persist one row per submission (history preserved); the portal reads the
-  // latest by createdAt. Ownership rules above are unchanged.
+  // latest by createdAt. Ownership: see the multi-tenant lookup above.
   const notice = await prisma.notice.create({
     data: {
       tenantId: tenant.id,
-      unitId: input.unitId,
+      unitId: unit.id,
       lastDay,
     },
     include: { unit: true },

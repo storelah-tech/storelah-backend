@@ -105,6 +105,11 @@ export interface BookingConfirmationData {
   // sets `receiptAttached` explicitly from the attachment bytes.
   receiptNumber?: string | null;
   receiptAttached?: boolean;
+  // Per-invoice receipts (core/invoicePayments.ts): a recurring invoice has no
+  // move-in event, so it overrides the "Move-in date | Duration" line and the
+  // single charge line. Both optional — booking receipts are unchanged.
+  detailLine?: string;
+  lineDescription?: string;
 }
 
 export interface BuiltBookingEmail {
@@ -371,7 +376,7 @@ export function buildBookingConfirmationEmail(d: BookingConfirmationData): Built
 }
 
 /** Best-effort support contact: live `operations.supportContact` setting, else default. */
-async function resolveSupportContact(): Promise<string> {
+export async function resolveSupportContact(): Promise<string> {
   try {
     const v = await getSetting('operations.supportContact');
     if (typeof v === 'string' && v.trim()) return v.trim();

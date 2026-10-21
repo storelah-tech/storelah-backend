@@ -76,6 +76,9 @@ export function receiptFilename(bookingRef: string): string {
  * move-in billing period. GST stays 0 (current convention — do not invent).
  */
 export function receiptLinesFromConfirmation(d: BookingConfirmationData): ReceiptLineItem[] {
+  if (d.lineDescription?.trim()) {
+    return [{ description: d.lineDescription.trim(), amount: d.amountPaidSgd }];
+  }
   const unitBit = d.unitSqft ? `${d.unitDisplayName} (${d.unitSqft} sqft)` : d.unitDisplayName;
   return [
     {
@@ -200,7 +203,7 @@ export async function buildReceiptPdfBytes(d: BookingConfirmationData): Promise<
   });
   cur.y -= 16;
   drawText(page, regular, {
-    text: ascii(`Move-in date: ${formatDay(d.moveInDate)}  |  Duration: ${d.duration}`),
+    text: ascii(d.detailLine?.trim() || `Move-in date: ${formatDay(d.moveInDate)}  |  Duration: ${d.duration}`),
     x: M,
     y: cur.y,
     size: 10,
@@ -258,7 +261,11 @@ export async function buildReceiptPdfBytes(d: BookingConfirmationData): Promise<
   });
   cur.y -= 14;
   drawText(page, regular, {
-    text: ascii(`Questions? Contact ${d.supportContact} and quote booking ${d.bookingRef}.`),
+    text: ascii(
+      d.invoiceNo?.trim() && d.lineDescription?.trim()
+        ? `Questions? Contact ${d.supportContact} and quote invoice ${d.invoiceNo.trim()}.`
+        : `Questions? Contact ${d.supportContact} and quote booking ${d.bookingRef}.`,
+    ),
     x: M,
     y: cur.y,
     size: 9,

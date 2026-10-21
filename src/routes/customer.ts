@@ -31,6 +31,12 @@ import {
   getCheckoutSessionStatus,
 } from '../core/checkout';
 import {
+  applyInvoiceCheckoutCompleted,
+  buildInvoiceReceipt,
+  createInvoiceCheckoutSession,
+  INVOICE_SESSION_KIND,
+} from '../core/invoicePayments';
+import {
   listVerificationsByBookingRef,
   recordMockVerification,
 } from '../core/verifications';
@@ -255,6 +261,33 @@ router.post('/requests', requireCustomerAuth, async (req: Request, res: Response
   created(res, await submitCustomerRequest(customerFrom(req), parsed.data));
 });
 
+// Portal invoice payment (Stripe Checkout, TEST MODE) — Bearer + owner only.
+// Amount is server-owned (the invoice total); the body carries nothing. The
+// first invoice of a still-unpaid booking is delegated to the booking
+// checkout (see core/invoicePayments.ts).
+router.post('/invoices/:id/checkout', requireCustomerAuth, async (req: Request, res: Response) => {
+  const id = String(req.params.id ?? '').trim();
+  if (!id) {
+    fail(res, 400, 'VALIDATION', 'An invoice id is required');
+    return;
+  }
+  ok(res, await createInvoiceCheckoutSession(customerFrom(req), id));
+});
+
+// PDF receipt for a PAID invoice the caller owns (binary, not the JSON envelope).
+router.get('/invoices/:id/receipt', requireCustomerAuth, async (req: Request, res: Response) => {
+  const id = String(req.params.id ?? '').trim();
+  if (!id) {
+    fail(res, 400, 'VALIDATION', 'An invoice id is required');
+    return;
+  }
+  const { filename, bytes } = await buildInvoiceReceipt(customerFrom(req), id);
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  res.setHeader('Cache-Control', 'no-store');
+  res.status(200).send(bytes);
+});
+
 router.post('/notice', requireCustomerAuth, async (req: Request, res: Response) => {
   const parsed = noticeSchema.safeParse(req.body);
   if (!parsed.success) {
@@ -389,6 +422,13 @@ router.post('/stripe/webhook', async (req: Request, res: Response) => {
 
   if (event.type === 'checkout.session.completed') {
     const session = event.data.object as Stripe.Checkout.Session;
+    // Portal invoice sessions carry metadata.kind = 'invoice'; everything
+    // else is a booking session (unchanged path).
+    if (session.metadata?.kind === INVOICE_SESSION_KIND) {
+      const result = await applyInvoiceCheckoutCompleted(session);
+      ok(res, { received: true, ...result });
+      return;
+    }
     const result = await applyCheckoutCompleted(session);
     ok(res, { received: true, ...result });
     return;

@@ -2040,6 +2040,11 @@ export const openapiSpec = {
             'tenant→unit linkage behind each entry is created at payment confirmation) — each entry is the portal unit shape plus the tenancy `status`, ' +
             '`moveInDate` and `nextPayment`. The singular `data.unit`, `data.invoices`, `data.bookings`, ' +
             '`data.notice` and `data.tenancy` keys are unchanged.',
+          '',
+          'Additive (portal payments): `data.invoices` now spans EVERY tenant row for the customer (one per ' +
+            'paid unit) and each entry gains `unitCode`, `paidAt`, `payable` (DUE/OVERDUE) and `bookingRef` ' +
+            '(set when the invoice opens a still-unpaid booking — pay it via `POST /customer/checkout/sessions`). ' +
+            '`data.support.contact` echoes the live `operations.supportContact` setting.',
         ].join('\n'),
         operationId: 'getCustomerPortal',
         security: [{ bearerAuth: [] }],
@@ -2086,6 +2091,9 @@ export const openapiSpec = {
           'Additive since 1.1.0: the notice is PERSISTED (one row per submission; the portal reads the latest via ' +
             '`GET /customer/portal` → `data.notice`), and the response additionally echoes `id`, `unitId`, ' +
             '`unitCode` and `submittedAt`. The pre-existing `status`/`lastDay` fields are unchanged.',
+          '',
+          '`unitId` accepts the unit\'s id OR its unit code (what `GET /customer/portal` exposes as a unit\'s ' +
+            '`id`); ownership is checked across every tenant row for the customer.',
         ].join('\n'),
         operationId: 'submitCustomerNotice',
         security: [{ bearerAuth: [] }],
@@ -2103,6 +2111,50 @@ export const openapiSpec = {
           '401': openapiErrorResponse('Missing/invalid bearer token.'),
           '404': openapiErrorResponse('Unit not found for this customer.'),
           '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+    },
+    '/customer/invoices/{id}/checkout': {
+      post: {
+        tags: ['Customer'],
+        summary: 'Pay an invoice (Stripe Checkout, test mode)',
+        description:
+          'Creates (or reuses an open) hosted Stripe Checkout session for one of the caller\'s DUE/OVERDUE ' +
+          'invoices; the amount is the invoice total (server-owned, no body). Returns `{ sessionId, url }`. ' +
+          'Success returns to `/portal?screen=invoices&paid=<invoiceNo>&session_id=…`. The first invoice of a ' +
+          'still-unpaid booking is delegated to the booking checkout. The webhook marks the invoice PAID.',
+        operationId: 'createInvoiceCheckoutSession',
+        security: [{ bearerAuth: [] }],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: {
+          '200': openapiResponse({
+            type: 'object',
+            properties: { sessionId: { type: 'string' }, url: { type: 'string' } },
+            required: ['sessionId', 'url'],
+          }),
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '404': openapiErrorResponse('Invoice not found for this customer.'),
+          '409': openapiErrorResponse('Invoice already paid or has no amount due.'),
+          '503': openapiErrorResponse('Stripe is not configured.'),
+        },
+      },
+    },
+    '/customer/invoices/{id}/receipt': {
+      get: {
+        tags: ['Customer'],
+        summary: 'Download an invoice receipt (PDF)',
+        description: 'PDF receipt for one of the caller\'s PAID invoices (`application/pdf`, attachment).',
+        operationId: 'getInvoiceReceipt',
+        security: [{ bearerAuth: [] }],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: {
+          '200': {
+            description: 'PDF receipt',
+            content: { 'application/pdf': { schema: { type: 'string', format: 'binary' } } },
+          },
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '404': openapiErrorResponse('Invoice not found for this customer.'),
+          '409': openapiErrorResponse('Invoice is not paid yet.'),
         },
       },
     },

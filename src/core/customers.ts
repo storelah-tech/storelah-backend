@@ -7,6 +7,7 @@ import { AppError } from '../lib/http';
 import { planCoversBranch, planCoversFloor, planCoversSize, syncPlanSchedule, toCanonicalSizeCategory } from './promotionPlans';
 import { resolvePromoDueTodayScope } from './promotions';
 import { resolveSupportContact } from './emails';
+import { CUSTOMER_REQUEST_NOTE_PREFIX, leadIdentityColumns } from './leads';
 import { CustomerJwtPayload, signCustomerToken } from '../middleware/auth';
 
 export interface RegisterCustomerInput {
@@ -1292,10 +1293,15 @@ export async function linkTenantForPaidBooking(
 export async function submitCustomerRequest(payload: CustomerJwtPayload, input: CustomerRequestInput) {
   const customer = await loadCustomer(payload);
 
-  const parts = [`Request type: ${input.type}`];
+  const parts = [`${CUSTOMER_REQUEST_NOTE_PREFIX}${input.type}`];
   if (input.preferredDate) parts.push(`Preferred date: ${input.preferredDate}`);
   if (input.notes) parts.push(input.notes);
 
+  // Contactable: the authenticated customer's email + mobile, with the
+  // standard identity stamp so the request links into that email's group
+  // timeline (link, never merge). Lead has no Customer FK; Customer.email is
+  // unique, so emailNorm is the link. The note prefix keeps request rows out
+  // of booking auto-WON and repeat-enquiry stats (see isCustomerRequestLead).
   const lead = await prisma.lead.create({
     data: {
       name: customer.name,
@@ -1303,10 +1309,9 @@ export async function submitCustomerRequest(payload: CustomerJwtPayload, input: 
       source: 'WEBSITE',
       stage: 'NEW_ENQUIRY',
       note: parts.join(' | '),
-      // Contact-less request rows stay ungrouped (null identity columns).
-      emailNorm: null,
-      mobileNorm: null,
-      leadGroupKey: null,
+      email: customer.email,
+      mobile: customer.mobile?.trim() || null,
+      ...leadIdentityColumns(customer.email, customer.mobile),
     },
   });
 

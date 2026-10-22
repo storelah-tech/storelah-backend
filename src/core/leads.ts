@@ -92,6 +92,21 @@ export function leadIdentityColumns(
   return normalizeLeadIdentity(email, mobile);
 }
 
+// Portal change requests (UPSIZE/DOWNSIZE/TRANSFER via POST
+// /customer/requests — submitCustomerRequest in core/customers.ts) are
+// service requests from an existing customer, not sales enquiries. They carry
+// the customer's contact and the standard identity stamp, so they LINK into
+// that email's group timeline (rows link, never merge), but they must never
+// be auto-converted by a booking (markLeadWonForBooking) or counted as repeat
+// enquiries (getLeadStats). There is no column for this (no migration), so the
+// note prefix the request writer always emits is the marker — legacy
+// contact-less request rows carry the same prefix.
+export const CUSTOMER_REQUEST_NOTE_PREFIX = 'Request type: ';
+
+export function isCustomerRequestLead(lead: { note: string | null }): boolean {
+  return !!lead.note && lead.note.startsWith(CUSTOMER_REQUEST_NOTE_PREFIX);
+}
+
 // Group linkage stats for a freshly written row: `linked` when the group
 // already held other rows, `groupCount` including this row, `phoneVariance`
 // when any other group row carries a different normalized phone (auto-link,
@@ -978,7 +993,8 @@ export async function getLeadStats() {
   // stored column is authoritative; the ?? fallback covers any row predating
   // the backfill without a data migration.
   const emailNormOf = (l: (typeof leads)[number]) => l.emailNorm ?? normalizeLeadEmail(l.email);
-  const emailRows = leads.filter((l) => emailNormOf(l) != null);
+  // Portal change requests are not enquiries: kept out of the repeat rollup.
+  const emailRows = leads.filter((l) => emailNormOf(l) != null && !isCustomerRequestLead(l));
   const uniqueEmails = new Set(emailRows.map((l) => emailNormOf(l) as string)).size;
   const avgEnquiriesPerEmail =
     emailRows.length && uniqueEmails ? Math.round((emailRows.length / uniqueEmails) * 100) / 100 : 0;
@@ -1302,6 +1318,9 @@ export async function markLeadWonForBooking(
   const ids: string[] = [];
   for (const c of candidates) {
     if (c.stage === 'WON' || c.stage === 'LOST') continue;
+    // Portal change requests share the customer's identity but are not
+    // enquiries a booking can convert — ops close them by hand.
+    if (isCustomerRequestLead(c)) continue;
     // Re-verify in JS so a loose index hit can never widen the write set.
     // (Norms are stamped on every write and backfilled, so the stored
     // columns are authoritative — no raw-contact fuzzy fallback.)

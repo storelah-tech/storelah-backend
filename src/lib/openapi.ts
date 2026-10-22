@@ -2055,7 +2055,9 @@ export const openapiSpec = {
         tags: ['Customer'],
         summary: 'Submit a request',
         description:
-          'Files a request (upsize / downsize / transfer) which is stored as a WEBSITE lead for the operator.',
+          'Files a request (upsize / downsize / transfer) which is stored as a WEBSITE lead for the operator, carrying the ' +
+          "authenticated customer's email + mobile (identity-stamped, so it links into that email's lead group). " +
+          'Request leads are never auto-marked WON by a booking payment. Request and response shapes are unchanged.',
         operationId: 'submitCustomerRequest',
         security: [{ bearerAuth: [] }],
         requestBody: {

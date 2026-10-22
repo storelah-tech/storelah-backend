@@ -33,7 +33,7 @@ export const state = {
   // Group rows come from GET /leads/groups (server-paged); the expanded
   // timeline comes from GET /leads/groups/:key and merges into leadsCache
   // so the detail drawer keeps working for timeline rows.
-  leadViewMode: 'stage',
+  leadViewMode: 'email', // By-stage toggle removed 2026-10-22 — email groups only
   leadGroupSearch: '', // debounced email/name search sent as ?search=
   leadGroupPage: 1,
   leadGroupPerPage: 10, // client pager stays 10/page (mirrors leadPerPage)

@@ -484,14 +484,22 @@ function getLeadStats(data) {
 
 async function bindLeadTable() {
   try {
-    ensureLeadsDateFilter();
     ensureLeadGroupControls(() => bindLeadTable().catch(() => {}));
-    // Phase 4 email-group mode: one row per identity from GET /leads/groups
-    // (server-paged); the stage view below is unchanged for compat.
+    // Email-group view (the only Lead Database view since 2026-10-22): one
+    // row per identity from GET /leads/groups (server-paged). The flat
+    // GET /leads still fills leadsCache for row Edit/Delete, the drawer and
+    // CSV export. The date-range control is not mounted (groups span all time).
     if (state.leadViewMode === 'email') {
-      await renderEmailGroups();
+      const [flatData] = await Promise.all([get('/leads').catch(() => null), renderEmailGroups()]);
+      if (flatData) {
+        // Keep expanded-timeline rows already merged into the cache.
+        const flat = flattenLeads(flatData);
+        const ids = new Set(flat.map((l) => l.id));
+        state.leadsCache = flat.concat((state.leadsCache || []).filter((l) => !ids.has(l.id)));
+      }
       return;
     }
+    ensureLeadsDateFilter();
     const data = await get(withDateQuery('/leads', state.leadDate));
     const flat = flattenLeads(data);
     state.leadsCache = flat;

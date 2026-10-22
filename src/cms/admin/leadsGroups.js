@@ -4,6 +4,8 @@
 // enquiry timeline (GET /leads/groups/:key) inline. The default stays the
 // stage view so operators are undisrupted; the toolbar toggle (injected here
 // via ensureLeadGroupControls, no dashboard.html edit needed) switches modes.
+// 2026-10-22: the By-stage toggle was removed (owner request) — email groups
+// are the only Lead Database view; the toolbar keeps just the email search.
 //
 // Follows the existing *View.js pattern: one-way imports (views →
 // state/api/dom), the entry (admin.js) branches bindLeadTable into
@@ -132,37 +134,14 @@ export function ensureLeadGroupControls(onReload) {
   if (!src || src.dataset.groupMounted) return;
   src.dataset.groupMounted = '1';
   controlsWired = true;
-  const seg = document.createElement('div');
-  seg.className = 'seg';
-  seg.id = 'leadGroupSeg';
-  seg.title = 'Group the lead table by pipeline stage (default) or by email identity';
-  seg.innerHTML = '<button type="button" data-lgmode="stage" class="active">By stage</button><button type="button" data-lgmode="email">By email</button>';
   const input = document.createElement('input');
   input.id = 'leadGroupSearch';
   input.className = 'tbl-search';
   input.placeholder = 'Search email / name…';
   input.setAttribute('aria-label', 'Search lead email groups');
-  input.title = 'Searches email, normalized email and name across all time (date range does not apply in By-email mode)';
+  input.title = 'Searches email, normalized email and name across all time';
   input.style.maxWidth = '220px';
-  input.hidden = true;
-  src.after(seg);
-  seg.after(input);
-  seg.addEventListener('click', (e) => {
-    const b = e.target.closest('button[data-lgmode]');
-    if (!b) return;
-    const mode = b.dataset.lgmode;
-    if (mode !== 'stage' && mode !== 'email') return;
-    state.leadViewMode = mode;
-    state.leadPage = 1;
-    state.leadGroupPage = 1;
-    state.leadGroupExpanded = null;
-    seg.querySelectorAll('button[data-lgmode]').forEach((x) => x.classList.toggle('active', x === b));
-    input.hidden = mode !== 'email';
-    if (mode === 'email') {
-      try { input.focus({ preventScroll: true }); } catch (err) { try { input.focus(); } catch (e2) { /* noop */ } }
-    }
-    onReload();
-  });
+  src.after(input);
   let t = null;
   input.addEventListener('input', () => {
     if (t) clearTimeout(t);

@@ -1002,10 +1002,20 @@ body.lead-drawer-open{overflow-x:hidden}
       </div>
     </section>
 
+    <!-- ============ QUOTATIONS (Leads): PROPOSAL_SENT leads + live inventory ============ -->
+    <section class="page" id="quotes">
+      <div class="head"><div><h1>Quotations</h1><p>Every quoted lead with its quotation PDF, email status and live inventory.</p></div><div class="actions"><button class="primary" id="addQuoteHeaderBtn" type="button">＋ New Quotation</button></div></div>
+      <div class="tbl-card">
+        <div class="sec-hdr"><div><div class="sec-title">Quotes</div><div class="sec-sub" id="quotesSub">Quoted leads · stages move in the Lead database</div></div></div>
+        <table class="data-tbl" id="quotesTable"><thead><tr><th>Lead</th><th>Stage</th><th>Facility/Size</th><th>Est. value</th><th>Inventory</th><th>Owner</th><th>Quotation No</th><th>PDF</th><th>Email</th><th></th></tr></thead><tbody id="quotesBody"></tbody></table>
+        <div id="quoteDetail"></div>
+      </div>
+    </section>
+
     <!-- ============ CUSTOMERS (subtabs: Tenants, Bookings, Move-ins) ============ -->
     <section class="page" id="customers">
-      <div class="head"><div><h1>Customers &amp; agreements</h1><p>Every tenant, unit and service record.</p></div><div class="actions"><button class="primary" id="addQuoteHeaderBtn" type="button">＋ New Quotation</button></div></div>
-      <div class="subtabs" data-tabs="customer"><button class="active" data-tab="customer-tenants">Tenants</button><button data-tab="customer-bookings">Bookings</button><button data-tab="customer-moveins">Move-ins</button><button data-tab="customer-quotes">Quotes</button><button data-tab="customer-moveouts">Move-outs</button></div>
+      <div class="head"><div><h1>Customers &amp; agreements</h1><p>Every tenant, unit and service record.</p></div></div>
+      <div class="subtabs" data-tabs="customer"><button class="active" data-tab="customer-tenants">Tenants</button><button data-tab="customer-bookings">Bookings</button><button data-tab="customer-moveins">Move-ins</button><button data-tab="customer-moveouts">Move-outs</button></div>
       <!-- Tenants Table -->
       <div class="module-panel active" id="customer-tenants">
         <div class="tbl-card">
@@ -1032,13 +1042,6 @@ body.lead-drawer-open{overflow-x:hidden}
           <table class="data-tbl" id="moveinsViewTable"><thead><tr><th>Ref</th><th>Customer</th><th>Unit</th><th>Move-in</th><th>Duration</th><th>$/mo</th><th>Paid/Due</th><th>Status</th></tr></thead><tbody id="moveinsViewBody"></tbody></table>
         </div>
       </div>
-      <!-- Quotes queue (P1): PROPOSAL_SENT leads + live inventory -->
-      <div class="module-panel" id="customer-quotes">
-        <div class="tbl-card">
-          <div class="sec-hdr"><div><div class="sec-title">Quotes</div><div class="sec-sub" id="quotesSub">Quoted leads · stages move in Leads</div></div></div>
-          <table class="data-tbl" id="quotesTable"><thead><tr><th>Lead</th><th>Stage</th><th>Facility/Size</th><th>Est. value</th><th>Inventory</th><th>Owner</th><th>Quotation No</th><th>PDF</th><th>Email</th><th></th></tr></thead><tbody id="quotesBody"></tbody></table>
-          <div id="quoteDetail"></div>
-        </div>
       </div>
       <!-- Move-outs queue (P1): NOTICE tenants + latest notice · explicit transitions -->
       <div class="module-panel" id="customer-moveouts">

@@ -54,7 +54,7 @@ function toast(msg) {
 const coreMap = {
   command: 'command',
   portfolio: 'command',
-  leads: 'leads', pipeline: 'leads', inbox: 'leads', calendar: 'leads', automation: 'leads',
+  leads: 'leads', pipeline: 'leads', quotes: 'leads', inbox: 'leads', calendar: 'leads', automation: 'leads',
   analytics: 'command',
   customers: 'customers',
   facilities: 'facilities',
@@ -67,10 +67,10 @@ const coreMap = {
 
 const sideNav = {
   command: [['Command centre', 'command'], ['Facility portfolio', 'portfolio'], ['Performance dashboards', 'analytics']],
-  leads: [['Lead database', 'leads'], ['Pipeline', 'pipeline'], ['Conversations', 'inbox'],
+  leads: [['Lead database', 'leads'], ['Pipeline', 'pipeline'], ['Quotations', 'quotes'], ['Conversations', 'inbox'],
     ['Appointments', 'calendar'], ['Automation', 'automation']],
   customers: [['Tenants', 'customers', 'customer-tenants'], ['Bookings', 'customers', 'customer-bookings'],
-    ['Move-ins', 'customers', 'customer-moveins'], ['Quotes', 'customers', 'customer-quotes'],
+    ['Move-ins', 'customers', 'customer-moveins'],
     ['Move-outs', 'customers', 'customer-moveouts']],
   facilities: [['Units Information', 'facilities', 'facility-map'], ['Units', 'facilities', 'facility-units'],
     ['Floors', 'facilities', 'facility-floors'],
@@ -157,6 +157,7 @@ function openPage(id) {
   }
   else if (id === 'leads') bindLeadTable();
   else if (id === 'pipeline') bindPipeline();
+  else if (id === 'quotes') bindQuotes().catch((err) => showBanner('Quotes: ' + describeError(err)));
   else if (id === 'inbox') bindInbox();
   else if (id === 'calendar') bindCalendar();
   else if (id === 'analytics') bindAnalytics();
@@ -4016,7 +4017,6 @@ function wireEvents() {
       if (panel === 'customer-tenants') refreshTenantsView();
       else if (panel === 'customer-bookings') refreshBookingsView();
       else if (panel === 'customer-moveins') refreshMoveinsView();
-      else if (panel === 'customer-quotes') bindQuotes().catch((err) => showBanner('Quotes: ' + describeError(err)));
       else if (panel === 'customer-moveouts') bindMoveouts().catch((err) => showBanner('Move-outs: ' + describeError(err)));
     });
   });

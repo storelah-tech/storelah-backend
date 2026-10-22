@@ -6165,6 +6165,8 @@ function fpRenderPlanStatus() {
   if (!state.fp.plan) {
     el.textContent = 'No plan yet';
     el.classList.remove('is-draft', 'is-live');
+    const revert = $('#fpRevertPublished');
+    if (revert) revert.style.display = 'none';
     return;
   }
   const st = String(state.fp.plan.status || 'DRAFT').toUpperCase();
@@ -6180,6 +6182,40 @@ function fpRenderPlanStatus() {
   el.title = servedSnapshot ? 'Last published ' + new Date(state.fp.plan.publishedAt).toLocaleString() : '';
   el.classList.toggle('is-live', live);
   el.classList.toggle('is-draft', !live);
+  // Unpublished edits on a published plan can always be discarded. (Inline
+  // display, not [hidden]: the header .tb-btn rule sets display and wins.)
+  const revert = $('#fpRevertPublished');
+  if (revert) revert.style.display = servedSnapshot ? '' : 'none';
+}
+
+// Revert to published: discard unpublished edits by restoring the working
+// copy from the published snapshot (what customers see right now) — nothing
+// new goes live. The current canvas is saved as a version first, so the
+// discarded edits stay recoverable from the Library.
+async function fpRevertToPublished() {
+  const plan = state.fp.plan;
+  if (!state.fp.floorId || !plan || !plan.publishedAt) return;
+  const when = new Date(plan.publishedAt).toLocaleString();
+  const ok = await confirmDialog({
+    title: 'Revert to the published plan?',
+    message: `The designer goes back to the plan customers see now (published ${when}). Your current canvas is saved as a new version first, so you can load it again from the Floor Plan Library. Nothing new is published.`,
+    confirmLabel: 'Revert to published',
+  });
+  if (!ok) return;
+  const saved = await fpSaveDraft();
+  if (!saved) return; // keep the edits if they could not be saved as a version
+  try {
+    const res = await request(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/revert-to-published`, { method: 'POST' });
+    const skipped = (res && res.meta && res.meta.skippedPlacements) || [];
+    await fpFetch();
+    fpToast(
+      `Reverted to the published plan (${when}). Your previous canvas is saved as v${saved.version}.` +
+        (skipped.length ? ` Skipped (${skipped.length}): ${skipped.join(', ')} — deleted, moved floors, or deactivated since publishing.` : ''),
+      !skipped.length,
+    );
+  } catch (err) {
+    fpToast('Revert to published: ' + describeError(err), false);
+  }
 }
 
 // ---------- draft plan rename (Floor Plan Library rows only) ----------
@@ -6368,7 +6404,7 @@ async function fpPublishPlan() {
       title: isEmpty ? 'Publish an EMPTY floor plan?' : 'Publish this floor plan?',
       message: isEmpty
         ? `0 units will go live — customers will see an empty floor. ${unitLine} Later edits stay in draft — customers keep seeing this published version until you publish again.`
-        : `${unitLine} The current draft becomes visible to the booking frontend. Later edits stay in draft — customers keep seeing this published version until you publish again.`,
+        : `${unitLine} The current draft becomes visible to the booking frontend and is saved as a version marked Published. Later edits stay in draft — customers keep seeing this published version until you publish again.`,
       confirmLabel: isEmpty ? 'Publish empty plan' : 'Publish',
       danger: isEmpty,
       requireCheck: isEmpty ? 'I understand customers will see an empty floor' : undefined,
@@ -6711,7 +6747,7 @@ async function fpLoadDraft(draftId) {
   } else {
     const ok = await confirmDialog({
       title: `Load ${label} into the designer?`,
-      message: `The working copy is replaced with ${label}. Edits not saved as a version are lost. Nothing is published — customers keep seeing the last published version until you publish.`,
+      message: `The working copy is replaced with ${label}${d && String(d.status).toUpperCase() === 'ACTIVE' ? ' (the version customers see now)' : ' — this is NOT the version customers see now; use Revert to published for that'}. Edits not saved as a version are lost. Nothing is published — customers keep seeing the last published version until you publish.`,
       confirmLabel: 'Load',
     });
     if (!ok) return;
@@ -6743,7 +6779,7 @@ async function fpResolveUnsaved(discardVerb) {
   if (!fpCanvasDirty && !fpHasPendingWrites()) return 'proceed';
   const saveOk = await confirmDialog({
     title: 'Unsaved floor-plan changes?',
-    message: `You have unsaved changes — Save as Draft, Discard, or Cancel. Save as Draft freezes the full canvas on screen as a new draft version; Discard ${discardVerb || 'continues'} and loses the edits; Cancel stays here.`,
+    message: `Your edits are kept in the working copy but are not saved as a version yet — Save as Draft, Discard, or Cancel. Save as Draft freezes the full canvas on screen as a new draft version; Discard ${discardVerb || 'continues'} without a version; Cancel stays here.`,
     confirmLabel: 'Save as Draft',
     cancelLabel: 'Not now',
   });
@@ -8126,6 +8162,7 @@ export function fpInitEvents() {
   $('#fpSaveCanvas').addEventListener('click', fpSaveCanvas);
   $('#fpSaveDraft').addEventListener('click', fpSaveDraft);
   $('#fpPublishPlan').addEventListener('click', fpPublishPlan);
+  $('#fpRevertPublished').addEventListener('click', fpRevertToPublished);
   $('#fpDeletePlan').addEventListener('click', fpDeletePlan);
   // Draft plan rename lives in the Floor Plan Library rows only (per-row
   // inline editor via the #fpDraftsBody delegation below) — no Designer

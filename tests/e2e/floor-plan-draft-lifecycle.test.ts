@@ -12,11 +12,15 @@
 
 import { beforeEach, describe, expect, it } from 'vitest';
 import { PIN, api, prisma, resetDb, seedMoveInWorld, type MoveInWorld } from './fixtures';
-import { listDrafts, loadDraft, publishDraft, saveDraft } from '../../src/core/floorPlanDrafts';
+import { listDrafts, loadDraft, publishDraft, publishLivePlan, revertToPublished, saveDraft } from '../../src/core/floorPlanDrafts';
 import {
   createFloorPlanBlock,
+  createFloorPlanBoundary,
+  createUnitOnPlan,
   getFloorPlan,
   publishFloorPlanWithSync,
+  removeFloorPlanBlock,
+  removeUnitPlacement,
   setFloorPlanBlock,
   setUnitPlacement,
 } from '../../src/core/floorPlans';
@@ -66,14 +70,20 @@ describe('floor plan draft versions vs the live plan (DB)', () => {
     expect(await publicPlan()).toEqual(publicBefore);
   });
 
-  it('publishing the working copy directly clears the version Published marker', async () => {
+  it('publishing the working copy saves it as a new version marked Published', async () => {
     const v1 = await saveDraft(world.floorId);
     await publishDraft(v1.id);
     expect(await markers(world.floorId)).toEqual({ 1: 'ACTIVE' });
 
     await setUnitPlacement(world.floorId, rentable, { x: 40, y: 50, width: 5, height: 10 });
-    await publishFloorPlanWithSync(world.floorId, { actorName: 'E2E' });
-    expect(await markers(world.floorId)).toEqual({ 1: 'DRAFT' });
+    await publishLivePlan(world.floorId, { actorName: 'E2E' });
+    expect(await markers(world.floorId)).toEqual({ 1: 'DRAFT', 2: 'ACTIVE' });
+
+    // The new version is exactly what customers see — loading it is a no-op.
+    const v2 = (await listDrafts(world.floorId))[0];
+    expect(v2.createdBy).toBe('E2E');
+    await loadDraft(v2.id);
+    expect((await getFloorPlan(world.floorId)).plan!.placements.find((p) => p.unit.id === rentable)).toMatchObject({ x: 40, y: 50 });
   });
 
   it('loading a version restores it into the working copy without publishing', async () => {
@@ -118,5 +128,69 @@ describe('floor plan draft versions vs the live plan (DB)', () => {
     const view = await publicPlan();
     expect(view).not.toBeNull();
     expect(view!.placements.find((p) => p.unit.unitCode === PIN.rentableUnit)).not.toMatchObject({ x: 40, y: 50 });
+  });
+
+  // Production report 2026-10-22: published last week, today deleted
+  // everything and drew one wall + one unit, saved, then "loaded last week's
+  // plan" and got the wall + unit — no Library row was the published plan.
+  it('revert to published recovers the plan customers see after a delete-all redraw', async () => {
+    await publishFloorPlanWithSync(world.floorId, { actorName: 'E2E' }); // legacy: no version saved
+    const published = (await publicPlan())!;
+    const before = await getFloorPlan(world.floorId);
+    const block = await createFloorPlanBlock(world.floorId, { name: 'Lift', x: 1, y: 1, width: 4, height: 4 });
+    await publishFloorPlanWithSync(world.floorId, { actorName: 'E2E' });
+    const publishedWithLift = (await publicPlan())!;
+
+    // An old version still carries a stale Published marker (pre-hygiene data).
+    const stale = await saveDraft(world.floorId, { placements: [] });
+    await prisma.floorPlanDraft.update({ where: { id: stale.id }, data: { status: 'ACTIVE', updatedAt: new Date(Date.now() - 86_400_000) } });
+    expect((await listDrafts(world.floorId)).find((d) => d.id === stale.id)!.status).toBe('DRAFT');
+
+    // Delete all, draw a wall and a unit, Save as draft.
+    for (const p of before.plan!.placements) await removeUnitPlacement(world.floorId, p.unit.id);
+    await removeFloorPlanBlock(world.floorId, (block as { id: string }).id);
+    await createFloorPlanBoundary(world.floorId, { kind: 'WALL', points: [[2, 2], [30, 2]] });
+    await createUnitOnPlan(world.floorId, { x: 10, y: 10, width: 6, height: 8 });
+    const today = await saveDraft(world.floorId);
+    expect(today.counts.placements).toBe(1);
+
+    // Loading the newest version only brings back the wall + unit…
+    await loadDraft(today.id);
+    expect((await getFloorPlan(world.floorId)).plan!.placements).toHaveLength(1);
+    // …while customers still see the full published plan.
+    expect((await publicPlan())!.placements).toHaveLength(published.placements.length);
+
+    const res = await revertToPublished(world.floorId);
+    expect(res.skippedPlacements).toEqual([]);
+    const cms = (await getFloorPlan(world.floorId)).plan!;
+    expect(cms.status).toBe('ACTIVE');
+    expect(cms.placements).toHaveLength(published.placements.length);
+    expect(cms.placements.every((p) => !p.areaDirty)).toBe(true);
+    expect(cms.blocks.map((b) => b.name)).toEqual(['Lift']);
+    expect(cms.boundaries).toHaveLength(0);
+    for (const pl of publishedWithLift.placements) {
+      expect(cms.placements.find((p) => p.unit.unitCode === pl.unit.unitCode)).toMatchObject({ x: pl.x, y: pl.y });
+    }
+    // Nothing new was published; today's drawing survives as a version.
+    // (fresh row ids after the restore — compare what customers see)
+    const shape = (v: any) => ({
+      size: [v.width, v.height],
+      units: v.placements.map((p: any) => [p.unit.unitCode, p.unit.status, p.x, p.y, p.width, p.height]).sort(),
+      blocks: v.blocks.map((b: any) => [b.name, b.x, b.y, b.width, b.height]).sort(),
+      lines: v.boundaries.length,
+    });
+    expect(shape(await publicPlan())).toEqual(shape(publishedWithLift));
+    // The Library now holds the published plan as the one Published version.
+    const rows = await listDrafts(world.floorId);
+    expect(rows.some((d) => d.id === today.id)).toBe(true);
+    expect(rows.filter((d) => d.status === 'ACTIVE')).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ status: 'ACTIVE', counts: { placements: published.placements.length, blocks: 1 } });
+    // Reverting again does not pile up versions.
+    await revertToPublished(world.floorId);
+    expect(await listDrafts(world.floorId)).toHaveLength(rows.length);
+  });
+
+  it('revert to published is refused for a never-published floor', async () => {
+    await expect(revertToPublished(world.floorId)).rejects.toMatchObject({ status: 409, code: 'NOT_PUBLISHED' });
   });
 });

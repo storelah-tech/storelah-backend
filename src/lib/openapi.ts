@@ -1678,6 +1678,32 @@ export const openapiSpec = {
         },
       },
     },
+    '/cms/floor-plans/{floorId}/revert-to-published': {
+      post: {
+        tags: ['Operator CMS'],
+        summary: 'Discard unpublished floor-plan edits (revert to published)',
+        description: [
+          'Restores the working copy from the published snapshot — what customers see right now — and marks ' +
+            'the plan ACTIVE again; nothing new is published and the public view is unchanged. Works for plans ' +
+            'published before publish auto-saved versions. Door positions re-centre and GUIDE lines are absent ' +
+            '(the snapshot is the public view). Placements whose unit has since been deleted, moved floors, or ' +
+            'deactivated are skipped (`meta.skippedPlacements`). `409 NOT_PUBLISHED` when the floor was never published.',
+          '',
+          'Operator CMS endpoints are documented here for reference only; they are served on the CMS host under ',
+          '`/api/v1/cms` and require a Bearer JWT issued by `/api/v1/cms/login` (auto-login via `/api/v1/cms/config`).',
+        ].join('\n'),
+        operationId: 'revertFloorPlanToPublished',
+        security: [{ bearerAuth: [] }],
+        parameters: [{ name: 'floorId', in: 'path', required: true, description: 'Floor id (cuid).', schema: { type: 'string' } }],
+        responses: {
+          '200': { description: 'Working copy restored from the published snapshot (plan ACTIVE).' },
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '404': openapiErrorResponse('No floor plan for this floor.'),
+          '409': openapiErrorResponse('Never published (NOT_PUBLISHED).'),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+    },
     '/cms/drafts/{draftId}/load': {
       post: {
         tags: ['Operator CMS'],

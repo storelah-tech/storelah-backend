@@ -1,6 +1,6 @@
 import { prisma } from '../lib/prisma';
 import { AppError } from '../lib/http';
-import { Prisma } from '@prisma/client';
+import { Prisma, type PlanStatus } from '@prisma/client';
 import {
   CANVAS_DEFAULTS,
   FP_MARKER_KINDS,
@@ -14,8 +14,10 @@ import {
   ensurePublishedSnapshotTx,
   getFloorPlan,
   publishFloorPlan,
+  publishFloorPlanWithSync,
   publishPlanTx,
   type DoorOffsets,
+  type PublicPlanView,
   type PublishFloorPlanOptions,
 } from './floorPlans';
 import { loadContractedUnits, sameSqft, sqftForRect } from './unitSizing';
@@ -273,6 +275,62 @@ function serializeDraft(d: DraftRow) {
   };
 }
 
+// ---------- live canvas → snapshot ----------
+
+const liveInclude = {
+  placements: { include: { unit: { include: { size: true } } } },
+  blocks: true,
+  boundaries: true,
+  markers: true,
+} satisfies Prisma.FloorPlanInclude;
+
+type LivePlan = Prisma.FloorPlanGetPayload<{ include: typeof liveInclude }>;
+
+// The live working copy in snapshot shape — the keep path of saveDraft and
+// the version every live publish freezes.
+function liveSnapshotOf(live: LivePlan | null) {
+  return {
+    placements: (live?.placements ?? []).map((p): DraftPlacementSnapshot => ({
+      unitId: p.unit.id,
+      unitCode: p.unit.unitCode,
+      name: p.unit.name,
+      sizeCode: p.unit.size.code,
+      sizeName: p.unit.size.name,
+      sqft: p.unit.sqft,
+      status: p.unit.status,
+      hasAC: p.unit.hasAC,
+      hasPillar: p.unit.hasPillar,
+      x: p.x,
+      y: p.y,
+      width: p.width,
+      height: p.height,
+      stackTier: (p.stackTier === 1 ? 1 : 0) as 0 | 1,
+      doorEdges: p.doorEdges ? String(p.doorEdges).split(',') : null,
+      doorOffsets: doorOffsetsToObject(p.doorOffsets),
+    })),
+    blocks: (live?.blocks ?? []).map((b): DraftBlockSnapshot => ({
+      id: b.id,
+      name: b.name,
+      x: b.x,
+      y: b.y,
+      width: b.width,
+      height: b.height,
+      color: b.color,
+      doorEdges: b.doorEdges ? String(b.doorEdges).split(',') : null,
+    })),
+    boundaries: (live?.boundaries ?? []).map((b): DraftBoundarySnapshot => ({
+      id: b.id,
+      label: b.label,
+      kind: b.kind,
+      points: boundaryPointsOf(b.points),
+      closed: b.closed,
+      sortOrder: b.sortOrder,
+      thickness: b.thickness ?? null,
+    })),
+    markers: (live?.markers ?? []).map((m): DraftMarkerSnapshot => ({ id: m.id, kind: m.kind, label: m.label, x: m.x, y: m.y })),
+  };
+}
+
 // ---------- API ----------
 
 /**
@@ -287,15 +345,7 @@ export async function saveDraft(floorId: string, input: SaveDraftInput = {}) {
   const floor = await prisma.floor.findUnique({ where: { id: floorId } });
   if (!floor) throw new AppError(404, 'NOT_FOUND', `Floor ${floorId} not found`);
 
-  const live = await prisma.floorPlan.findUnique({
-    where: { floorId },
-    include: {
-      placements: { include: { unit: { include: { size: true } } } },
-      blocks: true,
-      boundaries: true,
-      markers: true,
-    },
-  });
+  const live = await prisma.floorPlan.findUnique({ where: { floorId }, include: liveInclude });
 
   const width = input.width !== undefined ? checkDraftDim(input.width, 'width') : (live?.width || CANVAS_DEFAULTS.width);
   const height = input.height !== undefined ? checkDraftDim(input.height, 'height') : (live?.height || CANVAS_DEFAULTS.height);
@@ -362,24 +412,7 @@ export async function saveDraft(floorId: string, input: SaveDraftInput = {}) {
       });
     }
   } else {
-    placements = (live?.placements ?? []).map((p) => ({
-      unitId: p.unit.id,
-      unitCode: p.unit.unitCode,
-      name: p.unit.name,
-      sizeCode: p.unit.size.code,
-      sizeName: p.unit.size.name,
-      sqft: p.unit.sqft,
-      status: p.unit.status,
-      hasAC: p.unit.hasAC,
-      hasPillar: p.unit.hasPillar,
-      x: p.x,
-      y: p.y,
-      width: p.width,
-      height: p.height,
-      stackTier: (p.stackTier === 1 ? 1 : 0) as 0 | 1,
-      doorEdges: p.doorEdges ? String(p.doorEdges).split(',') : null,
-      doorOffsets: doorOffsetsToObject(p.doorOffsets),
-    }));
+    placements = liveSnapshotOf(live).placements;
   }
 
   let blocks: DraftBlockSnapshot[];
@@ -404,16 +437,7 @@ export async function saveDraft(floorId: string, input: SaveDraftInput = {}) {
       };
     });
   } else {
-    blocks = (live?.blocks ?? []).map((b) => ({
-      id: b.id,
-      name: b.name,
-      x: b.x,
-      y: b.y,
-      width: b.width,
-      height: b.height,
-      color: b.color,
-      doorEdges: b.doorEdges ? String(b.doorEdges).split(',') : null,
-    }));
+    blocks = liveSnapshotOf(live).blocks;
   }
 
   let boundaries: DraftBoundarySnapshot[];
@@ -444,15 +468,7 @@ export async function saveDraft(floorId: string, input: SaveDraftInput = {}) {
       };
     });
   } else {
-    boundaries = (live?.boundaries ?? []).map((b) => ({
-      id: b.id,
-      label: b.label,
-      kind: b.kind,
-      points: boundaryPointsOf(b.points),
-      closed: b.closed,
-      sortOrder: b.sortOrder,
-      thickness: b.thickness ?? null,
-    }));
+    boundaries = liveSnapshotOf(live).boundaries;
   }
 
   let markers: DraftMarkerSnapshot[];
@@ -476,7 +492,7 @@ export async function saveDraft(floorId: string, input: SaveDraftInput = {}) {
       return { kind: m.kind, label: m.label == null || !String(m.label).trim() ? null : String(m.label).trim(), x: quantizeFt(m.x), y: quantizeFt(m.y) };
     });
   } else {
-    markers = (live?.markers ?? []).map((m) => ({ id: m.id, kind: m.kind, label: m.label, x: m.x, y: m.y }));
+    markers = liveSnapshotOf(live).markers;
   }
 
   const data = {
@@ -520,7 +536,8 @@ export async function listDrafts(floorId: string) {
     include: { floor: { include: { branch: true } } },
     orderBy: { version: 'desc' },
   });
-  return rows.map(serializeDraftSummary);
+  const plan = await prisma.floorPlan.findUnique({ where: { floorId }, select: { publishedAt: true } });
+  return rows.map((r) => ({ ...serializeDraftSummary(r), status: effectiveStatus(r, plan?.publishedAt) }));
 }
 
 /** View one draft version with its full canvas snapshot. */
@@ -530,7 +547,13 @@ export async function getDraft(draftId: string) {
     include: { floor: { include: { branch: true } } },
   });
   if (!draft) throw new AppError(404, 'NOT_FOUND', `Floor plan draft ${draftId} not found`);
-  return serializeDraft(draft);
+  const plan = await prisma.floorPlan.findUnique({ where: { floorId: draft.floorId }, select: { publishedAt: true } });
+  return { ...serializeDraft(draft), status: effectiveStatus(draft, plan?.publishedAt) };
+}
+
+// The marker the CMS shows: ACTIVE only when it is trustworthy.
+function effectiveStatus(row: { status: PlanStatus; updatedAt: Date }, publishedAt: Date | null | undefined): PlanStatus {
+  return row.status === 'ACTIVE' && !isTrustedMarker(row, publishedAt) ? 'DRAFT' : row.status;
 }
 
 /** Delete one draft version (design history only — the live plan is untouched). */
@@ -606,6 +629,13 @@ async function findDraftContractedBlockers(
 
 type DraftWithFloor = Prisma.FloorPlanDraftGetPayload<{ include: { floor: true } }>;
 
+// What a restore needs from a version — also built from the published
+// snapshot by revertToPublished.
+type SnapshotSource = Pick<
+  DraftWithFloor,
+  'floorId' | 'width' | 'height' | 'structure' | 'gfaSqft' | 'placements' | 'blocks' | 'boundaries' | 'markers'
+>;
+
 // Snapshot → live-row resolution shared by the publish preview and the
 // publish itself (identical skip semantics in both, so the confirm popup can
 // never promise units the publish then drops). Placements whose unit has since
@@ -615,7 +645,7 @@ type DraftWithFloor = Prisma.FloorPlanDraftGetPayload<{ include: { floor: true }
 // Size-change bookkeeping (areaDirty flags + sizeChanges) reuses the Float
 // unit-sizing helpers (sqftForRect/sameSqft — Unit.sqft is float8 quantized to
 // 0.01, never Math.round).
-async function resolveDraftSnapshotRows(draft: DraftWithFloor) {
+async function resolveDraftSnapshotRows(draft: SnapshotSource) {
   const floorId = draft.floorId;
   const canvas = { width: draft.width, height: draft.height };
 
@@ -761,16 +791,18 @@ export async function getPublishPreview(draftId: string): Promise<PublishPreview
   // Highest ACTIVE version wins the "currently published" label (a legacy
   // floor could hold more than one ACTIVE marker — the next publish demotes
   // all but the chosen one, self-healing the invariant).
-  const publishedRow = await prisma.floorPlanDraft.findFirst({
+  const livePlan = await prisma.floorPlan.findUnique({ where: { floorId: draft.floorId }, select: { publishedAt: true } });
+  const activeRow = await prisma.floorPlanDraft.findFirst({
     where: { floorId: draft.floorId, status: 'ACTIVE' },
-    select: { id: true, version: true },
+    select: { id: true, version: true, status: true, updatedAt: true },
     orderBy: { version: 'desc' },
   });
+  const publishedRow = activeRow && isTrustedMarker(activeRow, livePlan?.publishedAt) ? activeRow : null;
   return {
     draftId: draft.id,
     floorId: draft.floorId,
     version: draft.version,
-    status: draft.status,
+    status: effectiveStatus(draft, livePlan?.publishedAt),
     counts: resolved.counts,
     published: publishedRow ? { id: publishedRow.id, version: publishedRow.version } : null,
     liveStatus: live?.status ?? null,
@@ -871,7 +903,7 @@ export async function loadDraft(draftId: string): Promise<LoadDraftResult> {
 // so customers never lose the floor. Returns the live plan id.
 async function restoreDraftTx(
   tx: Prisma.TransactionClient,
-  draft: DraftWithFloor,
+  draft: SnapshotSource,
   resolved: Awaited<ReturnType<typeof resolveDraftSnapshotRows>>,
 ): Promise<string> {
   const floorId = draft.floorId;
@@ -913,4 +945,112 @@ async function restoreDraftTx(
     await tx.floorPlanMarker.createMany({ data: markerRows.map((r) => ({ ...r, floorPlanId: plan.id })) });
   }
   return plan.id;
+}
+
+/**
+ * Live publish (header Publish) that also freezes the published canvas as a
+ * new version marked ACTIVE, in the same transaction — so the Library always
+ * holds exactly what customers see and it can be loaded back later.
+ */
+export async function publishLivePlan(floorId: string, opts?: PublishFloorPlanOptions) {
+  return publishFloorPlanWithSync(floorId, opts, {
+    afterPublishTx: (tx) => freezeLiveAsPublishedVersionTx(tx, floorId, opts?.actorName ?? null),
+  });
+}
+
+// Freeze the live working copy as a new version marked ACTIVE (every other
+// version demoted) — the Library row that equals what customers see.
+async function freezeLiveAsPublishedVersionTx(tx: Prisma.TransactionClient, floorId: string, createdBy: string | null) {
+  const live = await tx.floorPlan.findUniqueOrThrow({ where: { floorId }, include: liveInclude });
+  const snap = liveSnapshotOf(live);
+  const agg = await tx.floorPlanDraft.aggregate({ where: { floorId }, _max: { version: true } });
+  await tx.floorPlanDraft.updateMany({ where: { floorId, status: 'ACTIVE' }, data: { status: 'DRAFT' } });
+  await tx.floorPlanDraft.create({
+    data: {
+      floorId,
+      version: (agg._max.version ?? 0) + 1,
+      status: 'ACTIVE',
+      width: live.width,
+      height: live.height,
+      structure: live.structure === null ? Prisma.JsonNull : (live.structure as Prisma.InputJsonValue),
+      gfaSqft: live.gfaSqft,
+      placements: snap.placements as unknown as Prisma.InputJsonValue,
+      blocks: snap.blocks as unknown as Prisma.InputJsonValue,
+      boundaries: snap.boundaries as unknown as Prisma.InputJsonValue,
+      markers: snap.markers as unknown as Prisma.InputJsonValue,
+      createdBy,
+    },
+  });
+}
+
+// A version's ACTIVE marker is only trustworthy when it was set by the
+// floor's latest publish (same transaction ⇒ updatedAt ≥ publishedAt). Rows
+// marked before marker hygiene existed (a later live publish left them
+// ACTIVE) read as DRAFT so the Library never claims customers see them.
+const MARKER_SKEW_MS = 5000;
+function isTrustedMarker(row: { status: string; updatedAt: Date }, publishedAt: Date | null | undefined): boolean {
+  return row.status === 'ACTIVE' && !!publishedAt && row.updatedAt.getTime() >= publishedAt.getTime() - MARKER_SKEW_MS;
+}
+
+export interface RevertToPublishedResult extends LoadDraftResult {
+  publishedAt: string | null;
+}
+
+/**
+ * Discard unpublished edits: restore the working copy from the published
+ * snapshot (what customers see right now) and mark it ACTIVE again — nothing
+ * new goes live, the public view is unchanged. Works for plans published
+ * before publish auto-saved versions. The snapshot is the public view, so
+ * CMS-only details it never carried come back at defaults: door positions
+ * re-centre and GUIDE construction lines are absent.
+ */
+export async function revertToPublished(floorId: string, createdBy?: string | null): Promise<RevertToPublishedResult> {
+  const plan = await prisma.floorPlan.findUnique({ where: { floorId } });
+  if (!plan) throw new AppError(404, 'NOT_FOUND', `No floor plan exists for floor ${floorId}`);
+  const snap = plan.publishedSnapshot as unknown as PublicPlanView | null;
+  if (!snap) {
+    throw new AppError(409, 'NOT_PUBLISHED', 'This floor plan has never been published — there is no published version to revert to.');
+  }
+  const source: SnapshotSource = {
+    floorId,
+    width: snap.width,
+    height: snap.height,
+    structure: (snap.structure ?? null) as Prisma.JsonValue,
+    gfaSqft: snap.gfaSqft ?? null,
+    placements: (snap.placements ?? []).map((pl) => ({
+      unitId: pl.unit.id,
+      unitCode: pl.unit.unitCode,
+      x: pl.x,
+      y: pl.y,
+      width: pl.width,
+      height: pl.height,
+      stackTier: pl.stackTier,
+      doorEdges: pl.doorEdges,
+      doorOffsets: null,
+    })) as unknown as Prisma.JsonValue,
+    blocks: (snap.blocks ?? []) as unknown as Prisma.JsonValue,
+    boundaries: (snap.boundaries ?? []) as unknown as Prisma.JsonValue,
+    markers: (snap.markers ?? []) as unknown as Prisma.JsonValue,
+  };
+  const resolved = await resolveDraftSnapshotRows(source);
+  await prisma.$transaction(async (tx) => {
+    const planId = await restoreDraftTx(tx, source, resolved);
+    // The working copy now equals the published view — back to ACTIVE with
+    // the snapshot (and publishedAt) untouched: nothing new is published.
+    await tx.floorPlan.update({ where: { id: planId }, data: { status: 'ACTIVE' } });
+    // Published geometry is already synced to its units: nothing is pending.
+    await tx.unitPlacement.updateMany({ where: { floorPlanId: planId }, data: { areaDirty: false } });
+    // Make sure the Library holds the plan customers see: when no version is
+    // trustworthily marked Published (legacy publish, stale marker), freeze
+    // the restored copy as one.
+    const markers = await tx.floorPlanDraft.findMany({ where: { floorId, status: 'ACTIVE' }, select: { status: true, updatedAt: true } });
+    if (!markers.some((m) => isTrustedMarker(m, plan.publishedAt))) {
+      await freezeLiveAsPublishedVersionTx(tx, floorId, createdBy ? `${createdBy} (restored published plan)` : 'Restored published plan');
+    }
+  }, PUBLISH_TX_OPTIONS);
+  return {
+    plan: await getFloorPlan(floorId),
+    skippedPlacements: resolved.skippedPlacements,
+    publishedAt: plan.publishedAt ? plan.publishedAt.toISOString() : null,
+  };
 }

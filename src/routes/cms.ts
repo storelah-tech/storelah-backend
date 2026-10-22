@@ -152,7 +152,6 @@ import {
   setUnitPlacement,
   removeUnitPlacement,
   deleteFloorPlan,
-  publishFloorPlanWithSync,
   createUnitOnPlan,
   reconcileUnitSizes,
   createFloorPlanBlock,
@@ -187,6 +186,8 @@ import {
   deleteDraft,
   publishDraft,
   loadDraft,
+  publishLivePlan,
+  revertToPublished,
 } from '../core/floorPlanDrafts';
 import {
   listProtectionPlans,
@@ -1748,8 +1749,19 @@ router.post('/floor-plans/:floorId/publish', requireAuth, async (req: Request, r
     fail(res, 400, 'VALIDATION', 'Invalid publish body', p.error);
     return;
   }
-  const { plan, sizeSync } = await publishFloorPlanWithSync(String(req.params.floorId), p.opts);
+  // Also freezes the published canvas as a new version marked Published.
+  const { plan, sizeSync } = await publishLivePlan(String(req.params.floorId), p.opts);
   ok(res, plan, { sizeSync });
+});
+
+// Discard unpublished edits: restore the working copy from the published
+// snapshot (what customers see) and mark it published again — nothing new
+// goes live. 409 NOT_PUBLISHED when the floor was never published. Returns
+// the GET /floor-plans/:floorId payload; skipped placements ride in meta.
+router.post('/floor-plans/:floorId/revert-to-published', requireAuth, async (req: Request, res: Response) => {
+  const user = (req as any).user as { name?: string; email?: string } | undefined;
+  const { plan, skippedPlacements, publishedAt } = await revertToPublished(String(req.params.floorId), user?.name || user?.email || null);
+  ok(res, plan, { skippedPlacements, publishedAt });
 });
 
 // Publish review (read-only): the exact Unit changes publish would make —

@@ -1143,7 +1143,7 @@ export async function ensureCanvasPlan(floorId: string) {
 // customer floor plan never goes dark mid-edit. Unit facts are refreshed at
 // read time (see refreshSnapshotUnits), geometry stays as published.
 
-type PublicPlanView = ReturnType<typeof serializePlan>;
+export type PublicPlanView = ReturnType<typeof serializePlan>;
 
 async function storePublishedSnapshot(
   db: Prisma.TransactionClient | typeof prisma,
@@ -1245,6 +1245,10 @@ export interface PublishFloorPlanOptions {
 export async function publishFloorPlanWithSync(
   floorId: string,
   opts?: PublishFloorPlanOptions,
+  // Runs inside the publish transaction after DRAFT → ACTIVE (floorPlanDrafts
+  // uses it to freeze the published canvas as a version — passed in rather
+  // than imported to keep floorPlans.ts free of a circular import).
+  hooks?: { afterPublishTx?: (tx: Prisma.TransactionClient) => Promise<void> },
 ): Promise<{ plan: ReturnType<typeof serializePlan>; sizeSync: SizeSyncResult }> {
   const plan = await prisma.floorPlan.findUnique({ where: { floorId } });
   if (!plan) throw new AppError(404, 'NOT_FOUND', `No floor plan exists for floor ${floorId} — save a canvas first`);
@@ -1284,10 +1288,11 @@ export async function publishFloorPlanWithSync(
       );
     }
   }
-  const { plan: published, sizeSync } = await prisma.$transaction(
-    (tx) => publishPlanTx(tx, floorId, plan.id, opts),
-    PUBLISH_TX_OPTIONS,
-  );
+  const { plan: published, sizeSync } = await prisma.$transaction(async (tx) => {
+    const res = await publishPlanTx(tx, floorId, plan.id, opts);
+    if (hooks?.afterPublishTx) await hooks.afterPublishTx(tx);
+    return res;
+  }, PUBLISH_TX_OPTIONS);
   return { plan: published, sizeSync };
 }
 

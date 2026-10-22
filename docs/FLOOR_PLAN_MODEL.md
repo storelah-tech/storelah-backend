@@ -468,6 +468,21 @@ Bearer JWT, envelope `{ data, meta }`):
   live working copy rather than the loaded version.) Loading confirms first
   (unsaved edits: Save as Draft / Discard / Cancel); the next save freezes a
   NEW version (max+1 — the loaded version is never overwritten).
+- **Live publish saves a version** (`publishLivePlan`, header Publish →
+  `POST /floor-plans/:floorId/publish`): in the publish transaction the
+  published canvas is frozen as a new version marked `ACTIVE`, so the Library
+  always holds exactly what customers see. (Before 2026-10-22 a live publish
+  saved no version: after edits — e.g. delete-all and redraw — no Library row
+  could bring the published plan back.)
+- **Revert to published** (`revertToPublished`,
+  `POST /floor-plans/:floorId/revert-to-published`, Designer header button
+  shown while there are unpublished changes): restores the working copy from
+  `FloorPlan.publishedSnapshot` and marks it `ACTIVE` again (snapshot,
+  `publishedAt` and the public view unchanged; `areaDirty` cleared — the
+  published geometry is already synced). Works for plans published before
+  versions were auto-saved. The snapshot is the public view, so door
+  positions re-centre and GUIDE lines are absent. The designer saves the
+  current canvas as a version first. `409 NOT_PUBLISHED` when never published.
 - **Publish** (`publishDraft`): guards first (empty plan, contracted
   blockers, `promotions.approve`), then ONE transaction: restore the snapshot
   into the live plan (canvas upsert + delete-all/re-create placements/blocks/

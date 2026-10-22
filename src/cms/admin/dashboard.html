@@ -132,89 +132,6 @@ main{min-width:0;display:flex;flex-direction:column;min-height:100vh}
 .contact{display:flex;gap:10px;align-items:center}.contact .avatar{width:34px;height:34px;font-size:12px}
 .contact b{display:block}.contact small{color:var(--muted)}
 .heat{display:flex;gap:2px}.heat i{width:5px;height:13px;border-radius:2px;background:#ddd}.heat i.on{background:var(--terra)}
-/* ============ LEADS — email list + customer journey mind map (.lj-*) ============ */
-.lead-table-email{min-width:860px}
-.lead-table-email tr.lj-row{cursor:pointer}
-.lj-meter{display:inline-flex;gap:3px;vertical-align:middle;margin-right:6px}
-.lj-meter i{width:14px;height:6px;border-radius:3px;background:#e6e0d7}
-.lj-meter i.on{background:var(--olive2)}
-.lj-meter.lost i.on{background:#b9b2a7}
-.lj{position:fixed;inset:0;z-index:45}
-.lj[hidden]{display:none}
-.lj-backdrop{position:absolute;inset:0;background:rgba(32,36,31,.42);opacity:0;transition:opacity .25s ease}
-.lj.open .lj-backdrop{opacity:1}
-.lj-panel{position:absolute;inset:18px;background:var(--paper);border-radius:20px;box-shadow:0 30px 80px rgba(20,24,18,.28);display:flex;flex-direction:column;overflow:hidden;opacity:0;transform:translateY(14px) scale(.985);transition:opacity .28s ease,transform .32s cubic-bezier(.2,.9,.3,1.1)}
-.lj.open .lj-panel{opacity:1;transform:none}
-.lj-head{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;padding:18px 22px 10px;border-bottom:1px solid var(--line)}
-.lj-eyebrow{font-size:10.5px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:var(--terra)}
-.lj-head h2{margin:2px 0 2px;font-size:21px;letter-spacing:-.02em;word-break:break-all}
-.lj-head p{margin:0;color:var(--muted);font-size:12.5px}
-.lj-tools{display:flex;gap:6px;align-items:center;flex:none}
-.lj-zoomlbl{min-width:62px;padding:8px 10px}
-.lj-stats{display:flex;gap:10px;flex-wrap:wrap;padding:12px 22px 0}
-.lj-stat{background:var(--cream);border:1px solid var(--line);border-radius:12px;padding:7px 12px;min-width:120px}
-.lj-stat small{display:block;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
-.lj-stat b{font-size:13px}
-.lj-ribbon{display:flex;align-items:center;gap:14px;padding:14px 22px 6px}
-.lj-ribbon-end{font-size:11px;color:var(--muted);white-space:nowrap;font-weight:650}
-.lj-track{position:relative;flex:1;height:44px}
-.lj-track-line{position:absolute;left:0;right:0;top:14px;height:3px;border-radius:2px;background:linear-gradient(90deg,var(--sage),var(--terra-light));transform-origin:left;transform:scaleX(0);animation:lj-grow .8s .1s ease forwards}
-.lj-dot{position:absolute;top:2px;transform:translateX(-50%) scale(0);border:0;background:none;padding:0;display:flex;flex-direction:column;align-items:center;gap:2px;cursor:pointer;animation:lj-dot .45s var(--d,0ms) cubic-bezier(.2,.9,.3,1.4) forwards}
-.lj-dot span{width:27px;height:27px;border-radius:50%;display:grid;place-items:center;background:#fff;border:2.5px solid var(--tone);font-size:10px;font-weight:800;color:var(--ink);box-shadow:0 2px 6px rgba(0,0,0,.08);transition:transform .15s}
-.lj-dot small{font-size:9.5px;color:var(--muted);font-weight:650;white-space:nowrap}
-.lj-dot:hover span,.lj-dot.hot span{transform:scale(1.18);background:var(--tone);color:#fff}
-.lj-wrap{flex:1;overflow:auto;position:relative;cursor:grab;background-color:var(--cream);background-image:radial-gradient(rgba(51,68,55,.09) 1px,transparent 1.2px);background-size:22px 22px;margin:8px 14px 0;border-radius:14px;border:1px solid var(--line)}
-.lj-wrap.panning{cursor:grabbing;user-select:none}
-.lj-sizer{position:relative;margin:0 auto}
-.lj-canvas{position:absolute;left:0;top:0;transform-origin:0 0}
-.lj-links{position:absolute;left:0;top:0;overflow:visible;pointer-events:none}
-.lj-links path{fill:none;stroke-linecap:round;stroke-dasharray:1;stroke-dashoffset:1;opacity:.75;animation:lj-draw .7s var(--d,0ms) cubic-bezier(.45,.05,.3,1) forwards;transition:opacity .2s}
-.lj-node{position:absolute;box-sizing:border-box;opacity:0;transform:scale(.55);animation:lj-pop .55s var(--d,0ms) cubic-bezier(.2,.9,.3,1.35) forwards;transition:opacity .2s,box-shadow .2s,filter .2s}
-.lj-root{display:flex;align-items:center;gap:12px;padding:12px 16px;border-radius:22px;background:var(--olive);color:#fff;box-shadow:0 14px 34px rgba(51,68,55,.35)}
-.lj-root:before{content:'';position:absolute;inset:-7px;border-radius:28px;border:2px solid rgba(82,101,87,.35);animation:lj-pulse 2.6s 1s ease-out infinite}
-.lj-root-av{width:46px;height:46px;flex:none;border-radius:50%;display:grid;place-items:center;background:var(--terra);font-size:20px;font-weight:800}
-.lj-root-txt{min-width:0;display:flex;flex-direction:column}
-.lj-root-txt b{font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.lj-root-txt small{font-size:11px;opacity:.75;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.lj-enq{display:flex;flex-direction:column;justify-content:space-between;text-align:left;padding:9px 12px 9px 15px;border-radius:14px;background:#fff;border:1.5px solid var(--line);border-left:5px solid var(--tone);box-shadow:0 6px 18px rgba(46,47,40,.09);cursor:pointer;font:inherit;color:var(--ink)}
-.lj-enq:hover,.lj-enq.hot{box-shadow:0 10px 26px rgba(46,47,40,.18);border-color:var(--tone)}
-.lj-enq:focus-visible{outline:3px solid var(--terra);outline-offset:2px}
-.lj-enq b{font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.lj-enq-top,.lj-enq-foot{display:flex;align-items:center;gap:7px;font-size:11px}
-.lj-num{font-weight:800;color:#fff;background:var(--tone);border-radius:7px;padding:1px 7px}
-.lj-date{color:var(--muted);font-weight:650}
-.lj-stage{font-weight:800;color:var(--tone)}
-.lj-flag{color:#8b6324;font-weight:700}
-.lj-cta{margin-left:auto;color:var(--muted);font-weight:700;opacity:0;transition:opacity .15s}
-.lj-enq:hover .lj-cta,.lj-enq.hot .lj-cta,.lj-enq:focus-visible .lj-cta{opacity:1}
-.lj-leaf{display:flex;flex-direction:column;justify-content:center;padding:4px 11px;border-radius:10px;background:rgba(255,253,250,.96);border:1px solid var(--line);border-left:3px solid var(--tone);font-size:12px;line-height:1.25}
-.lj-leaf.left{border-left:1px solid var(--line);border-right:3px solid var(--tone);text-align:right}
-.lj-leaf.hot{box-shadow:0 6px 16px rgba(46,47,40,.12)}
-.lj-leaf.lost .lj-v{color:var(--red)}
-.lj-leaf.won .lj-v{color:var(--olive2)}
-.lj-k{font-size:9.5px;font-weight:800;letter-spacing:.07em;text-transform:uppercase;color:var(--muted)}
-.lj-v{font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.lj-steps{display:inline-flex;align-items:center;gap:2px}
-.lj-leaf.left .lj-steps{justify-content:flex-end}
-.lj-step{font-size:10.5px;font-weight:700;color:var(--muted)}
-.lj-step.cur{color:var(--tone);font-weight:800}
-.lj-step.lost{color:var(--red)}
-.lj-arrow{color:#c5bfb5;font-weight:800;margin:0 1px}
-.lj-focusing .lj-node:not(.lj-root):not(.hot){opacity:.32 !important;filter:saturate(.5)}
-.lj-focusing .lj-links path:not(.hot){opacity:.15}
-.lj-focusing .lj-links path.hot{opacity:1}
-.lj-foot{display:flex;gap:14px;flex-wrap:wrap;align-items:center;padding:10px 22px 14px;font-size:11px;color:var(--muted);font-weight:650}
-.lj-foot i{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:5px;vertical-align:-1px}
-.lj-foot em{margin-left:auto;font-style:normal}
-body.lj-open{overflow:hidden}
-.lj-static .lj-node,.lj-static .lj-dot,.lj-static .lj-track-line,.lj-static .lj-links path{animation-duration:0s;animation-delay:0s}
-@keyframes lj-draw{to{stroke-dashoffset:0}}
-@keyframes lj-pop{to{opacity:1;transform:none}}
-@keyframes lj-dot{to{transform:translateX(-50%) scale(1)}}
-@keyframes lj-grow{to{transform:scaleX(1)}}
-@keyframes lj-pulse{0%{opacity:.9;transform:scale(1)}70%,100%{opacity:0;transform:scale(1.14)}}
-@media (max-width:760px){.lj-panel{inset:0;border-radius:0}.lj-head{padding:14px}.lj-stats,.lj-ribbon{padding-left:14px;padding-right:14px}.lj-foot em{margin-left:0}}
-@media (prefers-reduced-motion:reduce){.lj-node,.lj-dot,.lj-track-line,.lj-links path{animation:none;opacity:1;transform:none;stroke-dashoffset:0}.lj-dot{transform:translateX(-50%)}.lj-links path{opacity:.75}.lj-root:before{animation:none;opacity:0}.lj-panel,.lj-backdrop{transition:none}}
 .channel{width:26px;height:26px;border-radius:8px;display:inline-grid;place-items:center;background:#edf1eb;color:var(--olive);font-weight:800;font-size:11px}
 .late{color:var(--red);font-weight:700}.check{width:16px;height:16px;cursor:pointer;accent-color:var(--olive);vertical-align:middle}
 .pagination{display:flex;justify-content:space-between;align-items:center;padding:14px;color:var(--muted);font-size:12px}
@@ -1043,7 +960,7 @@ body.lead-drawer-open{overflow-x:hidden}
         <button class="filter">＋ More filters</button><span class="grow"></span>
         <div class="seg"><button class="active" id="listViewBtn">List</button><button data-page-jump="pipeline">Board</button></div>
       </div>
-      <div class="card"><div class="table-wrap"><table class="lead-table lead-table-email"><thead><tr><th>Contact (email)</th><th>Journey</th><th>Enquiries</th><th>Phones</th><th>Latest</th><th></th></tr></thead><tbody id="leadRows"></tbody></table></div><div class="pagination"><span id="leadCount">0 contacts</span><div class="pages"><button id="leadsPagePrev" type="button" aria-label="Previous page">‹</button><button class="active" id="leadsPageNum">1</button><button id="leadsPageNext" type="button" aria-label="Next page">›</button></div></div></div>
+      <div class="card"><div class="table-wrap"><table class="lead-table"><thead><tr><th><input class="check" type="checkbox" id="leadSelectAll" aria-label="Select all leads"></th><th>Lead</th><th>Status</th><th>Intent</th><th>Product / Facility</th><th>Source</th><th>Next action</th><th>Est. value</th><th>Created</th><th></th></tr></thead><tbody id="leadRows"></tbody></table></div><div class="pagination"><span id="leadCount">0 leads</span><div class="pages"><button id="leadsPagePrev" type="button" aria-label="Previous page">‹</button><button class="active" id="leadsPageNum">1</button><button id="leadsPageNext" type="button" aria-label="Next page">›</button></div></div></div>
     </section>
 
     <!-- ============ PIPELINE (kanban) ============ -->

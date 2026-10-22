@@ -9,7 +9,12 @@ import {
   doorOffsetsToObject,
   normalizeDoorEdges,
   normalizeDoorOffsets,
+  PUBLISH_TX_OPTIONS,
+  assertPublishPermission,
+  ensurePublishedSnapshotTx,
+  getFloorPlan,
   publishFloorPlan,
+  publishPlanTx,
   type DoorOffsets,
   type PublishFloorPlanOptions,
 } from './floorPlans';
@@ -49,11 +54,12 @@ import {
 // and never touches FloorPlanDraft, so drafts can never leak to booking.
 // Publishing a draft copies its snapshot into the live FloorPlan (wholesale
 // replace — placements added after the snapshot are removed) and then walks
-// DRAFT → ACTIVE via the existing publishFloorPlan path (which also applies
-// the floor-plan unit sync); every OTHER ACTIVE version on the floor is
-// demoted back to DRAFT in the same restore transaction, so exactly one
-// version per floor carries the published marker. The single-plan publish
-// flow is untouched.
+// DRAFT → ACTIVE through the shared publishPlanTx (which also applies the
+// floor-plan unit sync) — all in ONE transaction, so a failed publish leaves
+// nothing half-applied. Exactly one version per floor carries the published
+// marker; publishing the working copy directly clears it (the live plan then
+// matches no saved version). Loading a version (loadDraft) restores the same
+// way without publishing.
 
 const MAX_CANVAS = 500; // feet per axis, same sanity cap as the live canvas
 
@@ -780,10 +786,10 @@ export async function getPublishPreview(draftId: string): Promise<PublishPreview
  * walk DRAFT → ACTIVE via the existing publishFloorPlan path (which also
  * applies the floor-plan unit sync). Snapshot placements whose unit has since
  * been deleted, moved floors, or deactivated are SKIPPED (reported, never
- * fatal). The chosen draft row is marked ACTIVE and every OTHER ACTIVE
- * version on the floor is demoted back to DRAFT in the same restore
- * transaction, so exactly one version per floor stays published. The
- * single-plan publish flow is untouched.
+ * fatal). Restore, unit sync, DRAFT → ACTIVE and the version markers run in
+ * ONE transaction (a failed publish changes nothing); the chosen draft row is
+ * marked ACTIVE and every other version is demoted back to DRAFT, so exactly
+ * one version per floor stays published.
  */
 export async function publishDraft(draftId: string, opts?: PublishFloorPlanOptions): Promise<PublishDraftResult> {
   const draft = await prisma.floorPlanDraft.findUnique({
@@ -791,15 +797,12 @@ export async function publishDraft(draftId: string, opts?: PublishFloorPlanOptio
     include: { floor: true },
   });
   if (!draft) throw new AppError(404, 'NOT_FOUND', `Floor plan draft ${draftId} not found`);
-  const floorId = draft.floorId;
-  const { canvas, placementRows, blockRows, boundaryRows, markerRows, skippedPlacements, sizeChanges } =
-    await resolveDraftSnapshotRows(draft);
+  const resolved = await resolveDraftSnapshotRows(draft);
+  const { blockRows, boundaryRows, markerRows, placementRows, skippedPlacements, sizeChanges } = resolved;
 
   // Empty-plan guard: a publish that would put 0 placements live is refused
   // (409 EMPTY_PLAN) without the typed { confirmEmpty: true }
-  // acknowledgement — customers would see an empty floor. confirmEmpty flows
-  // through to the live publish below, so an acknowledged empty draft still
-  // lands (existing behavior).
+  // acknowledgement — customers would see an empty floor.
   if (placementRows.length === 0 && !opts?.confirmEmpty) {
     throw new AppError(
       409,
@@ -810,9 +813,8 @@ export async function publishDraft(draftId: string, opts?: PublishFloorPlanOptio
   }
 
   // Preflight before the working copy is replaced: a contracted unit's size
-  // can never sync, so refuse up front instead of leaving a half-applied draft.
-  // Uses the shared blocker helper (same as the preview) — the 409 itself is
-  // unchanged (details gain the from→to sqft the preview already lists).
+  // can never sync, so refuse up front with the same blocker list the preview
+  // shows (from→to sqft).
   const blocked = await findDraftContractedBlockers(sizeChanges);
   if (blocked.length) {
     throw new AppError(
@@ -822,53 +824,93 @@ export async function publishDraft(draftId: string, opts?: PublishFloorPlanOptio
       { blockers: blocked.map((b) => ({ unitId: b.unitId, unitCode: b.unitCode, code: b.code, from: b.from, to: b.to })) },
     );
   }
+  await assertPublishPermission(opts);
 
-  await prisma.$transaction(async (tx) => {
-    const plan = await tx.floorPlan.upsert({
-      where: { floorId },
-      create: {
-        floor: { connect: { id: floorId } },
-        status: 'DRAFT',
-        width: canvas.width,
-        height: canvas.height,
-        structure: draft.structure === null ? Prisma.JsonNull : ((draft.structure ?? Prisma.JsonNull) as Prisma.InputJsonValue),
-        gfaSqft: draft.gfaSqft,
-      },
-      update: {
-        status: 'DRAFT',
-        width: canvas.width,
-        height: canvas.height,
-        structure: draft.structure === null ? Prisma.JsonNull : ((draft.structure ?? Prisma.JsonNull) as Prisma.InputJsonValue),
-        gfaSqft: draft.gfaSqft,
-      },
-    });
-    await tx.unitPlacement.deleteMany({ where: { floorPlanId: plan.id } });
-    await tx.floorPlanBlock.deleteMany({ where: { floorPlanId: plan.id } });
-    await tx.floorPlanBoundary.deleteMany({ where: { floorPlanId: plan.id } });
-    await tx.floorPlanMarker.deleteMany({ where: { floorPlanId: plan.id } });
-    if (placementRows.length) {
-      await tx.unitPlacement.createMany({ data: placementRows.map((r) => ({ ...r, floorPlanId: plan.id })) });
-    }
-    if (blockRows.length) {
-      await tx.floorPlanBlock.createMany({ data: blockRows.map((r) => ({ ...r, floorPlanId: plan.id })) });
-    }
-    if (boundaryRows.length) {
-      await tx.floorPlanBoundary.createMany({ data: boundaryRows.map((r) => ({ ...r, floorPlanId: plan.id })) });
-    }
-    if (markerRows.length) {
-      await tx.floorPlanMarker.createMany({ data: markerRows.map((r) => ({ ...r, floorPlanId: plan.id })) });
-    }
-    // Single-published enforcement (no migration — application-level): every
-    // OTHER published version on the floor goes back to DRAFT in the same
-    // transaction as the restore, so exactly one version per floor carries
-    // the ACTIVE marker once the publish below flips the live copy.
-    await tx.floorPlanDraft.updateMany({
-      where: { floorId, status: 'ACTIVE', id: { not: draftId } },
-      data: { status: 'DRAFT' },
-    });
+  // Restore + publish + version markers in ONE transaction: any failure inside
+  // the publish (size-sync blocker, stale preview, …) rolls the restore back,
+  // so the working copy, the published marker and the public view are never
+  // left half-applied.
+  const plan = await prisma.$transaction(async (tx) => {
+    const planId = await restoreDraftTx(tx, draft, resolved);
+    const { plan } = await publishPlanTx(tx, draft.floorId, planId, opts);
+    // publishPlanTx cleared every marker — this version is the published one.
     await tx.floorPlanDraft.update({ where: { id: draftId }, data: { status: 'ACTIVE' } });
-  });
-
-  const plan = await publishFloorPlan(floorId, opts);
+    return plan;
+  }, PUBLISH_TX_OPTIONS);
   return { plan, skippedPlacements };
+}
+
+export interface LoadDraftResult {
+  plan: Awaited<ReturnType<typeof getFloorPlan>>;
+  /** Unit codes from the snapshot that could not be restored (deleted, moved floors, or deactivated since the save). */
+  skippedPlacements: string[];
+}
+
+/**
+ * Load a version into the designer: restore its snapshot into the live
+ * working copy (wholesale replace, fresh row ids) WITHOUT publishing. The
+ * plan becomes DRAFT, so customers keep the last published snapshot (R-FP1)
+ * until the operator publishes; version markers are untouched. Restoring
+ * server-side means every later editor write addresses real rows, and the
+ * header Publish ships exactly what the designer shows.
+ */
+export async function loadDraft(draftId: string): Promise<LoadDraftResult> {
+  const draft = await prisma.floorPlanDraft.findUnique({
+    where: { id: draftId },
+    include: { floor: true },
+  });
+  if (!draft) throw new AppError(404, 'NOT_FOUND', `Floor plan draft ${draftId} not found`);
+  const resolved = await resolveDraftSnapshotRows(draft);
+  await prisma.$transaction((tx) => restoreDraftTx(tx, draft, resolved), PUBLISH_TX_OPTIONS);
+  return { plan: await getFloorPlan(draft.floorId), skippedPlacements: resolved.skippedPlacements };
+}
+
+// Copy a resolved snapshot into the live working copy (DRAFT): canvas dims,
+// structure, GFA, then every element wholesale (placements added after the
+// snapshot are removed). A published plan without a snapshot gets one first
+// so customers never lose the floor. Returns the live plan id.
+async function restoreDraftTx(
+  tx: Prisma.TransactionClient,
+  draft: DraftWithFloor,
+  resolved: Awaited<ReturnType<typeof resolveDraftSnapshotRows>>,
+): Promise<string> {
+  const floorId = draft.floorId;
+  const { canvas, placementRows, blockRows, boundaryRows, markerRows } = resolved;
+  await ensurePublishedSnapshotTx(tx, floorId);
+  const structure = draft.structure === null ? Prisma.JsonNull : ((draft.structure ?? Prisma.JsonNull) as Prisma.InputJsonValue);
+  const plan = await tx.floorPlan.upsert({
+    where: { floorId },
+    create: {
+      floor: { connect: { id: floorId } },
+      status: 'DRAFT',
+      width: canvas.width,
+      height: canvas.height,
+      structure,
+      gfaSqft: draft.gfaSqft,
+    },
+    update: {
+      status: 'DRAFT',
+      width: canvas.width,
+      height: canvas.height,
+      structure,
+      gfaSqft: draft.gfaSqft,
+    },
+  });
+  await tx.unitPlacement.deleteMany({ where: { floorPlanId: plan.id } });
+  await tx.floorPlanBlock.deleteMany({ where: { floorPlanId: plan.id } });
+  await tx.floorPlanBoundary.deleteMany({ where: { floorPlanId: plan.id } });
+  await tx.floorPlanMarker.deleteMany({ where: { floorPlanId: plan.id } });
+  if (placementRows.length) {
+    await tx.unitPlacement.createMany({ data: placementRows.map((r) => ({ ...r, floorPlanId: plan.id })) });
+  }
+  if (blockRows.length) {
+    await tx.floorPlanBlock.createMany({ data: blockRows.map((r) => ({ ...r, floorPlanId: plan.id })) });
+  }
+  if (boundaryRows.length) {
+    await tx.floorPlanBoundary.createMany({ data: boundaryRows.map((r) => ({ ...r, floorPlanId: plan.id })) });
+  }
+  if (markerRows.length) {
+    await tx.floorPlanMarker.createMany({ data: markerRows.map((r) => ({ ...r, floorPlanId: plan.id })) });
+  }
+  return plan.id;
 }

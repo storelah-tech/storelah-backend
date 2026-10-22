@@ -1249,6 +1249,8 @@ export async function publishFloorPlanWithSync(
   const plan = await prisma.floorPlan.findUnique({ where: { floorId } });
   if (!plan) throw new AppError(404, 'NOT_FOUND', `No floor plan exists for floor ${floorId} — save a canvas first`);
   if (plan.status === 'ACTIVE') {
+    // Idempotent: nothing changed since the last publish, so version markers
+    // are left as they are.
     const full = await prisma.floorPlan.findUniqueOrThrow({ where: { floorId }, include: planInclude });
     // Legacy ACTIVE plans (published before snapshots existed) get one now.
     if (!plan.publishedSnapshot) await storePublishedSnapshot(prisma, full);
@@ -1261,10 +1263,7 @@ export async function publishFloorPlanWithSync(
       allowed: ['ACTIVE'],
     });
   }
-  if (opts?.actorId) {
-    const { requirePermission } = await import('./users');
-    await requirePermission(opts.actorId, 'promotions.approve');
-  }
+  await assertPublishPermission(opts);
   // Empty-plan guard: a publish that would put 0 placements live is refused
   // (409 EMPTY_PLAN) without the typed { confirmEmpty: true }
   // acknowledgement — customers would see an empty floor. Counts the placements
@@ -1285,23 +1284,65 @@ export async function publishFloorPlanWithSync(
       );
     }
   }
-  const { published, sizeSync } = await prisma.$transaction(async (tx) => {
-    const sizeSync = await applySizeSync(tx, floorId, {
-      token: opts?.token,
-      choices: opts?.choices,
-      appliedBy: opts?.actorName || 'Operator',
-      floorPlanId: plan.id,
-    });
-    const published = await tx.floorPlan.update({
-      where: { floorId },
-      data: { status: 'ACTIVE' },
-      include: planInclude,
-    });
-    // Freeze what customers now see; served while later edits are drafted.
-    await storePublishedSnapshot(tx, published);
-    return { published, sizeSync };
+  const { plan: published, sizeSync } = await prisma.$transaction(
+    (tx) => publishPlanTx(tx, floorId, plan.id, opts),
+    PUBLISH_TX_OPTIONS,
+  );
+  return { plan: published, sizeSync };
+}
+
+// Publish writes (size sync + restore of a version) can touch every unit on a
+// floor; Prisma's 5 s interactive default is too tight against Neon.
+export const PUBLISH_TX_OPTIONS = { maxWait: 10_000, timeout: 30_000 };
+
+/** Permission gate shared by the live and the per-version publish (runs
+ * before any write, so a refused actor never changes the working copy). */
+export async function assertPublishPermission(opts?: PublishFloorPlanOptions): Promise<void> {
+  if (opts?.actorId) {
+    const { requirePermission } = await import('./users');
+    await requirePermission(opts.actorId, 'promotions.approve');
+  }
+}
+
+/**
+ * The in-transaction half of every publish: apply the floor-plan unit sync,
+ * walk DRAFT → ACTIVE and freeze the public snapshot. Also clears every saved
+ * version's published marker — the live plan no longer equals any version
+ * unless the caller (publishDraft) re-marks its own in the same transaction.
+ * Any throw rolls the whole caller transaction back.
+ */
+export async function publishPlanTx(
+  tx: Prisma.TransactionClient,
+  floorId: string,
+  floorPlanId: string,
+  opts?: PublishFloorPlanOptions,
+): Promise<{ plan: ReturnType<typeof serializePlan>; sizeSync: SizeSyncResult }> {
+  const sizeSync = await applySizeSync(tx, floorId, {
+    token: opts?.token,
+    choices: opts?.choices,
+    appliedBy: opts?.actorName || 'Operator',
+    floorPlanId,
   });
+  const published = await tx.floorPlan.update({
+    where: { floorId },
+    data: { status: 'ACTIVE' },
+    include: planInclude,
+  });
+  // Freeze what customers now see; served while later edits are drafted.
+  await storePublishedSnapshot(tx, published);
+  await tx.floorPlanDraft.updateMany({ where: { floorId, status: 'ACTIVE' }, data: { status: 'DRAFT' } });
   return { plan: serializePlan(published), sizeSync };
+}
+
+/**
+ * Before a write that demotes a published plan wholesale (restoring a version
+ * into the working copy), make sure customers have a snapshot to fall back
+ * on: legacy ACTIVE plans published before snapshots existed get one now,
+ * captured from the still-unchanged live rows.
+ */
+export async function ensurePublishedSnapshotTx(tx: Prisma.TransactionClient, floorId: string): Promise<void> {
+  const row = await tx.floorPlan.findUnique({ where: { floorId }, include: planInclude });
+  if (row && row.status === 'ACTIVE' && !row.publishedSnapshot) await storePublishedSnapshot(tx, row);
 }
 
 export type ReconcileAction = 'MARK_FOR_SYNC' | 'FIT_DRAWING';

@@ -186,6 +186,7 @@ import {
   getPublishPreview,
   deleteDraft,
   publishDraft,
+  loadDraft,
 } from '../core/floorPlanDrafts';
 import {
   listProtectionPlans,
@@ -1895,6 +1896,15 @@ router.get('/drafts/:draftId/publish-preview', requireAuth, async (req: Request,
 // Delete one draft version (design history only — the live plan is untouched).
 router.delete('/drafts/:draftId', requireAuth, async (req: Request, res: Response) => {
   ok(res, await deleteDraft(String(req.params.draftId)));
+});
+
+// Load a draft version into the designer: wholesale-restore its snapshot into
+// the live working copy WITHOUT publishing (plan → DRAFT; customers keep the
+// last published snapshot; version markers untouched). Returns the same
+// payload as GET /floor-plans/:floorId; skipped placements ride in meta.
+router.post('/drafts/:draftId/load', requireAuth, async (req: Request, res: Response) => {
+  const { plan, skippedPlacements } = await loadDraft(String(req.params.draftId));
+  ok(res, plan, { skippedPlacements });
 });
 
 // Publish a draft version: wholesale-restore its snapshot into the live plan

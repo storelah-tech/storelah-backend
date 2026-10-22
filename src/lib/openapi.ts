@@ -1678,6 +1678,39 @@ export const openapiSpec = {
         },
       },
     },
+    '/cms/drafts/{draftId}/load': {
+      post: {
+        tags: ['Operator CMS'],
+        summary: 'Load a floor-plan draft version into the working copy',
+        description: [
+          'Wholesale-restores the draft snapshot into the live FloorPlan working copy WITHOUT publishing: ' +
+            'the plan becomes DRAFT, customers keep the last published snapshot, and version markers are ' +
+            'untouched. Placements whose unit has since been deleted, moved floors, or deactivated are ' +
+            'skipped and reported in `meta.skippedPlacements`. Returns the same payload as ' +
+            '`GET /cms/floor-plans/{floorId}`.',
+          '',
+          'Operator CMS endpoints are documented here for reference only; they are served on the CMS host under ',
+          '`/api/v1/cms` and require a Bearer JWT issued by `/api/v1/cms/login` (auto-login via `/api/v1/cms/config`).',
+        ].join('\n'),
+        operationId: 'loadFloorPlanDraft',
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          {
+            name: 'draftId',
+            in: 'path',
+            required: true,
+            description: 'Draft row id (cuid).',
+            schema: { type: 'string' },
+          },
+        ],
+        responses: {
+          '200': { description: 'Working copy restored from the draft (not published).' },
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '404': openapiErrorResponse('Draft not found.'),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+    },
     '/cms/drafts/{draftId}/publish': {
       post: {
         tags: ['Operator CMS'],
@@ -1687,9 +1720,10 @@ export const openapiSpec = {
             'snapshot are removed), then walks DRAFT → ACTIVE via the existing publish path (same ' +
             '`promotions.approve` gate for actors holding permission rows). Snapshot placements whose ' +
             'unit has since been deleted, moved floors, or deactivated are skipped and reported in ' +
-            '`meta.skippedPlacements` (never fatal). The draft row is marked ACTIVE as its published marker, ' +
+            '`meta.skippedPlacements` (never fatal). Restore and publish run in one transaction — a failed ' +
+            'publish changes nothing. The draft row is marked ACTIVE as its published marker, ' +
             'and every OTHER published version on the floor is demoted back to DRAFT — exactly one ' +
-            'published version at a time. Preview with `GET /cms/drafts/{draftId}/publish-preview` first. ' +
+            'published version at a time (publishing the working copy directly clears it). Preview with `GET /cms/drafts/{draftId}/publish-preview` first. ' +
             'A 0-placement publish is refused with `409 EMPTY_PLAN` (`details.counts`) unless the body ' +
             'carries `{ confirmEmpty: true }`; a contracted-unit resize is `409 PUBLISH_BLOCKED` ' +
             '(`details.blockers[]` with from→to sqft) either way.',

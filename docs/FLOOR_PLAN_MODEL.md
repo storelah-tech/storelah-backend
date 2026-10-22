@@ -413,7 +413,7 @@ wholesale-restores the snapshot into the live plan and walks DRAFT → ACTIVE
 via the existing publish path (including the floor-plan unit sync — see
 `docs/FLOOR_PLAN_UNIT_SYNC_PLAN.md`); every OTHER published version on the
 floor is demoted back to DRAFT in the same transaction, so exactly one version
-per floor stays published. The existing single-plan publish flow is untouched.
+per floor stays published (a direct live publish clears the marker).
 
 | Field        | Type        | Meaning                                                        |
 | ------------ | ----------- | -------------------------------------------------------------- |
@@ -456,27 +456,33 @@ Bearer JWT, envelope `{ data, meta }`):
   `@@unique([floorId, version])` guard.
 - **List** (`listDrafts`): newest version first, summaries with element counts
   (no snapshot payloads).
-- **Load** (client-side only, no new endpoint — reuses `GET /drafts/:draftId`):
-  the designer replaces its local `state.fp.*` (canvas dims, placements,
-  blocks, boundaries, markers, structure, GFA) with the snapshot and
-  re-renders, setting an "Editing from draft vN" indicator; the live plan is
-  never written. Canvas edits after a load guard on unsaved changes (Save as
-  Draft / Discard / Cancel), and the next save freezes a NEW version (max+1 —
-  the loaded version is never overwritten). Any saved version can be published
-  straight from the Library list (unsaved screen edits guard first — the
-  screen itself is never shipped).
-- **Publish** (`publishDraft`): wholesale-restores the snapshot into the live
-  plan (canvas upsert + delete-all/re-create placements/blocks/boundaries/
-  markers in one transaction — placements added after the snapshot are
-  removed), marks the draft `ACTIVE`, then walks the live plan DRAFT → ACTIVE
-  via the existing `publishFloorPlan` path (same `promotions.approve` gate,
-  including the floor-plan unit sync). Snapshot placements whose unit has
-  since been deleted, moved floors, or been deactivated are skipped and
-  reported in `meta.skippedPlacements` (never fatal). Every OTHER `ACTIVE`
-  version on the floor is demoted back to DRAFT in the same restore
-  transaction — exactly one published version at a time. The designer offers
-  this per version (Library Publish button + confirm popup fed by the preview
-  below).
+- **Load** (`loadDraft`, `POST /drafts/:draftId/load`): wholesale-restores
+  the snapshot into the live working copy (same restore as publish, fresh row
+  ids) WITHOUT publishing — the plan becomes DRAFT, customers keep the last
+  published snapshot, version markers are untouched, skipped placements ride
+  in `meta.skippedPlacements`. The designer then reloads the working copy, so
+  every later edit addresses real rows and the header Publish ships exactly
+  what is on screen. (Until 2026-10-22 Load was client-side only: snapshot row
+  ids were empty or stale, so per-element edits 404'd and reverted, placement
+  edits silently went to the live plan, and the header Publish shipped the
+  live working copy rather than the loaded version.) Loading confirms first
+  (unsaved edits: Save as Draft / Discard / Cancel); the next save freezes a
+  NEW version (max+1 — the loaded version is never overwritten).
+- **Publish** (`publishDraft`): guards first (empty plan, contracted
+  blockers, `promotions.approve`), then ONE transaction: restore the snapshot
+  into the live plan (canvas upsert + delete-all/re-create placements/blocks/
+  boundaries/markers — placements added after the snapshot are removed), run
+  the shared `publishPlanTx` (floor-plan unit sync, DRAFT → ACTIVE, public
+  snapshot), and mark this version `ACTIVE`. Any failure (size-sync blocker,
+  stale preview, …) rolls everything back — working copy, version markers and
+  the public view are untouched. Snapshot placements whose unit has since been
+  deleted, moved floors, or been deactivated are skipped and reported in
+  `meta.skippedPlacements` (never fatal). `publishPlanTx` clears every
+  version's `ACTIVE` marker, so exactly one version is marked published — and
+  publishing the working copy directly (`POST /floor-plans/:floorId/publish`)
+  leaves NO version marked, because the live plan then matches no saved
+  version. The designer offers this per version (Library Publish button +
+  confirm popup fed by the preview below).
   - **Empty-plan guard**: a publish that would put 0 placements live is refused
     with `409 EMPTY_PLAN` (counts in `details`) unless the body carries the
     typed acknowledgement `{ confirmEmpty: true }` — customers would see an

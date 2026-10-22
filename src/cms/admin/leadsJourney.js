@@ -173,7 +173,7 @@ function nodeHtml(n, group) {
       `<b>${escapeHtml(t.name || '—')}</b>` +
       `<span class="lj-enq-foot"><span class="lj-stage">${escapeHtml(STAGE_LABEL[t.stage] || t.stage)}</span>` +
       (t.phoneVariance ? '<span class="lj-flag" title="This enquiry used a different phone">⚠ phone</span>' : '') +
-      `<span class="lj-open">Details ›</span></span></button>`;
+      `<span class="lj-cta">Details ›</span></span></button>`;
   }
   return `<div class="lj-node lj-leaf${n.leaf.tone ? ' ' + n.leaf.tone : ''}${n.side < 0 ? ' left' : ''}" data-branch="${n.idx}" style="${pos}">` +
     `<span class="lj-k">${escapeHtml(n.leaf.k)}</span><span class="lj-v">${n.leaf.v}</span></div>`;

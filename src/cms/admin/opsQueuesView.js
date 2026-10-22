@@ -5,7 +5,7 @@
 // PATCH /move-outs/:tenantId — nothing auto-flips tenant status.
 
 import { $, $$, escapeHtml, showBanner } from './dom.js';
-import { ApiError, get, post, downloadFile, describeError } from './api.js';
+import { ApiError, get, post, patch, downloadFile, describeError } from './api.js';
 import { state } from './state.js';
 import { confirmDialog } from './confirmDialog.js';
 
@@ -141,17 +141,36 @@ export function wireOpsQueues() {
   $('#quoteModalClose')?.addEventListener('click', closeQuoteModal);
   $('#quoteFormCancel')?.addEventListener('click', closeQuoteModal);
   $('#quoteForm')?.addEventListener('submit', submitQuoteForm);
-  // Sectioned-form live behaviour: lead auto-fill, unit narrowing, total preview.
+  // Sectioned-form live behaviour: lead auto-fill, unit narrowing, unit →
+  // rate and plan → protection-cost fill, add-on rows, live summary.
   $('#quoteForm')?.addEventListener('change', (e) => {
     const id = e.target && e.target.id;
     if (id === 'qf-lead') autofillLeadFields(e.target.value || '');
     if (id === 'qf-branch' || id === 'qf-size') refreshQuoteUnitOptions().catch(() => {});
+    if (id === 'qf-unit') fillRateFromUnit(e.target.value);
+    if (id === 'qf-protectionTier') fillProtectionCost(e.target.value);
+    if (e.target.closest && e.target.closest('.qm-addon')) onAddonRowEdit(e.target);
     refreshQuoteTotalPreview();
   });
   $('#quoteForm')?.addEventListener('input', (e) => {
     const id = e.target && e.target.id;
-    if (id === 'qf-size') refreshQuoteUnitOptions().catch(() => {});
-    if (['qf-rate', 'qf-duration', 'qf-protectionCost', 'qf-promoDiscount', 'qf-addons', 'qf-total'].includes(id)) refreshQuoteTotalPreview();
+    const inAddon = !!(e.target.closest && e.target.closest('.qm-addon'));
+    if (inAddon) onAddonRowEdit(e.target);
+    if (inAddon || ['qf-rate', 'qf-duration', 'qf-protectionCost', 'qf-promoDiscount', 'qf-promoCode', 'qf-total', 'qf-name'].includes(id)) refreshQuoteTotalPreview();
+  });
+  $('#qfAddonAdd')?.addEventListener('click', () => { addAddonRow(); refreshQuoteTotalPreview(); });
+  $('#qfAddonRows')?.addEventListener('click', (e) => {
+    const del = e.target.closest('.qm-del');
+    if (!del) return;
+    del.closest('.qm-addon').remove();
+    syncAddonsJson();
+    refreshQuoteTotalPreview();
+  });
+  $('#qfUseEstimate')?.addEventListener('click', () => {
+    refreshQuoteTotalPreview(); // never fill from a stale estimate
+    const t = $('#qf-total');
+    if (t && quoteEstimate != null) t.value = quoteEstimate.toFixed(2);
+    refreshQuoteTotalPreview();
   });
 }
 
@@ -275,7 +294,10 @@ function autofillLeadFields(leadId) {
   if (l.email !== undefined && $('#qf-email')) $('#qf-email').value = l.email || '';
   if (l.mobile !== undefined && $('#qf-mobile')) $('#qf-mobile').value = l.mobile || '';
   if (l.preferredBranchId && $('#qf-branch')) $('#qf-branch').value = l.preferredBranchId;
-  if (l.preferredSize !== undefined && $('#qf-size')) $('#qf-size').value = l.preferredSize || '';
+  if (l.preferredSize !== undefined && $('#qf-size')) {
+    if (l.preferredSize) ensureOption($('#qf-size'), String(l.preferredSize).toUpperCase());
+    else $('#qf-size').value = '';
+  }
   refreshQuoteUnitOptions().catch(() => {});
   refreshQuoteTotalPreview();
 }
@@ -310,8 +332,120 @@ async function refreshQuoteUnitOptions() {
   if (keep && matches.some((u) => u.code === keep)) sel.value = keep;
 }
 
-// (c) Payment information: live total preview from the component fields.
-// Preview only — the Total due today input is what gets saved.
+// Catalogues for the redesigned form (2026-10-22): size tiers (state.sizes),
+// protection plans (GET /protection-plans) and add-ons (GET /addons). All
+// best-effort — an empty catalogue just leaves the dropdown at its default.
+let quotePlans = [];
+let quoteAddonCatalog = [];
+
+async function loadQuoteCatalogs() {
+  const [plans, addons] = await Promise.all([
+    get('/protection-plans').catch(() => []),
+    get('/addons').catch(() => []),
+  ]);
+  quotePlans = (Array.isArray(plans) ? plans : []).filter((x) => x.active !== false);
+  quoteAddonCatalog = (Array.isArray(addons) ? addons : []).filter((x) => x.active !== false);
+  const sizeSel = $('#qf-size');
+  if (sizeSel) {
+    sizeSel.innerHTML = '<option value="">— Any size —</option>' + (state.sizes || [])
+      .map((z) => `<option value="${escapeHtml(z.code)}">${escapeHtml(z.name)} · ${z.sqftFrom === z.sqftTo ? z.sqftFrom : z.sqftFrom + '–' + z.sqftTo} sqft</option>`)
+      .join('');
+  }
+  const planSel = $('#qf-protectionTier');
+  if (planSel) {
+    planSel.innerHTML = '<option value="">— None —</option>' + quotePlans
+      .map((pl) => `<option value="${escapeHtml(pl.id)}">${escapeHtml(pl.name)} · $${Number(pl.price).toFixed(2)}/mo</option>`)
+      .join('');
+  }
+}
+
+// A select only keeps values it has options for: auto-fill from a lead
+// whose stored value is not in the catalogue adds it as an extra option.
+function ensureOption(sel, value) {
+  if (!sel || !value) return;
+  if (![...sel.options].some((o) => o.value === value)) sel.add(new Option(value, value));
+  sel.value = value;
+}
+
+function fillRateFromUnit(code) {
+  const u = quoteUnitsCache.find((x) => x.code === code);
+  if (u && u.rate != null && $('#qf-rate')) $('#qf-rate').value = Number(u.rate).toFixed(2);
+}
+
+function fillProtectionCost(planId) {
+  const pl = quotePlans.find((x) => x.id === planId);
+  const el = $('#qf-protectionCost');
+  if (!el) return;
+  el.value = pl ? Number(pl.price).toFixed(2) : '';
+}
+
+// ---------- add-on rows → hidden #qf-addons JSON ----------
+function addAddonRow(item) {
+  const box = $('#qfAddonRows');
+  if (!box) return;
+  if (!box.querySelector('.qm-addon-hdr')) {
+    box.innerHTML = '<div class="qm-addon qm-addon-hdr"><span>Item</span><span>Qty</span><span>Unit price</span><span style="text-align:right">Line</span><span></span></div>';
+  }
+  const row = document.createElement('div');
+  row.className = 'qm-addon';
+  const opts = '<option value="">Custom item…</option>' + quoteAddonCatalog
+    .map((a) => `<option value="${escapeHtml(a.id)}">${escapeHtml(a.name)} · $${Number(a.price).toFixed(2)}</option>`).join('');
+  row.innerHTML =
+    `<div style="display:flex;gap:6px;min-width:0"><select data-a="pick" aria-label="Catalogue item">${opts}</select><input data-a="name" placeholder="Item name" maxlength="80" aria-label="Item name"></div>` +
+    '<input data-a="qty" type="number" min="1" step="1" value="1" aria-label="Quantity">' +
+    '<input data-a="price" type="number" min="0" step="0.01" placeholder="0.00" aria-label="Unit price">' +
+    '<span class="qm-line">$0.00</span>' +
+    '<button type="button" class="qm-del" aria-label="Remove item">✕</button>';
+  box.appendChild(row);
+  if (item) {
+    const cat = quoteAddonCatalog.find((a) => a.id === item.id || a.name === item.name);
+    if (cat) row.querySelector('[data-a="pick"]').value = cat.id;
+    row.querySelector('[data-a="name"]').value = item.name || '';
+    row.querySelector('[data-a="qty"]').value = item.qty || 1;
+    row.querySelector('[data-a="price"]').value = item.price != null ? item.price : '';
+  }
+  syncAddonsJson();
+}
+
+function onAddonRowEdit(target) {
+  const row = target.closest('.qm-addon');
+  if (target.dataset.a === 'pick') {
+    const cat = quoteAddonCatalog.find((a) => a.id === target.value);
+    if (cat) {
+      row.querySelector('[data-a="name"]').value = cat.name;
+      row.querySelector('[data-a="price"]').value = Number(cat.price).toFixed(2);
+    }
+  }
+  syncAddonsJson();
+}
+
+function syncAddonsJson() {
+  const rows = [...document.querySelectorAll('#qfAddonRows .qm-addon:not(.qm-addon-hdr)')];
+  const list = [];
+  for (const row of rows) {
+    const name = row.querySelector('[data-a="name"]').value.trim();
+    const qty = Number(row.querySelector('[data-a="qty"]').value);
+    const price = Number(row.querySelector('[data-a="price"]').value);
+    const line = Number.isFinite(qty) && Number.isFinite(price) ? qty * price : 0;
+    row.querySelector('.qm-line').textContent = '$' + line.toFixed(2);
+    if (!name) continue;
+    const pick = row.querySelector('[data-a="pick"]').value;
+    list.push({ ...(pick ? { id: pick } : {}), name, qty: Number.isFinite(qty) ? qty : 0, price: Number.isFinite(price) ? price : 0 });
+  }
+  const hidden = $('#qf-addons');
+  if (hidden) hidden.value = list.length ? JSON.stringify(list) : '';
+  const box = $('#qfAddonRows');
+  if (box && !rows.length) box.innerHTML = '<div class="qm-empty">No add-ons — use “＋ Add item” for boxes, locks or supplies.</div>';
+  const add = $('#qfAddonAdd');
+  if (add) add.disabled = rows.length >= 20; // server caps addons at 20
+}
+
+// ---------- live summary (right column) ----------
+// Preview only — the Total due today input is what gets saved. quoteEstimate
+// feeds the "Use estimate" button.
+let quoteEstimate = null;
+const money = (n) => '$' + Number(n).toLocaleString('en-SG', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
 function refreshQuoteTotalPreview() {
   const el = $('#qf-quoteTotalPreview');
   if (!el) return;
@@ -335,14 +469,47 @@ function refreshQuoteTotalPreview() {
       addonsTotal = list.reduce((s, a) => s + (Number(a?.qty) || 0) * (Number(a?.price) || 0), 0);
     } catch { addonsTotal = NaN; }
   }
+  // Header of the summary: who + which unit.
+  const who = $('#qfSumWho');
+  if (who) who.textContent = ($('#qf-name')?.value.trim()) || 'New customer';
+  const unitEl = $('#qfSumUnit');
+  if (unitEl) {
+    const code = $('#qf-unit')?.value || '';
+    const u = quoteUnitsCache.find((x) => x.code === code);
+    const branchSel = $('#qf-branch');
+    const branch = branchSel && branchSel.value ? branchSel.selectedOptions[0].textContent : '';
+    const size = $('#qf-size')?.value || '';
+    unitEl.textContent = u
+      ? `Unit ${u.code} · ${u.size ? u.size.name || u.size.code : ''} · ${u.sqft} sqft`
+      : [branch, size].filter(Boolean).join(' · ') || 'No unit selected';
+  }
+  const linesEl = $('#qfSumLines');
+  const totalEl = $('#qfSumTotal');
   if ([rate, protection, discount, addonsTotal].some((n) => Number.isNaN(n)) || !Number.isInteger(months) || months < 1) {
-    el.textContent = 'Estimated total: — (check payment fields)';
+    el.textContent = 'Check the highlighted pricing fields.';
+    if (linesEl) linesEl.innerHTML = '';
+    if (totalEl) totalEl.textContent = '—';
+    quoteEstimate = null;
     return;
   }
-  const estimate = (rate + protection) * months + addonsTotal - discount;
+  const estimate = Math.max(0, (rate + protection) * months + addonsTotal - discount);
+  quoteEstimate = estimate;
+  const m = months === 1 ? '1 month' : months + ' months';
+  const lines = [
+    ['Storage ' + money(rate) + ' × ' + m, rate * months],
+    protection ? ['Protection ' + money(protection) + ' × ' + m, protection * months] : null,
+    addonsTotal ? ['Add-ons', addonsTotal] : null,
+    discount ? ['Promo' + ($('#qf-promoCode')?.value.trim() ? ' ' + $('#qf-promoCode').value.trim() : ''), -discount] : null,
+  ].filter(Boolean);
+  if (linesEl) {
+    linesEl.innerHTML = lines.map(([k, v]) =>
+      `<div${v < 0 ? ' class="neg"' : ''}><span>${escapeHtml(k)}</span><b>${v < 0 ? '−' + money(-v) : money(v)}</b></div>`).join('');
+  }
+  if (totalEl) totalEl.textContent = money(estimate);
   const saved = $('#qf-total')?.value.trim() || '';
-  el.textContent = `Estimated total: $${Math.max(0, estimate).toLocaleString('en-SG', { maximumFractionDigits: 2 })}` +
-    (saved ? ` · Total due today field: $${Number(saved).toLocaleString('en-SG', { maximumFractionDigits: 2 })} (saved)` : ' · fill Total due today to save this figure');
+  el.textContent = saved
+    ? `Saving ${money(Number(saved))} as total due today.`
+    : 'Estimate only — set Total due today to save a figure.';
 }
 
 export async function openQuoteModal() {
@@ -351,8 +518,12 @@ export async function openQuoteModal() {
   if (branchSel) branchSel.innerHTML = quoteBranchOptions();
   await loadQuoteLeadOptions();
   await loadQuoteUnitsCache();
+  await loadQuoteCatalogs();
   const form = $('#quoteForm');
   if (form) form.reset();
+  const rows = $('#qfAddonRows');
+  if (rows) rows.innerHTML = '';
+  syncAddonsJson();
   clearQuoteFieldErrors();
   await refreshQuoteUnitOptions();
   refreshQuoteTotalPreview();

@@ -627,6 +627,58 @@ main{min-width:0;display:flex;flex-direction:column;min-height:100vh}
 .fp-structure summary{cursor:pointer;color:var(--muted);font-size:12px}
 .fp-structure-input{width:100%;font-family:Menlo,Consolas,monospace;font-size:11px;border:1.5px solid var(--line);border-radius:7px;padding:8px;background:var(--white);color:var(--ink);resize:vertical;margin-top:6px}
 .modal-wide{width:860px;max-width:100%}
+/* ============ Quotation modal (2026-10-22 redesign, .qm-*) ============ */
+#quoteModal{padding:3vh 16px}
+.modal-win.qm{width:1120px;max-width:100%;max-height:94vh;padding:0;display:flex;flex-direction:column;overflow:hidden}
+.qm-hdr{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;padding:18px 22px 14px;border-bottom:1px solid var(--line);flex:none}
+.qm-eyebrow{font-size:10px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:var(--terra)}
+.qm-hdr .modal-title{font-size:20px;letter-spacing:-.02em;margin:2px 0}
+.qm-sub{font-size:12px;color:var(--muted)}
+.qm .modal-alert{margin:12px 22px 0}
+.qm-form{display:flex;flex-direction:column;min-height:0;flex:1}
+.qm-body{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:18px;padding:16px 22px;overflow:auto;min-height:0;flex:1;background:var(--cream)}
+.qm-main{display:flex;flex-direction:column;gap:14px;min-width:0}
+.qm-card{background:var(--paper);border:1px solid var(--line);border-radius:14px;padding:14px 16px 6px}
+.qm-card-hdr{display:flex;align-items:center;gap:11px;margin-bottom:10px}
+.qm-card-hdr b{display:block;font-size:14px}
+.qm-card-hdr small{display:block;font-size:11px;color:var(--muted)}
+.qm-step{width:26px;height:26px;flex:none;border-radius:50%;display:grid;place-items:center;background:var(--olive);color:#fff;font-size:12px;font-weight:800}
+.qm-add{margin-left:auto}
+.qm-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:4px 12px}
+.qm-span2{grid-column:span 2}.qm-span3{grid-column:1/-1}
+.qm .field label em{color:var(--red);font-style:normal}
+.qm .field textarea{border:1.5px solid var(--line);border-radius:7px;padding:8px 10px;font:600 13px Manrope,system-ui,sans-serif;color:var(--ink);outline:none;background:var(--white);width:100%;resize:vertical;min-height:44px}
+.qm .field textarea:focus{border-color:var(--terra)}
+.qm-addons{display:flex;flex-direction:column;gap:8px;margin-bottom:8px}
+.qm-addon{display:grid;grid-template-columns:minmax(0,1fr) 80px 100px 90px 30px;gap:8px;align-items:center}
+.qm-addon select,.qm-addon input{border:1.5px solid var(--line);border-radius:7px;padding:7px 9px;font:700 13px Manrope,system-ui,sans-serif;color:var(--ink);background:#fff;width:100%;outline:none}
+.qm-addon select:focus,.qm-addon input:focus{border-color:var(--terra)}
+.qm-addon .qm-line{font-weight:800;text-align:right;font-variant-numeric:tabular-nums}
+.qm-addon .qm-del{border:0;background:transparent;color:var(--muted);font-size:16px;cursor:pointer;border-radius:6px;height:30px}
+.qm-addon .qm-del:hover{background:var(--red-light);color:var(--red)}
+.qm-addon-hdr{font-size:9.5px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.qm-empty{font-size:12px;color:var(--muted);padding:6px 0 10px}
+.qm-side{position:sticky;top:0;align-self:start;display:flex;flex-direction:column;gap:10px}
+.qm-sum{background:var(--paper);border:1px solid var(--line);border-radius:14px;padding:16px}
+.qm-sum-title{font-size:10.5px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+.qm-sum-who{font-size:16px;font-weight:800;margin-top:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.qm-sum-unit{font-size:12px;color:var(--muted);margin-bottom:10px}
+.qm-lines{border-top:1px dashed var(--line);padding-top:8px;display:flex;flex-direction:column;gap:6px}
+.qm-lines div{display:flex;justify-content:space-between;gap:10px;font-size:12.5px}
+.qm-lines div span{color:var(--muted)}
+.qm-lines div b{font-variant-numeric:tabular-nums}
+.qm-lines .neg b{color:var(--olive2)}
+.qm-est{display:flex;justify-content:space-between;align-items:baseline;border-top:1px solid var(--line);margin-top:10px;padding-top:10px}
+.qm-est span{font-weight:700}
+.qm-est b{font-size:22px;letter-spacing:-.02em;color:var(--olive);font-variant-numeric:tabular-nums}
+.qm-est-note{margin:4px 0 10px;font-size:10.5px}
+.qm-total-row{display:flex;gap:6px}
+.qm-total-row input{flex:1;min-width:0}
+.qm-total-row .act-btn{white-space:nowrap}
+.qm-pdf-note{font-size:11px;color:var(--muted);background:var(--sage);border-radius:10px;padding:9px 11px;line-height:1.4}
+.qm-foot{margin:0;padding:12px 22px;border-top:1px solid var(--line);background:var(--paper);flex:none}
+@media (max-width:900px){.qm-body{grid-template-columns:1fr}.qm-side{position:static}.qm-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.qm-span2{grid-column:1/-1}}
+@media (max-width:560px){#quoteModal{padding:0}.modal-win.qm{max-height:100vh;border-radius:0}.qm-grid{grid-template-columns:1fr}.qm-addon{grid-template-columns:1fr 64px 80px 30px}.qm-addon .qm-line{display:none}}
 .fp-view-wrap .fp-canvas-wrap{min-height:0;max-height:62vh}
 .fp-view-canvas .fp-block,.fp-view-canvas .fp-placed{pointer-events:none;cursor:default}
 .fp-view-empty{font-size:12px;font-weight:700;color:var(--muted);text-align:center;background:var(--cream);border:1.5px dashed var(--line);border-radius:9px;padding:44px 16px}
@@ -2005,54 +2057,91 @@ body.lead-drawer-open{overflow-x:hidden}
   </div>
 </div>
 
-<!-- Quotation modal (POST /api/v1/cms/quotes: leadId XOR name, see createQuoteSchema) -->
+<!-- Quotation modal (POST /api/v1/cms/quotes: leadId XOR name, see createQuoteSchema).
+     2026-10-22 redesign: viewport-capped two-column layout — numbered section
+     cards scroll on the left, a sticky live quote summary on the right. Every
+     qf-* / qe-* id is unchanged (submit + validation in opsQueuesView.js). -->
 <div class="modal-overlay" id="quoteModal" hidden>
-  <div class="modal-win">
-    <div class="modal-hdr"><div class="modal-title" id="quoteModalTitle">New quotation</div><button class="modal-x" id="quoteModalClose" type="button">✕</button></div>
+  <div class="modal-win qm" role="dialog" aria-modal="true" aria-labelledby="quoteModalTitle">
+    <div class="qm-hdr">
+      <div><div class="qm-eyebrow">Leads · Quotations</div><div class="modal-title" id="quoteModalTitle">New quotation</div>
+        <div class="qm-sub" id="quoteModalHint">Quote an existing lead or create a new one. A quotation PDF is generated, saved and emailed on create.</div></div>
+      <button class="modal-x" id="quoteModalClose" type="button" aria-label="Close">✕</button>
+    </div>
     <div class="modal-alert" id="quoteModalAlert" hidden></div>
-    <div class="modal-hint" id="quoteModalHint">Pick a quotable lead (quoted, booked and lost leads are excluded) or leave blank and enter a name to create a new quoted lead. A quotation PDF is generated, saved and emailed on create.</div>
-    <form id="quoteForm" novalidate>
-      <!-- (a) Lead — picker from non-won leads + auto-fill name/email/mobile -->
-      <div style="font-weight:700;font-size:13px;margin:10px 2px 6px;">Lead</div>
-      <div class="form-grid">
-        <div class="field full"><label for="qf-lead">Existing lead (quotable stages only)</label><select id="qf-lead" name="leadId"><option value="">— New lead (enter name below) —</option></select><div class="field-err" id="qe-lead"></div></div>
-        <div class="field full"><label for="qf-name">Name (required for new lead)</label><input type="text" id="qf-name" name="name" maxlength="120" placeholder="Customer name"><div class="field-err" id="qe-name"></div></div>
-        <div class="field"><label for="qf-type">Type</label><select id="qf-type" name="type"><option value="">— default —</option><option value="PERSONAL">Personal</option><option value="BUSINESS">Business</option></select><div class="field-err" id="qe-type"></div></div>
-        <div class="field"><label for="qf-segment">Segment (optional)</label><input type="text" id="qf-segment" name="segment" maxlength="80" placeholder="E.g. Reno"><div class="field-err" id="qe-segment"></div></div>
-        <div class="field"><label for="qf-source">Source</label><select id="qf-source" name="source"><option value="">— default —</option><option value="WEBSITE">Website</option><option value="WHATSAPP">WhatsApp</option><option value="REFERRAL">Referral</option><option value="GOOGLE">Google</option></select><div class="field-err" id="qe-source"></div></div>
-        <div class="field"><label for="qf-mobile">Mobile</label><input type="text" id="qf-mobile" name="mobile" maxlength="40" placeholder="+65 9xxx xxxx"><div class="field-err" id="qe-mobile"></div></div>
-        <div class="field full"><label for="qf-email">Email</label><input type="email" id="qf-email" name="email" placeholder="name@example.com"><div class="field-err" id="qe-email"></div></div>
+    <form id="quoteForm" class="qm-form" novalidate>
+      <div class="qm-body">
+        <div class="qm-main">
+          <!-- 1. Customer -->
+          <section class="qm-card">
+            <div class="qm-card-hdr"><span class="qm-step">1</span><div><b>Customer</b><small>Pick a quotable lead to auto-fill, or start a new one</small></div></div>
+            <div class="qm-grid">
+              <div class="field qm-span3"><label for="qf-lead">Existing lead</label><select id="qf-lead" name="leadId"><option value="">— New lead (enter name below) —</option></select><div class="field-err" id="qe-lead"></div></div>
+              <div class="field qm-span2"><label for="qf-name">Customer name <em>*</em></label><input type="text" id="qf-name" name="name" maxlength="120" placeholder="Full name or company"><div class="field-err" id="qe-name"></div></div>
+              <div class="field"><label for="qf-type">Account type</label><select id="qf-type" name="type"><option value="">— default —</option><option value="PERSONAL">Personal</option><option value="BUSINESS">Business</option></select><div class="field-err" id="qe-type"></div></div>
+              <div class="field"><label for="qf-email">Email</label><input type="email" id="qf-email" name="email" placeholder="name@example.com"><div class="field-err" id="qe-email"></div></div>
+              <div class="field"><label for="qf-mobile">Mobile</label><input type="text" id="qf-mobile" name="mobile" maxlength="40" placeholder="+65 9xxx xxxx"><div class="field-err" id="qe-mobile"></div></div>
+              <div class="field"><label for="qf-source">Source</label><select id="qf-source" name="source"><option value="">— default —</option><option value="WEBSITE">Website</option><option value="WHATSAPP">WhatsApp</option><option value="REFERRAL">Referral</option><option value="GOOGLE">Google</option></select><div class="field-err" id="qe-source"></div></div>
+              <div class="field qm-span3"><label for="qf-segment">Segment</label><input type="text" id="qf-segment" name="segment" maxlength="80" placeholder="E.g. Reno, Home, SME, Expat"><div class="field-err" id="qe-segment"></div></div>
+            </div>
+          </section>
+          <!-- 2. Unit & rental period -->
+          <section class="qm-card">
+            <div class="qm-card-hdr"><span class="qm-step">2</span><div><b>Unit &amp; rental period</b><small>Live AVAILABLE units, narrowed by facility and size</small></div></div>
+            <div class="qm-grid">
+              <div class="field"><label for="qf-branch">Facility</label><select id="qf-branch" name="preferredBranchId"><option value="">— No facility —</option></select><div class="field-err" id="qe-branch"></div></div>
+              <div class="field"><label for="qf-size">Size</label><select id="qf-size" name="preferredSize"><option value="">— Any size —</option></select><div class="field-err" id="qe-size"></div></div>
+              <div class="field"><label for="qf-unit">Specific unit</label><select id="qf-unit" name="unitCode"><option value="">— No specific unit —</option></select><div class="field-err" id="qe-unit"></div></div>
+              <div class="field"><label for="qf-moveIn">Move-in date</label><input type="date" id="qf-moveIn" name="moveInDate"><div class="field-err" id="qe-moveIn"></div></div>
+              <div class="field"><label for="qf-duration">Duration (months)</label><input type="number" id="qf-duration" name="durationMonths" min="1" step="1" placeholder="1"><div class="field-err" id="qe-duration"></div></div>
+              <div class="field"><label for="qf-movingService">Moving service</label><select id="qf-movingService" name="movingService"><option value="">— not asked —</option><option value="yes">Requested</option><option value="no">Not requested</option></select><div class="field-err" id="qe-movingService"></div></div>
+            </div>
+          </section>
+          <!-- 3. Pricing -->
+          <section class="qm-card">
+            <div class="qm-card-hdr"><span class="qm-step">3</span><div><b>Pricing</b><small>Rate fills from the chosen unit; protection cost from the plan</small></div></div>
+            <div class="qm-grid">
+              <div class="field"><label for="qf-rate">Monthly rate ($)</label><input type="number" id="qf-rate" name="monthlyRate" min="0" step="0.01" placeholder="0.00"><div class="field-err" id="qe-rate"></div></div>
+              <div class="field"><label for="qf-protectionTier">Protection plan</label><select id="qf-protectionTier" name="protectionTier"><option value="">— None —</option></select><div class="field-err" id="qe-protectionTier"></div></div>
+              <div class="field"><label for="qf-protectionCost">Protection ($/mo)</label><input type="number" id="qf-protectionCost" name="protectionCost" min="0" step="0.01" placeholder="0.00"><div class="field-err" id="qe-protectionCost"></div></div>
+              <div class="field"><label for="qf-promoCode">Promo code</label><input type="text" id="qf-promoCode" name="promoCode" maxlength="40" placeholder="E.g. STORELAH10"><div class="field-err" id="qe-promoCode"></div></div>
+              <div class="field"><label for="qf-promoDiscount">Promo discount ($)</label><input type="number" id="qf-promoDiscount" name="promoDiscountAmt" min="0" step="0.01" placeholder="0.00"><div class="field-err" id="qe-promoDiscount"></div></div>
+            </div>
+          </section>
+          <!-- 4. Add-ons (row editor serialises into hidden #qf-addons) -->
+          <section class="qm-card">
+            <div class="qm-card-hdr"><span class="qm-step">4</span><div><b>Add-ons</b><small>Boxes, locks and supplies from the add-on catalogue</small></div><button type="button" class="act-btn qm-add" id="qfAddonAdd">＋ Add item</button></div>
+            <div class="qm-addons" id="qfAddonRows"></div>
+            <input type="hidden" id="qf-addons" name="addons">
+            <div class="field-err" id="qe-addons"></div>
+          </section>
+          <!-- 5. Follow-up -->
+          <section class="qm-card">
+            <div class="qm-card-hdr"><span class="qm-step">5</span><div><b>Follow-up</b><small>Who owns this quote and what happens next</small></div></div>
+            <div class="qm-grid">
+              <div class="field"><label for="qf-owner">Owner</label><input type="text" id="qf-owner" name="owner" maxlength="80" placeholder="Operator handling this lead"><div class="field-err" id="qe-owner"></div></div>
+              <div class="field"><label for="qf-nextAction">Next action</label><input type="date" id="qf-nextAction" name="nextActionAt"><div class="field-err" id="qe-nextAction"></div></div>
+              <div class="field qm-span3"><label for="qf-note">Note</label><textarea id="qf-note" name="note" maxlength="2000" rows="2" placeholder="Shown on the quotation — special terms, access needs, etc."></textarea><div class="field-err" id="qe-note"></div></div>
+            </div>
+          </section>
+        </div>
+        <!-- Sticky live summary -->
+        <aside class="qm-side" aria-label="Quotation summary">
+          <div class="qm-sum">
+            <div class="qm-sum-title">Quote summary</div>
+            <div class="qm-sum-who" id="qfSumWho">New customer</div>
+            <div class="qm-sum-unit" id="qfSumUnit">No unit selected</div>
+            <div class="qm-lines" id="qfSumLines"></div>
+            <div class="qm-est"><span>Estimated total</span><b id="qfSumTotal">$0.00</b></div>
+            <div class="modal-hint qm-est-note" id="qf-quoteTotalPreview">Estimated total: —</div>
+            <div class="field"><label for="qf-total">Total due today ($)</label>
+              <div class="qm-total-row"><input type="number" id="qf-total" name="totalDueToday" min="0" step="0.01" placeholder="0.00"><button type="button" class="act-btn" id="qfUseEstimate">Use estimate</button></div>
+              <div class="field-err" id="qe-total"></div></div>
+          </div>
+          <div class="qm-pdf-note">📄 A PDF quotation is generated, saved to the lead and emailed to the customer when an email is given.</div>
+        </aside>
       </div>
-      <!-- (b) Unit information — facility dropdown, preferred size, specific unitCode with live AVAILABLE options -->
-      <div style="font-weight:700;font-size:13px;margin:10px 2px 6px;">Unit information</div>
-      <div class="form-grid">
-        <div class="field"><label for="qf-branch">Facility</label><select id="qf-branch" name="preferredBranchId"><option value="">— No facility —</option></select><div class="field-err" id="qe-branch"></div></div>
-        <div class="field"><label for="qf-size">Preferred size</label><input type="text" id="qf-size" name="preferredSize" maxlength="40" placeholder="E.g. SMALL"><div class="field-err" id="qe-size"></div></div>
-        <div class="field full"><label for="qf-unit">Specific unit (live AVAILABLE options)</label><select id="qf-unit" name="unitCode"><option value="">— No specific unit —</option></select><div class="field-err" id="qe-unit"></div></div>
-      </div>
-      <!-- (c) Payment information — rate/duration/move-in/protection/addons/promo/moving/total + live total preview -->
-      <div style="font-weight:700;font-size:13px;margin:10px 2px 6px;">Payment information</div>
-      <div class="form-grid">
-        <div class="field"><label for="qf-rate">Monthly rate ($)</label><input type="number" id="qf-rate" name="monthlyRate" min="0" step="0.01"><div class="field-err" id="qe-rate"></div></div>
-        <div class="field"><label for="qf-duration">Duration (months)</label><input type="number" id="qf-duration" name="durationMonths" min="1" step="1"><div class="field-err" id="qe-duration"></div></div>
-        <div class="field"><label for="qf-moveIn">Move-in date</label><input type="date" id="qf-moveIn" name="moveInDate"><div class="field-err" id="qe-moveIn"></div></div>
-        <div class="field"><label for="qf-protectionTier">Protection tier (optional)</label><input type="text" id="qf-protectionTier" name="protectionTier" maxlength="80" placeholder="E.g. standard"><div class="field-err" id="qe-protectionTier"></div></div>
-        <div class="field"><label for="qf-protectionCost">Protection cost ($/mo)</label><input type="number" id="qf-protectionCost" name="protectionCost" min="0" step="0.01"><div class="field-err" id="qe-protectionCost"></div></div>
-        <div class="field"><label for="qf-addons">Addons (optional JSON)</label><input type="text" id="qf-addons" name="addons" placeholder='[{"name":"Medium Box","qty":2,"price":3.5}]'><div class="field-err" id="qe-addons"></div></div>
-        <div class="field"><label for="qf-promoCode">Promo code (optional)</label><input type="text" id="qf-promoCode" name="promoCode" maxlength="40" placeholder="E.g. STORELAH10"><div class="field-err" id="qe-promoCode"></div></div>
-        <div class="field"><label for="qf-promoDiscount">Promo discount ($)</label><input type="number" id="qf-promoDiscount" name="promoDiscountAmt" min="0" step="0.01"><div class="field-err" id="qe-promoDiscount"></div></div>
-        <div class="field"><label for="qf-movingService">Moving service</label><select id="qf-movingService" name="movingService"><option value="">— not requested —</option><option value="yes">Requested</option><option value="no">Not requested</option></select><div class="field-err" id="qe-movingService"></div></div>
-        <div class="field"><label for="qf-total">Total due today ($)</label><input type="number" id="qf-total" name="totalDueToday" min="0" step="0.01"><div class="field-err" id="qe-total"></div></div>
-        <div class="field full"><div class="modal-hint" id="qf-quoteTotalPreview" style="margin:0;">Estimated total: —</div></div>
-      </div>
-      <!-- (d) Note / owner / next action -->
-      <div style="font-weight:700;font-size:13px;margin:10px 2px 6px;">Note / owner / next action</div>
-      <div class="form-grid">
-        <div class="field full"><label for="qf-note">Note</label><input type="text" id="qf-note" name="note" maxlength="2000" placeholder="Quotation note"><div class="field-err" id="qe-note"></div></div>
-        <div class="field"><label for="qf-owner">Owner (optional)</label><input type="text" id="qf-owner" name="owner" maxlength="80" placeholder="Operator handling this lead"><div class="field-err" id="qe-owner"></div></div>
-        <div class="field"><label for="qf-nextAction">Next action (optional)</label><input type="date" id="qf-nextAction" name="nextActionAt"><div class="field-err" id="qe-nextAction"></div></div>
-      </div>
-      <div class="modal-foot"><button class="act-btn" type="button" id="quoteFormCancel">Cancel</button><button class="act-btn primary" type="submit" id="quoteFormSubmit">Create quotation</button></div>
+      <div class="modal-foot qm-foot"><button class="act-btn" type="button" id="quoteFormCancel">Cancel</button><button class="act-btn primary" type="submit" id="quoteFormSubmit">Create quotation</button></div>
     </form>
   </div>
 </div>

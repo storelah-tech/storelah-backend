@@ -166,6 +166,16 @@ export function wireOpsQueues() {
     syncAddonsJson();
     refreshQuoteTotalPreview();
   });
+  // View quotation: on-screen replica of the issued PDF (no server round-trip).
+  ['#qfViewQuote', '#qfViewQuoteFoot'].forEach((sel) => $(sel)?.addEventListener('click', () => {
+    openQuoteView().catch((e) => showBanner('Quotation preview: ' + describeError(e)));
+  }));
+  $('#quoteViewBack')?.addEventListener('click', closeQuoteView);
+  $('#quoteViewClose')?.addEventListener('click', closeQuoteView);
+  $('#quoteViewModal')?.addEventListener('click', (e) => { if (e.target.id === 'quoteViewModal') closeQuoteView(); });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && $('#quoteViewModal') && !$('#quoteViewModal').hidden) { e.stopPropagation(); closeQuoteView(); }
+  }, true);
   $('#qfUseEstimate')?.addEventListener('click', () => {
     refreshQuoteTotalPreview(); // never fill from a stale estimate
     const t = $('#qf-total');
@@ -512,6 +522,147 @@ function refreshQuoteTotalPreview() {
     : 'Estimate only — set Total due today to save a figure.';
 }
 
+// ---------- View quotation (document preview) ----------
+// Mirrors src/core/quotationPdf.ts row-for-row (same labels, order, money /
+// date formats and "To be confirmed" fallbacks) so operators see what the
+// customer receives. Unsaved form values win; blanks fall back to the picked
+// lead's stored values, like the server does on create. Keep in step with
+// quotationPdf.ts when that layout changes.
+let quoteSupportContact = null;
+
+async function loadSupportContact() {
+  if (quoteSupportContact) return quoteSupportContact;
+  try {
+    const s = await get('/settings');
+    const v = s && s['operations.supportContact'];
+    quoteSupportContact = typeof v === 'string' && v.trim() ? v.trim() : 'ops@storelah.sg';
+  } catch {
+    quoteSupportContact = 'ops@storelah.sg';
+  }
+  return quoteSupportContact;
+}
+
+const pdfSgd = (n) => new Intl.NumberFormat('en-SG', { style: 'currency', currency: 'SGD', minimumFractionDigits: 2 }).format(n);
+const pdfMoney = (n) => (n == null ? 'To be confirmed' : pdfSgd(n));
+const pdfDay = (d) => new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }).format(d);
+const pdfDateTime = (d) => pdfDay(d) + ', ' + new Intl.DateTimeFormat('en-SG', { hour: 'numeric', minute: '2-digit', hour12: true }).format(d);
+
+function quoteViewData() {
+  const v = (id) => ($(id)?.value || '').trim();
+  const num = (id) => {
+    const raw = v(id);
+    if (!raw) return null;
+    const x = Number(raw);
+    return Number.isFinite(x) && x >= 0 ? x : null;
+  };
+  const lead = quotableLeadCache.get(v('#qf-lead')) || {};
+  const or = (val, fb) => (val !== '' && val != null ? val : fb ?? null);
+  const branchId = or(v('#qf-branch'), lead.preferredBranchId);
+  const branch = (state.branches || []).find((b) => b.id === branchId) || null;
+  const unitCode = or(v('#qf-unit'), lead.unitCode);
+  const unit = quoteUnitsCache.find((u) => u.code === unitCode) || null;
+  let addons = [];
+  try { addons = v('#qf-addons') ? JSON.parse(v('#qf-addons')) : []; } catch { addons = []; }
+  const moveRaw = v('#qf-moveIn');
+  const moving = v('#qf-movingService');
+  return {
+    leadName: or(v('#qf-name'), lead.name) || 'Customer',
+    leadEmail: or(v('#qf-email'), lead.email),
+    leadMobile: or(v('#qf-mobile'), lead.mobile),
+    leadType: or(v('#qf-type'), lead.type),
+    unitCode,
+    unitDisplayName: unit && unit.name && unit.name !== unit.code ? unit.name : unitCode,
+    unitSqft: unit ? unit.sqft : null,
+    branchName: branch ? branch.name : null,
+    branchAddress: branch && branch.address && branch.address.trim() ? branch.address : null,
+    preferredSize: or(v('#qf-size'), lead.preferredSize),
+    monthlyRate: or(num('#qf-rate'), lead.monthlyRate),
+    durationMonths: Number.isInteger(num('#qf-duration')) && num('#qf-duration') >= 1 ? num('#qf-duration') : null,
+    moveInDate: /^\d{4}-\d{2}-\d{2}$/.test(moveRaw) ? new Date(moveRaw + 'T00:00:00') : null,
+    protectionTier: v('#qf-protectionTier') || null,
+    protectionCost: num('#qf-protectionCost'),
+    addons: (Array.isArray(addons) ? addons : []).filter((a) => a && a.name).slice(0, 20),
+    promoCode: v('#qf-promoCode') || null,
+    promoDiscountAmt: num('#qf-promoDiscount'),
+    movingService: moving ? moving === 'yes' : null,
+    totalDueToday: num('#qf-total'),
+    note: v('#qf-note') || null,
+    owner: or(v('#qf-owner'), lead.owner),
+  };
+}
+
+function quoteViewHtml(d, supportContact) {
+  const e = escapeHtml;
+  const row = (k, val, tbc) => `<div class="qv-row"><span class="k">${e(k)}</span><span class="v${tbc ? ' tbc' : ''}">${e(val)}</span></div>`;
+  const moneyRow = (k, n) => row(k, pdfMoney(n), n == null);
+  const sec = (t, body) => `<section class="qv-sec"><div class="qv-sec-t">${e(t)}</div>${body}</section>`;
+  const quoteNo = 'Assigned on create';
+  let unitVal;
+  if (d.unitCode) {
+    const bit = d.unitDisplayName && d.unitDisplayName !== d.unitCode ? `${d.unitCode} (${d.unitDisplayName})` : d.unitCode;
+    unitVal = row('Unit', d.unitSqft ? `${bit} - ${d.unitSqft} sqft` : bit);
+  } else {
+    unitVal = row('Unit', 'To be confirmed at viewing', true);
+  }
+  const pay = [
+    moneyRow('Monthly rate', d.monthlyRate),
+    d.protectionTier ? row('Protection plan', d.protectionCost != null ? `${d.protectionTier} (${pdfSgd(d.protectionCost)}/mo)` : d.protectionTier) : '',
+    ...d.addons.map((a) => `<div class="qv-line"><span>${e(`${a.name} x ${a.qty}`)}</span><span>${e(pdfSgd((Number(a.price) || 0) * (Number(a.qty) || 0)))}</span></div>`),
+    d.promoCode ? row('Promotion', d.promoDiscountAmt != null ? `${d.promoCode} (-${pdfSgd(d.promoDiscountAmt)})` : d.promoCode) : '',
+    d.movingService ? row('Moving service', 'Requested (charged separately)') : '',
+    `<div class="qv-total"><span>Total due today</span><span>${e(d.totalDueToday != null ? pdfSgd(d.totalDueToday) : 'To be confirmed')}</span></div>`,
+  ].join('');
+  return (
+    '<header class="qv-band"><div class="qv-brand">StoreLah</div><div class="qv-tag">Self-storage, sorted.</div><div class="qv-kind">STORAGE QUOTATION</div></header>' +
+    '<div class="qv-body">' +
+    '<div class="qv-h1">Quotation</div>' +
+    row('Quotation no.', quoteNo, true) +
+    row('Issued', pdfDateTime(new Date())) +
+    (d.owner ? row('Prepared by', d.owner) : '') +
+    sec('Lead information',
+      row('Name', d.leadName) +
+      (d.leadType ? row('Account type', d.leadType) : '') +
+      row('Email', d.leadEmail || '—') +
+      row('Mobile', d.leadMobile || '—')) +
+    sec('Unit information',
+      (d.branchName ? row('Facility', d.branchName) : row('Facility', 'To be confirmed', true)) +
+      (d.branchAddress ? row('Facility address', d.branchAddress) : '') +
+      (d.preferredSize ? row('Preferred size', d.preferredSize) : '') +
+      unitVal +
+      moneyRow('Monthly rate', d.monthlyRate) +
+      (d.durationMonths ? row('Duration', `${d.durationMonths} month(s)`) : '') +
+      (d.moveInDate ? row('Move-in date', pdfDay(d.moveInDate)) : '')) +
+    sec('Payment information', pay) +
+    (d.note ? sec('Note', `<div class="qv-note">${e(d.note.slice(0, 500))}</div>`) : '') +
+    '</div>' +
+    '<footer class="qv-foot">' +
+    'StoreLah Pte. Ltd.  |  UEN: <span class="ph">____ (to be confirmed by owner)</span><br>' +
+    'Registered address: <span class="ph">____ (to be confirmed by owner)</span><br>' +
+    `Questions? Contact ${e(supportContact)} and quote your quotation number.<br>` +
+    'This quotation is an estimate only and is valid subject to unit availability.' +
+    '</footer>'
+  );
+}
+
+export async function openQuoteView() {
+  const paper = $('#quoteViewPaper');
+  const modal = $('#quoteViewModal');
+  if (!paper || !modal) return;
+  syncAddonsJson();
+  const contact = await loadSupportContact();
+  paper.innerHTML = quoteViewHtml(quoteViewData(), contact);
+  modal.hidden = false;
+  const scroller = modal.querySelector('.qv-scroll');
+  if (scroller) scroller.scrollTop = 0;
+  try { $('#quoteViewBack').focus({ preventScroll: true }); } catch { /* noop */ }
+}
+
+export function closeQuoteView() {
+  const modal = $('#quoteViewModal');
+  if (modal) modal.hidden = true;
+  try { $('#qfViewQuote')?.focus({ preventScroll: true }); } catch { /* noop */ }
+}
+
 export async function openQuoteModal() {
   await ensureQuoteBranches();
   const branchSel = $('#qf-branch');
@@ -534,6 +685,8 @@ export async function openQuoteModal() {
 export function closeQuoteModal() {
   const modal = $('#quoteModal');
   if (modal) modal.hidden = true;
+  const view = $('#quoteViewModal');
+  if (view) view.hidden = true;
   clearQuoteFieldErrors();
 }
 

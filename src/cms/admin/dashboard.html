@@ -677,6 +677,40 @@ main{min-width:0;display:flex;flex-direction:column;min-height:100vh}
 .qm-total-row .act-btn{white-space:nowrap}
 .qm-pdf-note{font-size:11px;color:var(--muted);background:var(--sage);border-radius:10px;padding:9px 11px;line-height:1.4}
 .qm-foot{margin:0;padding:12px 22px;border-top:1px solid var(--line);background:var(--paper);flex:none}
+.qm-foot-view{margin-right:auto}
+.qm-view-btn{display:flex;align-items:center;gap:12px;width:100%;text-align:left;border:1.5px solid var(--terra);background:var(--terra-light);color:var(--terra2);border-radius:12px;padding:11px 14px;cursor:pointer;font-family:inherit;transition:background .15s,transform .15s}
+.qm-view-btn:hover{background:#f3d5c7;transform:translateY(-1px)}
+.qm-view-btn>span:first-child{font-size:22px}
+.qm-view-btn b{display:block;font-size:14px}
+.qm-view-btn small{display:block;font-size:11px;color:var(--terra2);opacity:.8}
+/* Quotation preview — mirrors quotationPdf.ts (A4 595×842pt, 48pt margins,
+   Helvetica, terra #BD6B50 header band, ink #282B27, muted #746F66, rules #E1D8CB). */
+.qv-overlay{z-index:210;padding:2vh 16px}
+.qv-shell{width:100%;max-width:900px;height:96vh;display:flex;flex-direction:column;background:#ddd6cb;border-radius:14px;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.3)}
+.qv-bar{display:flex;align-items:center;gap:14px;padding:10px 14px;background:var(--paper);border-bottom:1px solid var(--line);flex:none}
+.qv-bar-txt{flex:1;min-width:0}
+.qv-bar-txt b{display:block;font-size:14px}
+.qv-bar-txt small{display:block;font-size:11px;color:var(--muted)}
+.qv-scroll{flex:1;overflow:auto;padding:24px 16px 32px}
+.qv-paper{width:595pt;max-width:100%;min-height:842pt;margin:0 auto;background:#fff;box-shadow:0 6px 24px rgba(40,43,39,.18);font-family:Helvetica,Arial,sans-serif;color:#282B27;font-size:10pt;line-height:1.25;display:flex;flex-direction:column}
+.qv-band{background:#BD6B50;color:#fff;padding:22pt 48pt 16pt;height:100pt;box-sizing:border-box}
+.qv-band .qv-brand{font-size:22pt;font-weight:700;line-height:1}
+.qv-band .qv-tag{font-size:11pt;margin-top:6pt}
+.qv-band .qv-kind{font-size:11pt;font-weight:700;margin-top:12pt;letter-spacing:.02em}
+.qv-body{padding:26pt 48pt 0;flex:1}
+.qv-h1{font-size:14pt;font-weight:700;margin-bottom:10pt}
+.qv-row{display:flex;justify-content:space-between;gap:24pt;padding:3.5pt 0}
+.qv-row .k{color:#746F66;flex:none}
+.qv-row .v{text-align:right;overflow-wrap:anywhere}
+.qv-row .v.tbc{color:#746F66;font-style:italic}
+.qv-sec{border-top:1pt solid #E1D8CB;margin-top:10pt;padding-top:12pt}
+.qv-sec-t{font-size:12pt;font-weight:700;margin-bottom:8pt}
+.qv-line{display:flex;justify-content:space-between;gap:24pt;padding:3.5pt 0}
+.qv-total{display:flex;justify-content:space-between;border-top:1pt solid #E1D8CB;margin-top:6pt;padding-top:8pt;font-size:12pt;font-weight:700}
+.qv-note{color:#746F66;white-space:pre-wrap;overflow-wrap:anywhere}
+.qv-foot{margin:18pt 48pt 28pt;border-top:1pt solid #E1D8CB;padding-top:12pt;font-size:9pt;color:#746F66;line-height:1.6}
+.qv-foot .ph{background:#fff4c2;padding:0 2pt}
+@media (max-width:640px){.qv-overlay{padding:0}.qv-shell{height:100vh;border-radius:0}.qv-scroll{padding:12px 8px}.qv-band,.qv-body{padding-left:20pt;padding-right:20pt}.qv-foot{margin-left:20pt;margin-right:20pt}}
 @media (max-width:900px){.qm-body{grid-template-columns:1fr}.qm-side{position:static}.qm-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.qm-span2{grid-column:1/-1}}
 @media (max-width:560px){#quoteModal{padding:0}.modal-win.qm{max-height:100vh;border-radius:0}.qm-grid{grid-template-columns:1fr}.qm-addon{grid-template-columns:1fr 64px 80px 30px}.qm-addon .qm-line{display:none}}
 .fp-view-wrap .fp-canvas-wrap{min-height:0;max-height:62vh}
@@ -2138,11 +2172,26 @@ body.lead-drawer-open{overflow-x:hidden}
               <div class="qm-total-row"><input type="number" id="qf-total" name="totalDueToday" min="0" step="0.01" placeholder="0.00"><button type="button" class="act-btn" id="qfUseEstimate">Use estimate</button></div>
               <div class="field-err" id="qe-total"></div></div>
           </div>
-          <div class="qm-pdf-note">📄 A PDF quotation is generated, saved to the lead and emailed to the customer when an email is given.</div>
+          <button type="button" class="qm-view-btn" id="qfViewQuote"><span aria-hidden="true">📄</span><span><b>View quotation</b><small>See it as the customer will</small></span></button>
+          <div class="qm-pdf-note">A PDF quotation is generated, saved to the lead and emailed to the customer when an email is given.</div>
         </aside>
       </div>
-      <div class="modal-foot qm-foot"><button class="act-btn" type="button" id="quoteFormCancel">Cancel</button><button class="act-btn primary" type="submit" id="quoteFormSubmit">Create quotation</button></div>
+      <div class="modal-foot qm-foot"><button class="act-btn qm-foot-view" type="button" id="qfViewQuoteFoot">📄 View quotation</button><button class="act-btn" type="button" id="quoteFormCancel">Cancel</button><button class="act-btn primary" type="submit" id="quoteFormSubmit">Create quotation</button></div>
     </form>
+  </div>
+</div>
+
+<!-- Quotation preview (View quotation): an on-screen replica of the issued
+     quotation PDF (src/core/quotationPdf.ts layout, same rows and wording),
+     built client-side from the unsaved form. Stacks above #quoteModal. -->
+<div class="modal-overlay qv-overlay" id="quoteViewModal" hidden>
+  <div class="qv-shell" role="dialog" aria-modal="true" aria-labelledby="quoteViewTitle">
+    <div class="qv-bar">
+      <button type="button" class="act-btn" id="quoteViewBack">← Back to form</button>
+      <div class="qv-bar-txt"><b id="quoteViewTitle">Quotation preview</b><small>How the customer’s quotation will look · the number is assigned when you create it</small></div>
+      <button type="button" class="modal-x" id="quoteViewClose" aria-label="Close preview">✕</button>
+    </div>
+    <div class="qv-scroll"><article class="qv-paper" id="quoteViewPaper"></article></div>
   </div>
 </div>
 

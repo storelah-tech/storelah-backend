@@ -399,6 +399,25 @@ public plan from an unpublished fixture. Both tests updated.
 P2 (Customers, Leads, Overview, Finance, Content, Facility ops) and P3 (shell,
 Known-NW re-check) not run yet.
 
+### 1C.5 P2 suites (2026-10-22, test copy, API level, backend `2e57a64`): 24/25 pass, the 1 failure since fixed
+
+| Area | Result |
+| --- | --- |
+| Customers: tenants TN-04/07/08/10 | Pass: date filter (bad date 400), edit, deactivate releases the unit. Verification: validate works; a second decision on an already-reviewed row is 409 by design (only pending rows are reviewable) |
+| **TN-06 new tenant with a unit** | **FIXED 2026-10-22** (was FAIL, high). Assigning a tenant now marks the unit OCCUPIED (OVERDUE for overdue tenants) and the unit follows tenant status edits; unassign, reassign, deactivate and move-out release it. A unit with a pending online booking can't be assigned (409). 6 e2e tests; on the test copy the online booking now gets 409 and the tenant keeps the unit. Original finding: creating a tenant in the CMS links the unit but leaves it **AVAILABLE**. A customer can then book that unit online (201), and checkout **silently removes the walk-in tenant's unit link** (it treats links on AVAILABLE units as stale). A second CMS tenant on the same unit is correctly refused (400) |
+| Bookings / move-ins BK, MI | Pass: list + date filters, bad date 400, read-only |
+| Quotes QT/QQ | Pass: create from lead (quote no., lead → Quoted, email SKIPPED locally), validation 400, list with live inventory count, detail, PDF (`application/pdf`) |
+| Move-outs MO | Pass: notice tenants listed; Complete → tenant inactive + unit available; Withdraw → tenant active; bad action 400 |
+| Leads LD / pipeline PL | Pass: create + email validation, stage changes incl. LOST with reason/value, date filter, email groups + expand + `search` |
+| Conversations CV | Pass: thread, internal note, message (recorded `delivered:false` — stub, D-12), assign, unified timeline |
+| Appointments AP | Pass: create, end-before-start 400, reschedule, cancel, delete |
+| Analytics AN / Overview OV / Portfolio PF | Pass: stats, conversion, scorecard, 8-week series; KPIs, action items, portfolio, net PSF |
+| Finance FN | Pass: invoices by status, date range, bad date 400 (Export / Create invoice remain Known-NW D-22) |
+| Content CT | Pass: create, slug validation, drafts hidden publicly, publish visible, image upload + non-image 400 + remove, type/published filter, delete |
+| Facility ops MT/AS/IN/AC/IS | Pass: work orders (status filter, advance), preventive progress, assets (duplicate code 409), vendors, incidents (filters, bad severity 400), access (temporary list, DENIED exceptions, stats, revoke, policies), inspections (frequency filter, expiring certificates). A door with logged events can't be deleted (409 guard) |
+
+P3 (shell / responsive, Known-NW re-check) not run.
+
 ### 1C.3 Owner decisions needed
 
 1. R-FP1: should a published floor plan stay visible while it's being edited?

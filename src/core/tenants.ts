@@ -198,7 +198,26 @@ async function assertUnitAssignable(unitId: string, opts?: { selfId?: string }) 
   if (isOccupiedStatus(unit.status)) {
     throw new AppError(400, 'VALIDATION', `Unit ${unit.unitCode} is ${unit.status.toLowerCase()} and cannot be assigned`);
   }
+  // A customer mid-checkout holds the unit through a PENDING_PAYMENT booking
+  // (the unit itself stays AVAILABLE until payment) — never assign over it.
+  const pending = await prisma.booking.findFirst({
+    where: { unitId, status: 'PENDING_PAYMENT' },
+    select: { bookingRef: true },
+  });
+  if (pending) {
+    throw new AppError(409, 'CONFLICT', `Unit ${unit.unitCode} has a pending online booking (${pending.bookingRef}) and cannot be assigned`);
+  }
   return unit;
+}
+
+// Unit status while a tenant holds it (TN-06): assigning a tenant takes the
+// unit off the market — OCCUPIED, or OVERDUE when the tenant is overdue — so
+// online checkout (which only books AVAILABLE/RESERVED units) can't take it
+// and never treats the tenant link as stale. Every release path sets the unit
+// back to AVAILABLE (updateTenant unassign/reassign, deactivateTenant,
+// transitionMoveOut complete).
+function heldUnitStatus(tenantStatus: string | null | undefined): 'OCCUPIED' | 'OVERDUE' {
+  return tenantStatus === 'OVERDUE' ? 'OVERDUE' : 'OCCUPIED';
 }
 
 export async function createTenant(input: CreateTenantInput) {
@@ -208,23 +227,28 @@ export async function createTenant(input: CreateTenantInput) {
     sqft = unit.sqft;
   }
 
-  const tenant = await prisma.tenant.create({
-    data: {
-      name: input.name,
-      type: input.type ?? 'PERSONAL',
-      segment: input.segment,
-      // Reads are case-insensitive; writes store trim()+lowercase so
-      // email-keyed lookups keep matching (same canonicalizer as Customer).
-      email: input.email != null ? normalizeEmail(input.email) : input.email,
-      mobile: input.mobile,
-      unitId: input.unitId,
-      moveInDate: input.moveInDate,
-      monthlyRate: input.monthlyRate,
-      psf: sqft ? input.monthlyRate / sqft : input.monthlyRate,
-      status: input.status ?? 'ACTIVE',
-      autoDebit: input.autoDebit ?? false,
-    },
-    include: { unit: { include: { size: true } } },
+  const tenant = await prisma.$transaction(async (tx) => {
+    const created = await tx.tenant.create({
+      data: {
+        name: input.name,
+        type: input.type ?? 'PERSONAL',
+        segment: input.segment,
+        // Reads are case-insensitive; writes store trim()+lowercase so
+        // email-keyed lookups keep matching (same canonicalizer as Customer).
+        email: input.email != null ? normalizeEmail(input.email) : input.email,
+        mobile: input.mobile,
+        unitId: input.unitId,
+        moveInDate: input.moveInDate,
+        monthlyRate: input.monthlyRate,
+        psf: sqft ? input.monthlyRate / sqft : input.monthlyRate,
+        status: input.status ?? 'ACTIVE',
+        autoDebit: input.autoDebit ?? false,
+      },
+    });
+    if (input.unitId) {
+      await tx.unit.update({ where: { id: input.unitId }, data: { status: heldUnitStatus(created.status) } });
+    }
+    return tx.tenant.findUniqueOrThrow({ where: { id: created.id }, include: { unit: { include: { size: true } } } });
   });
   const latest = (await latestVerificationsByTenant([{ id: tenant.id, email: tenant.email }])).get(tenant.id) ?? null;
   return serializeTenant(tenant, latest);
@@ -281,6 +305,10 @@ export async function updateTenant(id: string, input: UpdateTenantInput) {
     // Release the tenant's previous unit back to AVAILABLE (consistent with deactivateTenant).
     if (releaseUnitId) {
       await tx.unit.update({ where: { id: releaseUnitId }, data: { status: 'AVAILABLE' } });
+    }
+    // The held unit follows the assignment and the tenant's status (TN-06).
+    if (nextUnitId && (nextUnitId !== tenant.unitId || input.status !== undefined)) {
+      await tx.unit.update({ where: { id: nextUnitId }, data: { status: heldUnitStatus(input.status ?? tenant.status) } });
     }
     return tx.tenant.findUnique({
       where: { id },

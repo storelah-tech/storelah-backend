@@ -132,16 +132,28 @@ describe('move-in edge cases', () => {
       .set('Authorization', 'Bearer this-is-not-a-token');
     expect(garbagePortal.status).toBe(401);
 
-    // A present-but-invalid token on booking is a hard 401 — the request must
-    // NOT be downgraded to guest checkout (which would create a booking).
+    // A present-but-invalid token WITHOUT guest proof (no email) is a hard
+    // 401 — it is never accepted as authenticated and creates no booking.
     const before = await prisma.booking.count();
     const invalidBooking = await api
       .post('/api/v1/customer/bookings')
       .set('Authorization', 'Bearer this-is-not-a-token')
-      .send({ unitCode: PIN.rentableUnit, moveInDate: futureMoveInISO(), durationMonths: 1, email: uniqueEmail() });
+      .send({ unitCode: PIN.rentableUnit, moveInDate: futureMoveInISO(), durationMonths: 1 });
     expect(invalidBooking.status).toBe(401);
     expect(invalidBooking.body.error.code).toBe('UNAUTHORIZED');
     expect(await prisma.booking.count()).toBe(before);
+
+    // Stale token + guest email proof → guest checkout (deliberate since
+    // c880f0e: an expired session must not block a guest from paying). The
+    // booking belongs to a GUEST customer, never to the token's identity.
+    const email = uniqueEmail();
+    const staleWithEmail = await api
+      .post('/api/v1/customer/bookings')
+      .set('Authorization', 'Bearer this-is-not-a-token')
+      .send({ unitCode: PIN.rentableUnit, moveInDate: futureMoveInISO(), durationMonths: 1, email });
+    expect(staleWithEmail.status).toBe(201);
+    const guest = await prisma.customer.findUnique({ where: { email } });
+    expect(guest?.type).toBe('GUEST');
   });
 
   it('duplicate registration → 409 CONFLICT', async () => {

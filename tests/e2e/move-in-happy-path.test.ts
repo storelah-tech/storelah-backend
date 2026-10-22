@@ -9,6 +9,7 @@
 
 import { beforeEach, describe, expect, it } from 'vitest';
 import { PIN, api, futureMoveInISO, prisma, resetDb, seedMoveInWorld, uniqueEmail } from './fixtures';
+import { publishFloorPlanWithSync } from '../../src/core/floorPlans';
 
 describe('move-in happy path (authenticated)', () => {
   beforeEach(async () => {
@@ -33,7 +34,11 @@ describe('move-in happy path (authenticated)', () => {
 
   it('register → login → authed booking → persisted → portal-visible', async () => {
     // 1. The real plan contains the unit's placement (the layout the booking
-    //    renderer draws — joined live to unitCode/status, no PII).
+    //    renderer draws — joined live to unitCode/status, no PII). Customers
+    //    only ever see PUBLISHED plans, so publish the seeded layout first
+    //    (the fixture seeds it as an unpublished DRAFT).
+    const seeded = await prisma.floorPlan.findFirstOrThrow({ where: { floor: { level: PIN.level, branch: { code: PIN.branchCode } } } });
+    await publishFloorPlanWithSync(seeded.floorId, { actorName: 'E2E Op' });
     const planRes = await api.get(`/api/v1/public/floor-plans/${PIN.branchCode}/${PIN.level}`);
     expect(planRes.status).toBe(200);
     expect(planRes.body.data.plan).not.toBeNull();

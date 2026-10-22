@@ -366,6 +366,39 @@ charges the server figure.
 ($61–$84), so any all-sizes promotion that includes lockers is blocked by
 validation. Scope promotions by size, or add a LOCKER-specific floor.
 
+### 1C.4 Release + rerun (2026-10-19)
+
+**Released:** backend `948886e` live on Lambda (rollback = version 17 = `c88f2fc`), prod
+migration `20261018000000` applied, 10/10 live floor plans snapshotted; booking
+`5012b57` live via Amplify job 93 (gate unchanged, content check behind the gate
+still owner-side).
+
+**P0 rerun on the final code (test copy):** all §1A/§1B cases pass except
+**FPP-10** (known, low: two simultaneous publishes both write rate history).
+R-FP1 and R-PR1–R-PR7 no longer reproduce.
+
+**Backend e2e:** 142/142. The 2 move-in tests were stale, not bugs. One predates
+the deliberate stale-token guest fallback (`c880f0e`); the other expected a
+public plan from an unpublished fixture. Both tests updated.
+
+**P1 suites (test copy, API level): 27/30 pass.**
+
+| Area | Result |
+| --- | --- |
+| Facilities ST-13/14 | Pass: create/validate, edit, code immutable, inactive hidden from booking, delete guarded (409) |
+| Floors FL-02..05 | Pass: create, duplicate level 409, edit, delete empty, delete with units 409, deactivate |
+| Units UN/UM | Pass: create + validation (incl. legacy `climateControl` 400), list filters + paging, edit, rate change + history, map + size filter, delete guard (occupied 409), CSV import (2 created / 2 errors reported) |
+| Safeguards PR-21 | Pass |
+| Protection & Addons EX | Pass: CRUD, slug validation, price/wasPrice reach the public catalog, inactive hidden |
+| Settings / business rules / fees ST-01..08 | Pass: range + unknown-key validation; fee resolve picks Product > Facility > Global (75 / 50 / 1) |
+| Users ST-09..12, RB-01..03, RB-06 | Pass: password rule, grants gate fees / rules / users, every CMS route 401 without a valid token |
+| **RB-04 facility scoping** | **FAIL:** an operator limited to one facility can read and edit other facilities' units. Access rows are saved but never enforced (`scopedBranchIds` has no callers) |
+| **RB-05 VIEWER role** | **FAIL:** a VIEWER can create units and save settings. The role isn't checked on writes |
+| Activity feed (observation) | Booking events sort by move-in date, so future move-ins sit above today's changes in "Latest Unit Activity" |
+
+P2 (Customers, Leads, Overview, Finance, Content, Facility ops) and P3 (shell,
+Known-NW re-check) not run yet.
+
 ### 1C.3 Owner decisions needed
 
 1. R-FP1: should a published floor plan stay visible while it's being edited?

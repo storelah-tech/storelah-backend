@@ -25,7 +25,7 @@ export const openapiSpec = {
   openapi: '3.0.3',
   info: {
     title: 'StoreLah Booking API',
-    version: '1.10.2',
+    version: '1.10.3',
     description: [
       'Customer-facing booking API for the StoreLah self-storage business.',
       '',
@@ -366,6 +366,13 @@ export const openapiSpec = {
          'units / map / floor-plan reads exclude INACTIVE branches (shape-compatible, ' +
          'filtering only). CMS `GET /cms/floors` rows gain additive `planStatus` ' +
          '(none/draft/active). Public shapes unchanged.',
+       'v1.10.3 is ADDITIVE over 1.10.2: unit dimensions (CMS only, Bearer JWT). ' +
+         '`POST /cms/units` accepts `lengthFt`, `widthFt`, `heightFt` (decimal feet, 0 < x <= 1000, ' +
+         'quantized to 0.01); with length + width the server derives `sqft = length × width` and `sqft` ' +
+         'may be omitted (one of the two is required). `PUT /cms/units/{code}` accepts the same keys ' +
+         '(null clears); a length/width change re-derives `sqft` (still 409 `SIZE_OWNED_BY_PLAN` on a ' +
+         'placed unit whose area would change). CMS unit reads gain `lengthFt`, `widthFt`, `heightFt` and ' +
+         '`volumeCuft` (null when any dimension is unknown). Public shapes unchanged.',
     ].join('\n'),
   },
   servers: [

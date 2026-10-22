@@ -1,11 +1,11 @@
 // StoreLah CMS admin UI — v8 design with leads centrepiece + all existing CRUD.
 // Talks to /api/v1/cms endpoints. Preserves all unit/tenant/booking/floorplan views.
 import { ALL_FACILITIES } from './constants.js';
-import { $, $$, escapeHtml, timeAgo, showBanner, initSelectAll, resetSelectAll } from './dom.js';
+import { $, $$, escapeHtml, timeAgo, showBanner, initSelectAll } from './dom.js';
 import { login, get, post, put, patch, del, describeError, getCurrentUser } from './api.js';
 import { confirmDialog } from './confirmDialog.js';
 import { state, ensureActiveLevel, isAllFacilities } from './state.js';
-import { createDateFilter, withDateQuery, isRangeActive, rangeLabel, rangeEmptyText } from './dateFilter.js';
+import { createDateFilter, withDateQuery, rangeEmptyText } from './dateFilter.js';
 import { refreshBookingsView, bindBookingsTable, refreshMoveinsView } from './bookingsView.js';
 import {
   initCharts, bindKpis, bindCharts, renderFloorTabs, fetchUnitMap, syncFacilityDashboard, ensureMapSizeFilter,
@@ -16,7 +16,7 @@ import {
 } from './tenantsView.js';
 import {
   setRefreshAll as unitsSetRefreshAll, setRefsLoader as unitsSetRefsLoader,
-  fetchUnitsPage, showUnitDetail, getSelectedUnitCode, gotoUnitHistory, onUnitSizeChange,
+  fetchUnitsPage, showUnitDetail, getSelectedUnitCode, gotoUnitHistory, onUnitSizeChange, onUnitDimsInput,
   populateFloorSelect, populateUnitLevelFilter, openCreateForm, openEditForm, closeUnitModal,
   submitUnitForm, deleteUnit, importUnitsFile, openRateForm, closeRateModal, submitRateForm,
 } from './unitsView.js';
@@ -29,8 +29,9 @@ import {
   setRefreshAll as leadDrawerSetRefreshAll, setLeadDrawerActions, openLeadDrawer, wireLeadDrawer,
 } from './leadsDetailDrawer.js';
 import {
-  ensureLeadGroupControls, renderEmailGroups, wireGroupRowClicks, leadRowHtml,
+  ensureLeadGroupControls, renderEmailGroups, wireGroupRowClicks,
 } from './leadsGroups.js';
+import { setJourneyLeadOpener, refreshOpenJourney } from './leadsJourney.js';
 import { setRefsLoader as fpSetRefsLoader, fpInitEvents, fpOpen, fpOpenLibrary, fpViewClose, getFpViewFloorId } from './floorplanView.js';
 import { setRefreshAll as floorsSetRefreshAll, setRefsLoader as floorsSetRefsLoader, bindFloorsView, wireFloorsView } from './floorsView.js';
 import { setRefreshAll as branchesSetRefreshAll, setRefsLoader as branchesSetRefsLoader, bindBranchesSection, wireBranchesView } from './branchesView.js';
@@ -274,17 +275,6 @@ function nextActionLabel(l) {
   return '<small>' + (l.stage === 'NEW_ENQUIRY' ? 'Needs contact' : 'Follow-up') + '</small>';
 }
 
-function renderLeadPager(total) {
-  const pages = Math.max(1, Math.ceil(total / state.leadPerPage));
-  if (state.leadPage > pages) state.leadPage = pages;
-  const num = $('#leadsPageNum');
-  if (num) num.textContent = state.leadPage + ' / ' + pages;
-  const prev = $('#leadsPagePrev');
-  const next = $('#leadsPageNext');
-  if (prev) prev.disabled = state.leadPage <= 1;
-  if (next) next.disabled = state.leadPage >= pages;
-}
-
 function findLeadById(id) {
   return (state.leadsCache || []).find((l) => l.id === id);
 }
@@ -400,7 +390,7 @@ async function importLeadsCsv(file) {
       errors.push('Row ' + (r + 1) + ': ' + describeError(e));
     }
   }
-  state.leadPage = 1;
+  state.leadGroupPage = 1;
   await refreshLeadsViews();
   if (errors.length) showBanner('Imported ' + okCount + ' lead(s); ' + errors.length + ' failed — ' + errors.slice(0, 2).join(' · '));
   else toast('Imported ' + okCount + ' lead(s)');
@@ -483,30 +473,14 @@ function getLeadStats(data) {
 
 async function bindLeadTable() {
   try {
-    ensureLeadsDateFilter();
     ensureLeadGroupControls(() => bindLeadTable().catch(() => {}));
-    // Phase 4 email-group mode: one row per identity from GET /leads/groups
-    // (server-paged); the stage view below is unchanged for compat.
-    if (state.leadViewMode === 'email') {
-      await renderEmailGroups();
-      return;
-    }
-    const data = await get(withDateQuery('/leads', state.leadDate));
-    const flat = flattenLeads(data);
-    state.leadsCache = flat;
-    const filtered = applyLeadFilter(flat);
-    const tbody = $('#leadRows');
-    if (!tbody) return;
-    const count = $('#leadCount');
-    if (count) count.textContent = filtered.length + ' lead' + (filtered.length === 1 ? '' : 's') + (filtered.length !== flat.length ? ' · ' + flat.length + ' total' : '') + (isRangeActive(state.leadDate) ? ' · ' + rangeLabel(state.leadDate) : '');
-    resetSelectAll('#leadRows');
-    renderLeadPager(filtered.length);
-    if (!filtered.length) { tbody.innerHTML = '<tr><td colspan="10"><div class="section-empty">' + escapeHtml(rangeEmptyText('leads', state.leadDate, 'No leads match — adjust your filters.')) + '</div></td></tr>'; return; }
-    const start = (state.leadPage - 1) * state.leadPerPage;
-    const rows = filtered.slice(start, start + state.leadPerPage);
-    // Row template lives in leadsGroups.js (shared with expanded group
-    // timelines) — output is identical to the previous inline version.
-    tbody.innerHTML = rows.map((l) => leadRowHtml(l)).join('');
+    // Lead Database = one row per email identity (GET /leads/groups,
+    // server-paged); the By-stage list was retired 2026-10-22. The flat
+    // GET /leads still backs leadsCache (detail drawer lookup, edit, export).
+    const [flatData] = await Promise.all([get('/leads').catch(() => null), renderEmailGroups()]);
+    if (flatData) state.leadsCache = flattenLeads(flatData);
+    await refreshOpenJourney(); // drawer edits/deletes re-draw an open journey
+
   } catch (e) { showBanner('Leads: ' + describeError(e)); }
 }
 
@@ -672,29 +646,10 @@ async function submitLeadForm(e) {
       showBanner('Updated lead ' + name, true);
     }
     closeLeadModal();
-    state.leadPage = 1;
+    state.leadGroupPage = 1;
     await refreshLeadsViews();
   } catch (err) {
     if (!renderLeadFieldErrors(err)) showLeadFormAlert(describeError(err));
-  }
-}
-
-async function deleteLeadRow(id) {
-  const l = findLeadById(id);
-  if (!l) return;
-  const okConfirm = await confirmDialog({
-    title: 'Delete lead ' + l.name + '?',
-    message: 'This removes the lead and its conversation threads. Appointments keep their slot but lose the lead link.',
-    confirmLabel: 'Delete',
-    danger: true,
-  });
-  if (!okConfirm) return;
-  try {
-    await del('/leads/' + encodeURIComponent(id));
-    showBanner('Deleted lead ' + l.name, true);
-    await refreshLeadsViews();
-  } catch (err) {
-    showBanner('Delete: ' + describeError(err));
   }
 }
 
@@ -1168,25 +1123,8 @@ async function sendComposer() {
   } catch (e) { showBanner('Send: ' + describeError(e)); }
 }
 
-// Date-range controls for the leads table + appointments lists. Each control
-// refetches server-side (?from=&to=) and resets its pager to page 1, composing
-// with the existing status/source filters (client-side over the ranged rows).
-function ensureLeadsDateFilter() {
-  const toolbar = $('#leadStatusFilter')?.closest('.toolbar');
-  if (!toolbar || toolbar.dataset.dateFilterMounted) return;
-  toolbar.dataset.dateFilterMounted = '1';
-  const handle = createDateFilter({
-    onChange: (r) => {
-      state.leadDate = r;
-      state.leadPage = 1;
-      bindLeadTable().catch(() => {});
-    },
-  });
-  // Date-range trigger is the FIRST control in the toolbar — before the
-  // status/source selects, More filters, the .grow spacer and view segments.
-  toolbar.prepend(handle.el);
-}
-
+// Date-range control for the appointments lists: refetches server-side
+// (?from=&to=).
 function ensureCalendarDateFilter() {
   const actions = document.querySelector('#calendar .head .actions');
   if (!actions || actions.dataset.dateFilterMounted) return;
@@ -4290,6 +4228,7 @@ function wireEvents() {
   $('#deleteUnitBtn')?.addEventListener('click', () => { const code = getSelectedUnitCode(); if (code) deleteUnit(code); });
   $('#f-branch')?.addEventListener('change', (e) => populateFloorSelect(e.target.value));
   $('#f-size')?.addEventListener('change', onUnitSizeChange);
+  ['#f-length', '#f-width', '#f-height'].forEach((sel) => $(sel)?.addEventListener('input', onUnitDimsInput));
   $('#unitsTable')?.addEventListener('click', (e) => {
     const btn = e.target.closest('button[data-act]');
     if (!btn) return;
@@ -4389,45 +4328,16 @@ function wireEvents() {
       }
     }
   });
-  // Leads: filters + pager (status/source compose in both modes — client-side
-  // in By-stage, server-side via ?stage=/?source= in By-email; paging is
-  // client-side in By-stage and server-side in By-email).
-  $('#leadStatusFilter')?.addEventListener('change', (e) => { state.leadStatusFilter = e.target.value; state.leadPage = 1; state.leadGroupPage = 1; state.leadGroupExpanded = null; bindLeadTable().catch(() => {}); });
-  $('#leadSourceFilter')?.addEventListener('change', (e) => { state.leadSourceFilter = e.target.value; state.leadPage = 1; state.leadGroupPage = 1; state.leadGroupExpanded = null; bindLeadTable().catch(() => {}); });
+  // Leads: filters + pager (status/source compose server-side via
+  // ?stage=/?source= on GET /leads/groups; paging is server-side).
+  $('#leadStatusFilter')?.addEventListener('change', (e) => { state.leadStatusFilter = e.target.value; state.leadGroupPage = 1; bindLeadTable().catch(() => {}); });
+  $('#leadSourceFilter')?.addEventListener('change', (e) => { state.leadSourceFilter = e.target.value; state.leadGroupPage = 1; bindLeadTable().catch(() => {}); });
   $('#leadsPagePrev')?.addEventListener('click', () => {
-    if (state.leadViewMode === 'email') { if (state.leadGroupPage > 1) { state.leadGroupPage--; bindLeadTable().catch(() => {}); } return; }
-    if (state.leadPage > 1) { state.leadPage--; bindLeadTable().catch(() => {}); }
+    if (state.leadGroupPage > 1) { state.leadGroupPage--; bindLeadTable().catch(() => {}); }
   });
   $('#leadsPageNext')?.addEventListener('click', () => {
-    if (state.leadViewMode === 'email') {
-      const pages = Math.max(1, Math.ceil(state.leadGroupTotal / state.leadGroupPerPage));
-      if (state.leadGroupPage < pages) { state.leadGroupPage++; bindLeadTable().catch(() => {}); }
-      return;
-    }
-    state.leadPage++; bindLeadTable().catch(() => {});
-  });
-  $('#leadRows')?.addEventListener('click', (e) => {
-    // Checkbox toggles must not open the drawer — only row intent does.
-    if (e.target.closest('input[type="checkbox"]')) return;
-    const btn = e.target.closest('button[data-act]');
-    if (btn) {
-      const { act } = btn.dataset;
-      const id = btn.dataset.leadId;
-      if (act === 'edit') openEditLead(id);
-      else if (act === 'delete') deleteLeadRow(id);
-      return;
-    }
-    // Row-click (any cell) → right detail drawer (Lead Database only).
-    const tr = e.target.closest('tr[data-lead-id]');
-    if (tr) openLeadDrawer(tr.dataset.leadId, tr);
-  });
-  // Keyboard parity: Enter/Space on a focused row opens the same drawer.
-  $('#leadRows')?.addEventListener('keydown', (e) => {
-    if (e.key !== 'Enter' && e.key !== ' ') return;
-    const tr = e.target.closest && e.target.closest('tr[data-lead-id]');
-    if (!tr || e.target.closest('button[data-act],input[type="checkbox"]')) return;
-    e.preventDefault();
-    openLeadDrawer(tr.dataset.leadId, tr);
+    const pages = Math.max(1, Math.ceil(state.leadGroupTotal / state.leadGroupPerPage));
+    if (state.leadGroupPage < pages) { state.leadGroupPage++; bindLeadTable().catch(() => {}); }
   });
   // Leads: import / export
   $('#leadExportBtn')?.addEventListener('click', exportLeadsCsv);
@@ -4446,10 +4356,10 @@ function wireEvents() {
   // Lead detail drawer (row-click → right sidebar): shell wiring + DI so the
   // view can refresh lists and delegate to the entry-owned modals.
   wireLeadDrawer();
-  // Per-email group mode (Phase 4): toolbar toggle + debounced search and
-  // group-row expand/collapse. Coexists with the drawer handler above (group
-  // rows carry data-group-key, lead rows data-lead-id).
+  // Email-grouped rows (data-group-key) open the journey mind map; its
+  // enquiry nodes open the same lead drawer as above.
   wireGroupRowClicks();
+  setJourneyLeadOpener((id, el) => openLeadDrawer(id, el));
   setLeadDrawerActions({ onEditLead: openEditLead, onSchedule: (lead) => openCreateAppointment(lead && lead.id).catch((e) => showBanner('Schedule: ' + describeError(e))) });
   leadDrawerSetRefreshAll(async () => {
     await refreshAll().catch(() => {});

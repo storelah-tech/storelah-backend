@@ -221,11 +221,18 @@ const adjustRateSchema = z.object({
   appliedBy: z.string().optional(),
 });
 
+const unitDimSchema = z.number().positive().max(1000);
+
 const createUnitSchema = z.object({
   branchId: z.string().min(1),
   floorId: z.string().min(1),
   sizeId: z.string().min(1),
-  sqft: z.number().positive(),
+  // Dimensions in decimal feet: when lengthFt + widthFt are both given the
+  // server derives sqft = length × width and sqft may be omitted.
+  sqft: z.number().positive().optional(),
+  lengthFt: unitDimSchema.optional(),
+  widthFt: unitDimSchema.optional(),
+  heightFt: unitDimSchema.optional(),
   monthlyRate: z.number().nonnegative(),
   status: z.enum(['AVAILABLE', 'RESERVED', 'MAINTENANCE', 'INACTIVE', 'BLOCKED']).optional(),
   // climateControl was removed: hasAC is the source of truth. The key is
@@ -234,10 +241,17 @@ const createUnitSchema = z.object({
   hasAC: z.boolean().optional(),
   hasPillar: z.boolean().optional(),
   name: z.string().trim().max(80).optional(),
+}).superRefine((v, ctx) => {
+  if (v.sqft !== undefined) return;
+  if (v.lengthFt === undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['lengthFt'], message: 'Required (or send sqft)' });
+  if (v.widthFt === undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['widthFt'], message: 'Required (or send sqft)' });
 });
 
 const updateUnitSchema = z.object({
   sqft: z.number().positive().optional(),
+  lengthFt: unitDimSchema.nullable().optional(),
+  widthFt: unitDimSchema.nullable().optional(),
+  heightFt: unitDimSchema.nullable().optional(),
   monthlyRate: z.number().nonnegative().optional(),
   status: z
     .enum(['OCCUPIED', 'AVAILABLE', 'RESERVED', 'OVERDUE', 'MAINTENANCE', 'INACTIVE', 'BLOCKED'])

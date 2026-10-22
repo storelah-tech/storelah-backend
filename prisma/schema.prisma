@@ -491,6 +491,13 @@ model Unit {
   unitCode       String     @unique // 4-digit numeric code, e.g. 1001 (globally unique; see docs/UNIT_CODE_AND_NAME.md)
   name           String? // optional display label; null/empty => display name falls back to unitCode
   sqft           Float // decimal square feet, quantized to 0.01 on every write (owner decision 2026-10-14; was Int) — see quantizeSqft in src/core/unitSizing.ts
+  // Physical dimensions in decimal FEET (all nullable — pre-2026-10-22 rows
+  // have none). When length AND width are set, sqft is derived as
+  // quantizeSqft(lengthFt × widthFt) on every write (see src/core/units.ts);
+  // heightFt is informational (volume) and never feeds sqft.
+  lengthFt       Float?
+  widthFt        Float?
+  heightFt       Float?
   monthlyRate    Decimal    @default(0) @db.Decimal(10, 2)
   status         UnitStatus @default(AVAILABLE)
   climateControl String? // LEGACY free-text climate note (e.g. "Ambient climate"). Kept readable/writable for

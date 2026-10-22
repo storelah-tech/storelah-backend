@@ -46,6 +46,10 @@ function normalizeUnit(u) {
     code: u.code || u.unitCode,
     name: u.name ?? (u.code || u.unitCode),
     sqft: u.sqft,
+    lengthFt: u.lengthFt ?? null,
+    widthFt: u.widthFt ?? null,
+    heightFt: u.heightFt ?? null,
+    volumeCuft: u.volumeCuft ?? null,
     rate: u.rate,
     psf: u.psf,
     status,
@@ -240,6 +244,7 @@ export async function showUnitDetail(code) {
       u.sizeCode
         ? u.sizeCode +
             (u.sqft ? ' · ' + u.sqft + ' sq ft' : '') +
+            (u.lengthFt && u.widthFt ? ` · ${u.lengthFt}×${u.widthFt}${u.heightFt ? '×' + u.heightFt : ''} ft` : '') +
             (u.placement ? ` · drawn ${u.placement.widthFt}×${u.placement.heightFt}${u.placement.areaDirty ? ' (Δ on publish)' : ''}` : '') +
             (lastSize ? ` · was ${lastSize.previous}` : '')
         : '—',
@@ -730,14 +735,58 @@ function populateStatusSelect(mode, selected) {
   if (selected && list.includes(selected)) sel.value = selected;
 }
 
-// #f-size change handler (bound by the entry): in create mode auto-fill sqft
-// from the selected size's sqftFrom.
-export function onUnitSizeChange(e) {
-  // In create mode, auto-fill sqft from the selected size's sqftFrom.
-  if (mode === 'create') {
-    const size = state.sizes.find((s) => s.id === e.target.value);
-    if (size) $('#f-sqft').value = size.sqftFrom;
+// #f-size change handler (bound by the entry). Area now comes from
+// length × width, so a manual tier pick only stops the area → tier auto-pick.
+let sizeTouched = false;
+export function onUnitSizeChange() {
+  if (mode === 'create') sizeTouched = true;
+}
+
+// ---------- dimensions → area ----------
+// Length × width (decimal feet) drive #f-sqft (read-only). Mirrors the
+// server's derivation (quantized to 0.01) so the preview matches what is saved.
+const round2 = (n) => Math.round(n * 100) / 100;
+
+function readDim(sel) {
+  const raw = $(sel).value;
+  if (raw === '') return null;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : NaN;
+}
+
+let legacySqft = null; // edit mode: stored sqft for a unit without dimensions
+let planOwned = false;
+
+// Bound by the entry on input of #f-length / #f-width / #f-height.
+export function onUnitDimsInput() {
+  const l = readDim('#f-length');
+  const w = readDim('#f-width');
+  const h = readDim('#f-height');
+  const hint = $('#f-dimsHint');
+  const area = l > 0 && w > 0 ? round2(l * w) : null;
+  $('#f-sqft').value = area != null ? String(area) : legacySqft != null ? String(legacySqft) : '';
+  if (area != null && mode === 'create' && !sizeTouched) {
+    // Auto-pick the size tier whose sqft band covers the area.
+    const tier = state.sizes.find((s) => area >= s.sqftFrom && area <= s.sqftTo);
+    if (tier) $('#f-size').value = tier.id;
   }
+  if (!hint) return;
+  if (planOwned) {
+    hint.innerHTML = 'Length × width are set by the floor plan drawing — resize the unit in the Floor Plan Designer. Height stays editable.';
+  } else if (area != null) {
+    const vol = h > 0 ? round2(l * w * h) : null;
+    hint.innerHTML = `<b>${l} × ${w} = ${area.toLocaleString('en-SG')} sq ft</b>` + (vol != null ? ` · volume ${vol.toLocaleString('en-SG')} cu ft` : ' · add height for volume');
+  } else if (legacySqft != null) {
+    hint.textContent = 'No dimensions on record — enter length × width to recalculate the area.';
+  } else {
+    hint.textContent = 'Area is calculated from length × width.';
+  }
+}
+
+function setDimInputs(u) {
+  $('#f-length').value = u && u.lengthFt != null ? u.lengthFt : '';
+  $('#f-width').value = u && u.widthFt != null ? u.widthFt : '';
+  $('#f-height').value = u && u.heightFt != null ? u.heightFt : '';
 }
 
 // ---------- unit form (create / edit) ----------
@@ -759,6 +808,9 @@ const FIELD_ID = {
   floorId: 'floor',
   sizeId: 'size',
   sqft: 'sqft',
+  lengthFt: 'length',
+  widthFt: 'width',
+  heightFt: 'height',
   monthlyRate: 'monthlyRate',
   status: 'status',
   hasAC: 'hasAC',
@@ -791,7 +843,11 @@ export async function openCreateForm() {
   populateFloorSelect(state.branches[0]?.id);
   populateSizeSelect();
   populateStatusSelect('create');
-  $('#f-sqft').value = '';
+  sizeTouched = false;
+  legacySqft = null;
+  planOwned = false;
+  setDimInputs(null);
+  onUnitDimsInput();
   $('#f-monthlyRate').value = '';
   $('#f-hasAC').value = 'no';
   $('#f-hasPillar').value = 'no';
@@ -814,10 +870,16 @@ export async function openEditForm(code) {
     populateFloorSelect(u.branchId, u.floorId);
     populateSizeSelect(u.sizeId);
     populateStatusSelect('edit', u.status);
-    $('#f-sqft').value = u.sqft ?? '';
-    // Floor-plan unit sync: a placed unit's size is set by its drawing.
-    $('#f-sqft').disabled = !!d.sizeOwnedByPlan;
-    $('#f-sqft').title = d.sizeOwnedByPlan ? 'Set by the floor plan — resize this unit in the Floor Plan Designer and publish.' : '';
+    setDimInputs(u);
+    legacySqft = u.sqft ?? null;
+    // Floor-plan unit sync: a placed unit's size is set by its drawing, so
+    // length/width lock (height stays editable).
+    planOwned = !!d.sizeOwnedByPlan;
+    for (const sel of ['#f-length', '#f-width']) {
+      $(sel).disabled = planOwned;
+      $(sel).title = planOwned ? 'Set by the floor plan — resize this unit in the Floor Plan Designer and publish.' : '';
+    }
+    onUnitDimsInput();
     $('#f-monthlyRate').value = u.rate ?? '';
     $('#f-hasAC').value = u.hasAC ? 'yes' : 'no';
     $('#f-hasPillar').value = u.hasPillar ? 'yes' : 'no';
@@ -838,8 +900,11 @@ export function closeUnitModal() {
   $('#f-branch').disabled = false;
   $('#f-floor').disabled = false;
   $('#f-size').disabled = false;
-  $('#f-sqft').disabled = false;
-  $('#f-sqft').title = '';
+  $('#f-length').disabled = false;
+  $('#f-width').disabled = false;
+  $('#f-length').title = '';
+  $('#f-width').title = '';
+  planOwned = false;
   clearFieldErrors();
 }
 
@@ -851,6 +916,9 @@ export async function submitUnitForm(e) {
     floorId: $('#f-floor').value,
     sizeId: $('#f-size').value,
     sqft: Number($('#f-sqft').value),
+    lengthFt: readDim('#f-length'),
+    widthFt: readDim('#f-width'),
+    heightFt: readDim('#f-height'),
     monthlyRate: Number($('#f-monthlyRate').value),
     status: $('#f-status').value,
     hasAC: $('#f-hasAC').value === 'yes',
@@ -864,6 +932,23 @@ export async function submitUnitForm(e) {
     showFormAlert('Branch, floor and size are required.');
     return;
   }
+  // Dimensions: all three required on create; on edit, length/width may stay
+  // blank only for a legacy unit (keeps its stored sqft) or a plan-owned one.
+  const dimErr = (key, msg) => {
+    const el = $(`#e-${key}`);
+    if (el) el.textContent = msg;
+    $(`#f-${key}`).classList.add('err');
+  };
+  let dimsBad = false;
+  for (const [key, val] of [['length', body.lengthFt], ['width', body.widthFt], ['height', body.heightFt]]) {
+    if (Number.isNaN(val)) { dimErr(key, 'Must be greater than 0'); dimsBad = true; }
+    else if (val == null && mode === 'create') { dimErr(key, 'Required'); dimsBad = true; }
+  }
+  if (!dimsBad && mode === 'edit' && !planOwned && (body.lengthFt == null) !== (body.widthFt == null)) {
+    dimErr(body.lengthFt == null ? 'length' : 'width', 'Enter both length and width');
+    dimsBad = true;
+  }
+  if (dimsBad) return;
   if (!(body.sqft > 0)) {
     const el = $('#e-sqft');
     if (el) el.textContent = 'Must be greater than 0';
@@ -879,13 +964,18 @@ export async function submitUnitForm(e) {
 
   try {
     if (mode === 'create') {
-      const res = await request('/units', { method: 'POST', body: JSON.stringify(body) });
+      const { sqft: _area, ...createBody } = body; // server derives sqft = length × width
+      const res = await request('/units', { method: 'POST', body: JSON.stringify(createBody) });
       showBanner(`Created ${res.data.code}`, true);
     } else {
       // PUT /units/:code accepts sqft / monthlyRate / status / hasAC / hasPillar / name.
       // Name: non-empty → set it; empty → name: null (clears back to the unit code).
+      // Dimensions: length/width (when present and not plan-owned) re-derive
+      // sqft server-side; otherwise the stored sqft is re-sent (a no-op).
       const patch = {
-        sqft: body.sqft,
+        sqft: planOwned && legacySqft != null ? legacySqft : body.sqft,
+        ...(!planOwned && body.lengthFt != null ? { lengthFt: body.lengthFt, widthFt: body.widthFt } : {}),
+        heightFt: body.heightFt,
         monthlyRate: body.monthlyRate,
         status: body.status,
         hasAC: body.hasAC,

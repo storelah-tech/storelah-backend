@@ -83,6 +83,7 @@ const FP_TOOLBAR_GROUPS = [
   { id: 'actions', label: 'Plan actions', tools: ['fpAutoPlace', 'fpAutoDoors', 'fpSizesBtn'] },
   { id: 'markers', label: 'Markers/Safety', tools: ['fpMarkersBtn', 'fpMarkerTools'] },
   { id: 'view', label: 'View', tools: ['fpLayersBtn', 'fpUnderlayBtn', 'fpGridToggle', 'fpObjSnap', 'fpSnapStep', 'fpSnapStepBtn', 'fpShortcutsBtn'] },
+  { id: 'rotate', label: 'Rotate view', tools: ['fpRotL', 'fpRotLbl', 'fpRotR'] },
   { id: 'zoom', label: 'Zoom', tools: ['fpZoomOut', 'fpZoomLbl', 'fpZoomPreset', 'fpZoomIn'] },
 ];
 
@@ -961,7 +962,11 @@ function fpZoomFit() {
   const vh = (stage && stage.clientHeight) || wrap.clientHeight || 480;
   const availW = Math.max(160, vw - 80);
   const availH = Math.max(160, vh - 120);
-  state.fp.scale = Math.min(3, Math.max(0.4, Math.min(availW / (d.w * FP_BASE), availH / (d.h * FP_BASE))));
+  // A 90°/270° view rotation swaps the board's on-screen width and height.
+  const swap = fpViewRot() % 180 !== 0;
+  const bw = swap ? d.h : d.w;
+  const bh = swap ? d.w : d.h;
+  state.fp.scale = Math.min(3, Math.max(0.4, Math.min(availW / (bw * FP_BASE), availH / (bh * FP_BASE))));
   fpRenderCanvas(); // re-renders the canvas and refreshes the zoom label
 }
 
@@ -1563,6 +1568,8 @@ function fpRenderCanvas() {
   // Safety/facility point icons render LAST (top of the z-order) so a marker
   // never hides under a placement.
   fpRenderMarkerLayer(canvas, u, fpLayerHidden('markers') ? [] : state.fp.markers || [], true, state.fp.selectedMarker);
+  fpApplyCanvasRotation(canvas, fpViewRot());
+  fpUprightCanvasText(canvas, fpViewRot());
   fpZoomLabel();
 }
 
@@ -2388,6 +2395,10 @@ function fpRemapUnitId(oldId, newId) {
 // reload (fpFetch).
 function fpApplyPlanPayload(body, keep) {
   state.fp.plan = body.plan;
+  if (!keep) {
+    fpLoadViewRotation(); // per-floor view rotation preference
+    fpSyncRotateUI();
+  }
   state.fp.underlay = body.underlay || null; // CMS-only tracing image metadata
   fpEnsureUnderlayImage().catch(() => {});
   state.fp.canvasDefaults = body.canvasDefaults || { width: 70, height: 80 };
@@ -3355,7 +3366,9 @@ function fpCommitNumField(input) {
 // One debounced persist + undo step per burst. Ignored while typing, while a
 // modal is open, or when the designer is not on screen.
 function fpOnArrowKey(e) {
-  const dir = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[e.key];
+  const screenDir = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[e.key];
+  // Arrows nudge in SCREEN direction on a rotated view.
+  const dir = screenDir && fpScreenDeltaToLocal(screenDir[0], screenDir[1]);
   if (!dir || e.defaultPrevented || e.metaKey || e.ctrlKey) return;
   const t = e.target;
   if (t && typeof t.closest === 'function' && t.closest('input, textarea, select, [contenteditable]')) return;
@@ -3910,15 +3923,129 @@ function fpRender() {
   fpSyncModeUI();
 }
 
-// Snapped decimal-ft canvas position for a pointer (top-left anchor of a
-// dragged rect). `ev` (optional) supplies the Alt fine-snap modifier.
-function fpCanvasCellAt(clientX, clientY, ev) {
-  const canvas = $('#fpCanvas');
+// ---------- view rotation (2026-10-22) ----------
+// The whole canvas can be viewed rotated in 90° steps (state.fp.viewRotation;
+// a per-viewer preference remembered per floor in localStorage). Geometry
+// never changes: the rotation is a CSS transform on the canvas element, every
+// pointer → feet mapping goes through fpClientToLocal (inverse rotation about
+// the canvas centre — identical to the old rect.left/top maths at 0°), and
+// fpUprightCanvasText counter-rotates every label so text and numbers always
+// read upright. Screen deltas (resize, arrow nudges) map via
+// fpScreenDeltaToLocal.
+const FP_ROT_KEY = 'storelah.fp.viewRotation.';
+const FP_ROT_COS = [1, 0, -1, 0];
+const FP_ROT_SIN = [0, 1, 0, -1];
+
+function fpViewRot() {
+  const r = Math.round((Number(state.fp.viewRotation) || 0) / 90) * 90;
+  return ((r % 360) + 360) % 360;
+}
+
+// Screen-space delta → canvas-local delta (inverse of CSS rotate(rot)).
+function fpScreenDeltaToLocal(dx, dy, rot = fpViewRot()) {
+  const i = rot / 90;
+  const c = FP_ROT_COS[i];
+  const sn = FP_ROT_SIN[i];
+  return [c * dx + sn * dy, -sn * dx + c * dy];
+}
+
+// Client point → unrotated canvas-local px (origin = canvas top-left).
+function fpClientToLocal(clientX, clientY, canvasEl, rot = fpViewRot()) {
+  const canvas = canvasEl || $('#fpCanvas');
   if (!canvas) return null;
   const rect = canvas.getBoundingClientRect();
+  if (!rot) return [clientX - rect.left, clientY - rect.top];
+  const [lx, ly] = fpScreenDeltaToLocal(clientX - (rect.left + rect.width / 2), clientY - (rect.top + rect.height / 2), rot);
+  return [lx + canvas.offsetWidth / 2, ly + canvas.offsetHeight / 2];
+}
+
+// Rotate the canvas element in place (transform-origin top-left + translate)
+// and swap its layout footprint with margins so the scroll area matches the
+// rotated board. Call after width/height are set.
+function fpApplyCanvasRotation(canvas, rot) {
+  if (!canvas) return;
+  if (!rot) {
+    canvas.style.transform = '';
+    canvas.style.transformOrigin = '';
+    canvas.style.marginRight = '';
+    canvas.style.marginBottom = '';
+    return;
+  }
+  const W = parseFloat(canvas.style.width) || canvas.offsetWidth;
+  const H = parseFloat(canvas.style.height) || canvas.offsetHeight;
+  canvas.style.transformOrigin = '0 0';
+  canvas.style.transform =
+    rot === 90 ? `translate(${H}px,0) rotate(90deg)` : rot === 180 ? `translate(${W}px,${H}px) rotate(180deg)` : `translate(0,${W}px) rotate(270deg)`;
+  const swap = rot % 180 !== 0;
+  canvas.style.marginRight = swap ? H - W + 'px' : '';
+  canvas.style.marginBottom = swap ? W - H + 'px' : '';
+}
+
+// Counter-rotate every label inside a rotated canvas so it reads upright:
+// tile text (unit codes, sizes, tags, block names, ghost sqft) moves into a
+// centred .fp-upright box sized to the tile's ON-SCREEN footprint; markers
+// spin back as a whole; SVG labels (wall names, dimensions) rotate about
+// their anchor. Status dots, doors and resize handles stay in tile space.
+const FP_UPRIGHT_TILES = '.fp-placed, .fp-block, .fp-new-ghost, .fp-struct, .fp-wall, .fp-corridor';
+const FP_UPRIGHT_KEEP = '.fp-status, .fp-resize, .fp-door, .fp-upright';
+function fpUprightCanvasText(canvas, rot) {
+  if (!canvas || !rot) return;
+  const swap = rot % 180 !== 0;
+  canvas.querySelectorAll(FP_UPRIGHT_TILES).forEach((tile) => {
+    const move = Array.from(tile.childNodes).filter((n) =>
+      n.nodeType === 3 ? n.textContent.trim() !== '' : n.nodeType === 1 && !n.matches(FP_UPRIGHT_KEEP));
+    if (!move.length) return;
+    // Inner (padding-box) size from the inline px rect, minus the border.
+    const w = Math.max(0, (parseFloat(tile.style.width) || 0) - 4);
+    const h = Math.max(0, (parseFloat(tile.style.height) || 0) - 4);
+    const box = document.createElement('div');
+    box.className = 'fp-upright';
+    box.style.width = (swap ? h : w) + 'px';
+    box.style.height = (swap ? w : h) + 'px';
+    box.style.transform = `translate(-50%,-50%) rotate(${-rot}deg)`;
+    move.forEach((n) => box.appendChild(n));
+    tile.appendChild(box);
+  });
+  canvas.querySelectorAll('.fp-marker').forEach((m) => {
+    m.style.transform = `rotate(${-rot}deg)`;
+  });
+  canvas.querySelectorAll('svg text').forEach((t) => {
+    if (t.hasAttribute('transform')) return;
+    t.setAttribute('transform', `rotate(${-rot} ${t.getAttribute('x') || 0} ${t.getAttribute('y') || 0})`);
+  });
+}
+
+function fpLoadViewRotation() {
+  let r = 0;
+  try {
+    r = Number(localStorage.getItem(FP_ROT_KEY + (state.fp.floorId || '')) || 0);
+  } catch (e) { /* storage blocked: default 0° */ }
+  state.fp.viewRotation = [0, 90, 180, 270].includes(r) ? r : 0;
+}
+
+function fpRotateView(dir) {
+  state.fp.viewRotation = (fpViewRot() + (dir < 0 ? 270 : 90)) % 360;
+  try {
+    localStorage.setItem(FP_ROT_KEY + (state.fp.floorId || ''), String(state.fp.viewRotation));
+  } catch (e) { /* storage blocked: rotation still applies for this visit */ }
+  fpRenderCanvas();
+  fpSyncRotateUI();
+  fpToast(`View rotated to ${state.fp.viewRotation}° — the plan itself is unchanged.`, true);
+}
+
+function fpSyncRotateUI() {
+  const lbl = $('#fpRotLbl');
+  if (!lbl) return;
+  lbl.textContent = fpViewRot() + '°';
+  lbl.classList.toggle('on', fpViewRot() !== 0);
+}
+
+// Snapped decimal-ft canvas position for canvas-local px (top-left anchor of
+// a dragged rect). `ev` (optional) supplies the Alt fine-snap modifier.
+function fpCanvasCellAtLocal(lx, ly, ev) {
   const u = fpPx();
-  const rawX = (clientX - rect.left) / u;
-  const rawY = (clientY - rect.top) / u;
+  const rawX = lx / u;
+  const rawY = ly / u;
   const { w: cw, h: ch } = fpCanvasDims();
   if (rawX < -0.5 || rawY < -0.5 || rawX >= cw || rawY >= ch) return null;
   const step = fpSnapStep(ev);
@@ -3929,15 +4056,14 @@ function fpCanvasCellAt(clientX, clientY, ev) {
 // canvas with edges INCLUSIVE (0..w / 0..h — boundary vertices may sit on the
 // canvas edge, same contract as checkBoundaryPoints in src/core/floorPlans.ts).
 function fpCanvasPointAt(clientX, clientY, ev) {
-  const canvas = $('#fpCanvas');
-  if (!canvas) return null;
-  const rect = canvas.getBoundingClientRect();
+  const loc = fpClientToLocal(clientX, clientY);
+  if (!loc) return null;
   const u = fpPx();
   const { w: cw, h: ch } = fpCanvasDims();
   const step = fpSnapStep(ev);
   return {
-    x: clampFt(snapFt((clientX - rect.left) / u, step), 0, cw),
-    y: clampFt(snapFt((clientY - rect.top) / u, step), 0, ch),
+    x: clampFt(snapFt(loc[0] / u, step), 0, cw),
+    y: clampFt(snapFt(loc[1] / u, step), 0, ch),
   };
 }
 
@@ -3980,14 +4106,13 @@ function fpLineKindLabel(kind) {
 
 // Unsnapped pointer position in feet, clamped onto the canvas.
 function fpCanvasRawAt(clientX, clientY) {
-  const canvas = $('#fpCanvas');
-  if (!canvas) return null;
-  const rect = canvas.getBoundingClientRect();
+  const loc = fpClientToLocal(clientX, clientY);
+  if (!loc) return null;
   const u = fpPx();
   const { w: cw, h: ch } = fpCanvasDims();
   return [
-    Math.min(Math.max(0, (clientX - rect.left) / u), cw),
-    Math.min(Math.max(0, (clientY - rect.top) / u), ch),
+    Math.min(Math.max(0, loc[0] / u), cw),
+    Math.min(Math.max(0, loc[1] / u), ch),
   ];
 }
 
@@ -4609,12 +4734,10 @@ function fpRenderPenOverlay(svg, u) {
 // pointer-events:none, so the segment hit-test runs here against grid-ft
 // points scaled by the live px-per-foot.
 function fpBoundaryHitAt(clientX, clientY) {
-  const canvas = $('#fpCanvas');
-  if (!canvas) return null;
-  const rect = canvas.getBoundingClientRect();
+  const loc = fpClientToLocal(clientX, clientY);
+  if (!loc) return null;
   const u = fpPx();
-  const px = clientX - rect.left;
-  const py = clientY - rect.top;
+  const [px, py] = loc;
   const THRESHOLD = 8;
   let best = null;
   let bestDist = Infinity;
@@ -4835,8 +4958,10 @@ function fpStartPaletteDrag(e, chip) {
   e.preventDefault();
   const ghost = document.createElement('div');
   ghost.className = 'fp-ghost';
-  ghost.style.width = fp.w * u + 'px';
-  ghost.style.height = fp.h * u + 'px';
+  // On a rotated view the ghost shows the footprint as it will land on screen.
+  const swapGhost = fpViewRot() % 180 !== 0;
+  ghost.style.width = (swapGhost ? fp.h : fp.w) * u + 'px';
+  ghost.style.height = (swapGhost ? fp.w : fp.h) * u + 'px';
   ghost.style.left = e.clientX + 'px';
   ghost.style.top = e.clientY + 'px';
   ghost.textContent = unit.unitCode;
@@ -4850,7 +4975,10 @@ function fpStartPaletteDrag(e, chip) {
     document.removeEventListener('pointerup', up);
     const rect = ghost.getBoundingClientRect();
     ghost.remove();
-    const cell = fpCanvasCellAt(rect.left, rect.top, ev);
+    // Anchor on the ghost's centre so the drop lands where it was shown at
+    // any view rotation (at 0° this equals the old top-left anchor).
+    const c = fpClientToLocal(rect.left + rect.width / 2, rect.top + rect.height / 2);
+    const cell = c ? fpCanvasCellAtLocal(c[0] - (fp.w * u) / 2, c[1] - (fp.h * u) / 2, ev) : null;
     if (cell) fpPlaceUnit(unit, fp, cell.gx, cell.gy);
   };
   document.addEventListener('pointermove', move);
@@ -4870,9 +4998,10 @@ function fpStartMove(e, el) {
   // Capture the grab offset from the LIVE element BEFORE any re-render. The
   // fpRenderCanvas() call below rebuilds canvas.innerHTML, which detaches `el`;
   // reading its geometry afterwards would return all-zeros and break dragging.
-  const startRect = el.getBoundingClientRect();
-  const offsetX = e.clientX - startRect.left;
-  const offsetY = e.clientY - startRect.top;
+  // Grab offset in canvas-local px (rotation-safe): pointer minus rect origin.
+  const grab = fpClientToLocal(e.clientX, e.clientY) || [0, 0];
+  const offsetX = grab[0] - pl.x * fpPx();
+  const offsetY = grab[1] - pl.y * fpPx();
   state.fp.selected = uid;
   pl._undoPrev = { x: pl.x, y: pl.y, width: pl.width, height: pl.height, stackTier: pl.stackTier || 0 };
   // A unit interaction supersedes any block/marker selection — otherwise the
@@ -4891,7 +5020,8 @@ function fpStartMove(e, el) {
   const { w: cw, h: ch } = fpCanvasDims();
   const orig = pair.map((p) => ({ p, x: p.x, y: p.y }));
   const move = (ev) => {
-    const cell = fpCanvasCellAt(ev.clientX - offsetX, ev.clientY - offsetY, ev);
+    const loc = fpClientToLocal(ev.clientX, ev.clientY);
+    const cell = loc ? fpCanvasCellAtLocal(loc[0] - offsetX, loc[1] - offsetY, ev) : null;
     if (!cell) return;
     let nx = clampFt(cell.gx, 0, cw - pl.width);
     let ny = clampFt(cell.gy, 0, ch - pl.height);
@@ -4998,8 +5128,9 @@ function fpStartResize(e, pl) {
   const pairIds = pair.map((p) => p.unitId);
   const move = (ev) => {
     const step = fpSnapStep(ev);
-    const freeW = clampFt(snapFt(origW + (ev.clientX - startX) / u, step), fpMinSide(ev), cw - origX);
-    const freeH = clampFt(snapFt(origH + (ev.clientY - startY) / u, step), fpMinSide(ev), ch - origY);
+    const [ddx, ddy] = fpScreenDeltaToLocal(ev.clientX - startX, ev.clientY - startY);
+    const freeW = clampFt(snapFt(origW + ddx / u, step), fpMinSide(ev), cw - origX);
+    const freeH = clampFt(snapFt(origH + ddy / u, step), fpMinSide(ev), ch - origY);
     let w;
     let h;
     if ((state.fp.lockSqft || pair.some(fpIsContracted)) && pl.sqft > 0) {
@@ -5536,9 +5667,9 @@ function fpBlockStartMove(e, el) {
   e.preventDefault();
   // Capture the grab offset from the LIVE element BEFORE any re-render (same
   // offset-capture-before-render fix as units).
-  const startRect = el.getBoundingClientRect();
-  const offsetX = e.clientX - startRect.left;
-  const offsetY = e.clientY - startRect.top;
+  const grab = fpClientToLocal(e.clientX, e.clientY) || [0, 0];
+  const offsetX = grab[0] - blk.x * fpPx();
+  const offsetY = grab[1] - blk.y * fpPx();
   state.fp.selectedBlock = bid;
   state.fp.selected = null;
   state.fp.selectedMarker = null;
@@ -5550,7 +5681,8 @@ function fpBlockStartMove(e, el) {
   fpRenderSelInfo();
   const { w: cw, h: ch } = fpCanvasDims();
   const move = (ev) => {
-    const cell = fpCanvasCellAt(ev.clientX - offsetX, ev.clientY - offsetY, ev);
+    const loc = fpClientToLocal(ev.clientX, ev.clientY);
+    const cell = loc ? fpCanvasCellAtLocal(loc[0] - offsetX, loc[1] - offsetY, ev) : null;
     if (!cell) return;
     blk.x = clampFt(cell.gx, 0, cw - blk.width);
     blk.y = clampFt(cell.gy, 0, ch - blk.height);
@@ -5591,8 +5723,9 @@ function fpBlockStartResize(e, blk) {
   const { w: cw, h: ch } = fpCanvasDims();
   const move = (ev) => {
     const step = fpSnapStep(ev);
-    blk.width = clampFt(snapFt(origW + (ev.clientX - startX) / u, step), fpMinSide(ev), cw - origX);
-    blk.height = clampFt(snapFt(origH + (ev.clientY - startY) / u, step), fpMinSide(ev), ch - origY);
+    const [ddx, ddy] = fpScreenDeltaToLocal(ev.clientX - startX, ev.clientY - startY);
+    blk.width = clampFt(snapFt(origW + ddx / u, step), fpMinSide(ev), cw - origX);
+    blk.height = clampFt(snapFt(origH + ddy / u, step), fpMinSide(ev), ch - origY);
     fpRenderCanvas();
     fpSetReadout(`${blk.name || 'Block'} ${formatFt(blk.width)} × ${formatFt(blk.height)} ft = ${fpFmtArea(rectAreaSqft(blk))} sqft`);
   };
@@ -7369,6 +7502,7 @@ const fpView = {
   markers: [], // normalized safety/facility point icons
   dims: { w: 70, h: 80 }, // plan grid size (plan dims, else canvas defaults)
   floorId: null, // floor whose level === state.level (for the current branch)
+  rotation: 0, // view rotation (0/90/180/270), shared per floor with the designer
 };
 
 function fpViewFloor() {
@@ -7393,6 +7527,12 @@ export function fpViewOpen() {
   if (title) title.textContent = `Floor Plan — ${b ? b.name : selectedFacilityName() || 'All Facilities'} · Level ${state.level}`;
   const floor = fpViewFloor();
   fpView.floorId = floor ? floor.id : null;
+  try {
+    const r = Number(localStorage.getItem(FP_ROT_KEY + (fpView.floorId || '')) || 0);
+    fpView.rotation = [0, 90, 180, 270].includes(r) ? r : 0;
+  } catch (e) {
+    fpView.rotation = 0;
+  }
   const overlay = $('#fpViewModal');
   if (!overlay) return;
   overlay.hidden = false;
@@ -7431,7 +7571,9 @@ async function fpViewFetch(floorId) {
 }
 
 function fpViewUnit() {
-  const { w, h } = fpView.dims;
+  const swap = (fpView.rotation || 0) % 180 !== 0;
+  const w = swap ? fpView.dims.h : fpView.dims.w;
+  const h = swap ? fpView.dims.w : fpView.dims.h;
   const wrap = $('#fpViewCanvasWrap');
   const availW = Math.max(160, (wrap && wrap.clientWidth ? wrap.clientWidth : 800) - 26);
   const availH = 480;
@@ -7514,6 +7656,17 @@ function fpViewRender() {
   }
   // Safety/facility point icons, static in the read-only preview.
   fpRenderMarkerLayer(canvas, u, fpView.markers || [], false, null);
+  fpApplyCanvasRotation(canvas, fpView.rotation || 0);
+  fpUprightCanvasText(canvas, fpView.rotation || 0);
+}
+
+// Preview rotation shares the designer's per-floor preference key.
+function fpViewRotate() {
+  fpView.rotation = ((fpView.rotation || 0) + 90) % 360;
+  try {
+    localStorage.setItem(FP_ROT_KEY + (fpView.floorId || ''), String(fpView.rotation));
+  } catch (e) { /* storage blocked */ }
+  if (fpView.plan) fpViewRender();
 }
 
 export function fpViewClose() {
@@ -8151,6 +8304,13 @@ export function fpInitEvents() {
   });
   // --- Group: view (zoom) ---
   $('#fpZoomIn').addEventListener('click', () => fpZoomStep(1));
+  $('#fpRotL')?.addEventListener('click', () => fpRotateView(-1));
+  $('#fpRotR')?.addEventListener('click', () => fpRotateView(1));
+  $('#fpRotLbl')?.addEventListener('click', () => {
+    if (!fpViewRot()) return;
+    state.fp.viewRotation = 270; // one more clockwise step lands on 0°
+    fpRotateView(1);
+  });
   $('#fpZoomOut').addEventListener('click', () => fpZoomStep(-1));
   // Modifier-gated canvas zoom (see fpOnCanvasWheel) + editor Delete shortcut
   // (see fpOnDeleteKey) — both attached once here, never per-render.
@@ -8586,6 +8746,7 @@ export function fpInitEvents() {
   $('#unitShowFloorPlan').addEventListener('click', fpViewOpen);
   $('#fpViewClose').addEventListener('click', fpViewClose);
   $('#fpViewCloseBtn').addEventListener('click', fpViewClose);
+  $('#fpViewRotate')?.addEventListener('click', fpViewRotate);
   // Draft versions table (Rename / Publish / Load / View / Delete per saved
   // version; the rename editor's Save/Cancel ride the same delegation).
   $('#fpDraftsBody')?.addEventListener('click', (e) => {

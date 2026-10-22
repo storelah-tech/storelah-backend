@@ -12,7 +12,11 @@ export interface CreateUnitInput {
   branchId: string;
   floorId: string;
   sizeId: string;
-  sqft: number;
+  // Optional when lengthFt AND widthFt are given (sqft is then derived).
+  sqft?: number;
+  lengthFt?: number;
+  widthFt?: number;
+  heightFt?: number;
   monthlyRate: number;
   status?: UnitStatus;
   climateControl?: string;
@@ -26,6 +30,10 @@ export interface CreateUnitInput {
 
 export interface UpdateUnitInput {
   sqft?: number;
+  // null clears a dimension; length/width changes re-derive sqft.
+  lengthFt?: number | null;
+  widthFt?: number | null;
+  heightFt?: number | null;
   monthlyRate?: number;
   status?: UnitStatus;
   climateControl?: string | null;
@@ -45,6 +53,33 @@ export interface UpdateUnitInput {
 // Legacy branch-prefixed codes (SW-01-01 style; pre-rename BM-01-01 rows
 // keep working) are left untouched by codegen; the opt-in rename lives
 // in scripts/backfill-unit-codes-4digit.ts (dry-run first).
+
+// ---------- physical dimensions (decimal feet) ----------
+//
+// Length × width drive the floor area: whenever both are known after a write,
+// sqft = quantizeSqft(lengthFt × widthFt) — the operator never types sqft for
+// a dimensioned unit. Height is informational (volume = L × W × H, cu ft).
+// Dimensions are stored at the same 0.01 precision as sqft.
+
+export function quantizeDim(ft: number): number {
+  return Math.round(ft * 100) / 100;
+}
+
+function quantizeDimOrNull(ft: number | null | undefined): number | null | undefined {
+  return ft == null ? ft : quantizeDim(ft);
+}
+
+export function areaFromDims(lengthFt: number | null | undefined, widthFt: number | null | undefined): number | null {
+  return lengthFt != null && widthFt != null && lengthFt > 0 && widthFt > 0 ? quantizeSqft(lengthFt * widthFt) : null;
+}
+
+function dimsOf(u: { lengthFt: number | null; widthFt: number | null; heightFt: number | null }) {
+  const volumeCuft =
+    u.lengthFt != null && u.widthFt != null && u.heightFt != null
+      ? Math.round(u.lengthFt * u.widthFt * u.heightFt * 100) / 100
+      : null;
+  return { lengthFt: u.lengthFt, widthFt: u.widthFt, heightFt: u.heightFt, volumeCuft };
+}
 
 const FOUR_DIGIT_RE = /^\d{4}$/;
 const FIRST_FOUR_DIGIT_CODE = 1001;
@@ -101,6 +136,7 @@ function serializeUnit(u: UnitWithRelations) {
     unitCode: u.unitCode,
     name: u.name ?? u.unitCode,
     sqft: u.sqft,
+    ...dimsOf(u),
     rate,
     psf: u.sqft ? rate / u.sqft : 0,
     status: u.status,
@@ -316,6 +352,15 @@ export async function createUnit(input: CreateUnitInput) {
   const mappedAC = climateControlToHasAC(input.climateControl);
   const hasAC = input.hasAC ?? mappedAC ?? false;
 
+  const lengthFt = quantizeDimOrNull(input.lengthFt) ?? null;
+  const widthFt = quantizeDimOrNull(input.widthFt) ?? null;
+  const heightFt = quantizeDimOrNull(input.heightFt) ?? null;
+  const derivedSqft = areaFromDims(lengthFt, widthFt);
+  const sqft = derivedSqft ?? (input.sqft !== undefined ? quantizeSqft(input.sqft) : null);
+  if (!(sqft != null && sqft > 0)) {
+    throw new AppError(400, 'VALIDATION', 'Provide lengthFt and widthFt (area = length × width) or a positive sqft');
+  }
+
   const unit = await prisma.unit.create({
     data: {
       branchId: input.branchId,
@@ -323,7 +368,10 @@ export async function createUnit(input: CreateUnitInput) {
       sizeId: input.sizeId,
       unitCode,
       name: input.name?.trim() || null,
-      sqft: quantizeSqft(input.sqft), // decimal sqft, 0.01 step
+      sqft, // decimal sqft, 0.01 step (derived from length × width when given)
+      lengthFt,
+      widthFt,
+      heightFt,
       monthlyRate: input.monthlyRate,
       status: input.status ?? 'AVAILABLE',
       climateControl: input.climateControl,
@@ -345,7 +393,13 @@ export async function updateUnit(code: string, input: UpdateUnitInput) {
   // unit's size is set by its drawing (synced on publish) — resize it on the
   // floor plan instead. Re-sending the current sqft (the edit form always
   // does) stays a no-op.
-  const nextSqft = input.sqft === undefined ? undefined : quantizeSqft(input.sqft); // decimal sqft, 0.01 step
+  // Length/width edits re-derive sqft from the merged dimensions (an explicit
+  // sqft in the same request loses to the dimensions).
+  const nextLength = input.lengthFt === undefined ? unit.lengthFt : quantizeDimOrNull(input.lengthFt) ?? null;
+  const nextWidth = input.widthFt === undefined ? unit.widthFt : quantizeDimOrNull(input.widthFt) ?? null;
+  const dimsTouched = input.lengthFt !== undefined || input.widthFt !== undefined;
+  const derivedSqft = dimsTouched ? areaFromDims(nextLength, nextWidth) : null;
+  const nextSqft = derivedSqft ?? (input.sqft === undefined ? undefined : quantizeSqft(input.sqft)); // decimal sqft, 0.01 step
   if (unit.placement && nextSqft !== undefined && nextSqft !== unit.sqft) {
     throw new AppError(
       409,
@@ -361,6 +415,9 @@ export async function updateUnit(code: string, input: UpdateUnitInput) {
   const mappedAC = climateControlToHasAC(input.climateControl ?? undefined);
   const data: Prisma.UnitUpdateInput = {
     sqft: nextSqft,
+    ...(input.lengthFt !== undefined ? { lengthFt: nextLength } : {}),
+    ...(input.widthFt !== undefined ? { widthFt: nextWidth } : {}),
+    ...(input.heightFt !== undefined ? { heightFt: quantizeDimOrNull(input.heightFt) ?? null } : {}),
     monthlyRate: input.monthlyRate,
     status: input.status,
     climateControl: input.climateControl,
@@ -641,6 +698,7 @@ export async function getUnitDetail(code: string) {
     size: unit.size.name,
     sizeCode: unit.size.code,
     sqft: unit.sqft,
+    ...dimsOf(unit),
     rate: toNum(unit.monthlyRate),
     psf: unit.sqft ? toNum(unit.monthlyRate) / unit.sqft : 0,
     status: unit.status.toLowerCase(),

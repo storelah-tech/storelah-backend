@@ -7,7 +7,7 @@ import { AppError } from '../lib/http';
 import { planCoversBranch, planCoversFloor, planCoversSize, syncPlanSchedule, toCanonicalSizeCategory } from './promotionPlans';
 import { resolvePromoDueTodayScope } from './promotions';
 import { resolveSupportContact } from './emails';
-import { CUSTOMER_REQUEST_NOTE_PREFIX, leadIdentityColumns } from './leads';
+import { CUSTOMER_REQUEST_NOTE_PREFIX, leadIdentityColumns, normalizeLeadEmail } from './leads';
 import { CustomerJwtPayload, signCustomerToken } from '../middleware/auth';
 
 export interface RegisterCustomerInput {
@@ -495,6 +495,47 @@ function serializePortalNotice(n: PortalNotice) {
   };
 }
 
+// Portal change-request history (Phase 4). Requests are stored as leads
+// (submitCustomerRequest) with the note "Request type: <T>[ | Preferred date:
+// <d>][ | Unit <code> — <notes>]" and the customer's identity stamp; only
+// contact-stamped rows can be attributed to a customer (legacy contact-less
+// rows stay operator-only). Lead stages map to four customer-facing statuses —
+// sales-pipeline names never leak to the customer.
+type PortalRequestStatus = 'RECEIVED' | 'IN_PROGRESS' | 'COMPLETED' | 'CLOSED';
+
+function requestStatusFromStage(stage: string): PortalRequestStatus {
+  if (stage === 'NEW_ENQUIRY') return 'RECEIVED';
+  if (stage === 'WON') return 'COMPLETED';
+  if (stage === 'LOST') return 'CLOSED';
+  return 'IN_PROGRESS';
+}
+
+export function parseCustomerRequestNote(note: string): {
+  type: string | null;
+  preferredDate: string | null;
+  unitCode: string | null;
+  notes: string | null;
+} {
+  const parts = note.split(' | ');
+  const type = parts[0]?.startsWith(CUSTOMER_REQUEST_NOTE_PREFIX)
+    ? parts[0].slice(CUSTOMER_REQUEST_NOTE_PREFIX.length).trim() || null
+    : null;
+  let preferredDate: string | null = null;
+  const rest: string[] = [];
+  for (const p of parts.slice(1)) {
+    if (p.startsWith('Preferred date: ')) preferredDate = p.slice('Preferred date: '.length).trim() || null;
+    else rest.push(p);
+  }
+  let text = rest.join(' | ').trim();
+  let unitCode: string | null = null;
+  const m = text.match(/^Unit (\S+)(?: — ([\s\S]*))?$/);
+  if (m) {
+    unitCode = m[1];
+    text = (m[2] ?? '').trim();
+  }
+  return { type, preferredDate, unitCode, notes: text || null };
+}
+
 export async function getCustomerPortal(payload: CustomerJwtPayload) {
   const customer = await loadCustomer(payload);
   const tenant = customer.email
@@ -602,6 +643,37 @@ export async function getCustomerPortal(payload: CustomerJwtPayload) {
 
   const bookings = await listCustomerBookings(payload);
 
+  // Change-request history: request leads stamped with this customer's email.
+  const emailNorm = normalizeLeadEmail(customer.email);
+  const requestLeads = emailNorm
+    ? await prisma.lead.findMany({
+        where: { emailNorm, note: { startsWith: CUSTOMER_REQUEST_NOTE_PREFIX } },
+        orderBy: { createdAt: 'desc' },
+        take: 20,
+        select: { id: true, note: true, stage: true, createdAt: true, updatedAt: true },
+      })
+    : [];
+  const requests = requestLeads.map((l) => ({
+    id: l.id,
+    ...parseCustomerRequestNote(l.note ?? ''),
+    status: requestStatusFromStage(l.stage),
+    submittedAt: l.createdAt,
+    updatedAt: l.updatedAt,
+  }));
+
+  // Latest move-out notice PER UNIT across every tenant row for this email.
+  const noticeRows = tenantIds.length
+    ? await prisma.notice.findMany({
+        where: { tenantId: { in: tenantIds } },
+        orderBy: { createdAt: 'desc' },
+        include: { unit: true },
+      })
+    : [];
+  const seenNoticeUnits = new Set<string>();
+  const notices = noticeRows
+    .filter((n) => (seenNoticeUnits.has(n.unitId) ? false : (seenNoticeUnits.add(n.unitId), true)))
+    .map(serializePortalNotice);
+
   // Latest submitted move-out notice (null when none was ever persisted).
   const notice = tenant
     ? await prisma.notice.findFirst({
@@ -625,6 +697,10 @@ export async function getCustomerPortal(payload: CustomerJwtPayload) {
     units,
     // --- appended (additive): live operations.supportContact setting ---
     support: { contact: await resolveSupportContact() },
+    // --- appended (additive, Phase 4): change-request history + latest
+    // move-out notice per unit (across every tenant row) ---
+    requests,
+    notices,
   };
 }
 

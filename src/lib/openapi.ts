@@ -2045,6 +2045,11 @@ export const openapiSpec = {
             'paid unit) and each entry gains `unitCode`, `paidAt`, `payable` (DUE/OVERDUE) and `bookingRef` ' +
             '(set when the invoice opens a still-unpaid booking — pay it via `POST /customer/checkout/sessions`). ' +
             '`data.support.contact` echoes the live `operations.supportContact` setting.',
+          '',
+          'Additive (portal Phase 4): `data.requests` lists the customer\'s change requests (newest first, max 20) as ' +
+            '`{ id, type, preferredDate, unitCode, notes, status, submittedAt, updatedAt }` with `status` one of ' +
+            'RECEIVED / IN_PROGRESS / COMPLETED / CLOSED (lead stages are never exposed); `data.notices` holds the ' +
+            'latest move-out notice per unit across every tenant row (same shape as `data.notice`).',
         ].join('\n'),
         operationId: 'getCustomerPortal',
         security: [{ bearerAuth: [] }],

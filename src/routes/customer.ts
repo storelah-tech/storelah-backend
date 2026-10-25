@@ -33,9 +33,17 @@ import {
 import {
   applyInvoiceCheckoutCompleted,
   buildInvoiceReceipt,
+  applyInvoicePaymentSucceeded,
   createInvoiceCheckoutSession,
   INVOICE_SESSION_KIND,
+  payInvoiceWithSavedCard,
 } from '../core/invoicePayments';
+import {
+  createCardSetupIntent,
+  listSavedCards,
+  removeCard,
+  setDefaultCard,
+} from '../core/savedCards';
 import {
   listVerificationsByBookingRef,
   recordMockVerification,
@@ -274,6 +282,39 @@ router.post('/invoices/:id/checkout', requireCustomerAuth, async (req: Request, 
   ok(res, await createInvoiceCheckoutSession(customerFrom(req), id));
 });
 
+// Saved-card payment (PaymentIntent, TEST MODE) — Bearer + owner only. The
+// amount is server-owned; the body only names one of the caller's saved
+// cards. Never marks the invoice PAID (payment_intent.succeeded webhook does).
+const payWithCardSchema = z.object({ paymentMethodId: z.string().min(1).max(255) });
+
+router.post('/invoices/:id/pay', requireCustomerAuth, async (req: Request, res: Response) => {
+  const id = String(req.params.id ?? '').trim();
+  const parsed = payWithCardSchema.safeParse(req.body ?? {});
+  if (!id || !parsed.success) {
+    fail(res, 400, 'VALIDATION', 'An invoice id and a saved card are required');
+    return;
+  }
+  ok(res, await payInvoiceWithSavedCard(customerFrom(req), id, parsed.data.paymentMethodId.trim()));
+});
+
+// Saved payment cards (Stripe Customer wallet) — see core/savedCards.ts.
+// Only brand / last4 / expiry / default ever leave the server.
+router.get('/payment-methods', requireCustomerAuth, async (req: Request, res: Response) => {
+  ok(res, await listSavedCards(customerFrom(req)));
+});
+
+router.post('/payment-methods/setup-intent', requireCustomerAuth, async (req: Request, res: Response) => {
+  ok(res, await createCardSetupIntent(customerFrom(req)));
+});
+
+router.post('/payment-methods/:id/default', requireCustomerAuth, async (req: Request, res: Response) => {
+  ok(res, await setDefaultCard(customerFrom(req), String(req.params.id ?? '').trim()));
+});
+
+router.delete('/payment-methods/:id', requireCustomerAuth, async (req: Request, res: Response) => {
+  ok(res, await removeCard(customerFrom(req), String(req.params.id ?? '').trim()));
+});
+
 // PDF receipt for a PAID invoice the caller owns (binary, not the JSON envelope).
 router.get('/invoices/:id/receipt', requireCustomerAuth, async (req: Request, res: Response) => {
   const id = String(req.params.id ?? '').trim();
@@ -432,6 +473,21 @@ router.post('/stripe/webhook', async (req: Request, res: Response) => {
     const result = await applyCheckoutCompleted(session);
     ok(res, { received: true, ...result });
     return;
+  }
+  // Saved-card invoice payments (core/invoicePayments.ts). Checkout-created
+  // PIs carry no metadata.kind, so they never reach this branch.
+  if (event.type === 'payment_intent.succeeded') {
+    const pi = event.data.object as Stripe.PaymentIntent;
+    if (pi.metadata?.kind === INVOICE_SESSION_KIND) {
+      ok(res, { received: true, ...(await applyInvoicePaymentSucceeded(pi)) });
+      return;
+    }
+  }
+  if (event.type === 'payment_intent.payment_failed') {
+    const pi = event.data.object as Stripe.PaymentIntent;
+    if (pi.metadata?.kind === INVOICE_SESSION_KIND) {
+      console.log(`[invoice-pay] payment failed invoiceNo=${pi.metadata?.invoiceNo ?? '?'}`);
+    }
   }
   ok(res, { received: true, applied: false });
 });

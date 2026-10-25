@@ -25,7 +25,7 @@ export const openapiSpec = {
   openapi: '3.0.3',
   info: {
     title: 'StoreLah Booking API',
-    version: '1.10.3',
+    version: '1.11.0',
     description: [
       'Customer-facing booking API for the StoreLah self-storage business.',
       '',
@@ -2232,6 +2232,125 @@ export const openapiSpec = {
         },
       },
     },
+    '/customer/invoices/{id}/pay': {
+      post: {
+        tags: ['Customer'],
+        summary: 'Pay an invoice with a saved card (PaymentIntent, test mode)',
+        description:
+          'Charges one of the caller\'s saved cards for a DUE/OVERDUE invoice (server-owned amount). ' +
+          '`requires_action` returns a `clientSecret` for Stripe.js `handleNextAction` (3-D Secure). The response ' +
+          'never marks the invoice PAID — the `payment_intent.succeeded` webhook does. The first invoice of a ' +
+          'still-unpaid booking answers 409 `USE_CHECKOUT` (pay it via hosted Checkout).',
+        operationId: 'payInvoiceWithSavedCard',
+        security: [{ bearerAuth: [] }],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: { paymentMethodId: { type: 'string', example: 'pm_123' } },
+                required: ['paymentMethodId'],
+              },
+            },
+          },
+        },
+        responses: {
+          '200': openapiResponse({
+            type: 'object',
+            properties: {
+              status: { type: 'string', enum: ['succeeded', 'processing', 'requires_action'] },
+              invoiceNo: { type: 'string' },
+              paymentIntentId: { type: 'string' },
+              clientSecret: { type: 'string', description: 'Only when status is requires_action.' },
+            },
+            required: ['status', 'invoiceNo', 'paymentIntentId'],
+          }),
+          '400': openapiErrorResponse('Missing invoice id or paymentMethodId.'),
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '402': openapiErrorResponse('CARD_DECLINED — the card was declined.'),
+          '404': openapiErrorResponse('Invoice or card not found for this customer.'),
+          '409': openapiErrorResponse('Invoice already paid / no amount due / USE_CHECKOUT.'),
+          '503': openapiErrorResponse('Stripe is not configured.'),
+        },
+      },
+    },
+    '/customer/payment-methods': {
+      get: {
+        tags: ['Customer'],
+        summary: 'List saved cards',
+        description:
+          'The caller\'s saved cards (brand, last4, expiry, default) — never full card numbers. Never creates a ' +
+          'Stripe Customer; an empty wallet returns `cards: []`. `publishableKey` is null when Stripe.js is not configured.',
+        operationId: 'listSavedCards',
+        security: [{ bearerAuth: [] }],
+        responses: {
+          '200': openapiResponse({
+            type: 'object',
+            properties: {
+              cards: { type: 'array', items: { $ref: '#/components/schemas/SavedCard' } },
+              defaultId: { type: 'string', nullable: true },
+              publishableKey: { type: 'string', nullable: true },
+            },
+            required: ['cards', 'defaultId', 'publishableKey'],
+          }),
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '503': openapiErrorResponse('Stripe is not configured.'),
+        },
+      },
+    },
+    '/customer/payment-methods/setup-intent': {
+      post: {
+        tags: ['Customer'],
+        summary: 'Start saving a card (SetupIntent)',
+        description:
+          'Creates the caller\'s Stripe Customer on first use and a card SetupIntent (`usage: off_session`). The ' +
+          'browser confirms it with Stripe Elements (`confirmCardSetup`) — card details never reach this API.',
+        operationId: 'createCardSetupIntent',
+        security: [{ bearerAuth: [] }],
+        responses: {
+          '200': openapiResponse({
+            type: 'object',
+            properties: { clientSecret: { type: 'string' }, publishableKey: { type: 'string' } },
+            required: ['clientSecret', 'publishableKey'],
+          }),
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '503': openapiErrorResponse('Stripe is not configured.'),
+        },
+      },
+    },
+    '/customer/payment-methods/{id}/default': {
+      post: {
+        tags: ['Customer'],
+        summary: 'Make a saved card the default',
+        operationId: 'setDefaultCard',
+        security: [{ bearerAuth: [] }],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: {
+          '200': openapiResponse({ $ref: '#/components/schemas/SavedCardWallet' }),
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '404': openapiErrorResponse('Card not found for this customer.'),
+          '503': openapiErrorResponse('Stripe is not configured.'),
+        },
+      },
+    },
+    '/customer/payment-methods/{id}': {
+      delete: {
+        tags: ['Customer'],
+        summary: 'Remove a saved card',
+        description: 'Detaches the card from the caller\'s wallet; a removed default promotes the newest remaining card.',
+        operationId: 'removeSavedCard',
+        security: [{ bearerAuth: [] }],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: {
+          '200': openapiResponse({ $ref: '#/components/schemas/SavedCardWallet' }),
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '404': openapiErrorResponse('Card not found for this customer.'),
+          '503': openapiErrorResponse('Stripe is not configured.'),
+        },
+      },
+    },
     '/customer/verifications/mock': {
       post: {
         tags: ['Customer'],
@@ -4363,6 +4482,27 @@ export const openapiSpec = {
       },
     },
     schemas: {
+      SavedCard: {
+        type: 'object',
+        description: 'A saved card — Stripe-provided display fields only (never the card number).',
+        properties: {
+          id: { type: 'string', example: 'pm_123' },
+          brand: { type: 'string', example: 'visa' },
+          last4: { type: 'string', example: '4242' },
+          expMonth: { type: 'integer', example: 12 },
+          expYear: { type: 'integer', example: 2030 },
+          isDefault: { type: 'boolean' },
+        },
+        required: ['id', 'brand', 'last4', 'expMonth', 'expYear', 'isDefault'],
+      },
+      SavedCardWallet: {
+        type: 'object',
+        properties: {
+          cards: { type: 'array', items: { $ref: '#/components/schemas/SavedCard' } },
+          defaultId: { type: 'string', nullable: true },
+        },
+        required: ['cards', 'defaultId'],
+      },
       ErrorEnvelope: {
         type: 'object',
         required: ['error'],

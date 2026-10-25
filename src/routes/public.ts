@@ -60,6 +60,11 @@ router.get('/units', async (req: Request, res: Response) => {
     return;
   }
   const { units, branches } = await listPublicUnits(parsed.data);
+  // Local-storage unit photos are API-relative (/uploads/...); make them
+  // absolute so the booking app (another origin) can load them. S3 URLs
+  // are already absolute.
+  const origin = `${req.protocol}://${req.get('host')}`;
+  for (const u of units) u.images = u.images.map((url) => (url.startsWith('/') ? origin + url : url));
   ok(res, units, { count: units.length, branches });
 });
 

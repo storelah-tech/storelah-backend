@@ -7048,6 +7048,8 @@ function fpNewUnitRectFrom(a, b) {
 function fpNewUnitProblem(r) {
   if (!(r.width >= MIN_RECT_SIDE_FT) || !(r.height >= MIN_RECT_SIDE_FT)) return 'too small';
   if (fpSqftForRect(r) < 1) return 'under 1 sqft';
+  const { w: cw, h: ch } = fpCanvasDims();
+  if (toMilli(r.x) + toMilli(r.width) > toMilli(cw) || toMilli(r.y) + toMilli(r.height) > toMilli(ch)) return 'runs past the plan edge';
   const hit = fpOverlapAt(r.x, r.y, r.width, r.height, null, 0);
   if (hit) return `overlaps ${hit.unitCode}`;
   return null;
@@ -7073,7 +7075,11 @@ function fpRenderNewUnitGhost(canvas, u) {
   el.style.top = r.y * u + 'px';
   el.style.width = r.width * u + 'px';
   el.style.height = r.height * u + 'px';
-  el.textContent = `${fpFmtArea(fpSqftForRect(r))} sqft`;
+  // Width along the top edge, length along the right edge, area in the middle.
+  el.innerHTML =
+    `<span class="fp-new-ghost-area">${formatFt(r.width)} × ${formatFt(r.height)} ft<br>${fpFmtArea(fpSqftForRect(r))} sqft</span>` +
+    `<span class="fp-new-ghost-dim w">W ${formatFt(r.width)} ft</span>` +
+    `<span class="fp-new-ghost-dim l">L ${formatFt(r.height)} ft</span>`;
   canvas.appendChild(el);
 }
 
@@ -7128,8 +7134,8 @@ function fpOpenNewUnitForm(r) {
   if (!stage) return;
   const old = $('#fpNewUnitPop');
   if (old) old.remove();
-  const sqft = fpSqftForRect(r);
-  const tier = fpNearestTier(sqft);
+  let sqft = fpSqftForRect(r);
+  let tier = fpNearestTier(sqft);
   if (!tier) {
     fpCancelNewUnit(true);
     fpToast('No unit size tiers exist — add size tiers before drawing units.', false);
@@ -7146,7 +7152,10 @@ function fpOpenNewUnitForm(r) {
   pop.setAttribute('role', 'dialog');
   pop.setAttribute('aria-label', 'New unit');
   pop.innerHTML =
-    `<div class="fp-newunit-hdr">New unit <span class="t-type">${formatFt(r.width)} × ${formatFt(r.height)} ft · ${fpFmtArea(sqft)} sqft</span></div>` +
+    `<div class="fp-newunit-hdr">New unit <span class="t-type" data-nu-dims>${formatFt(r.width)} × ${formatFt(r.height)} ft · ${fpFmtArea(sqft)} sqft</span></div>` +
+    `<div class="fp-newunit-dims"><label class="fp-newunit-row"><span>Width (ft)</span><input class="tbl-search" name="widthFt" type="number" min="${MIN_RECT_SIDE_FT}" step="0.01" required value="${r.width}"></label>` +
+    `<label class="fp-newunit-row"><span>Length (ft)</span><input class="tbl-search" name="lengthFt" type="number" min="${MIN_RECT_SIDE_FT}" step="0.01" required value="${r.height}"></label></div>` +
+    `<div class="fp-pub-note fp-newunit-err" data-nu-dimerr></div>` +
     `<label class="fp-newunit-row"><span>Size tier</span><select class="tbl-select" name="sizeId">${opts}</select></label>` +
     `<div class="fp-pub-note" data-nu-tiernote>${tier.inBand ? '' : `Nearest tier — no tier range covers ${fpFmtArea(sqft)} sqft.`}</div>` +
     `<label class="fp-newunit-row"><span>Name <em class="t-type">(optional)</em></span><input class="tbl-search" name="name" maxlength="80" autocomplete="off" placeholder="Shown instead of the unit code"></label>` +
@@ -7181,7 +7190,30 @@ function fpOpenNewUnitForm(r) {
   } catch (e) { /* noop */ }
   const sizeSel = pop.elements.sizeId;
   const rateIn = pop.elements.rate;
+  const widthIn = pop.elements.widthFt;
+  const lengthIn = pop.elements.lengthFt;
+  const submitBtn = pop.querySelector('button[type="submit"]');
   let rateTouched = false;
+  let tierTouched = false;
+  let dimProblem = null;
+  // Typed width / length resize the drawn rectangle from its top-left corner;
+  // the ghost, tier (until picked by hand) and default rate follow.
+  const syncDims = () => {
+    const w = quantizeFt(Number(widthIn.value));
+    const h = quantizeFt(Number(lengthIn.value));
+    const next = { x: r.x, y: r.y, width: Number.isFinite(w) ? w : 0, height: Number.isFinite(h) ? h : 0 };
+    dimProblem = fpNewUnitProblem(next);
+    r = next;
+    fpNewDraft = { ...r, bad: !!dimProblem };
+    fpRenderCanvas();
+    sqft = fpSqftForRect(r);
+    tier = fpNearestTier(sqft, tierTouched ? sizeSel.value : undefined) || tier;
+    if (!tierTouched) sizeSel.value = tier.size.id;
+    pop.querySelector('[data-nu-dims]').textContent = `${formatFt(r.width)} × ${formatFt(r.height)} ft · ${fpFmtArea(sqft)} sqft`;
+    pop.querySelector('[data-nu-dimerr]').textContent = dimProblem ? `Can't create this size — ${dimProblem}.` : '';
+    submitBtn.disabled = !!dimProblem;
+    sync();
+  };
   const sync = () => {
     const sz = (state.sizes || []).find((x) => x.id === sizeSel.value);
     if (!rateTouched && sz) rateIn.value = fpDefaultRate(sz.code, sqft).toFixed(2);
@@ -7189,7 +7221,12 @@ function fpOpenNewUnitForm(r) {
     pop.querySelector('[data-nu-psf]').textContent = Number.isFinite(rate) && rate >= 0 ? `S$${(rate / sqft).toFixed(2)}/sqft · default is the ${sz ? sz.name : ''} market rate × sqft` : '';
     pop.querySelector('[data-nu-tiernote]').textContent = sz && sz.id === tier.size.id && !tier.inBand ? `Nearest tier — no tier range covers ${fpFmtArea(sqft)} sqft.` : '';
   };
-  sizeSel.addEventListener('change', sync);
+  sizeSel.addEventListener('change', () => {
+    tierTouched = true;
+    sync();
+  });
+  widthIn.addEventListener('input', syncDims);
+  lengthIn.addEventListener('input', syncDims);
   rateIn.addEventListener('input', () => {
     rateTouched = true;
     sync();
@@ -7205,6 +7242,10 @@ function fpOpenNewUnitForm(r) {
   pop.querySelector('[data-nu-cancel]').addEventListener('click', () => fpCancelNewUnit());
   pop.addEventListener('submit', async (ev) => {
     ev.preventDefault();
+    if (dimProblem) {
+      widthIn.focus();
+      return;
+    }
     const rate = Number(rateIn.value);
     if (!(Number.isFinite(rate) && rate >= 0)) {
       rateIn.focus();
@@ -7217,10 +7258,10 @@ function fpOpenNewUnitForm(r) {
       hasPillar: pop.elements.hasPillar.checked,
       monthlyRate: Math.round(rate * 100) / 100,
     };
-    pop.querySelector('button[type="submit"]').disabled = true;
+    submitBtn.disabled = true;
     const ok = await fpCreateUnits([{ rect: r, spec }]);
     if (ok) fpCancelNewUnit(true);
-    else pop.querySelector('button[type="submit"]').disabled = false;
+    else submitBtn.disabled = false;
   });
   try {
     sizeSel.focus({ preventScroll: true });

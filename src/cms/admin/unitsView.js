@@ -8,7 +8,7 @@
 import { STATUS_TONE, STATUS_LABEL, fmtMoney, fmtDay, fmtDateTime, BOOKING_TONE, INVOICE_TONE, HIST_STAGE_TONE, HIST_STAGE_LABEL, HISTORY_EMPTY_TEXT } from './constants.js';
 import { $, $$, escapeHtml, timeAgo, showBanner } from './dom.js';
 import { confirmDialog } from './confirmDialog.js';
-import { ApiError, request, get, describeError } from './api.js';
+import { ApiError, request, get, post, del, describeError } from './api.js';
 import { state, ensureActiveLevel, isAllFacilities } from './state.js';
 
 // Post-mutation full-refresh hook — the entry hands its refreshAll() down here
@@ -263,6 +263,7 @@ export async function showUnitDetail(code) {
     setVal('#udLastChange', last ? (last.changePct >= 0 ? '+' : '') + last.changePct + '%' : '—');
     setVal('#udLastChangeSub', last ? new Date(last.date).toLocaleDateString('en-SG', { day: '2-digit', month: 'short', year: 'numeric' }) + ' · ' + (last.reason || '') : '—');
     renderUnitOps(u.operations);
+    renderUnitPhotos(u.code, d.images || []);
     currentEditCode = u.code;
     state.selectedCode = u.code;
     setUnitsBanner('');
@@ -277,11 +278,116 @@ export async function showUnitDetail(code) {
   }
 }
 
+// ---------- unit photos (Photos tab) ----------
+// POST /units/:code/images (JSON { filename, contentType, dataBase64 }),
+// POST …/:id/cover, DELETE …/:id — each returns the unit's ordered images.
+// The first photo is the cover booking shows on this unit's cards.
+const PHOTO_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
+let photoCode = null;
+
+function renderUnitPhotos(code, images) {
+  photoCode = code;
+  const host = $('#udPhotos');
+  const count = $('#udPhotoCount');
+  if (count) {
+    count.hidden = !images.length;
+    count.textContent = String(images.length);
+  }
+  if (!host) return;
+  host.innerHTML = images.length
+    ? images
+        .map(
+          (img, i) =>
+            `<div class="ud-photo"><img src="${escapeHtml(img.imageUrl)}" alt="Unit ${escapeHtml(code)} photo ${i + 1}" loading="lazy">` +
+            `<div class="ud-photo-bar">${i === 0 ? '<span class="badge terra">Cover</span>' : `<button class="act-btn" type="button" data-photo-cover="${escapeHtml(img.id)}">Make cover</button>`}` +
+            `<span class="sp"></span><button class="act-btn" type="button" data-photo-del="${escapeHtml(img.id)}">Remove</button></div></div>`,
+        )
+        .join('')
+    : '<div class="ud-history-empty">No photos yet — booking shows the built-in photo for this unit\'s size.</div>';
+}
+
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(new Error('Could not read the selected file.'));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function uploadUnitPhotos(files) {
+  const code = photoCode;
+  if (!code) return;
+  let res = null;
+  let added = 0;
+  for (const file of files) {
+    if (!PHOTO_TYPES.includes(file.type)) {
+      showBanner(`${file.name}: unsupported type (png, jpeg, webp, gif only).`);
+      continue;
+    }
+    if (file.size > 8 * 1024 * 1024) {
+      showBanner(`${file.name}: too large (max 8 MB).`);
+      continue;
+    }
+    try {
+      const base64 = (await readFileAsDataUrl(file)).split(',')[1] || '';
+      res = await post(`/units/${encodeURIComponent(code)}/images`, { filename: file.name, contentType: file.type, dataBase64: base64 });
+      added += 1;
+    } catch (err) {
+      showBanner(`${file.name}: ${describeError(err)}`);
+      break;
+    }
+  }
+  if (res && photoCode === code) renderUnitPhotos(code, res.images || []);
+  if (added) showBanner(`${added} photo${added === 1 ? '' : 's'} added to unit ${code}`, true);
+}
+
+async function setUnitPhotoCover(id) {
+  const code = photoCode;
+  try {
+    const res = await post(`/units/${encodeURIComponent(code)}/images/${encodeURIComponent(id)}/cover`, {});
+    if (photoCode === code) renderUnitPhotos(code, res.images || []);
+  } catch (err) {
+    showBanner('Photos: ' + describeError(err));
+  }
+}
+
+async function removeUnitPhoto(id) {
+  const code = photoCode;
+  const ok = await confirmDialog({ title: 'Remove this photo?', message: `The photo is deleted from unit ${code}.`, confirmLabel: 'Remove', danger: true });
+  if (!ok) return;
+  try {
+    const res = await del(`/units/${encodeURIComponent(code)}/images/${encodeURIComponent(id)}`);
+    if (photoCode === code) renderUnitPhotos(code, res.images || []);
+    showBanner('Photo removed', true);
+  } catch (err) {
+    showBanner('Photos: ' + describeError(err));
+  }
+}
+
+function initUnitPhotos() {
+  $('#udPhotoFile')?.addEventListener('change', (e) => {
+    const input = e.target;
+    const files = Array.from(input.files || []);
+    input.value = '';
+    if (files.length) uploadUnitPhotos(files).catch(() => {});
+  });
+  $('#udPhotos')?.addEventListener('click', (e) => {
+    const cover = e.target.closest('[data-photo-cover]');
+    if (cover) {
+      setUnitPhotoCover(cover.dataset.photoCover).catch(() => {});
+      return;
+    }
+    const rm = e.target.closest('[data-photo-del]');
+    if (rm) removeUnitPhoto(rm.dataset.photoDel).catch(() => {});
+  });
+}
+
 // ---------- unit-detail tabs (Overview / Tenant history / Bookings / Invoices / Activity) ----------
 // Tablist keyboard follows the ARIA tabs pattern: Left/Right/Home/End move +
 // activate, Escape returns focus to the panel. Panels keep their existing IDs
 // so every prior data binding keeps working.
-const UD_TABS = ['overview', 'history', 'bookings', 'invoices', 'activity'];
+const UD_TABS = ['overview', 'photos', 'history', 'bookings', 'invoices', 'activity'];
 
 export function activateUdTab(name, opts = {}) {
   if (!UD_TABS.includes(name)) return;
@@ -323,6 +429,7 @@ function initUnitTabs() {
       activateUdTab(next, { focus: true });
     });
   }
+  initUnitPhotos();
   $('#udHistFilter')?.addEventListener('change', (e) => {
     udEnrich.histFilter = e.target.value || '';
     if (udEnrich.code) renderUdHistory();

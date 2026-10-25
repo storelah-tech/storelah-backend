@@ -517,6 +517,7 @@ model Unit {
   tenant         Tenant?       @relation("CurrentTenant")
   rateHistory    RateChange[]
   areaHistory    UnitAreaChange[]
+  images         UnitImage[]
   bookings       Booking[]
   invoices       Invoice[]
   notices        Notice[]
@@ -864,6 +865,23 @@ model ConversationNote {
 // floor-plan publish (or reconcile / manual edit) changes Unit.sqft or its size
 // tier — see docs/FLOOR_PLAN_UNIT_SYNC_PLAN.md. widthFt/heightFt record the
 // drawn rect that produced the new sqft (null for MANUAL changes).
+// Customer-facing photos of one unit (CMS unit detail → Photos). Ordered by
+// sortOrder; the first is the cover booking shows on the unit's cards (no
+// photos = booking keeps its built-in category photo). Bytes live in the
+// content image storage (src/lib/contentStorage.ts).
+model UnitImage {
+  id        String   @id @default(cuid())
+  unitId    String
+  unit      Unit     @relation(fields: [unitId], references: [id], onDelete: Cascade)
+  imageKey  String // S3 object key, or "local/<filename>" for the local fallback
+  imageUrl  String
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+
+  @@index([unitId, sortOrder])
+  @@map("UnitImage")
+}
+
 model UnitAreaChange {
   id          String   @id @default(cuid())
   unitId      String

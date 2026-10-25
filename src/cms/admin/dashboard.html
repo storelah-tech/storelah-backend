@@ -298,6 +298,18 @@ main{min-width:0;display:flex;flex-direction:column;min-height:100vh}
 .fp-placed .fp-tag-new + .fp-tag-dirty{left:auto}
 .fp-new-ghost{position:absolute;z-index:6;border:2px dashed var(--terra,#C1664C);background:rgba(193,102,76,.12);border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;color:#7A3B28;pointer-events:none;box-sizing:border-box}
 .fp-new-ghost.bad{border-color:var(--red,#B42318);background:rgba(180,35,24,.10);color:var(--red,#B42318)}
+.ud-photos{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px;margin-top:8px}
+.ud-photo{border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--paper);display:flex;flex-direction:column}
+.ud-photo img{width:100%;aspect-ratio:4/3;object-fit:cover;display:block;background:#f3efe9}
+.ud-photo-bar{display:flex;align-items:center;gap:6px;padding:6px;font-size:11px}
+.ud-photo-bar .sp{flex:1}
+.fp-new-ghost-area{text-align:center;line-height:1.3;white-space:nowrap}
+.fp-new-ghost-dim{position:absolute;white-space:nowrap;font-size:10px;font-weight:800;background:var(--paper,#fff);color:inherit;border:1px solid currentColor;border-radius:4px;padding:0 4px;line-height:15px}
+.fp-new-ghost-dim.w{bottom:100%;left:50%;transform:translate(-50%,-3px)}
+.fp-new-ghost-dim.l{left:100%;top:50%;transform:translate(3px,-50%)}
+.fp-newunit-dims{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.fp-newunit-err{color:var(--red,#B42318)}
+.fp-newunit-err:empty{display:none}
 .fp-newunit-pop{position:absolute;top:44px;right:12px;z-index:20;width:280px;max-width:calc(100% - 24px);background:var(--paper);border:1px solid var(--line);border-radius:12px;box-shadow:0 12px 32px rgba(0,0,0,.18);padding:12px;display:flex;flex-direction:column;gap:8px;font-size:12px}
 .fp-newunit-hdr{font-weight:800;font-size:13px;display:flex;flex-direction:column;gap:2px}
 .fp-newunit-row{display:flex;flex-direction:column;gap:3px;font-size:11px;font-weight:700;color:var(--ink)}
@@ -1154,6 +1166,7 @@ body.lead-drawer-open{overflow-x:hidden}
           <div class="ud-hdr"><div><div class="ud-id" id="udId">Select a unit</div><div class="ud-badges" id="udBadges"></div></div><div class="ud-actions"><button class="act-btn" id="viewHistoryBtn" title="Jump to tenant history">📋 History</button><button class="act-btn" id="editUnitBtn">✏️ Edit</button><button class="act-btn primary" id="adjustRateBtn">⚡ Adjust Rate</button><button class="act-btn danger" id="deleteUnitBtn">🗑 Delete</button></div></div>
           <div class="ud-tabs" role="tablist" aria-label="Unit detail sections">
             <button type="button" class="ud-tab active" role="tab" id="udTab-overview" aria-controls="udPanel-overview" aria-selected="true" data-ud-tab="overview">Overview</button>
+            <button type="button" class="ud-tab" role="tab" id="udTab-photos" aria-controls="udPanel-photos" aria-selected="false" tabindex="-1" data-ud-tab="photos">Photos<span class="ud-count" id="udPhotoCount" hidden></span></button>
             <button type="button" class="ud-tab" role="tab" id="udTab-history" aria-controls="udPanel-history" aria-selected="false" tabindex="-1" data-ud-tab="history">Tenant history<span class="ud-count" id="udHistCount" hidden></span></button>
             <button type="button" class="ud-tab" role="tab" id="udTab-bookings" aria-controls="udPanel-bookings" aria-selected="false" tabindex="-1" data-ud-tab="bookings">Bookings</button>
             <button type="button" class="ud-tab" role="tab" id="udTab-invoices" aria-controls="udPanel-invoices" aria-selected="false" tabindex="-1" data-ud-tab="invoices">Invoices</button>
@@ -1161,6 +1174,10 @@ body.lead-drawer-open{overflow-x:hidden}
           </div>
           <div class="ud-panel active" id="udPanel-overview" role="tabpanel" aria-labelledby="udTab-overview" tabindex="0">
             <div class="ud-stats"><div class="ud-stat"><div class="ud-stat-lbl">Tenant</div><div class="ud-stat-val" id="udTenant" style="font-size:14px;">—</div><div class="ud-stat-sub" id="udTenantSub"></div></div><div class="ud-stat"><div class="ud-stat-lbl">Rate</div><div class="ud-stat-val" id="udRate">—</div><div class="ud-stat-sub" id="udRateSub"></div></div><div class="ud-stat"><div class="ud-stat-lbl">Status</div><div class="ud-stat-val" id="udStatus" style="font-size:16px;">—</div><div class="ud-stat-sub" id="udStatusSub"></div></div><div class="ud-stat"><div class="ud-stat-lbl">Branch</div><div class="ud-stat-val" id="udBranch" style="font-size:14px;">—</div><div class="ud-stat-sub" id="udLevel"></div></div><div class="ud-stat"><div class="ud-stat-lbl">Size</div><div class="ud-stat-val" id="udSize" style="font-size:14px;">—</div><div class="ud-stat-sub" id="udSizeSub"></div></div><div class="ud-stat"><div class="ud-stat-lbl">PSF</div><div class="ud-stat-val" id="udPsf">—</div><div class="ud-stat-sub" id="udPsfSub"></div></div><div class="ud-stat"><div class="ud-stat-lbl">Rate history</div><div class="ud-stat-val" id="udRateHistCount" style="font-size:16px;">0</div><div class="ud-stat-sub" id="udRateHistSub"></div></div><div class="ud-stat"><div class="ud-stat-lbl">Last change</div><div class="ud-stat-val" id="udLastChange" style="font-size:14px;">—</div><div class="ud-stat-sub" id="udLastChangeSub"></div></div></div>
+          </div>
+          <div class="ud-panel" id="udPanel-photos" role="tabpanel" aria-labelledby="udTab-photos" tabindex="0" hidden>
+            <div class="ud-sec-hdr"><div><div class="ud-sec-title">Photos</div><div class="ud-sec-sub">Shown to customers when booking this unit · the first photo is the cover · png / jpeg / webp / gif, max 8 MB, up to 10</div></div><label class="tb-btn primary" style="cursor:pointer;">+ Add photos<input type="file" id="udPhotoFile" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden></label></div>
+            <div class="ud-photos" id="udPhotos" aria-live="polite"></div>
           </div>
           <div class="ud-panel" id="udPanel-history" role="tabpanel" aria-labelledby="udTab-history" tabindex="0" hidden>
             <div class="ud-sec-hdr"><div><div class="ud-sec-title">Tenant history</div><div class="ud-sec-sub" id="udHistSub">Newest first</div></div><select id="udHistFilter" class="tbl-select" aria-label="Filter tenant history by stage"><option value="">All stages</option><option value="ACTIVE">Active</option><option value="DUE">Due</option><option value="OVERDUE">Overdue</option><option value="NOTICE">Notice</option></select></div>

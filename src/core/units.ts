@@ -3,6 +3,7 @@ import { toNum } from '../lib/format';
 import { AppError } from '../lib/http';
 import { Prisma, UnitStatus } from '@prisma/client';
 import { quantizeSqft } from './unitSizing';
+import { putContentImage, deleteContentImage } from '../lib/contentStorage';
 
 type UnitWithRelations = Prisma.UnitGetPayload<{
   include: { size: true; branch: true; floor: true; tenant: true };
@@ -279,7 +280,7 @@ export async function listPublicUnits(query: PublicUnitsQuery = {}) {
         isActive: true,
       },
     },
-    include: { size: true, branch: true, floor: true },
+    include: { size: true, branch: true, floor: true, images: { orderBy: { sortOrder: 'asc' }, select: { imageUrl: true } } },
     orderBy: { unitCode: 'asc' },
   });
 
@@ -301,6 +302,8 @@ export async function listPublicUnits(query: PublicUnitsQuery = {}) {
       size: { code: u.size.code, name: u.size.name },
       branch: { code: u.branch.code, name: u.branch.name },
       floor: { level: u.floor.level },
+      // Additive: unit photos, cover first (empty = booking's built-in photo).
+      images: u.images.map((i) => i.imageUrl),
     };
   });
 
@@ -639,6 +642,55 @@ export async function listSizes() {
   }));
 }
 
+// ---------- unit photos (CMS unit detail → Photos; booking cover = first) ----------
+export const MAX_UNIT_IMAGES = 10;
+
+function serializeUnitImage(i: { id: string; imageUrl: string; sortOrder: number }) {
+  return { id: i.id, imageUrl: i.imageUrl, sortOrder: i.sortOrder };
+}
+
+async function unitIdForImages(code: string) {
+  const unit = await prisma.unit.findUnique({ where: { unitCode: code, deletedAt: null }, select: { id: true } });
+  if (!unit) throw new AppError(404, 'NOT_FOUND', `Unit ${code} not found`);
+  return unit.id;
+}
+
+async function listImagesOf(unitId: string) {
+  const rows = await prisma.unitImage.findMany({ where: { unitId }, orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }] });
+  return rows.map(serializeUnitImage);
+}
+
+/** Add a photo to a unit (appended after the existing ones). */
+export async function addUnitImage(code: string, filename: string, contentType: string, data: Buffer) {
+  const unitId = await unitIdForImages(code);
+  const count = await prisma.unitImage.count({ where: { unitId } });
+  if (count >= MAX_UNIT_IMAGES) throw new AppError(400, 'VALIDATION', `A unit can have at most ${MAX_UNIT_IMAGES} photos — remove one first.`);
+  const stored = await putContentImage(`unit-${code.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`, filename, contentType, data);
+  const last = await prisma.unitImage.findFirst({ where: { unitId }, orderBy: { sortOrder: 'desc' }, select: { sortOrder: true } });
+  await prisma.unitImage.create({ data: { unitId, imageKey: stored.imageKey, imageUrl: stored.imageUrl, sortOrder: (last?.sortOrder ?? -1) + 1 } });
+  return { images: await listImagesOf(unitId), storage: stored.storage };
+}
+
+/** Remove one photo (and its stored file, best-effort). */
+export async function removeUnitImage(code: string, imageId: string) {
+  const unitId = await unitIdForImages(code);
+  const row = await prisma.unitImage.findFirst({ where: { id: imageId, unitId } });
+  if (!row) throw new AppError(404, 'NOT_FOUND', `Photo ${imageId} not found on unit ${code}`);
+  await prisma.unitImage.delete({ where: { id: row.id } });
+  await deleteContentImage(row.imageKey);
+  return { images: await listImagesOf(unitId) };
+}
+
+/** Make one photo the cover (first); the others keep their relative order. */
+export async function setUnitImageCover(code: string, imageId: string) {
+  const unitId = await unitIdForImages(code);
+  const rows = await listImagesOf(unitId);
+  if (!rows.some((r) => r.id === imageId)) throw new AppError(404, 'NOT_FOUND', `Photo ${imageId} not found on unit ${code}`);
+  const ordered = [imageId, ...rows.map((r) => r.id).filter((id) => id !== imageId)];
+  await prisma.$transaction(ordered.map((id, i) => prisma.unitImage.update({ where: { id }, data: { sortOrder: i } })));
+  return { images: await listImagesOf(unitId) };
+}
+
 export async function getUnitDetail(code: string) {
   const unit = await prisma.unit.findUnique({
     // deletedAt: null → a deleted unit is not addressable (404 below).
@@ -651,6 +703,7 @@ export async function getUnitDetail(code: string) {
       rateHistory: { orderBy: { date: 'desc' } },
       placement: { select: { width: true, height: true, areaDirty: true, floorPlan: { select: { status: true } } } },
       areaHistory: { orderBy: { createdAt: 'desc' }, take: 20 },
+      images: { orderBy: { sortOrder: 'asc' } },
     },
   });
   if (!unit) throw new AppError(404, 'NOT_FOUND', `Unit ${code} not found`);
@@ -742,6 +795,7 @@ export async function getUnitDetail(code: string) {
         }
       : null,
     sizeOwnedByPlan: !!unit.placement,
+    images: unit.images.map(serializeUnitImage),
     areaHistory: unit.areaHistory.map((a) => ({
       date: a.createdAt,
       previous: a.previous,

@@ -15,6 +15,9 @@ import {
   updateUnit,
   softDeleteUnit,
   listSizes,
+  addUnitImage,
+  removeUnitImage,
+  setUnitImageCover,
   getUnitActivity,
   unitImportTemplateCsv,
   importUnits,
@@ -3313,6 +3316,30 @@ router.post(
 
 router.delete('/content/:key/image', requireAuth, async (req: Request, res: Response) => {
   ok(res, await removeContentItemImage(String(req.params.key)));
+});
+
+// Unit photos (unit detail → Photos): same JSON upload contract and storage
+// as content images. Booking shows the first photo as the unit's cover.
+router.post('/units/:code/images', requireAuth, jsonBody({ limit: '12mb' }), async (req: Request, res: Response) => {
+  const parsed = contentImageSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Image payload must be { filename, contentType, dataBase64 }', parsed.error.flatten());
+    return;
+  }
+  const data = Buffer.from(parsed.data.dataBase64, 'base64');
+  if (data.length === 0) {
+    fail(res, 400, 'VALIDATION', 'dataBase64 decodes to an empty file');
+    return;
+  }
+  ok(res, await addUnitImage(String(req.params.code), parsed.data.filename, parsed.data.contentType, data));
+});
+
+router.post('/units/:code/images/:imageId/cover', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await setUnitImageCover(String(req.params.code), String(req.params.imageId)));
+});
+
+router.delete('/units/:code/images/:imageId', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await removeUnitImage(String(req.params.code), String(req.params.imageId)));
 });
 
 export default router;

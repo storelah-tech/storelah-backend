@@ -1,0 +1,22 @@
+{
+  "keys": [
+    {
+      "kty": "EC",
+      "x": "jg3Am0cEtKEVBK9uL1Xy6SJ94WaF8T1kzc-o1Xd9vPc",
+      "y": "s0B7sAcbG_CQhp2xN9glaVa-94M_jE0hYOctbrTQVDA",
+      "crv": "P-256",
+      "kid": "storelah-staging-sig-2026-10-26",
+      "use": "sig",
+      "alg": "ES256"
+    },
+    {
+      "kty": "EC",
+      "x": "NGaT33LpV40cG3b2OF0nqFtvggNtG0B58Wz7iFsKEJc",
+      "y": "m-wTw081FICG2HWIRKarF7nKTFakWWFuwLdtAribNFs",
+      "crv": "P-256",
+      "kid": "storelah-staging-enc-2026-10-26",
+      "use": "enc",
+      "alg": "ECDH-ES+A256KW"
+    }
+  ]
+}

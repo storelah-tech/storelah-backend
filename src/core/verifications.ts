@@ -6,7 +6,8 @@
 //
 // booking.requireIDVerification stays display-only: nothing in this module
 // gates move-in or payment on verification status.
-import type { Verification } from '@prisma/client';
+import crypto from 'crypto';
+import type { Prisma, Verification } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { AppError } from '../lib/http';
 import type { CustomerJwtPayload } from '../middleware/auth';
@@ -168,18 +169,62 @@ export async function recordMockVerification(
   return serializeVerification(row);
 }
 
-/**
- * Persist a completed Singpass Myinfo login. Guest-mode resolution (no
- * Bearer JWT crosses the Singpass redirect); the Myinfo email is NOT used to
- * match the booking. Personal data stays in `payload` (never serialized to
- * the public read) and the NRIC/FIN is stored masked only.
- */
-export async function recordSingpassVerification(
+// ---------- Singpass Myinfo: pending review → confirm / cancel ----------
+//
+// Myinfo requires the retrieved data to be shown to the user on a form
+// (government-verified fields read-only, mobile/email editable) and the user
+// must be able to cancel. So the callback stores a PENDING_CONFIRMATION row
+// and hands the browser an opaque one-time review token (`<rowId>.<secret>`,
+// no personal data in the URL). Only confirm() turns it VERIFIED; cancel()
+// deletes it. Pending rows never appear in the customer or CMS lists.
+
+export const SINGPASS_PENDING_STATUS = 'PENDING_CONFIRMATION' as const;
+const SINGPASS_REVIEW_TTL_MS = 30 * 60 * 1000;
+
+interface SingpassPayload {
+  method: typeof SINGPASS_VERIFICATION_METHOD;
+  singpassSub: string;
+  uinfinMasked: string | null;
+  name: string | null;
+  dob: string | null;
+  regadd: string | null;
+  mobileno: string | null;
+  email: string | null;
+  reviewTokenHash?: string;
+  reviewExpiresAt?: string;
+  confirmedAt?: string;
+  contactEdited?: boolean;
+}
+
+export interface SingpassReview {
+  bookingRef: string;
+  expiresAt: string;
+  verified: { uinfin: string | null; name: string | null; dob: string | null; regadd: string | null };
+  editable: { mobileno: string | null; email: string | null };
+}
+
+const sha256 = (v: string) => crypto.createHash('sha256').update(v).digest('hex');
+const REVIEW_NOT_FOUND = 'This Myinfo review has expired or was already completed. Please verify again.';
+
+export async function createPendingSingpassVerification(
   bookingRef: string,
   person: MyinfoPerson,
-): Promise<SerializedVerification> {
+): Promise<string> {
   const ref = bookingRef.trim();
   const { customerId, tenantId } = await resolveCustomerId(null, ref);
+  const secret = crypto.randomBytes(32).toString('base64url');
+  const payload: SingpassPayload = {
+    method: SINGPASS_VERIFICATION_METHOD,
+    singpassSub: person.sub,
+    uinfinMasked: maskUinfin(person.uinfin),
+    name: person.name,
+    dob: person.dob,
+    regadd: person.regadd,
+    mobileno: person.mobileno,
+    email: person.email,
+    reviewTokenHash: sha256(secret),
+    reviewExpiresAt: new Date(Date.now() + SINGPASS_REVIEW_TTL_MS).toISOString(),
+  };
   const row = await prisma.verification.create({
     data: {
       customerId,
@@ -188,21 +233,75 @@ export async function recordSingpassVerification(
       method: SINGPASS_VERIFICATION_METHOD,
       idType: 'nric-fin',
       result: 'pass',
-      status: statusForResult('pass'),
+      status: SINGPASS_PENDING_STATUS,
       capturedAt: new Date(),
-      payload: {
-        method: SINGPASS_VERIFICATION_METHOD,
-        singpassSub: person.sub,
-        uinfinMasked: maskUinfin(person.uinfin),
-        name: person.name,
-        dob: person.dob,
-        mobileno: person.mobileno,
-        email: person.email,
-        regadd: person.regadd,
-      },
+      payload: payload as unknown as Prisma.InputJsonValue,
     },
   });
-  return serializeVerification(row);
+  return `${row.id}.${secret}`;
+}
+
+async function loadPendingReview(token: string): Promise<{ row: Verification; payload: SingpassPayload }> {
+  const [id, secret] = String(token).split('.');
+  if (!id || !secret) throw new AppError(404, 'NOT_FOUND', REVIEW_NOT_FOUND);
+  const row = await prisma.verification.findUnique({ where: { id } });
+  const payload = (row?.payload ?? null) as unknown as SingpassPayload | null;
+  const expected = Buffer.from(payload?.reviewTokenHash ?? '', 'hex');
+  const actual = Buffer.from(sha256(secret), 'hex');
+  if (
+    !row ||
+    !payload ||
+    row.status !== SINGPASS_PENDING_STATUS ||
+    expected.length !== actual.length ||
+    !crypto.timingSafeEqual(expected, actual) ||
+    !payload.reviewExpiresAt ||
+    Date.parse(payload.reviewExpiresAt) < Date.now()
+  ) {
+    throw new AppError(404, 'NOT_FOUND', REVIEW_NOT_FOUND);
+  }
+  return { row, payload };
+}
+
+export async function getSingpassReview(token: string): Promise<SingpassReview> {
+  const { row, payload } = await loadPendingReview(token);
+  return {
+    bookingRef: row.bookingRef,
+    expiresAt: payload.reviewExpiresAt as string,
+    verified: { uinfin: payload.uinfinMasked, name: payload.name, dob: payload.dob, regadd: payload.regadd },
+    editable: { mobileno: payload.mobileno, email: payload.email },
+  };
+}
+
+export async function confirmSingpassReview(
+  token: string,
+  contact: { mobileno?: string; email?: string },
+): Promise<SerializedVerification> {
+  const { row, payload } = await loadPendingReview(token);
+  const mobileno = contact.mobileno?.trim() || payload.mobileno;
+  const email = contact.email?.trim() || payload.email;
+  const { reviewTokenHash: _h, reviewExpiresAt: _e, ...rest } = payload;
+  const confirmed: SingpassPayload = {
+    ...rest,
+    mobileno,
+    email,
+    contactEdited: mobileno !== payload.mobileno || email !== payload.email,
+    confirmedAt: new Date().toISOString(),
+  };
+  const updated = await prisma.verification.update({
+    where: { id: row.id },
+    data: {
+      status: statusForResult('pass'),
+      verifiedAt: new Date(),
+      payload: confirmed as unknown as Prisma.InputJsonValue,
+    },
+  });
+  return serializeVerification(updated);
+}
+
+/** User cancelled on the review form: discard the retrieved data entirely. */
+export async function cancelSingpassReview(token: string): Promise<void> {
+  const { row } = await loadPendingReview(token);
+  await prisma.verification.delete({ where: { id: row.id } });
 }
 
 export async function listVerificationsByBookingRef(
@@ -213,7 +312,7 @@ export async function listVerificationsByBookingRef(
     throw new AppError(400, 'VALIDATION', 'bookingRef is required');
   }
   const rows = await prisma.verification.findMany({
-    where: { bookingRef: ref },
+    where: { bookingRef: ref, status: { not: SINGPASS_PENDING_STATUS } },
     orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
   });
   return rows.map(serializeVerification);
@@ -239,7 +338,9 @@ export interface ListVerificationsForCmsInput {
 export async function listVerificationsForCms(
   input: ListVerificationsForCmsInput,
 ): Promise<{ rows: SerializedVerification[]; count: number }> {
-  const where: { bookingRef?: string; reviewStatus?: string } = {};
+  const where: { bookingRef?: string; reviewStatus?: string; status: { not: string } } = {
+    status: { not: SINGPASS_PENDING_STATUS },
+  };
   if (input.bookingRef?.trim()) where.bookingRef = input.bookingRef.trim();
   if (input.reviewStatus) where.reviewStatus = input.reviewStatus;
   const [rows, count] = await Promise.all([

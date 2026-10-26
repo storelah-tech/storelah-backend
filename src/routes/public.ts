@@ -22,7 +22,12 @@ import {
   singpassSettings,
   startSingpassLogin,
 } from '../core/singpass';
-import { recordSingpassVerification } from '../core/verifications';
+import {
+  cancelSingpassReview,
+  confirmSingpassReview,
+  createPendingSingpassVerification,
+  getSingpassReview,
+} from '../core/verifications';
 import { config } from '../lib/config';
 
 const router = Router();
@@ -382,10 +387,12 @@ router.get('/singpass/callback', async (req: Request, res: Response) => {
     return;
   }
   let returnPath: string | undefined;
-  const back = (outcome: 'verified' | 'cancelled' | 'failed', bookingRef?: string) => {
+  const back = (outcome: 'review' | 'cancelled' | 'failed', bookingRef?: string, reviewToken?: string) => {
     const url = singpassReturnUrl(settings.returnUrl, returnPath);
     url.searchParams.set('singpass', outcome);
     if (bookingRef) url.searchParams.set('bookingRef', bookingRef);
+    // Opaque one-time token (no personal data) for the Myinfo review form.
+    if (reviewToken) url.searchParams.set('review', reviewToken);
     res.clearCookie(SINGPASS_COOKIE, { path: SINGPASS_COOKIE_PATH });
     res.redirect(302, url.toString());
   };
@@ -406,12 +413,53 @@ router.get('/singpass/callback', async (req: Request, res: Response) => {
       return;
     }
     const person = await completeSingpassLogin(session, q.code);
-    await recordSingpassVerification(bookingRef, person);
-    back('verified', bookingRef);
+    const reviewToken = await createPendingSingpassVerification(bookingRef, person);
+    back('review', bookingRef, reviewToken);
   } catch (err) {
     console.error('[singpass] callback failed:', err instanceof Error ? err.message : 'unknown error');
     back('failed', bookingRef);
   }
+});
+
+// Myinfo review form (booking app, via its /api/singpass/review proxy): show
+// the retrieved data, then confirm (→ VERIFIED, mobile/email editable) or
+// cancel (→ data discarded). Token = the opaque `review` value from /callback.
+const singpassReviewTokenSchema = z.string().min(10).max(200).regex(/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
+
+router.get('/singpass/review', async (req: Request, res: Response) => {
+  const parsed = singpassReviewTokenSchema.safeParse(req.query.token);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid review token');
+    return;
+  }
+  res.set('Cache-Control', 'no-store');
+  ok(res, await getSingpassReview(parsed.data));
+});
+
+const singpassConfirmSchema = z.object({
+  token: singpassReviewTokenSchema,
+  mobileno: z.string().trim().max(32).optional(),
+  email: z.string().trim().email().max(254).optional().or(z.literal('')),
+});
+
+router.post('/singpass/review/confirm', async (req: Request, res: Response) => {
+  const parsed = singpassConfirmSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid confirmation', parsed.error.flatten());
+    return;
+  }
+  const { token, mobileno, email } = parsed.data;
+  ok(res, await confirmSingpassReview(token, { mobileno, email: email || undefined }));
+});
+
+router.post('/singpass/review/cancel', async (req: Request, res: Response) => {
+  const parsed = z.object({ token: singpassReviewTokenSchema }).safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid review token');
+    return;
+  }
+  await cancelSingpassReview(parsed.data.token);
+  ok(res, { cancelled: true });
 });
 
 export default router;

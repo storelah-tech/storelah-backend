@@ -6218,37 +6218,23 @@ async function fpRevertToPublished() {
   }
 }
 
-// ---------- draft plan rename (Floor Plan Library rows only) ----------
-// The live plan carries an optional operator label (FloorPlan.name, CMS-only
-// and never exposed to booking). Rename lives in the Library only: each draft
-// row's Actions cell has a Rename button that swaps the cell into an inline
-// editor (input + Save/Cancel, Enter saves, Esc cancels, empty-name rejected
-// with a toast) and persists through the existing plan-update endpoint (POST
-// /floor-plans/:floorId accepts `name` — no new route). The Library lists
-// draft versions, so the drafts-only gate is natural; the published guard
-// still runs at open/save time (a published live plan toasts instead of
-// editing) and server-side via checkPlanName/demote, untouched.
-function fpPlanIsPublished() {
-  return !!state.fp.plan && String(state.fp.plan.status || '').toUpperCase() === 'ACTIVE';
+// ---------- draft version rename (Floor Plan Library rows only) ----------
+// Each saved version carries an optional operator label (FloorPlanDraft.name,
+// CMS-only, never exposed to booking). Each Library row's Actions cell has a
+// Rename button that swaps the cell into an inline editor (input + Save/Cancel,
+// Enter saves, Esc cancels) and persists via PATCH /drafts/:draftId { name }.
+// Renaming a saved version never touches the snapshot or the live plan, so it
+// works on published floors too; an empty name clears back to the bare "vN".
+function fpDraftLabel(d) {
+  if (!d) return 'this version';
+  return d.name ? `“${d.name}” (v${d.version})` : `v${d.version}`;
 }
 
-function fpPlanRenameGate() {
-  if (!state.fp.plan) return 'No plan yet — set a canvas size and save first.';
-  if (fpPlanIsPublished()) return "Published plans can't be renamed — edit the canvas to return it to draft first.";
-  return '';
-}
-
-// Which library row is mid-rename (draft id, or null). The rename targets the
-// live plan name (one per floor), anchored to the row the operator clicked;
-// fpRenderDrafts clears it when the row leaves the list (floor switch).
+// Which library row is mid-rename (draft id, or null); fpRenderDrafts clears
+// it when the row leaves the list (floor switch).
 let fpRenamingDraftId = null;
 
 function fpOpenPlanRename(draftId) {
-  const gate = fpPlanRenameGate();
-  if (gate) {
-    fpToast(gate, false);
-    return;
-  }
   fpRenamingDraftId = draftId != null ? String(draftId) : null;
   fpRenderDrafts();
   const input = $('#fpDraftRenameInput');
@@ -6268,37 +6254,29 @@ function fpCancelPlanRename() {
 }
 
 async function fpSavePlanName() {
+  const draftId = fpRenamingDraftId;
+  if (draftId == null) return;
   const input = $('#fpDraftRenameInput');
   const name = String(input ? input.value : '').trim();
-  if (!name) {
-    fpToast("Plan name can't be empty — type a name or Cancel.", false);
-    if (input) input.focus();
-    return;
-  }
   if (name.length > 80) {
-    fpToast('Plan name must be at most 80 characters.', false);
+    fpToast('Version name must be at most 80 characters.', false);
     if (input) input.focus();
-    return;
-  }
-  const gate = fpPlanRenameGate();
-  if (gate) {
-    fpToast(gate, false);
     return;
   }
   try {
-    const res = await fpMutate(`/floor-plans/${encodeURIComponent(state.fp.floorId)}`, {
-      method: 'POST',
-      body: JSON.stringify({ name }),
+    const res = await request(`/drafts/${encodeURIComponent(draftId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ name: name || null }),
     });
-    const saved = res && res.data && res.data.name != null ? String(res.data.name) : name;
-    if (state.fp.plan) state.fp.plan.name = saved;
+    const saved = res && res.data ? res.data : null;
+    const row = fpDrafts.find((d) => d.id != null && String(d.id) === String(draftId));
+    if (row) row.name = saved && saved.name != null ? String(saved.name) : null;
     fpRenamingDraftId = null;
     fpRenderDrafts(); // exit the inline editor
-    fpRenderPlanStatus();
-    fpRender(); // refresh the designer sub-line suffix too
-    fpToast(`Plan renamed to “${saved}”.`, true);
+    fpRenderLoadedDraft();
+    fpToast(row && row.name ? `Renamed v${row.version} to “${row.name}”.` : `Name cleared — shown as v${row ? row.version : ''}.`, true);
   } catch (err) {
-    fpToast('Rename plan: ' + describeError(err), false);
+    fpToast('Rename version: ' + describeError(err), false);
   }
 }
 
@@ -6673,7 +6651,6 @@ function fpRenderDrafts() {
   if (fpRenamingDraftId != null && !fpDrafts.some((d) => d.id != null && String(d.id) === String(fpRenamingDraftId))) {
     fpRenamingDraftId = null; // the edited row left the list (floor switch) — back to buttons
   }
-  const planName = state.fp.plan && state.fp.plan.name ? String(state.fp.plan.name) : '';
   tb.innerHTML = fpDrafts
     .map((d) => {
       const live = String(d.status || '').toUpperCase() === 'ACTIVE';
@@ -6684,17 +6661,17 @@ function fpRenderDrafts() {
       // reusing the .tb-btn/.tbl-search table classes — no new CSS. Escaped
       // throughout (escapeHtml in markup, textContent toasts).
       const actions = renaming
-        ? `<input type="text" id="fpDraftRenameInput" class="tbl-search" maxlength="80" autocomplete="off" spellcheck="false" value="${escapeHtml(planName)}" placeholder="Plan name" aria-label="Plan name for draft version ${escapeHtml(d.version)}" style="width:150px;"> ` +
-          `<button class="tb-btn primary" data-fp-draft-act="rename-save" data-fp-draft-id="${escapeHtml(d.id)}" title="Save the plan name">Save</button> ` +
+        ? `<input type="text" id="fpDraftRenameInput" class="tbl-search" maxlength="80" autocomplete="off" spellcheck="false" value="${escapeHtml(d.name || '')}" placeholder="v${escapeHtml(d.version)} name" aria-label="Name for version ${escapeHtml(d.version)}" style="width:150px;"> ` +
+          `<button class="tb-btn primary" data-fp-draft-act="rename-save" data-fp-draft-id="${escapeHtml(d.id)}" title="Save the version name (empty clears it)">Save</button> ` +
           `<button class="tb-btn ghost" data-fp-draft-act="rename-cancel" data-fp-draft-id="${escapeHtml(d.id)}" title="Cancel renaming">Cancel</button>`
-        : `<button class="tb-btn ghost" data-fp-draft-act="rename" data-fp-draft-id="${escapeHtml(d.id)}" title="Rename plan name (draft v${escapeHtml(d.version)}) — available while the plan is a draft" aria-label="Rename plan name for draft version ${escapeHtml(d.version)}">Rename</button> ` +
+        : `<button class="tb-btn ghost" data-fp-draft-act="rename" data-fp-draft-id="${escapeHtml(d.id)}" title="Name this saved version (v${escapeHtml(d.version)}) — the snapshot and live plan are untouched" aria-label="Rename version ${escapeHtml(d.version)}">Rename</button> ` +
           `<button class="tb-btn ghost" data-fp-draft-act="publish" data-fp-draft-id="${escapeHtml(d.id)}" title="Publish this version — a confirm shows what goes live, what goes back to draft, and what will be skipped">Publish</button> ` +
           `<button class="tb-btn ghost" data-fp-draft-act="load" data-fp-draft-id="${escapeHtml(d.id)}" title="Load this version into the working copy (not published — customers keep the last published version)">Load</button> ` +
           `<button class="tb-btn ghost" data-fp-draft-act="view" data-fp-draft-id="${escapeHtml(d.id)}">View</button> ` +
           `<button class="tb-btn danger" data-fp-draft-act="delete" data-fp-draft-id="${escapeHtml(d.id)}">Delete</button>`;
       return (
         '<tr>' +
-        `<td><strong>v${escapeHtml(d.version)}</strong>${d.id && d.id === fpLoadedDraftId ? ' <span class="pill amber">editing</span>' : ''}</td>` +
+        `<td>${d.name ? `<strong>${escapeHtml(d.name)}</strong> <span class="t-type">v${escapeHtml(d.version)}</span>` : `<strong>v${escapeHtml(d.version)}</strong>`}${d.id && d.id === fpLoadedDraftId ? ' <span class="pill amber">editing</span>' : ''}</td>` +
         `<td><span class="t-type">${live ? '● Published' : '○ Draft'}</span></td>` +
         `<td>${escapeHtml(d.width)}×${escapeHtml(d.height)} ft</td>` +
         `<td class="t-type">${escapeHtml(c.placements || 0)} units · ${escapeHtml(c.blocks || 0)} blocks · ` +
@@ -6719,7 +6696,8 @@ function fpRenderLoadedDraft() {
     return;
   }
   el.hidden = false;
-  el.textContent = `Working copy loaded from v${fpLoadedDraftVersion} — customers see the last published version`;
+  const row = fpDrafts.find((d) => d.id != null && d.id === fpLoadedDraftId);
+  el.textContent = `Working copy loaded from ${row ? fpDraftLabel(row) : 'v' + fpLoadedDraftVersion} — customers see the last published version`;
 }
 
 function fpSetLoadedDraft(d) {
@@ -6740,7 +6718,7 @@ function fpSetLoadedDraft(d) {
 // or Cancel) and a clean canvas still confirms.
 async function fpLoadDraft(draftId) {
   const d = fpDrafts.find((r) => r.id === draftId);
-  const label = d ? `v${d.version}` : 'this version';
+  const label = fpDraftLabel(d);
   if (fpCanvasDirty || fpHasPendingWrites()) {
     // Save as Draft, Discard, or Cancel — staying keeps the current screen.
     if ((await fpResolveUnsaved('and load the draft')) !== 'proceed') return;

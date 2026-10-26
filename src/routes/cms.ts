@@ -187,6 +187,7 @@ import {
   getDraft,
   getPublishPreview,
   deleteDraft,
+  renameDraft,
   publishDraft,
   loadDraft,
   publishLivePlan,
@@ -1906,6 +1907,18 @@ router.get('/drafts/:draftId', requireAuth, async (req: Request, res: Response) 
 // as the publish preflight — shown instead of failing after confirm).
 router.get('/drafts/:draftId/publish-preview', requireAuth, async (req: Request, res: Response) => {
   ok(res, await getPublishPreview(String(req.params.draftId)));
+});
+
+// Rename one draft version (operator label; snapshot + live plan untouched).
+// { name: "" | null } clears the label back to the bare version number.
+const floorPlanDraftRenameSchema = z.object({ name: z.string().max(80).nullable() });
+router.patch('/drafts/:draftId', requireAuth, async (req: Request, res: Response) => {
+  const parsed = floorPlanDraftRenameSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid draft rename payload', parsed.error.flatten());
+    return;
+  }
+  ok(res, await renameDraft(String(req.params.draftId), parsed.data.name));
 });
 
 // Delete one draft version (design history only — the live plan is untouched).

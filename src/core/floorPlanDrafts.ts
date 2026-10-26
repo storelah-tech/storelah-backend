@@ -244,6 +244,7 @@ function serializeDraftSummary(d: DraftRow) {
     id: d.id,
     floorId: d.floorId,
     version: d.version,
+    name: d.name ?? null,
     // DRAFT = saved design snapshot; ACTIVE = this version was published to
     // the live plan (informational — the live FloorPlan carries the real state).
     status: d.status,
@@ -554,6 +555,29 @@ export async function getDraft(draftId: string) {
 // The marker the CMS shows: ACTIVE only when it is trustworthy.
 function effectiveStatus(row: { status: PlanStatus; updatedAt: Date }, publishedAt: Date | null | undefined): PlanStatus {
   return row.status === 'ACTIVE' && !isTrustedMarker(row, publishedAt) ? 'DRAFT' : row.status;
+}
+
+/**
+ * Rename one draft version (operator label only — snapshot, status and the
+ * live plan are untouched). Empty/whitespace clears the label back to "vN".
+ * updatedAt is pinned so a rename never changes isTrustedMarker's verdict.
+ */
+export async function renameDraft(draftId: string, name: string | null) {
+  const draft = await prisma.floorPlanDraft.findUnique({ where: { id: draftId }, select: { id: true, updatedAt: true } });
+  if (!draft) throw new AppError(404, 'NOT_FOUND', `Floor plan draft ${draftId} not found`);
+  const label = name == null ? '' : String(name).trim();
+  if (label.length > 80) throw new AppError(400, 'VALIDATION', 'Draft name must be at most 80 characters');
+  await prisma.floorPlanDraft.update({
+    where: { id: draftId },
+    data: { name: label || null, updatedAt: draft.updatedAt },
+  });
+  return getDraftSummary(draftId);
+}
+
+async function getDraftSummary(draftId: string) {
+  const row = await prisma.floorPlanDraft.findUniqueOrThrow({ where: { id: draftId }, include: { floor: { include: { branch: true } } } });
+  const plan = await prisma.floorPlan.findUnique({ where: { floorId: row.floorId }, select: { publishedAt: true } });
+  return { ...serializeDraftSummary(row), status: effectiveStatus(row, plan?.publishedAt) };
 }
 
 /** Delete one draft version (design history only — the live plan is untouched). */

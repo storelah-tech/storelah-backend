@@ -283,7 +283,9 @@ export const openapiSpec = {
         'units since deleted/moved/deactivated are skipped and reported in ' +
         '`meta.skippedPlacements`) then walks DRAFT → ACTIVE via the existing publish ' +
         'path. Drafts are CMS-only (Bearer JWT) — the public floor-plan read resolves ' +
-        'the ACTIVE live plan and never touches drafts. All pre-existing shapes are unchanged.',
+        'the ACTIVE live plan and never touches drafts. All pre-existing shapes are unchanged. ' +
+        'Later additive: `PATCH /cms/drafts/{draftId}` `{ name: string|null }` sets an optional ' +
+        'operator label per version (≤80 chars, empty clears; summaries gain `name`).',
       '',
       'v1.9.2 is ADDITIVE-ONLY over 1.9.1: per-email lead-group reads for the operator ' +
         'CMS (served on the CMS host under `/api/v1/cms`, Bearer JWT) — ' +

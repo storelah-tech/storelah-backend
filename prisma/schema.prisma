@@ -452,6 +452,9 @@ model FloorPlanDraft {
   blocks     Json
   boundaries Json
   markers    Json
+  // Optional operator label for this version (Library Rename; CMS-only,
+  // never exposed to booking). null = show the bare "vN".
+  name      String?
   // Operator who saved the draft (admin email/name from the Bearer JWT).
   createdBy String?
   createdAt DateTime @default(now())

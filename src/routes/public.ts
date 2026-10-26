@@ -12,6 +12,18 @@ import { getSiteContentWithMeta } from '../core/siteContent';
 import { listPublishedContent, getPublishedContent } from '../core/content';
 import { readLocalImage } from '../lib/contentStorage';
 import { createPublicLead } from '../core/leads';
+import {
+  SINGPASS_COOKIE,
+  SINGPASS_COOKIE_PATH,
+  SINGPASS_SESSION_TTL_S,
+  completeSingpassLogin,
+  openSession,
+  singpassReturnUrl,
+  singpassSettings,
+  startSingpassLogin,
+} from '../core/singpass';
+import { recordSingpassVerification } from '../core/verifications';
+import { config } from '../lib/config';
 
 const router = Router();
 
@@ -326,6 +338,80 @@ router.post('/leads', publicLeadLimiter, async (req: Request, res: Response) => 
     return;
   }
   created(res, { ...lead, deduped, linked, groupCount, phoneVariance });
+});
+
+
+// ---------- Singpass Myinfo identity verification (see core/singpass.ts) ----------
+//
+// Browser-redirect endpoints, not JSON APIs: /start 302s to Singpass, and
+// Singpass 302s the user back to /callback (the redirect URL registered with
+// Singpass). Both live on the api host so the HttpOnly auth-session cookie
+// set by /start is readable by /callback.
+
+router.get('/singpass/status', (_req: Request, res: Response) => {
+  ok(res, { enabled: singpassSettings() !== null });
+});
+
+const singpassStartSchema = z.object({
+  bookingRef: z.string().trim().min(1).max(64).regex(/^[A-Za-z0-9_-]+$/),
+  // Booking-app relative path to land back on (validated in safeReturnPath).
+  returnPath: z.string().max(512).optional(),
+});
+
+router.get('/singpass/start', publicLeadLimiter, async (req: Request, res: Response) => {
+  const parsed = singpassStartSchema.safeParse(req.query);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid Singpass start query', parsed.error.flatten());
+    return;
+  }
+  const { redirectUrl, sealedSession } = await startSingpassLogin(parsed.data.bookingRef, parsed.data.returnPath);
+  res.cookie(SINGPASS_COOKIE, sealedSession, {
+    httpOnly: true,
+    secure: config.isProd,
+    sameSite: 'lax', // top-level GET back from Singpass must carry it
+    path: SINGPASS_COOKIE_PATH,
+    maxAge: SINGPASS_SESSION_TTL_S * 1000,
+  });
+  res.redirect(302, redirectUrl);
+});
+
+router.get('/singpass/callback', async (req: Request, res: Response) => {
+  const settings = singpassSettings();
+  if (!settings) {
+    fail(res, 503, 'SINGPASS_NOT_CONFIGURED', 'Singpass verification is not available yet.');
+    return;
+  }
+  let returnPath: string | undefined;
+  const back = (outcome: 'verified' | 'cancelled' | 'failed', bookingRef?: string) => {
+    const url = singpassReturnUrl(settings.returnUrl, returnPath);
+    url.searchParams.set('singpass', outcome);
+    if (bookingRef) url.searchParams.set('bookingRef', bookingRef);
+    res.clearCookie(SINGPASS_COOKIE, { path: SINGPASS_COOKIE_PATH });
+    res.redirect(302, url.toString());
+  };
+
+  let bookingRef: string | undefined;
+  try {
+    const session = await openSession(req.cookies?.[SINGPASS_COOKIE]);
+    bookingRef = session.bookingRef;
+    returnPath = session.returnPath;
+    const q = req.query as Record<string, string | undefined>;
+    if (q.state !== session.state) {
+      back('failed', bookingRef);
+      return;
+    }
+    if (q.error || !q.code) {
+      // access_denied = user cancelled on the Singpass consent page.
+      back(q.error === 'access_denied' ? 'cancelled' : 'failed', bookingRef);
+      return;
+    }
+    const person = await completeSingpassLogin(session, q.code);
+    await recordSingpassVerification(bookingRef, person);
+    back('verified', bookingRef);
+  } catch (err) {
+    console.error('[singpass] callback failed:', err instanceof Error ? err.message : 'unknown error');
+    back('failed', bookingRef);
+  }
 });
 
 export default router;

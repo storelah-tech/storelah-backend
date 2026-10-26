@@ -11,9 +11,14 @@ import { prisma } from '../lib/prisma';
 import { AppError } from '../lib/http';
 import type { CustomerJwtPayload } from '../middleware/auth';
 import { findOrCreateGuestCustomer, loadCustomer, normalizeEmail } from './customers';
+import { maskUinfin, type MyinfoPerson } from './singpass';
 
 export const VERIFICATION_PROVIDER = 'mock' as const;
 export const VERIFICATION_METHOD = 'mock-camera' as const;
+// Real Singpass Myinfo rows (core/singpass.ts) share the table; provider is
+// derived from `method` so pre-existing mock rows read unchanged.
+export const SINGPASS_VERIFICATION_METHOD = 'singpass-myinfo' as const;
+export type VerificationProvider = typeof VERIFICATION_PROVIDER | 'singpass';
 
 export type VerificationIdType = 'passport' | 'nric-fin' | 'drivers-licence' | 'residence-permit';
 export type VerificationResult = 'pass' | 'fail';
@@ -42,7 +47,7 @@ export interface SerializedVerification {
   bookingRef: string;
   capturedAt: string | null;
   verifiedAt: string;
-  provider: typeof VERIFICATION_PROVIDER;
+  provider: VerificationProvider;
   // CMS staff-validation layer (additive — provider status/result untouched).
   // Every mock row reads PENDING_VALIDATION until an operator VALIDATEs or
   // REJECTs it via PATCH /api/v1/cms/verifications/:id.
@@ -63,7 +68,7 @@ export function serializeVerification(v: Verification): SerializedVerification {
     bookingRef: v.bookingRef,
     capturedAt: v.capturedAt ? v.capturedAt.toISOString() : null,
     verifiedAt: v.verifiedAt.toISOString(),
-    provider: VERIFICATION_PROVIDER,
+    provider: v.method === SINGPASS_VERIFICATION_METHOD ? 'singpass' : VERIFICATION_PROVIDER,
     // Pre-review-layer rows cannot exist (the column backfills via its DB
     // default), but fall back defensively so a NULL never escapes.
     reviewStatus: (v.reviewStatus as VerificationReviewStatus) ?? 'PENDING_VALIDATION',
@@ -157,6 +162,43 @@ export async function recordMockVerification(
       payload: {
         method: VERIFICATION_METHOD,
         selfiePresent: input.selfiePresent ?? null,
+      },
+    },
+  });
+  return serializeVerification(row);
+}
+
+/**
+ * Persist a completed Singpass Myinfo login. Guest-mode resolution (no
+ * Bearer JWT crosses the Singpass redirect); the Myinfo email is NOT used to
+ * match the booking. Personal data stays in `payload` (never serialized to
+ * the public read) and the NRIC/FIN is stored masked only.
+ */
+export async function recordSingpassVerification(
+  bookingRef: string,
+  person: MyinfoPerson,
+): Promise<SerializedVerification> {
+  const ref = bookingRef.trim();
+  const { customerId, tenantId } = await resolveCustomerId(null, ref);
+  const row = await prisma.verification.create({
+    data: {
+      customerId,
+      tenantId,
+      bookingRef: ref,
+      method: SINGPASS_VERIFICATION_METHOD,
+      idType: 'nric-fin',
+      result: 'pass',
+      status: statusForResult('pass'),
+      capturedAt: new Date(),
+      payload: {
+        method: SINGPASS_VERIFICATION_METHOD,
+        singpassSub: person.sub,
+        uinfinMasked: maskUinfin(person.uinfin),
+        name: person.name,
+        dob: person.dob,
+        mobileno: person.mobileno,
+        email: person.email,
+        regadd: person.regadd,
       },
     },
   });

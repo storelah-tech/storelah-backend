@@ -26,7 +26,8 @@
     "db:backfill-footprints": "tsx scripts/backfill-placement-footprints.ts",
     "db:backfill-matrix-sizes": "tsx scripts/backfill-matrix-size-categories.ts",
     "db:studio": "prisma studio",
-    "build:admin-geometry": "tsx scripts/build-admin-geometry.ts"
+    "build:admin-geometry": "tsx scripts/build-admin-geometry.ts",
+    "singpass:keys": "tsx scripts/singpass-generate-keys.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"
@@ -40,6 +41,7 @@
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
     "express": "^5.1.0",
+    "jose": "^5.10.0",
     "jsonwebtoken": "^9.0.2",
     "pdf-lib": "^1.17.1",
     "serverless-http": "^4.0.0",

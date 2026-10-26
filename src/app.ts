@@ -10,6 +10,7 @@ import { errorHandler } from './lib/http';
 import { AppError } from './lib/http';
 import { resolveHostKind } from './lib/host';
 import { contentStorageStatus } from './lib/contentStorage';
+import { publicJwks } from './core/singpass';
 
 const app = express();
 
@@ -39,6 +40,14 @@ app.use(cookieParser());
     app.use('/uploads/content', express.static(cs.localDir, { maxAge: '1d' }));
   }
 }
+
+// Singpass fetches our public client JWKS from here (registered as the "JWKS
+// endpoint" in the Singpass developer portal). Must stay public and fast
+// (Singpass fails logins if it takes >3s). Public keys only — see publicJwks().
+app.get('/.well-known/jwks.json', (_req, res) => {
+  res.set('Cache-Control', 'public, max-age=300');
+  res.json(publicJwks());
+});
 
 app.get('/health', (_req, res) => {
   res.json({ ok: true, service: 'storelah-cms', time: new Date().toISOString() });

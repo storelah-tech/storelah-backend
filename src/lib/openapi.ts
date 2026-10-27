@@ -5276,6 +5276,28 @@ export const openapiSpec = {
             type: 'string',
             description: 'Guest checkout only. Same find-or-create rules as name.',
           },
+          companyName: {
+            type: 'string',
+            maxLength: 300,
+            description: 'Business bookings: hirer company name as entered. Stored on the tenant UNVERIFIED unless `myinfoBusiness` binds.',
+          },
+          uen: {
+            type: 'string',
+            maxLength: 60,
+            description: 'Business bookings: hirer UEN as entered (stored uppercase, unverified unless `myinfoBusiness` binds).',
+          },
+          myinfoBusiness: {
+            type: 'object',
+            required: ['verificationId', 'draftRef'],
+            description:
+              'Myinfo Business confirmation from the Details step (POST /public/corppass/review/confirm). Bound once, if it is a ' +
+              'confirmed, unbound row for this draft ref verified in the last 24h: its company name / UEN / registered address ' +
+              'override `companyName`/`uen` and the tenant is stamped verified (201 `companyVerified: true`). Otherwise ignored — the booking proceeds unverified.',
+            properties: {
+              verificationId: { type: 'string' },
+              draftRef: { type: 'string', example: 'DRAFT-0123456789ABCDEF' },
+            },
+          },
         },
       },
       BookingCreated: {
@@ -5299,6 +5321,10 @@ export const openapiSpec = {
           },
           moveInDate: { type: 'string', format: 'date-time' },
           amount: { type: 'number', description: 'Booking amount (SGD) — unit monthly-rate snapshot, NOT the invoiced total.' },
+          companyVerified: {
+            type: 'boolean',
+            description: 'Additive: true when the hirer company was bound from Myinfo Business (`myinfoBusiness` in the request).',
+          },
           dueToday: {
             type: 'number',
             description:

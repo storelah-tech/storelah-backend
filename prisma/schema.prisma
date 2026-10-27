@@ -617,6 +617,16 @@ model Tenant {
   branchId       String?
   branch         Branch?     @relation(fields: [branchId], references: [id])
 
+  // Hirer company (Business bookings). Manual entry leaves companyVerifiedAt
+  // NULL; Myinfo Business (Corppass) sets it + companyVerificationId (the
+  // Verification row holding the retrieved entity data). See
+  // docs/myinfo-business-plan.md.
+  companyName           String?
+  uen                   String?
+  companyAddress        String?
+  companyVerifiedAt     DateTime?
+  companyVerificationId String?
+
   bookings  Booking[]
   invoices  Invoice[]
   notices   Notice[]

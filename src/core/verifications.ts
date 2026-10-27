@@ -433,6 +433,69 @@ export async function cancelBusinessReview(token: string): Promise<void> {
   await prisma.verification.delete({ where: { id: row.id } });
 }
 
+// ---------- booking-submit binding (phase 2) ----------
+//
+// POST /customer/bookings may carry { verificationId, draftRef } from the
+// Details step. The row is claimed only if it is a CONFIRMED Myinfo Business
+// row for that exact draft ref, still unbound and recent; the claim is a
+// conditional update (tenantId NULL → tenant) so a row binds at most once,
+// even under concurrent submits. Anything else returns null and the booking
+// proceeds with the client's company fields, unverified — never a false
+// "verified" stamp, never a blocked booking.
+
+export const MYINFO_BUSINESS_BIND_TTL_MS = 24 * 60 * 60 * 1000;
+
+export interface ClaimedBusinessVerification {
+  verificationId: string;
+  verifiedAt: Date;
+  entityName: string | null;
+  uen: string | null;
+  uenStatus: string | null;
+  entityType: string | null;
+  registeredAddress: string | null;
+}
+
+export async function claimBusinessVerificationTx(
+  tx: Prisma.TransactionClient,
+  ref: { verificationId: string; draftRef: string },
+  bind: { tenantId: string; customerId: string; bookingRef: string },
+): Promise<ClaimedBusinessVerification | null> {
+  const row = await tx.verification.findUnique({ where: { id: ref.verificationId } });
+  if (
+    !row ||
+    row.method !== MYINFO_BUSINESS_METHOD ||
+    row.status !== statusForResult('pass') ||
+    row.bookingRef !== ref.draftRef.trim() ||
+    row.tenantId !== null ||
+    Date.now() - row.verifiedAt.getTime() > MYINFO_BUSINESS_BIND_TTL_MS
+  ) {
+    return null;
+  }
+  const payload = (row.payload ?? {}) as unknown as BusinessPayload;
+  const bound: BusinessPayload & { draftRef: string } = { ...payload, draftRef: row.bookingRef };
+  // Re-keyed from the draft ref to the real booking ref so the row shows up
+  // with the booking (customer + CMS verification reads).
+  const claimed = await tx.verification.updateMany({
+    where: { id: row.id, tenantId: null, bookingRef: row.bookingRef },
+    data: {
+      tenantId: bind.tenantId,
+      customerId: bind.customerId,
+      bookingRef: bind.bookingRef,
+      payload: bound as unknown as Prisma.InputJsonValue,
+    },
+  });
+  if (claimed.count !== 1) return null;
+  return {
+    verificationId: row.id,
+    verifiedAt: row.verifiedAt,
+    entityName: payload.entityName,
+    uen: payload.uen,
+    uenStatus: payload.uenStatus,
+    entityType: payload.entityType,
+    registeredAddress: payload.registeredAddress,
+  };
+}
+
 export async function listVerificationsByBookingRef(
   bookingRef: string,
 ): Promise<SerializedVerification[]> {

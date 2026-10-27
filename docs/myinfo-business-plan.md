@@ -1,6 +1,6 @@
 # Myinfo Business (Corppass) — integration + user-journey deck plan
 
-Status: **phases 1 + 3 built against a mock** (2026-10-27, branches `feature/myinfo-business` in backend + booking). Phases 2, 4, 5 pending. Companion to `docs/singpass-myinfo.md`
+Status: **phases 1, 2 + 3 built against a mock** (2026-10-27, branches `feature/myinfo-business` in backend + booking). Phases 4, 5 pending; phase 2 adds migration `20261027000000_tenant_company_verification` (not on prod). Companion to `docs/singpass-myinfo.md`
 (individual Myinfo, live). Cross-lane: backend + booking + one DB migration.
 
 ## Goal
@@ -70,12 +70,13 @@ minimisation.
 2. **Routes:** `/api/v1/public/corppass/{status,start,callback,review,review/cancel}`, mirroring the Singpass ones. `start` takes a draft ref plus `returnPath`. **Do not send `authentication_context_type`**, because Corppass rejects it for Myinfo Business.
 3. **Mapping:** parse `entity_info` (`value` / `code`+`desc` / `unavailable` wrappers) into `{ name, uen, uenStatus, entityType, registeredAddress }`, plus `corppass_info.email`.
 4. **Pending prefill (built):** the existing `Verification` table, keyed by the booking **draft ref** (`DRAFT-…`). It uses method `myinfo-business`, idType `uen`, status `PENDING_CONFIRMATION` until **Use these details** (→ `VERIFIED`, provider `corppass`). Review tokens work as for Singpass: sha256-hashed, single-use, 30 min. **No migration needed for phases 1 and 3.**
-5. **Binding at submit:** `POST /customer/bookings` accepts an optional `myinfoBusinessToken`.
-   - The server copies the **verified** company name, UEN and address onto the tenant and customer, overriding whatever the client sent.
-   - It sets `companyVerifiedAt` and `companyVerificationSource = "myinfo-business"`, and consumes the token.
-   - Without a token, behaviour is unchanged (manual entry, unverified).
-   - → New nullable columns `Tenant.companyVerifiedAt`, `companyAddress`, `companyVerification` Json (same migration).
-6. **CMS:** a "Company verified · Myinfo Business" badge on the tenant and customer.
+5. **Binding at submit (built):** `POST /customer/bookings` accepts optional `companyName`, `uen` and `myinfoBusiness: { verificationId, draftRef }` (the review token is already spent at confirm).
+   - The row binds only if it is a confirmed `myinfo-business` row for that exact draft ref, still unbound, verified in the last 24h. The claim is a conditional update, so it binds once even under concurrent submits; the row is re-keyed to the real booking ref and `tenantId`/`customerId` set.
+   - The **verified** company name, UEN and registered address then override the client's values on the tenant, with `companyVerifiedAt` + `companyVerificationId`; 201 echoes `companyVerified: true`.
+   - Otherwise the booking still goes through with the typed company, **unverified** (never blocked, never falsely stamped). Retyping a tenant's already-verified UEN keeps the verified record.
+   - The Customer profile's company/UEN are only filled when blank (a guest submit never rewrites an account).
+   - → Migration `20261027000000_tenant_company_verification`: nullable `Tenant.companyName`, `uen`, `companyAddress`, `companyVerifiedAt`, `companyVerificationId`.
+6. **CMS (built):** tenant rows show the company + a "Company verified · Myinfo Business" badge (or "Unverified" for typed details); the stay-history header adds the registered address. Myinfo Business rows are excluded from the tenant's person-identity `latestVerification`.
 7. **Policy (decide):** whether to block Business bookings whose UEN status isn't live, or just flag them in the CMS.
 
 ## Booking (storelah-booking)

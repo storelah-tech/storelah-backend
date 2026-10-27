@@ -100,6 +100,13 @@ const createBookingSchema = z.object({
   email: z.string().email().optional(),
   name: z.string().optional(),
   mobile: z.string().optional(),
+  // Business bookings: the hirer company as typed (stored unverified), and
+  // the Myinfo Business confirmation to bind (verified values override).
+  companyName: z.string().max(300).optional(),
+  uen: z.string().max(60).optional(),
+  myinfoBusiness: z
+    .object({ verificationId: z.string().trim().min(1).max(64), draftRef: z.string().trim().min(1).max(64) })
+    .optional(),
 });
 
 const requestSchema = z.object({

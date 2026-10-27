@@ -185,6 +185,13 @@ interface SingpassPayload {
   method: typeof SINGPASS_VERIFICATION_METHOD;
   singpassSub: string;
   uinfinMasked: string | null;
+  /**
+   * Full NRIC/FIN, only while the review is pending: Myinfo's data-display
+   * rules require the complete value on the review form. AES-256-GCM under a
+   * key derived from the review token's secret (never stored — the row keeps
+   * only its sha256), so the DB alone can't reveal it. Dropped on confirm.
+   */
+  uinfinSealed?: string;
   name: string | null;
   dob: string | null;
   regadd: string | null;
@@ -204,6 +211,29 @@ export interface SingpassReview {
 }
 
 const sha256 = (v: string) => crypto.createHash('sha256').update(v).digest('hex');
+
+function reviewKey(secret: string): Buffer {
+  return crypto.createHash('sha256').update(`storelah:myinfo-review-uinfin:${secret}`).digest();
+}
+
+function sealForReview(value: string, secret: string): string {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', reviewKey(secret), iv);
+  const ct = Buffer.concat([cipher.update(value, 'utf8'), cipher.final()]);
+  return [iv, cipher.getAuthTag(), ct].map((b) => b.toString('base64url')).join('.');
+}
+
+function openForReview(sealed: string | undefined, secret: string): string | null {
+  if (!sealed) return null;
+  try {
+    const [iv, tag, ct] = sealed.split('.').map((p) => Buffer.from(p, 'base64url'));
+    const decipher = crypto.createDecipheriv('aes-256-gcm', reviewKey(secret), iv);
+    decipher.setAuthTag(tag);
+    return Buffer.concat([decipher.update(ct), decipher.final()]).toString('utf8');
+  } catch {
+    return null;
+  }
+}
 const REVIEW_NOT_FOUND = 'This Myinfo review has expired or was already completed. Please verify again.';
 
 export async function createPendingSingpassVerification(
@@ -217,6 +247,7 @@ export async function createPendingSingpassVerification(
     method: SINGPASS_VERIFICATION_METHOD,
     singpassSub: person.sub,
     uinfinMasked: maskUinfin(person.uinfin),
+    ...(person.uinfin ? { uinfinSealed: sealForReview(person.uinfin, secret) } : {}),
     name: person.name,
     dob: person.dob,
     regadd: person.regadd,
@@ -264,10 +295,13 @@ async function loadPendingReview(token: string): Promise<{ row: Verification; pa
 
 export async function getSingpassReview(token: string): Promise<SingpassReview> {
   const { row, payload } = await loadPendingReview(token);
+  // Full value on the review form (Myinfo data-display requirement); masked
+  // only as a fallback for rows created before uinfinSealed existed.
+  const uinfin = openForReview(payload.uinfinSealed, String(token).split('.')[1]) ?? payload.uinfinMasked;
   return {
     bookingRef: row.bookingRef,
     expiresAt: payload.reviewExpiresAt as string,
-    verified: { uinfin: payload.uinfinMasked, name: payload.name, dob: payload.dob, regadd: payload.regadd },
+    verified: { uinfin, name: payload.name, dob: payload.dob, regadd: payload.regadd },
     editable: { mobileno: payload.mobileno, email: payload.email },
   };
 }
@@ -279,7 +313,8 @@ export async function confirmSingpassReview(
   const { row, payload } = await loadPendingReview(token);
   const mobileno = contact.mobileno?.trim() || payload.mobileno;
   const email = contact.email?.trim() || payload.email;
-  const { reviewTokenHash: _h, reviewExpiresAt: _e, ...rest } = payload;
+  // Stored masked after the transaction: the sealed full NRIC/FIN goes.
+  const { reviewTokenHash: _h, reviewExpiresAt: _e, uinfinSealed: _u, ...rest } = payload;
   const confirmed: SingpassPayload = {
     ...rest,
     mobileno,

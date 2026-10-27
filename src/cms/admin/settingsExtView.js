@@ -1,11 +1,11 @@
 // StoreLah CMS admin UI — Settings extensions (P1 items 5, 6, 7).
 // Fees & deposits with per-facility override (GET/POST/DELETE /fees +
 // /fees/resolve preview), business-rules section (GET/PUT /business-rules),
-// Users section (GET/POST/PATCH/DELETE /users + access + permissions).
+// Team & access (Owner only): operators, editable roles, permission audit.
 // The 14 scalar settings in #settingsGrid are untouched.
 
 import { $, escapeHtml, showBanner } from './dom.js';
-import { get, post, put, del, describeError } from './api.js';
+import { get, post, put, patch, del, describeError, getMe } from './api.js';
 import { confirmDialog } from './confirmDialog.js';
 import { state } from './state.js';
 
@@ -215,100 +215,125 @@ async function saveBusinessRules() {
   }
 }
 
-// ---------- users & roles (P1 item 6) ----------
+// ---------- team & access: operators, roles, audit (CMS RBAC; Owner only) ----------
 
-let permCatalog = [];
+const ACTION_COLS = [['view', 'View'], ['create', 'Create'], ['edit', 'Edit'], ['delete', 'Delete'], ['approve', 'Approve']];
+const actionKey = (a) => (a === 'edit' ? 'update' : a);
 let usersCache = [];
+let rolesCache = [];
+let catalog = null; // { resources: [{ key, label, group, actions }] }
+let selectedRoleId = null; // null + creatingRole = new role draft
+let creatingRole = false;
 
 export async function bindUsersSection() {
+  if (!getMe()?.isOwner) return; // Team & access is Owner-only (tab hidden too)
   const body = $('#usersBody');
   if (!body) return;
   try {
-    permCatalog = (await get('/users/permissions')) || [];
-  } catch (e) { permCatalog = []; }
-  try {
-    usersCache = (await get('/users')) || [];
+    [usersCache, rolesCache, catalog] = await Promise.all([get('/users'), get('/roles'), get('/roles/catalog')]);
     renderUsers();
+    renderRoleSelect();
+    renderRoles();
   } catch (e) {
-    body.innerHTML = '<tr><td colspan="5"><div class="section-empty">Users failed to load: ' + escapeHtml(describeError(e)) + '</div></td></tr>';
+    body.innerHTML = '<tr><td colspan="4"><div class="section-empty">Team failed to load: ' + escapeHtml(describeError(e)) + '</div></td></tr>';
   }
+  bindAudit().catch(() => {});
+}
+
+async function reloadTeam() {
+  [usersCache, rolesCache] = await Promise.all([get('/users'), get('/roles')]);
+  renderUsers();
+  renderRoleSelect();
+  renderRoles();
+  bindAudit().catch(() => {});
+}
+
+function roleOptions(selectedId) {
+  return rolesCache.map((r) => `<option value="${escapeHtml(r.id)}" ${r.id === selectedId ? 'selected' : ''}>${escapeHtml(r.name)}</option>`).join('');
+}
+
+function renderRoleSelect() {
+  const sel = $('#uf-role');
+  if (!sel) return;
+  const keep = sel.value;
+  const manager = rolesCache.find((r) => r.key === 'MANAGER');
+  sel.innerHTML = roleOptions(keep || manager?.id);
 }
 
 function renderUsers() {
   const body = $('#usersBody');
   if (!body) return;
-  body.innerHTML = usersCache.length ? usersCache.map((u) =>
-    `<tr><td><b>${escapeHtml(u.email)}</b><div class="t-type">${escapeHtml(u.name)} · ${escapeHtml(u.role)}</div></td>` +
-    `<td>${u.scoped ? u.facilityAccess.map((a) => a.scope === 'ALL' ? 'ALL' : escapeHtml(a.branchCode || '?')).join(', ') : '<span class="t-type">All facilities (legacy)</span>'}</td>` +
-    `<td>${u.permissions.length ? u.permissions.map((p) => `<span class="pill green">${escapeHtml(p)}</span>`).join(' ') : '<span class="t-type">legacy role</span>'}</td>` +
-    `<td class="unit-actions"><button class="act-btn" data-u-act="access" data-u-id="${escapeHtml(u.id)}">Access</button> ` +
-    `<button class="act-btn" data-u-act="perms" data-u-id="${escapeHtml(u.id)}">Permissions</button> ` +
-    `<button class="act-btn danger" data-u-act="delete" data-u-id="${escapeHtml(u.id)}">Delete</button></td></tr>` +
-    `<tr data-u-editor="${escapeHtml(u.id)}" hidden><td colspan="4"><div class="t-type" data-u-editor-body>…</div></td></tr>`,
-  ).join('') : '<tr><td colspan="5"><div class="section-empty">No operators.</div></td></tr>';
+  const myId = getMe()?.user.id;
+  body.innerHTML = usersCache.length ? usersCache.map((u) => {
+    const self = u.id === myId;
+    const facilities = u.scoped
+      ? u.facilityAccess.map((a) => escapeHtml(a.branchCode || '?')).join(', ')
+      : '<span class="t-type">All facilities</span>';
+    const locked = u.lockedUntil ? ' <span class="pill red">Locked</span>' : '';
+    return `<tr><td><b>${escapeHtml(u.name)}</b>${self ? ' <span class="pill green">You</span>' : ''}${locked}<div class="t-type">${escapeHtml(u.email)}</div></td>` +
+      `<td><select class="tbl-select" data-u-role="${escapeHtml(u.id)}" aria-label="Role for ${escapeHtml(u.email)}" ${self ? 'disabled title="You cannot change your own role"' : ''}>${roleOptions(u.role.id)}</select></td>` +
+      `<td>${facilities}</td>` +
+      `<td class="unit-actions"><button class="act-btn" type="button" data-u-act="access" data-u-id="${escapeHtml(u.id)}">Facilities</button> ` +
+      `<button class="act-btn" type="button" data-u-act="password" data-u-id="${escapeHtml(u.id)}">Reset password</button> ` +
+      (u.lockedUntil ? `<button class="act-btn" type="button" data-u-act="unlock" data-u-id="${escapeHtml(u.id)}">Unlock</button> ` : '') +
+      (self ? '' : `<button class="act-btn danger" type="button" data-u-act="delete" data-u-id="${escapeHtml(u.id)}">Remove</button>`) + '</td></tr>' +
+      `<tr data-u-editor="${escapeHtml(u.id)}" hidden><td colspan="4"><div class="t-type" data-u-editor-body>…</div></td></tr>`;
+  }).join('') : '<tr><td colspan="4"><div class="section-empty">No operators.</div></td></tr>';
 }
 
 function editorRow(id) {
   return document.querySelector(`tr[data-u-editor="${CSS.escape(id)}"]`);
 }
 
-async function toggleAccessEditor(id) {
+function toggleAccessEditor(id) {
   const row = editorRow(id);
   if (!row) return;
-  if (!row.hidden) { row.hidden = true; return; }
+  if (!row.hidden && row.dataset.mode === 'access') { row.hidden = true; return; }
   const u = usersCache.find((x) => x.id === id);
-  const bodyEl = row.querySelector('[data-u-editor-body]');
   const current = new Set((u?.facilityAccess || []).map((a) => a.scope === 'ALL' ? 'ALL' : a.branchId));
-  bodyEl.innerHTML = `<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
-    <label><input type="checkbox" data-acc="ALL" ${current.has('ALL') ? 'checked' : ''}> All facilities</label>` +
-    (state.branches || []).map((b) => `<label><input type="checkbox" data-acc="${escapeHtml(b.id)}" ${current.has(b.id) ? 'checked' : ''}> ${escapeHtml(b.code)}</label>`).join('') +
-    ` <button class="act-btn primary" data-u-save-access="${escapeHtml(id)}">Save access</button></div>`;
+  const all = !u?.scoped;
+  row.dataset.mode = 'access';
+  row.querySelector('[data-u-editor-body]').innerHTML = `<div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center;">
+    <label><input type="checkbox" data-acc="ALL" ${all || current.has('ALL') ? 'checked' : ''}> All facilities</label>` +
+    (state.branches || []).map((b) => `<label><input type="checkbox" data-acc="${escapeHtml(b.id)}" ${!all && current.has(b.id) ? 'checked' : ''}> ${escapeHtml(b.name)} (${escapeHtml(b.code)})</label>`).join('') +
+    ` <button class="act-btn primary" type="button" data-u-save-access="${escapeHtml(id)}">Save facilities</button></div>`;
   row.hidden = false;
 }
 
-async function togglePermsEditor(id) {
+function togglePasswordEditor(id) {
   const row = editorRow(id);
   if (!row) return;
-  if (!row.hidden) { row.hidden = true; return; }
-  const u = usersCache.find((x) => x.id === id);
-  const has = new Set(u?.permissions || []);
-  const bodyEl = row.querySelector('[data-u-editor-body]');
-  bodyEl.innerHTML = `<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
-    <span class="t-type">Verified grants (empty = legacy role behavior):</span>` +
-    permCatalog.map((p) => `<label><input type="checkbox" data-perm="${escapeHtml(p)}" ${has.has(p) ? 'checked' : ''}> ${escapeHtml(p)}</label>`).join('') +
-    ` <button class="act-btn primary" data-u-save-perms="${escapeHtml(id)}">Save grants</button></div>`;
+  if (!row.hidden && row.dataset.mode === 'password') { row.hidden = true; return; }
+  row.dataset.mode = 'password';
+  row.querySelector('[data-u-editor-body]').innerHTML = `<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
+    <input type="password" class="tbl-search" data-u-newpw placeholder="New temporary password (8+ characters)" aria-label="New temporary password" autocomplete="new-password" style="max-width:280px;">
+    <button class="act-btn primary" type="button" data-u-save-password="${escapeHtml(id)}">Set password</button>
+    <span class="t-type">They are signed out everywhere and should change it after signing in.</span></div>`;
   row.hidden = false;
+  row.querySelector('[data-u-newpw]').focus();
 }
 
 async function saveAccess(id) {
   const row = editorRow(id);
   const boxes = row ? [...row.querySelectorAll('input[data-acc]:checked')].map((c) => c.dataset.acc) : [];
-  const access = boxes.includes('ALL') ? [{ scope: 'ALL' }] : boxes.map((branchId) => ({ branchId }));
+  const access = boxes.includes('ALL') || !boxes.length ? [] : boxes.map((branchId) => ({ branchId }));
   try {
     await put(`/users/${encodeURIComponent(id)}/access`, { access });
     showBanner('Facility access saved', true);
-    usersCache = (await get('/users')) || [];
-    renderUsers();
+    await reloadTeam();
   } catch (e) {
-    showBanner('Access: ' + describeError(e));
+    showBanner('Facilities: ' + describeError(e));
   }
 }
 
-async function savePerms(id) {
-  const row = editorRow(id);
-  const u = usersCache.find((x) => x.id === id);
-  const want = new Set(row ? [...row.querySelectorAll('input[data-perm]:checked')].map((c) => c.dataset.perm) : []);
-  const have = new Set(u?.permissions || []);
+async function patchUser(id, body, okMsg) {
   try {
-    for (const p of want) if (!have.has(p)) await post(`/users/${encodeURIComponent(id)}/permissions`, { permission: p });
-    for (const p of have) {
-      if (!want.has(p)) await del(`/users/${encodeURIComponent(id)}/permissions/${encodeURIComponent(p)}`);
-    }
-    showBanner('Permissions saved', true);
-    usersCache = (await get('/users')) || [];
-    renderUsers();
+    await patch(`/users/${encodeURIComponent(id)}`, body);
+    showBanner(okMsg, true);
+    await reloadTeam();
   } catch (e) {
-    showBanner('Permissions: ' + describeError(e));
+    showBanner('Operator: ' + describeError(e));
+    renderUsers(); // put a refused role select back
   }
 }
 
@@ -317,23 +342,160 @@ async function submitUserForm() {
     email: $('#uf-email')?.value.trim() || '',
     name: $('#uf-name')?.value.trim() || '',
     password: $('#uf-password')?.value || '',
-    role: $('#uf-role')?.value || 'MANAGER',
+    roleId: $('#uf-role')?.value || '',
   };
-  if (!body.email || !body.name || body.password.length < 8) {
-    showBanner('Email, name and a password of 8+ characters are required');
+  if (!body.email || !body.name || body.password.length < 8 || !body.roleId) {
+    showBanner('Enter an email, a name, a role and a temporary password of 8+ characters');
     return;
   }
   try {
     await post('/users', body);
-    showBanner(`Operator ${body.email} created`, true);
-    if ($('#uf-email')) $('#uf-email').value = '';
-    if ($('#uf-name')) $('#uf-name').value = '';
-    if ($('#uf-password')) $('#uf-password').value = '';
-    usersCache = (await get('/users')) || [];
-    renderUsers();
+    showBanner(`${body.email} added. Share the temporary password with them directly.`, true);
+    ['#uf-email', '#uf-name', '#uf-password'].forEach((sel) => { if ($(sel)) $(sel).value = ''; });
+    await reloadTeam();
   } catch (e) {
-    showBanner('User: ' + describeError(e));
+    showBanner('Operator: ' + describeError(e));
   }
+}
+
+// ---- roles ----
+
+function renderRoles() {
+  const tabs = $('#roleTabs');
+  if (!tabs || !catalog) return;
+  if (!creatingRole && !rolesCache.some((r) => r.id === selectedRoleId)) {
+    selectedRoleId = (rolesCache.find((r) => r.key === 'MANAGER') || rolesCache[0] || {}).id || null;
+  }
+  tabs.innerHTML = rolesCache.map((r) =>
+    `<button type="button" role="tab" data-role-id="${escapeHtml(r.id)}" aria-selected="${!creatingRole && r.id === selectedRoleId}">${escapeHtml(r.name)}<small>${r.userCount}</small></button>`,
+  ).join('') + (creatingRole ? '<button type="button" role="tab" aria-selected="true">New role</button>' : '');
+  renderRoleEditor();
+}
+
+function renderRoleEditor() {
+  const el = $('#roleEditor');
+  if (!el) return;
+  const role = creatingRole ? { id: null, name: '', description: '', locked: false, isOwner: false, permissions: [], userCount: 0 } : rolesCache.find((r) => r.id === selectedRoleId);
+  if (!role) { el.innerHTML = ''; return; }
+  const has = new Set(role.permissions);
+  const ro = role.locked;
+  let group = '';
+  const rows = catalog.resources.map((res) => {
+    let head = '';
+    if (res.group !== group) {
+      group = res.group;
+      head = `<tr class="grp"><td colspan="${ACTION_COLS.length + 1}">${escapeHtml(group)}</td></tr>`;
+    }
+    const cells = ACTION_COLS.map(([a]) => {
+      const key = actionKey(a);
+      if (!res.actions.includes(key)) return '<td class="c na" aria-label="Not applicable">—</td>';
+      const perm = `${res.key}:${key}`;
+      return `<td class="c"><input type="checkbox" data-role-perm="${escapeHtml(perm)}" aria-label="${escapeHtml(res.label)}: ${a}" ${has.has(perm) ? 'checked' : ''} ${ro ? 'disabled' : ''}></td>`;
+    }).join('');
+    return head + `<tr><td>${escapeHtml(res.label)}</td>${cells}</tr>`;
+  }).join('') + `<tr class="grp"><td colspan="${ACTION_COLS.length + 1}">Global Settings › Team &amp; access — Owner only</td></tr>`;
+  el.innerHTML =
+    (ro ? '<p class="role-note">The Owner role always has full access and cannot be edited.</p>' : '') +
+    `<div class="role-meta">
+      <div class="field"><label for="roleName">Role name</label><input id="roleName" value="${escapeHtml(role.name)}" ${ro ? 'disabled' : ''} maxlength="60"></div>
+      <div class="field"><label for="roleDesc">Description</label><input id="roleDesc" value="${escapeHtml(role.description || '')}" ${ro ? 'disabled' : ''} maxlength="200"></div>
+    </div>
+    <div class="role-grid-wrap"><table class="role-grid"><thead><tr><th>Screen</th>${ACTION_COLS.map(([, l]) => `<th class="c">${l}</th>`).join('')}</tr></thead><tbody>${rows}</tbody></table></div>` +
+    (ro ? '' : `<div class="role-actions">
+      ${creatingRole ? '<button class="tb-btn" type="button" id="roleCancelBtn">Cancel</button>' : `<button class="tb-btn danger" type="button" id="roleDeleteBtn" ${role.userCount ? `disabled title="Move its ${role.userCount} operator(s) to another role first"` : ''}>Delete role</button>`}
+      <button class="tb-btn primary" type="button" id="roleSaveBtn">${creatingRole ? 'Create role' : 'Save role'}</button></div>`);
+}
+
+function onRoleGridChange(e) {
+  const box = e.target.closest && e.target.closest('input[data-role-perm]');
+  if (!box) return;
+  const [res, action] = box.dataset.rolePerm.split(':');
+  const grid = $('#roleEditor');
+  const viewBox = grid.querySelector(`input[data-role-perm="${CSS.escape(res + ':view')}"]`);
+  // Any write needs View; removing View removes the writes too.
+  if (action !== 'view' && box.checked && viewBox) viewBox.checked = true;
+  if (action === 'view' && !box.checked) {
+    grid.querySelectorAll(`input[data-role-perm^="${CSS.escape(res + ':')}"]`).forEach((b) => { b.checked = false; });
+  }
+}
+
+async function saveRole() {
+  const name = $('#roleName')?.value.trim() || '';
+  if (!name) { showBanner('Give the role a name'); return; }
+  const permissions = [...document.querySelectorAll('#roleEditor input[data-role-perm]:checked')].map((b) => b.dataset.rolePerm);
+  const body = { name, description: $('#roleDesc')?.value.trim() || null, permissions };
+  try {
+    if (creatingRole) {
+      const r = await post('/roles', body);
+      creatingRole = false;
+      selectedRoleId = r.id;
+      showBanner(`Role ${r.name} created`, true);
+    } else {
+      await patch(`/roles/${encodeURIComponent(selectedRoleId)}`, body);
+      showBanner('Role saved. Operators on it see the change on their next action.', true);
+    }
+    await reloadTeam();
+  } catch (e) {
+    showBanner('Role: ' + describeError(e));
+  }
+}
+
+async function deleteSelectedRole() {
+  const role = rolesCache.find((r) => r.id === selectedRoleId);
+  if (!role) return;
+  const okConfirm = await confirmDialog({ title: `Delete the ${role.name} role?`, message: 'This cannot be undone.', confirmLabel: 'Delete role', danger: true });
+  if (!okConfirm) return;
+  try {
+    await del(`/roles/${encodeURIComponent(role.id)}`);
+    selectedRoleId = null;
+    showBanner(`Role ${role.name} deleted`, true);
+    await reloadTeam();
+  } catch (e) {
+    showBanner('Role: ' + describeError(e));
+  }
+}
+
+// ---- audit ----
+
+const AUDIT_LABEL = {
+  ROLE_CREATE: 'created role', ROLE_UPDATE: 'edited role', ROLE_DELETE: 'deleted role',
+  USER_CREATE: 'added operator', USER_UPDATE: 'updated operator', USER_DELETE: 'removed operator', USER_ACCESS: 'changed facilities for',
+};
+
+function auditTarget(a) {
+  const pick = (o) => (o && (o.name || o.email)) || '';
+  if (a.targetType === 'ROLE') return pick(a.after) || pick(a.before);
+  const u = usersCache.find((x) => x.id === a.targetId);
+  return (u && u.email) || pick(a.after) || pick(a.before) || 'an operator';
+}
+
+function auditDetail(a) {
+  const b = a.before || {};
+  const n = a.after || {};
+  if (a.action === 'USER_UPDATE' && b.role !== n.role) return `role ${b.role} → ${n.role}`;
+  if (a.action === 'USER_UPDATE' && n.passwordReset) return 'password reset';
+  if (a.action === 'USER_UPDATE' && n.unlocked) return 'unlocked';
+  if (a.action === 'USER_ACCESS') return `${(b.facilities || []).join(', ') || 'all'} → ${(n.facilities || []).join(', ') || 'all'}`;
+  if (a.action === 'ROLE_UPDATE') {
+    const was = new Set(b.permissions || []);
+    const now = new Set(n.permissions || []);
+    const added = [...now].filter((p) => !was.has(p)).length;
+    const removed = [...was].filter((p) => !now.has(p)).length;
+    return added || removed ? `+${added} / −${removed} permissions` : 'name or description';
+  }
+  return '';
+}
+
+async function bindAudit() {
+  const body = $('#auditBody');
+  if (!body) return;
+  const rows = (await get('/permission-audit?limit=20')) || [];
+  body.innerHTML = rows.length ? rows.map((a) => {
+    const when = new Date(a.createdAt).toLocaleString('en-SG', { dateStyle: 'medium', timeStyle: 'short' });
+    const detail = auditDetail(a);
+    return `<tr><td class="t-type">${escapeHtml(when)}</td><td>${escapeHtml(a.actorEmail || 'system')}</td>` +
+      `<td>${escapeHtml(AUDIT_LABEL[a.action] || a.action)} <b>${escapeHtml(auditTarget(a))}</b>${detail ? ` <span class="t-type">· ${escapeHtml(detail)}</span>` : ''}</td></tr>`;
+  }).join('') : '<tr><td colspan="3"><div class="section-empty">No permission changes yet.</div></td></tr>';
 }
 
 let settingsExtWired = false;
@@ -374,29 +536,56 @@ export function wireSettingsExt() {
     markRulesDirty();
   });
   $('#businessRulesSaveBtn')?.addEventListener('click', () => saveBusinessRules().catch(() => {}));
-  // Users section.
+  // Team & access (Owner only).
   $('#uf-add')?.addEventListener('click', () => submitUserForm().catch(() => {}));
+  $('#usersBody')?.addEventListener('change', (e) => {
+    const sel = e.target.closest && e.target.closest('select[data-u-role]');
+    if (!sel) return;
+    const role = rolesCache.find((r) => r.id === sel.value);
+    patchUser(sel.dataset.uRole, { roleId: sel.value }, `Role changed to ${role ? role.name : 'the new role'}`).catch(() => {});
+  });
   $('#usersBody')?.addEventListener('click', async (e) => {
     const act = e.target.closest('button[data-u-act]');
     if (act) {
-      if (act.dataset.uAct === 'access') toggleAccessEditor(act.dataset.uId).catch(() => {});
-      else if (act.dataset.uAct === 'perms') togglePermsEditor(act.dataset.uId).catch(() => {});
+      const id = act.dataset.uId;
+      const u = usersCache.find((x) => x.id === id);
+      if (act.dataset.uAct === 'access') toggleAccessEditor(id);
+      else if (act.dataset.uAct === 'password') togglePasswordEditor(id);
+      else if (act.dataset.uAct === 'unlock') patchUser(id, { unlock: true }, `${u ? u.email : 'Operator'} unlocked`).catch(() => {});
       else if (act.dataset.uAct === 'delete') {
-        const okConfirm = await confirmDialog({ title: 'Delete operator?', message: 'Their access and grants are removed.', confirmLabel: 'Delete', danger: true });
+        const okConfirm = await confirmDialog({ title: `Remove ${u ? u.email : 'this operator'}?`, message: 'They are signed out and can no longer sign in.', confirmLabel: 'Remove', danger: true });
         if (!okConfirm) return;
         try {
-          await del('/users/' + encodeURIComponent(act.dataset.uId));
-          usersCache = (await get('/users')) || [];
-          renderUsers();
+          await del('/users/' + encodeURIComponent(id));
+          showBanner('Operator removed', true);
+          await reloadTeam();
         } catch (err) {
-          showBanner('User: ' + describeError(err));
+          showBanner('Operator: ' + describeError(err));
         }
       }
       return;
     }
     const saveAcc = e.target.closest('button[data-u-save-access]');
     if (saveAcc) { saveAccess(saveAcc.dataset.uSaveAccess).catch(() => {}); return; }
-    const savePerms = e.target.closest('button[data-u-save-perms]');
-    if (savePerms) savePerms(savePerms.dataset.uSavePerms).catch(() => {});
+    const savePw = e.target.closest('button[data-u-save-password]');
+    if (savePw) {
+      const pw = editorRow(savePw.dataset.uSavePassword)?.querySelector('[data-u-newpw]')?.value || '';
+      if (pw.length < 8) { showBanner('Use at least 8 characters'); return; }
+      patchUser(savePw.dataset.uSavePassword, { password: pw }, 'Password set. They have been signed out.').catch(() => {});
+    }
+  });
+  $('#roleTabs')?.addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-role-id]');
+    if (!b) return;
+    creatingRole = false;
+    selectedRoleId = b.dataset.roleId;
+    renderRoles();
+  });
+  $('#roleNewBtn')?.addEventListener('click', () => { creatingRole = true; renderRoles(); $('#roleName')?.focus(); });
+  $('#roleEditor')?.addEventListener('change', onRoleGridChange);
+  $('#roleEditor')?.addEventListener('click', (e) => {
+    if (e.target.closest('#roleSaveBtn')) saveRole().catch(() => {});
+    else if (e.target.closest('#roleDeleteBtn')) deleteSelectedRole().catch(() => {});
+    else if (e.target.closest('#roleCancelBtn')) { creatingRole = false; renderRoles(); }
   });
 }

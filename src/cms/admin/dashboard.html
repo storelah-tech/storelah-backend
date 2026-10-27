@@ -964,9 +964,79 @@ body.lead-drawer-open{overflow-x:hidden}
 ::-webkit-scrollbar{width:4px;height:4px}
 ::-webkit-scrollbar-track{background:transparent}
 ::-webkit-scrollbar-thumb{background:var(--line);border-radius:2px}
+.team-add{margin-top:10px;flex-wrap:wrap;gap:8px}
+.team-add .tbl-search{max-width:210px}
+.role-tabs{display:flex;flex-wrap:wrap;gap:6px;margin:4px 0 14px}
+.role-tabs button{border:1.5px solid var(--line);background:var(--white);border-radius:9px;padding:7px 12px;font:700 12px Manrope,system-ui,sans-serif;color:var(--ink);cursor:pointer}
+.role-tabs button[aria-selected="true"]{border-color:var(--olive);background:var(--sage);color:var(--olive)}
+.role-tabs button small{font-weight:600;color:var(--muted);margin-left:5px}
+.role-meta{display:grid;grid-template-columns:minmax(0,220px) minmax(0,1fr);gap:10px;margin-bottom:12px}
+@media (max-width:760px){.role-meta{grid-template-columns:minmax(0,1fr)}}
+.role-grid-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:12px}
+.role-grid{width:100%;min-width:560px;border-collapse:collapse;font-size:12.5px}
+.role-grid th,.role-grid td{padding:7px 10px;border-bottom:1px solid var(--line);text-align:left}
+.role-grid th.c,.role-grid td.c{text-align:center;width:72px}
+.role-grid thead th{font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);background:var(--paper)}
+.role-grid tr.grp td{background:var(--cream);font-weight:800;font-size:11.5px}
+.role-grid td.na{color:var(--line)}
+.role-grid input[type=checkbox]{width:16px;height:16px;accent-color:var(--olive);cursor:pointer}
+.role-actions{display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end;margin-top:12px}
+.role-note{color:var(--muted);font-size:12px;margin:0 0 10px}
+/* ---- CMS RBAC: sign-in screen, user menu, permission hiding ---- */
+body.auth-pending .app{visibility:hidden}
+.signin[hidden]{display:none}
+.signin{position:fixed;inset:0;z-index:200;display:grid;place-items:center;padding:24px 16px;background:var(--olive);overflow:auto}
+.signin-card{width:min(400px,100%);background:var(--paper);border-radius:18px;padding:30px 28px;box-shadow:0 30px 80px #0005;display:grid;gap:14px}
+.signin-brand{font-size:22px;font-weight:800;letter-spacing:-.02em;color:var(--olive)}
+.signin-card h1{margin:0;font-size:17px;font-weight:700;color:var(--ink)}
+.signin-card .field input{font-weight:600;font-size:14px;padding:10px 12px}
+.signin-card .primary{padding:12px 15px;font-size:14px;cursor:pointer}
+.signin-card .primary:disabled{opacity:.6;cursor:progress}
+.signin-card small{color:var(--muted);font-size:12px}
+.signin-note{margin:0;padding:10px 12px;border-radius:10px;background:var(--sage);color:var(--olive);font-size:13px;font-weight:600}
+.signin-error,.pw-error{margin:0;padding:10px 12px;border-radius:10px;background:#f7e1dd;color:#8f2f26;font-size:13px;font-weight:600}
+.user-actions{display:flex;gap:6px;padding:0 9px 6px}
+.user-actions button{flex:1;border:1px solid rgba(255,255,255,.22);background:transparent;color:inherit;border-radius:8px;padding:6px 8px;font:600 11.5px Manrope,system-ui,sans-serif;cursor:pointer}
+.user-actions button:hover{background:rgba(255,255,255,.1)}
+.user-actions button:focus-visible,.signin-card input:focus-visible,.signin-card button:focus-visible{outline:2px solid var(--amber);outline-offset:2px}
+.perm-hidden{display:none!important}
+.pw-card{width:min(420px,94vw)}
+.pw-card section{display:grid;gap:12px}
+.pw-card footer{display:flex;justify-content:flex-end;gap:8px;padding:0 20px 20px}
+@media (max-width:760px){ body.sb-collapsed:not(.sb-hover) .side .user-actions{display:flex} }
+@media (min-width:761px){ body.sb-collapsed:not(.sb-hover) .side .user-actions{display:none} }
 </style>
 </head>
-<body>
+<body class="auth-pending">
+
+<!-- SIGN-IN (CMS RBAC: real operator accounts; replaces the old auto-login) -->
+<div class="signin" id="signin" hidden>
+  <form class="signin-card" id="signinForm" novalidate>
+    <div class="signin-brand">StoreLah</div>
+    <h1>Sign in to the operator CMS</h1>
+    <p class="signin-note" id="signinNote" hidden></p>
+    <div class="field"><label for="signinEmail">Email</label><input id="signinEmail" name="email" type="email" autocomplete="username" required></div>
+    <div class="field"><label for="signinPassword">Password</label><input id="signinPassword" name="password" type="password" autocomplete="current-password" required></div>
+    <p class="signin-error" id="signinError" role="alert" hidden></p>
+    <button class="primary" type="submit" id="signinSubmit">Sign in</button>
+    <small>Forgot your password? Ask an Owner to reset it in Global Settings › Team &amp; access.</small>
+  </form>
+</div>
+
+<!-- CHANGE OWN PASSWORD -->
+<div class="modal" id="pwModal" aria-hidden="true">
+  <div class="overlay" data-close-pw></div>
+  <form class="modal-card pw-card" id="pwForm" novalidate role="dialog" aria-modal="true" aria-labelledby="pwTitle">
+    <header><div><h2 id="pwTitle">Change password</h2><small>Other devices will be signed out.</small></div><button class="iconbtn" type="button" data-close-pw aria-label="Close">×</button></header>
+    <section>
+      <div class="field"><label for="pwCurrent">Current password</label><input id="pwCurrent" type="password" autocomplete="current-password" required></div>
+      <div class="field"><label for="pwNew">New password</label><input id="pwNew" type="password" autocomplete="new-password" minlength="8" required></div>
+      <div class="field"><label for="pwConfirm">Repeat new password</label><input id="pwConfirm" type="password" autocomplete="new-password" minlength="8" required></div>
+      <p class="pw-error" id="pwError" role="alert" hidden></p>
+    </section>
+    <footer><button class="btn" type="button" data-close-pw>Cancel</button><button class="primary" type="submit" id="pwSubmit">Change password</button></footer>
+  </form>
+</div>
 
 <!-- MOBILE BACKDROP -->
 <div class="sb-backdrop" id="sbBackdrop" aria-hidden="true"></div>
@@ -992,7 +1062,7 @@ body.lead-drawer-open{overflow-x:hidden}
   <button class="nav" data-core-page="billing"><svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="14" height="9" rx="1.5"/><circle cx="9" cy="9.5" r="2"/><path d="M5.5 7.2v.01M12.5 11.8v.01"/></svg> <span>Finance</span></button>
   <button class="nav" data-core-page="content"><svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="14" height="14" rx="2"/><path d="M2 6.5h14M6.5 6.5V16"/></svg> <span>Content</span></button>
   <button class="nav" data-core-page="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg> <span>Global Settings</span></button>
-  <div class="side-foot"><div class="user"><div class="avatar" id="userAvatar">FZ</div><div><b id="userName">Faisal</b><br><small id="userRole">Administrator</small></div></div></div>
+  <div class="side-foot"><div class="user"><div class="avatar" id="userAvatar">··</div><div><b id="userName">Signed out</b><br><small id="userRole"></small></div></div><div class="user-actions"><button type="button" id="changePwBtn">Change password</button><button type="button" id="signOutBtn">Sign out</button></div></div>
 </aside>
 
 <main>
@@ -1866,7 +1936,7 @@ body.lead-drawer-open{overflow-x:hidden}
          number/text/select controls. Rows are rendered by bindSettings()
          (admin.js) from GET /settings; the Save bar PUTs the diff. -->
     <section class="page" id="settings">
-      <div class="head"><div><h1>Global Settings</h1><p>Business rules, fees, alerts and platform-wide policies. General cards save via the header button; every other tab saves separately.</p></div><div class="actions"><span class="dirty-dot" id="settingsDirty"><i></i>Unsaved general changes</span><button class="primary" id="settingsSaveBtn" disabled>Save general settings</button></div></div>
+      <div class="head"><div><h1>Global Settings</h1><p>Business rules, fees, alerts and platform-wide policies. General cards save via the header button; every other tab saves separately.</p></div><div class="actions"><span class="dirty-dot" id="settingsDirty" data-perm="settings-general:update"><i></i>Unsaved general changes</span><button class="primary" id="settingsSaveBtn" data-perm="settings-general:update" disabled>Save general settings</button></div></div>
       <div class="modal-alert" id="settingsBanner" hidden></div>
       <div class="subtabs" data-tabs="settings"><button class="active" data-tab="settings-general">General</button><button data-tab="settings-booking">Booking &amp; billing</button><button data-tab="settings-fees">Fees &amp; deposits</button><button data-tab="settings-team">Team &amp; access</button><button data-tab="settings-facilities">Facilities</button></div>
       <div class="module-panel active" id="settings-general">
@@ -1910,18 +1980,28 @@ body.lead-drawer-open{overflow-x:hidden}
           </div>
         </div>
       </div>
+      <!-- Team & access (CMS RBAC; Owner only): operators, editable roles
+           (sidebar × View/Create/Edit/Delete/Approve), recent permission changes. -->
       <div class="module-panel" id="settings-team">
         <div class="tbl-card" id="usersSection">
-          <div class="sec-hdr"><div><div class="sec-title">Users &amp; roles</div><div class="sec-sub">Facility scoping + verified grants · empty grants = legacy role behavior · saves immediately — header Save does not apply here</div></div></div>
-          <table class="data-tbl" id="usersTable"><thead><tr><th>Operator</th><th>Facilities</th><th>Grants</th><th></th></tr></thead><tbody id="usersBody"></tbody></table>
-          <div class="tbl-toolbar" style="margin-top:10px;flex-wrap:wrap;">
-            <input type="email" id="uf-email" class="tbl-search" placeholder="Email" style="max-width:200px;">
-            <input type="text" id="uf-name" class="tbl-search" placeholder="Name" style="max-width:150px;">
-            <input type="password" id="uf-password" class="tbl-search" placeholder="Password (8+ chars)" style="max-width:150px;">
-            <select id="uf-role" class="tbl-select"><option value="MANAGER">Manager</option><option value="OWNER">Owner</option><option value="VIEWER">Viewer</option></select>
-            <button class="tb-btn primary" id="uf-add">+ Add operator</button>
+          <div class="sec-hdr"><div><div class="sec-title">Operators</div><div class="sec-sub">Role decides what each person sees and can change · facilities limit which sites · saves immediately — header Save does not apply here</div></div></div>
+          <table class="data-tbl" id="usersTable"><thead><tr><th>Operator</th><th>Role</th><th>Facilities</th><th></th></tr></thead><tbody id="usersBody"></tbody></table>
+          <div class="tbl-toolbar team-add">
+            <input type="email" id="uf-email" class="tbl-search" placeholder="Email" aria-label="New operator email" autocomplete="off">
+            <input type="text" id="uf-name" class="tbl-search" placeholder="Name" aria-label="New operator name" autocomplete="off">
+            <input type="password" id="uf-password" class="tbl-search" placeholder="Temporary password (8+ characters)" aria-label="Temporary password" autocomplete="new-password">
+            <select id="uf-role" class="tbl-select" aria-label="Role"></select>
+            <button class="tb-btn primary" id="uf-add" type="button">+ Add operator</button>
           </div>
-          <div class="t-type" style="padding:8px 2px;" id="usersNote">Facility access editor: pick branches or All facilities per operator. Grants gate go-live approvals, fee/rule writes and user admin — only for operators that hold at least one grant.</div>
+        </div>
+        <div class="tbl-card" id="rolesSection" style="margin-top:16px;">
+          <div class="sec-hdr"><div><div class="sec-title">Roles</div><div class="sec-sub">Pick a role to see and edit what it can do on each screen · Owner always has full access</div></div><div><button class="tb-btn primary" id="roleNewBtn" type="button">+ New role</button></div></div>
+          <div class="role-tabs" id="roleTabs" role="tablist" aria-label="Roles"></div>
+          <div class="role-editor" id="roleEditor"></div>
+        </div>
+        <div class="tbl-card" id="auditSection" style="margin-top:16px;">
+          <div class="sec-hdr"><div><div class="sec-title">Recent permission changes</div><div class="sec-sub">Role edits, role assignments, facility access, operators added or removed</div></div></div>
+          <table class="data-tbl"><thead><tr><th>When</th><th>Who</th><th>Change</th></tr></thead><tbody id="auditBody"></tbody></table>
         </div>
       </div>
       <!-- Facilities (branches): list, create, edit, activate/deactivate.

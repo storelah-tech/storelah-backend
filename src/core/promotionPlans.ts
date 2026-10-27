@@ -515,10 +515,9 @@ export function planCoversFloor(rules: ReadonlyArray<{ field: string; operator: 
 // - VALIDATED → SCHEDULED, SCHEDULED → ACTIVE: no extra data checks; the
 //   operator performing the step is recorded on the version row (changedBy) and
 //   an optional approverRole label (e.g. "MANAGER", "COMMERCIAL") is stored in
-//   the version snapshot for audit. P1 item 6 adds a GATED verified check:
-//   actors that hold any Permission row must also hold 'promotions.approve'
-//   for these go-live edges (see the requirePermission call below); actors
-//   without rows keep the legacy label-only behavior.
+//   the version snapshot for audit. These go-live edges also require the
+//   'promo-library:approve' role permission (CMS RBAC; see the
+//   requirePermission call below).
 // - SCHEDULED → ENDED and ACTIVE → ENDED: early termination.
 // - VALIDATED → DRAFT and SCHEDULED → DRAFT: safe rollback for rework.
 // - ACTIVE → DRAFT = "Disable" (owner decision 2026-10-18): a live plan is
@@ -563,14 +562,12 @@ export async function setPlanStatus(
     );
   }
 
-  // P1 item 6 (gated): go-live transitions (→ SCHEDULED / → ACTIVE) require
-  // the verified 'promotions.approve' permission — but ONLY for actors that
-  // have permission rows at all. Actors without rows keep the legacy behavior
-  // (free-text approverRole label, no check), so existing auth flows never
-  // break. Import is lazy to avoid a core/users ⇄ core/promotionPlans cycle.
+  // Go-live transitions (→ SCHEDULED / → ACTIVE) require the
+  // 'promo-library:approve' role permission (CMS RBAC). Import is lazy to
+  // avoid a core/users ⇄ core/promotionPlans cycle.
   if ((status === 'SCHEDULED' || status === 'ACTIVE') && opts?.actorId) {
     const { requirePermission } = await import('./users');
-    await requirePermission(opts.actorId, 'promotions.approve');
+    await requirePermission(opts.actorId, 'promo-library:approve');
   }
 
   // Gate: scheduling-line transitions require a clean validation.

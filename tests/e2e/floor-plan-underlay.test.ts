@@ -1,15 +1,15 @@
 // Floor-plan tracing underlay (precision Phase 5): CMS-only image stored in
 // Postgres, served behind requireAuth, never in the public read.
 import { beforeEach, describe, expect, it } from 'vitest';
-import { PIN, api, prisma, resetDb, seedMoveInWorld, type MoveInWorld } from './fixtures';
-import { signToken } from '../../src/middleware/auth';
+import { PIN, api, createOperator, prisma, resetDb, seedMoveInWorld, type MoveInWorld } from './fixtures';
 import { publishFloorPlan } from '../../src/core/floorPlans';
 import { UNDERLAY_MAX_BYTES, setUnderlay } from '../../src/core/floorPlanUnderlay';
 import { calibrateUnderlay, underlayFtToPx, underlayPxToFt } from '../../src/core/planGeometry';
 
 // 1×1 PNG.
 const PNG_1PX = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=', 'base64');
-const auth = () => `Bearer ${signToken({ id: 'e2e-admin', email: 'e2e@test.local', name: 'E2E' })}`;
+let ownerAuth = '';
+const auth = () => ownerAuth;
 
 // A syntactically-PNG buffer of `size` bytes (header + padding) — enough for the sniff + size rules.
 function pngOfSize(size: number): Buffer {
@@ -48,6 +48,7 @@ describe('floor-plan underlay', () => {
   beforeEach(async () => {
     await resetDb();
     world = await seedMoveInWorld();
+    ownerAuth = (await createOperator('OWNER')).auth;
   });
 
   it('uploads over HTTP (≈600 KB body), reads back meta + image, and stays out of the public read', async () => {

@@ -2,7 +2,8 @@
 // Talks to /api/v1/cms endpoints. Preserves all unit/tenant/booking/floorplan views.
 import { ALL_FACILITIES } from './constants.js';
 import { $, $$, escapeHtml, timeAgo, showBanner, initSelectAll, resetSelectAll } from './dom.js';
-import { login, get, post, put, patch, del, describeError, getCurrentUser } from './api.js';
+import { get, post, put, patch, del, describeError, getCurrentUser, restoreSession, signIn, signOut, setAuthLostHandler, changePassword } from './api.js';
+import { applySidebar, applyUser, pageAllowed, firstAllowedPage, canView, watchActions, guardHiddenClicks } from './access.js';
 import { confirmDialog } from './confirmDialog.js';
 import { state, ensureActiveLevel, isAllFacilities } from './state.js';
 import { createDateFilter, withDateQuery, isRangeActive, rangeLabel, rangeEmptyText } from './dateFilter.js';
@@ -122,6 +123,12 @@ function closeAllViews() {
 }
 
 function openPage(id) {
+  // Role permissions: never open a page the operator cannot view.
+  if (!pageAllowed(id)) {
+    const fallback = firstAllowedPage();
+    if (!fallback || fallback === id) { showNoAccess(); return; }
+    id = fallback;
+  }
   closeAllViews();
   const core = coreMap[id] || id;
   document.body.classList.toggle('lead-context', core === 'leads');
@@ -163,7 +170,7 @@ function openPage(id) {
   else if (id === 'analytics') bindAnalytics();
   else if (id === 'automation') bindAutomation();
   else if (id === 'customers') {
-    const firstTab = document.querySelector('[data-tabs="customer"] button');
+    const firstTab = document.querySelector('[data-tabs="customer"] button:not(.perm-hidden)');
     if (firstTab) firstTab.click();
   }
   else if (id === 'promotions') { bootPromotions(); bindPromotionsOverview(); }
@@ -172,28 +179,32 @@ function openPage(id) {
     bindSettings();
     // closeAllViews() strips .active from every .module-panel, so restore the
     // settings tab (keeps the operator's selected tab across page visits).
-    const tab = document.querySelector('[data-tabs="settings"] [data-tab].active') ||
-      document.querySelector('[data-tabs="settings"] [data-tab]');
+    const tab = document.querySelector('[data-tabs="settings"] [data-tab].active:not(.perm-hidden)') ||
+      document.querySelector('[data-tabs="settings"] [data-tab]:not(.perm-hidden)');
     if (tab) tab.click();
   }
   else if (id === 'facilities') {
     syncFacilityDashboard();
     updateFacilityBadge().catch(() => {});
     // Activate first facility tab
-    const firstTab = document.querySelector('[data-tabs="facility"] button');
+    const firstTab = document.querySelector('[data-tabs="facility"] button:not(.perm-hidden)');
     if (firstTab) firstTab.click();
   }
   else if (id === 'extras') {
-    const firstTab = document.querySelector('[data-tabs="extras"] button');
+    const firstTab = document.querySelector('[data-tabs="extras"] button:not(.perm-hidden)');
     if (firstTab) firstTab.click();
   }
   else if (id === 'content') {
-    const firstTab = document.querySelector('[data-tabs="content"] button');
+    const firstTab = document.querySelector('[data-tabs="content"] button:not(.perm-hidden)');
     if (firstTab) firstTab.click();
   }
 }
 
 function openPanel(page, panel) {
+  if (panel && !canView(panel) && document.getElementById(panel)?.closest('.page')?.querySelector('[data-tab="' + panel + '"]')) {
+    toast('You don\'t have access to that screen.');
+    return;
+  }
   openPage(page);
   setTimeout(() => {
     const tab = document.querySelector('[data-tab="' + panel + '"],[data-settings-tab="' + panel + '"]');
@@ -211,7 +222,7 @@ function openPanel(page, panel) {
 }
 
 function openCoreDefault(core) {
-  const first = document.querySelector('[data-side-menu="' + core + '"] .nav-subitem');
+  const first = document.querySelector('[data-side-menu="' + core + '"] .nav-subitem:not(.perm-hidden)');
   if (!first) { openPage(core); return; }
   const sp = first.dataset.sidePage;
   if (first.dataset.sidePanel) openPanel(sp, first.dataset.sidePanel);
@@ -1928,10 +1939,11 @@ async function bindSettings() {
     grid.innerHTML = '<div class="card"><div class="card-body"><div class="section-empty">Settings failed to load: ' + escapeHtml(describeError(e)) + '</div></div></div>';
   }
   // P1 settings extensions (independent sections — failures never break scalars).
-  bindBranchesSection().catch((e) => showBanner('Facilities: ' + describeError(e)));
-  bindFeesSection().catch((e) => showBanner('Fees: ' + describeError(e)));
-  bindBusinessRulesSection().catch((e) => showBanner('Business rules: ' + describeError(e)));
-  bindUsersSection().catch((e) => showBanner('Users: ' + describeError(e)));
+  // Each loads only when the operator's role can view that tab.
+  if (canView('settings-facilities')) bindBranchesSection().catch((e) => showBanner('Facilities: ' + describeError(e)));
+  if (canView('settings-fees')) bindFeesSection().catch((e) => showBanner('Fees: ' + describeError(e)));
+  if (canView('settings-booking') || canView('settings-general')) bindBusinessRulesSection().catch((e) => showBanner('Business rules: ' + describeError(e)));
+  if (canView('settings-team')) bindUsersSection().catch((e) => showBanner('Team: ' + describeError(e)));
   // Booking extras catalog lives under Protection & Addons (#extras).
   // Drop any legacy mount under Settings so the page stays clean.
   document.querySelector('#settings #extrasSection')?.remove();
@@ -4541,6 +4553,95 @@ async function refreshUnitsView() {
   await Promise.all([fetchUnitsPage().catch(() => {}), fetchUnitMap().catch(() => {})]);
 }
 
+// ====================== SIGN-IN (CMS RBAC) ======================
+// Real operator accounts replace the old /config auto-login. The app stays
+// hidden (body.auth-pending) until a session is restored or signed in.
+function showSignIn(note) {
+  const screen = $('#signin');
+  const form = $('#signinForm');
+  const err = $('#signinError');
+  const noteEl = $('#signinNote');
+  document.body.classList.add('auth-pending');
+  screen.hidden = false;
+  noteEl.hidden = !note;
+  noteEl.textContent = note || '';
+  err.hidden = true;
+  setTimeout(() => $('#signinEmail').focus(), 0);
+  return new Promise((resolve) => {
+    form.onsubmit = async (e) => {
+      e.preventDefault();
+      const email = $('#signinEmail').value.trim();
+      const password = $('#signinPassword').value;
+      if (!email || !password) {
+        err.textContent = 'Enter your email and password.';
+        err.hidden = false;
+        return;
+      }
+      const btn = $('#signinSubmit');
+      btn.disabled = true;
+      btn.textContent = 'Signing in…';
+      try {
+        await signIn(email, password);
+        $('#signinPassword').value = '';
+        screen.hidden = true;
+        document.body.classList.remove('auth-pending');
+        resolve();
+      } catch (ex) {
+        err.textContent = describeError(ex);
+        err.hidden = false;
+        $('#signinPassword').select();
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Sign in';
+      }
+    };
+  });
+}
+
+function showNoAccess() {
+  closeAllViews();
+  showBanner('Your role has no screens yet. Ask an Owner to update it in Global Settings › Team & access.');
+}
+
+function wireAccount() {
+  $('#signOutBtn')?.addEventListener('click', () => {
+    signOut();
+    location.hash = '';
+    location.reload();
+  });
+  const modal = $('#pwModal');
+  const err = $('#pwError');
+  const close = () => { modal.classList.remove('open'); modal.setAttribute('aria-hidden', 'true'); };
+  $('#changePwBtn')?.addEventListener('click', () => {
+    $('#pwForm').reset();
+    err.hidden = true;
+    modal.classList.add('open');
+    modal.setAttribute('aria-hidden', 'false');
+    setTimeout(() => $('#pwCurrent').focus(), 0);
+  });
+  modal.querySelectorAll('[data-close-pw]').forEach((b) => b.addEventListener('click', close));
+  modal.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
+  $('#pwForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const current = $('#pwCurrent').value;
+    const next = $('#pwNew').value;
+    const fail = (msg) => { err.textContent = msg; err.hidden = false; };
+    if (next.length < 8) return fail('Use at least 8 characters for the new password.');
+    if (next !== $('#pwConfirm').value) return fail('The new passwords do not match.');
+    const btn = $('#pwSubmit');
+    btn.disabled = true;
+    try {
+      await changePassword(current, next);
+      close();
+      toast('Password changed. Other devices are signed out.');
+    } catch (ex) {
+      fail(describeError(ex));
+    } finally {
+      btn.disabled = false;
+    }
+  });
+}
+
 // ====================== BOOT ======================
 async function boot() {
   try {
@@ -4554,7 +4655,20 @@ async function boot() {
     branchesSetRefsLoader(loadRefs);
     wireFloorsView();
     wireBranchesView();
-    await login();
+    wireAccount();
+    guardHiddenClicks(() => toast('You don\'t have access to that screen.'));
+    // A session that ends mid-use (expired, password changed elsewhere,
+    // account removed) returns to the sign-in screen; after signing back in
+    // the page reloads so every view matches the (possibly different) role.
+    setAuthLostHandler((msg) => {
+      if (!$('#signin').hidden) return; // several calls can 401 at once
+      showSignIn(msg).then(() => location.reload());
+    });
+    if (!(await restoreSession())) await showSignIn();
+    document.body.classList.remove('auth-pending');
+    applyUser();
+    applySidebar();
+    watchActions();
     initCharts();
     await Promise.all([loadRefs(), refreshAll()]);
     // Navigate to initial page from hash (unknown hashes fall back to command,

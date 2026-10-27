@@ -4,33 +4,116 @@
 // auth headers, envelope parsing ({data, meta}) and error shaping stay uniform.
 
 const API = '/api/v1/cms';
-let token = null;
+// Operator session (CMS RBAC). The JWT survives reloads in localStorage; the
+// legacy /dashboard.html data layer reads the same key.
+const TOKEN_KEY = 'storelah.cms.token';
+let token = readToken();
 let currentUser = null;
+let me = null; // GET /me: { user, role, isOwner, permissions, branchIds }
+let onAuthLost = null;
+
+function readToken() {
+  try { return localStorage.getItem(TOKEN_KEY); } catch (e) { return null; }
+}
+function writeToken(t) {
+  token = t;
+  try {
+    if (t) localStorage.setItem(TOKEN_KEY, t);
+    else localStorage.removeItem(TOKEN_KEY);
+  } catch (e) { /* storage blocked: session lasts for this page only */ }
+}
 
 // Auth-readiness gate: request() must never emit `Authorization: Bearer null`.
-// wireEvents() registers nav/click handlers synchronously while login() is
-// still in flight, so any bind* triggered before login settles (a pre-login
-// click, a boot reorder, a hash-restored openPage) would otherwise fire
-// without a token and 401. When no token is held yet, request() waits for the
-// boot login to settle instead of firing blind: success → the call proceeds
-// with the fresh token; failure → a clear AUTH error instead of a confusing
-// 401. This covers every data-binding (bindInbox, bindLeadTable,
-// bindPipeline, bindCalendar, refreshAll, …) with no per-call-site changes.
-// login()/getCreds() use raw fetch (never request()), so the gate cannot
-// deadlock itself.
+// wireEvents() registers nav/click handlers synchronously while sign-in is
+// still pending, so any bind* triggered before then waits here instead of
+// firing blind: once the operator signs in the call proceeds with the fresh
+// token. A 401 mid-session re-arms the gate (see request()).
 let authResolve;
-let authReject;
-let authSettled = new Promise((resolve, reject) => {
-  authResolve = resolve;
-  authReject = reject;
-});
+let authSettled;
+function armAuthGate() {
+  authSettled = new Promise((resolve) => { authResolve = resolve; });
+}
+armAuthGate();
 
 export function getCurrentUser() {
   return currentUser;
 }
 
+export function getMe() {
+  return me;
+}
+
 export function isAuthed() {
   return !!token;
+}
+
+/** Called with the server message whenever the session ends (401). */
+export function setAuthLostHandler(fn) {
+  onAuthLost = fn;
+}
+
+async function fetchMe() {
+  const res = await fetch(`${API}/me`, { headers: { Authorization: `Bearer ${token}` } });
+  if (!res.ok) return null;
+  return (await res.json()).data;
+}
+
+function settle(data) {
+  me = data;
+  currentUser = { email: data.user.email, name: data.user.name, role: data.role.key, roleName: data.role.name };
+  authResolve();
+}
+
+/** Resumes a stored session. Resolves true when it is still valid. */
+export async function restoreSession() {
+  if (!token) return false;
+  let data = null;
+  try { data = await fetchMe(); } catch (e) { return false; }
+  if (!data) { writeToken(null); return false; }
+  settle(data);
+  return true;
+}
+
+/** Signs in; throws ApiError with the server's message on failure. */
+export async function signIn(email, password) {
+  let res;
+  try {
+    res = await fetch(`${API}/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password }),
+    });
+  } catch (e) {
+    throw new ApiError(0, 'NETWORK', 'Network error — is the backend up?');
+  }
+  const body = await res.json().catch(() => null);
+  if (!res.ok) {
+    const e = body && body.error;
+    throw new ApiError(res.status, (e && e.code) || 'HTTP', (e && e.message) || `Sign-in failed (${res.status})`, e && e.details);
+  }
+  writeToken(body.data.token);
+  const data = await fetchMe();
+  if (!data) throw new ApiError(401, 'UNAUTHORIZED', 'Sign-in failed. Try again.');
+  settle(data);
+}
+
+export function signOut() {
+  writeToken(null);
+  me = null;
+  currentUser = null;
+  armAuthGate();
+}
+
+/** Changes the signed-in operator's password and keeps this session. */
+export async function changePassword(currentPassword, newPassword) {
+  const data = await post('/me/password', { currentPassword, newPassword });
+  writeToken(data.token);
+}
+
+/** True when the signed-in operator holds `perm` (`resource:action`). */
+export function can(perm) {
+  if (!me) return false;
+  return me.isOwner || me.permissions.includes(perm);
 }
 
 export class ApiError extends Error {
@@ -42,51 +125,10 @@ export class ApiError extends Error {
   }
 }
 
-// ---------- auth (mirrors frozen data-layer.js; never prints credentials) ----------
-
-async function getCreds() {
-  const res = await fetch(`${API}/config`);
-  if (!res.ok) throw new Error('admin credentials not configured (set STORELAH_ADMIN_*)');
-  return res.json();
-}
-
-export async function login() {
-  // Reset the gate so a retried login (after a previous failure) re-arms it.
-  authSettled = new Promise((resolve, reject) => {
-    authResolve = resolve;
-    authReject = reject;
-  });
-  try {
-    const CREDS = await getCreds();
-    const res = await fetch(`${API}/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(CREDS),
-    });
-    if (!res.ok) throw new Error('login failed');
-    const body = await res.json();
-    token = body.data.token;
-    currentUser = body.data.user || null;
-    authResolve();
-  } catch (e) {
-    authReject(e);
-    throw e;
-  }
-}
-
 // ---------- http ----------
 
 export async function request(path, opts = {}) {
-  if (!token) {
-    try {
-      await authSettled;
-    } catch (e) {
-      throw new ApiError(0, 'AUTH', 'Not authenticated — login failed. Reload to retry.');
-    }
-    if (!token) {
-      throw new ApiError(0, 'AUTH', 'Not authenticated — no token. Reload to retry.');
-    }
-  }
+  if (!token || !me) await authSettled;
   const headers = { Authorization: `Bearer ${token}` };
   if (opts.body) headers['Content-Type'] = 'application/json';
   Object.assign(headers, opts.headers);
@@ -104,6 +146,12 @@ export async function request(path, opts = {}) {
   }
   if (!res.ok) {
     const e = body && body.error;
+    // Session ended (expired, password changed, account removed): drop the
+    // token, re-arm the gate and let the app show the sign-in screen.
+    if (res.status === 401 && token) {
+      signOut();
+      if (onAuthLost) onAuthLost((e && e.message) || 'Sign in again to continue.');
+    }
     // Envelope shape: { error: { code, message, details? } }
     if (e && typeof e === 'object' && e.message) {
       throw new ApiError(res.status, e.code || 'ERROR', e.message, e.details);
@@ -139,16 +187,7 @@ export function del(p) {
 // fetches with the Bearer token, throws ApiError on HTTP failure, otherwise
 // triggers a browser download of the blob. Additive — JSON paths untouched.
 export async function downloadFile(path, filename) {
-  if (!token) {
-    try {
-      await authSettled;
-    } catch (e) {
-      throw new ApiError(0, 'AUTH', 'Not authenticated — login failed. Reload to retry.');
-    }
-    if (!token) {
-      throw new ApiError(0, 'AUTH', 'Not authenticated — no token. Reload to retry.');
-    }
-  }
+  if (!token || !me) await authSettled;
   let res;
   try {
     res = await fetch(`${API}${path}`, { headers: { Authorization: `Bearer ${token}` } });

@@ -1212,10 +1212,7 @@ async function markDraft(planId: string): Promise<void> {
  * demotes the plan back to DRAFT via markDraft (ACTIVE is never edited
  * in place — corrections are edit-draft + re-publish).
  *
- * Permission gate mirrors PATCH /promotion-plans/:id/status (same gated
- * pattern): actors that hold any Permission row must also hold
- * 'promotions.approve'; actors without rows keep the legacy ungated behavior
- * so existing auth flows never break.
+ * Requires the 'facility-floorplans:approve' role permission (CMS RBAC).
  */
 export async function publishFloorPlan(floorId: string, opts?: PublishFloorPlanOptions) {
   return (await publishFloorPlanWithSync(floorId, opts)).plan;
@@ -1305,7 +1302,7 @@ export const PUBLISH_TX_OPTIONS = { maxWait: 10_000, timeout: 30_000 };
 export async function assertPublishPermission(opts?: PublishFloorPlanOptions): Promise<void> {
   if (opts?.actorId) {
     const { requirePermission } = await import('./users');
-    await requirePermission(opts.actorId, 'promotions.approve');
+    await requirePermission(opts.actorId, 'facility-floorplans:approve');
   }
 }
 

@@ -9,6 +9,8 @@ import {
 import bcrypt from 'bcryptjs';
 import 'dotenv/config';
 import { seedExtras } from '../src/core/extras';
+import { ensureSystemRoles, roleIdByKey } from '../src/core/users';
+import { OWNER_ROLE_KEY } from '../src/lib/permissions';
 
 const prisma = new PrismaClient();
 
@@ -155,8 +157,11 @@ async function main() {
   const adminEmail = process.env.STORELAH_ADMIN_EMAIL || 'admin@storelah.sg';
   const adminPassword = process.env.STORELAH_ADMIN_PASSWORD || 'password';
   const passwordHash = await bcrypt.hash(adminPassword, 10);
+  // Roles come from the cms_rbac migration; ensureSystemRoles() restores them
+  // if missing. The seeded admin is the Owner (the only role that can add users).
+  await ensureSystemRoles();
   await prisma.adminUser.create({
-    data: { email: adminEmail, name: 'Faisal Z.', passwordHash, role: 'MANAGER' },
+    data: { email: adminEmail, name: 'Faisal Z.', passwordHash, roleId: await roleIdByKey(OWNER_ROLE_KEY) },
   });
 
   const sizeIds: Record<SizeKey, string> = {} as any;

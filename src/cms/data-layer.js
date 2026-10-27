@@ -1,26 +1,17 @@
 // StoreLah CMS data layer — v8 themed, binds live data into dashboard.html.
-// Auth: GET /api/cms/config → login → Bearer JWT.
+// Auth: reuses the operator session the admin dashboard stores after sign-in
+// (CMS RBAC — the old GET /config auto-login is gone). No session → /admin.
 
 (function () {
   const API = '/api/cms';
   let token = null;
 
-  async function getCreds() {
-    const res = await fetch(API + '/config');
-    if (!res.ok) throw new Error('admin credentials not configured (set STORELAH_ADMIN_*)');
-    return res.json();
-  }
-
   async function login() {
-    const CREDS = await getCreds();
-    const res = await fetch(API + '/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(CREDS),
-    });
-    if (!res.ok) throw new Error('login failed');
-    const body = await res.json();
-    token = body.data.token;
+    try { token = localStorage.getItem('storelah.cms.token'); } catch (e) { token = null; }
+    if (!token) {
+      location.href = '/admin';
+      throw new Error('sign in required');
+    }
   }
 
   async function get(path) {

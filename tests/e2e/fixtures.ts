@@ -10,7 +10,10 @@
 import { randomUUID } from 'node:crypto';
 import request from 'supertest';
 import app from '../../src/app';
+import bcrypt from 'bcryptjs';
 import { prisma } from '../../src/lib/prisma';
+import { signToken } from '../../src/middleware/auth';
+import { ensureSystemRoles, roleIdByKey } from '../../src/core/users';
 import { assertSafeTestDb } from './test-db';
 
 export const api = request(app);
@@ -45,6 +48,26 @@ export async function resetDb(): Promise<void> {
   if (rows.length === 0) return;
   const tables = rows.map((r) => `"${r.tablename.replace(/"/g, '""')}"`).join(', ');
   await prisma.$executeRawUnsafe(`TRUNCATE TABLE ${tables} RESTART IDENTITY CASCADE`);
+  // The cms_rbac migration seeds the roles; TRUNCATE wipes them — restore.
+  await ensureSystemRoles();
+}
+
+export interface Operator {
+  id: string;
+  email: string;
+  password: string;
+  /** `Bearer <jwt>` for the CMS API. */
+  auth: string;
+}
+
+/** Creates a CMS operator on a seeded role (OWNER / MANAGER / VIEWER) or a role id. */
+export async function createOperator(role = 'OWNER', password = 'e2e-operator-1'): Promise<Operator> {
+  const email = uniqueEmail();
+  const roleId = role.startsWith('role_') || role.length > 20 ? role : await roleIdByKey(role);
+  const u = await prisma.adminUser.create({
+    data: { email, name: `E2E ${role}`, passwordHash: await bcrypt.hash(password, 4), roleId },
+  });
+  return { id: u.id, email, password, auth: `Bearer ${signToken(u)}` };
 }
 
 export interface MoveInWorld {

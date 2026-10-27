@@ -1,11 +1,15 @@
 import { NextFunction, Request, Response } from 'express';
 import jwt from 'jsonwebtoken';
 import { AppError, fail } from '../lib/http';
+import { loadPrincipal, type Principal } from '../core/users';
 
 export interface AdminJwt {
   sub: string;
   email: string;
   name: string;
+  /** passwordChangedAt (epoch ms) when the token was issued. */
+  pwv?: number;
+  kind?: string;
 }
 
 export interface CustomerJwtPayload {
@@ -17,8 +21,9 @@ export interface CustomerJwtPayload {
 
 export const SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
 
-export function signToken(user: { id: string; email: string; name: string }): string {
-  return jwt.sign({ sub: user.id, email: user.email, name: user.name }, SECRET, {
+export function signToken(user: { id: string; email: string; name: string; passwordChangedAt?: Date }): string {
+  const claims = { sub: user.id, email: user.email, name: user.name, pwv: user.passwordChangedAt?.getTime() };
+  return jwt.sign(claims, SECRET, {
     expiresIn: (process.env.JWT_EXPIRES_IN as jwt.SignOptions['expiresIn']) || '12h',
   });
 }
@@ -31,20 +36,48 @@ export function signCustomerToken(user: { id: string; email: string; name: strin
   );
 }
 
-export function requireAuth(req: Request, res: Response, next: NextFunction): void {
+/**
+ * CMS operator auth. Verifies the Bearer JWT, then loads the operator's
+ * principal (role, permissions, facility scope) from the DB on EVERY request,
+ * so a role change or deletion applies on the next call. A token whose
+ * password version (pwv) no longer matches the operator's passwordChangedAt
+ * is rejected, so a password change signs out every other session. Sets
+ * req.user (JWT claims, unchanged shape) and req.admin.
+ */
+export async function requireAuth(req: Request, res: Response, next: NextFunction): Promise<void> {
   const header = req.headers.authorization;
   if (!header || !header.startsWith('Bearer ')) {
-    res.status(401).json({ error: 'Unauthorized' });
+    fail(res, 401, 'UNAUTHORIZED', 'Sign in to continue');
     return;
   }
+  let payload: AdminJwt;
   try {
-    const token = header.slice(7);
-    const payload = jwt.verify(token, SECRET) as AdminJwt;
-    (req as any).user = payload;
-    next();
+    payload = jwt.verify(header.slice(7), SECRET) as AdminJwt;
   } catch {
-    res.status(401).json({ error: 'Unauthorized' });
+    fail(res, 401, 'UNAUTHORIZED', 'Your session has expired. Sign in again.');
+    return;
   }
+  // Customer tokens share the secret — never accept them as operators.
+  if (payload.kind === 'customer' || !payload.sub) {
+    fail(res, 401, 'UNAUTHORIZED', 'Sign in to continue');
+    return;
+  }
+  const principal = await loadPrincipal(payload.sub);
+  if (!principal) {
+    fail(res, 401, 'UNAUTHORIZED', 'Sign in to continue');
+    return;
+  }
+  if (payload.pwv !== principal.passwordChangedAt.getTime()) {
+    fail(res, 401, 'UNAUTHORIZED', 'Your session has ended. Sign in again.');
+    return;
+  }
+  (req as any).user = { sub: principal.id, email: principal.email, name: principal.name };
+  (req as any).admin = principal;
+  next();
+}
+
+export function adminOf(req: Request): Principal | undefined {
+  return (req as any).admin;
 }
 
 export function requireCustomerAuth(req: Request, res: Response, next: NextFunction): void {

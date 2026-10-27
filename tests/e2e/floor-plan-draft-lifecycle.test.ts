@@ -11,7 +11,7 @@
 //   the version markers are untouched, and later edits address real rows.
 
 import { beforeEach, describe, expect, it } from 'vitest';
-import { PIN, api, prisma, resetDb, seedMoveInWorld, type MoveInWorld } from './fixtures';
+import { PIN, createOperator, api, prisma, resetDb, seedMoveInWorld, type MoveInWorld } from './fixtures';
 import { listDrafts, loadDraft, publishDraft, publishLivePlan, revertToPublished, saveDraft } from '../../src/core/floorPlanDrafts';
 import {
   createFloorPlanBlock,
@@ -55,10 +55,8 @@ describe('floor plan draft versions vs the live plan (DB)', () => {
     await setUnitPlacement(world.floorId, rentable, { x: 20, y: 30, width: 5, height: 10 });
     const publicBefore = await publicPlan();
 
-    // An operator without promotions.approve is refused…
-    const actor = await prisma.adminUser.create({
-      data: { email: 'no-approve@e2e.test', name: 'No Approve', passwordHash: 'x', permissions: { create: { permission: 'units.edit' } } },
-    });
+    // An operator without facility-floorplans:approve (Manager) is refused…
+    const actor = await createOperator('MANAGER');
     await expect(publishDraft(v2.id, { actorId: actor.id })).rejects.toMatchObject({ status: 403 });
 
     // …and nothing moved: working copy keeps the unsaved edit, v1 stays the

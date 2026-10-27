@@ -2,9 +2,8 @@
 // off the market (OCCUPIED / OVERDUE) so online checkout can't book it and
 // never drops the tenant's link; every release path frees the unit again.
 
-import bcrypt from 'bcryptjs';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { PIN, api, futureMoveInISO, prisma, resetDb, seedMoveInWorld, uniqueEmail } from './fixtures';
+import { PIN, api, createOperator, futureMoveInISO, prisma, resetDb, seedMoveInWorld, uniqueEmail } from './fixtures';
 import { createTenant, deactivateTenant, transitionMoveOut, updateTenant } from '../../src/core/tenants';
 
 const unitByCode = (unitCode: string) => prisma.unit.findUniqueOrThrow({ where: { unitCode } });
@@ -80,9 +79,7 @@ describe('tenant ↔ unit hold (TN-06)', () => {
   it('the CMS API marks the unit OCCUPIED on POST /tenants', async () => {
     const unit = await unitByCode(PIN.rentableUnit);
     // The e2e world seeds no operator — create one for this request.
-    const email = uniqueEmail();
-    const password = 'e2e-operator-1';
-    await prisma.adminUser.create({ data: { email, name: 'E2E Operator', passwordHash: await bcrypt.hash(password, 4) } });
+    const { email, password } = await createOperator('MANAGER');
     const res = await api.post('/api/v1/cms/login').send({ email, password });
     expect(res.status).toBe(200);
     const created = await api

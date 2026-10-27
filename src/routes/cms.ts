@@ -1,11 +1,10 @@
 import { Router, Request, Response, json as jsonBody } from 'express';
-import bcrypt from 'bcryptjs';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma';
-import { ok, created, fail, AppError } from '../lib/http';
+import { ok, created, fail } from '../lib/http';
 import { dateRangeFields, resolveDateRange } from '../lib/dateRange';
-import { resolveHostKind } from '../lib/host';
-import { requireAuth, signToken } from '../middleware/auth';
+import { requireAuth, signToken, adminOf } from '../middleware/auth';
+import { applyRoutePermissions } from '../lib/routePermissions';
 import { getSummary } from '../core/summary';
 import {
   getUnitMap,
@@ -50,14 +49,20 @@ import { listFees, createFee, updateFee, deleteFee, resolveFee } from '../core/f
 import { listBusinessRules, upsertBusinessRules } from '../core/businessRules';
 import {
   listUsers,
+  getUser,
   createUser,
   updateUser,
   deleteUser,
   setFacilityAccess,
-  grantPermission,
-  revokePermission,
-  requirePermission,
-  PERMISSIONS,
+  authenticate,
+  changeOwnPassword,
+  listRoles,
+  roleCatalog,
+  createRole,
+  updateRole,
+  deleteRole,
+  listAudit,
+  type Principal,
 } from '../core/users';
 import {
   listPromotions,
@@ -449,44 +454,49 @@ const floorPlanBoundarySchema = z.object({
   thickness: z.number().positive().max(10).nullish(), // WALL thickness in ft (Phase 3); stored for kind WALL only
 });
 
-router.get('/config', (req: Request, res: Response) => {
-  // Security gate (deploy runbook "Phase 0 step 4 — SECURITY FLAG"): this endpoint
-  // hands the CMS dashboard its live login credentials, so it must never be
-  // reachable from a PUBLIC host. It is allowed ONLY on the cms host
-  // (cms.storelah.sg) and local dev (localhost / loopback — classified 'cms').
-  // Every other host (api.storelah.sg, the raw execute-api invoke URL, any
-  // unknown/forged host) gets a 404.
-  //
-  // Deliberately host-kind-based and NOT NODE_ENV-based: the gate must not
-  // silently deactivate if NODE_ENV is missing/misconfigured at Lambda runtime
-  // (the original prod-flag version was bypassed in exactly that way on the live
-  // function). The only legitimate consumers of /config are the dashboard on its
-  // own host and local dev, neither of which ever arrive via an api-kind host.
-  // The booking app never calls it.
-  if (resolveHostKind(req) === 'api') {
-    throw new AppError(404, 'NOT_FOUND', 'Not found');
-  }
-  const email = process.env.STORELAH_ADMIN_EMAIL;
-  const password = process.env.STORELAH_ADMIN_PASSWORD;
-  if (!email || !password) {
-    res.status(503).json({ error: 'Admin credentials not configured' });
-    return;
-  }
-  res.json({ email, password });
-});
-
+// Operator sign-in (CMS RBAC). Replaces the old GET /config auto-login, which
+// handed the dashboard a shared admin password. Lockout: 5 failures → 15 min.
 router.post('/login', async (req: Request, res: Response) => {
   const parsed = loginSchema.safeParse(req.body);
   if (!parsed.success) {
-    fail(res, 400, 'VALIDATION', 'Invalid credentials', parsed.error.flatten());
+    fail(res, 400, 'VALIDATION', 'Enter your email and password', parsed.error.flatten());
     return;
   }
-  const admin = await prisma.adminUser.findUnique({ where: { email: parsed.data.email } });
-  if (!admin || !(await bcrypt.compare(parsed.data.password, admin.passwordHash))) {
-    fail(res, 401, 'UNAUTHORIZED', 'Invalid email or password');
+  const admin = await authenticate(parsed.data.email, parsed.data.password);
+  ok(res, { token: signToken(admin), user: { email: admin.email, name: admin.name, role: admin.role.key } });
+});
+
+function serializeMe(p: Principal) {
+  return {
+    user: { id: p.id, email: p.email, name: p.name },
+    role: p.role,
+    isOwner: p.isOwner,
+    permissions: p.permissions,
+    branchIds: p.branchIds,
+  };
+}
+
+// The signed-in operator, their role and effective permissions (drives which
+// sidebar items and buttons the dashboard shows).
+router.get('/me', requireAuth, async (req: Request, res: Response) => {
+  ok(res, serializeMe(adminOf(req) as Principal));
+});
+
+const changePasswordSchema = z.object({
+  currentPassword: z.string().min(1).max(200),
+  newPassword: z.string().min(8, 'Use at least 8 characters').max(200),
+});
+
+// Change own password. Signs out every other session; returns a fresh token.
+router.post('/me/password', requireAuth, async (req: Request, res: Response) => {
+  const parsed = changePasswordSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid password change', parsed.error.flatten());
     return;
   }
-  ok(res, { token: signToken(admin), user: { email: admin.email, name: admin.name, role: admin.role } });
+  const me = adminOf(req) as Principal;
+  const user = await changeOwnPassword(me.id, parsed.data.currentPassword, parsed.data.newPassword);
+  ok(res, { token: signToken(user) });
 });
 
 router.get('/summary', requireAuth, async (_req: Request, res: Response) => {
@@ -1708,9 +1718,8 @@ router.delete('/floor-plans/:floorId/markers/:markerId', requireAuth, async (req
 // that exposes the plan to the public booking renderer (GET
 // /public/floor-plans/:branchCode/:level resolves ACTIVE only; draft-only
 // floors read as plan: null). Every other CMS floor-plan write persists as
-// DRAFT, so corrections are edit-draft + re-publish. Permission gate mirrors
-// PATCH /promotion-plans/:id/status (gated 'promotions.approve' for actors
-// that hold permission rows, legacy fallback otherwise).
+// DRAFT, so corrections are edit-draft + re-publish. Publishing requires
+// 'facility-floorplans:approve' (route table + core re-check).
 //
 // Floor-plan unit sync (docs/FLOOR_PLAN_UNIT_SYNC_PLAN.md D2): publish also
 // applies every pending drawn-size change to its Unit row in the same
@@ -2084,8 +2093,7 @@ router.patch('/promotion-plans/:id/status', requireAuth, async (req: Request, re
   ok(res, await setPlanStatus(String(req.params.id), parsed.data.status, {
     changedBy: parsed.data.changedBy,
     approverRole: parsed.data.approverRole,
-    // P1 item 6: verified-permission gate for go-live edges (legacy fallback
-    // when the actor holds no permission rows — see core/users.ts mayAct).
+    // Go-live edges re-check 'promo-library:approve' in the core.
     actorId: (req as any).user?.sub,
   }));
 });
@@ -2259,9 +2267,7 @@ router.get('/floor-plans/:floorId/metrics/snapshots/authoritative', requireAuth,
 
 // Walk a snapshot through DRAFT → VALIDATED → SCHEDULED → ACTIVE (rollback to
 // DRAFT allowed for rework; ACTIVE is immutable). Go-live edges (→ SCHEDULED
-// / → ACTIVE) require the verified 'promotions.approve' permission for actors
-// that hold permission rows (legacy label-only fallback otherwise — same
-// gated pattern as PATCH /promotion-plans/:id/status).
+// / → ACTIVE) require 'facility-floorplans:approve' (CMS RBAC).
 router.patch('/floor-plans/metrics/snapshots/:id/status', requireAuth, async (req: Request, res: Response) => {
   const parsed = metricsSnapshotStatusSchema.safeParse(req.body);
   if (!parsed.success) {
@@ -2935,8 +2941,6 @@ router.post('/fees', requireAuth, async (req: Request, res: Response) => {
     fail(res, 400, 'VALIDATION', 'Invalid fee payload', parsed.error.flatten());
     return;
   }
-  // P1 item 6 (gated): operators with permission rows need 'fees.manage'.
-  await requirePermission((req as any).user?.sub, 'fees.manage');
   created(res, await createFee(parsed.data));
 });
 
@@ -2946,12 +2950,10 @@ router.patch('/fees/:id', requireAuth, async (req: Request, res: Response) => {
     fail(res, 400, 'VALIDATION', 'Invalid fee payload', parsed.error.flatten());
     return;
   }
-  await requirePermission((req as any).user?.sub, 'fees.manage');
   ok(res, await updateFee(String(req.params.id), parsed.data));
 });
 
 router.delete('/fees/:id', requireAuth, async (req: Request, res: Response) => {
-  await requirePermission((req as any).user?.sub, 'fees.manage');
   ok(res, await deleteFee(String(req.params.id)));
 });
 
@@ -2971,26 +2973,24 @@ router.put('/business-rules', requireAuth, async (req: Request, res: Response) =
     fail(res, 400, 'VALIDATION', 'Business-rules payload must be an object of { key: value }', parsed.error.flatten());
     return;
   }
-  // P1 item 6 (gated): operators with permission rows need 'businessRules.manage'.
-  await requirePermission((req as any).user?.sub, 'businessRules.manage');
   ok(res, await upsertBusinessRules(parsed.data));
 });
 
-// --- Users & roles (P1 item 6) ---
-// Facility scoping + verified permissions. Reads are never gated; writes use
-// the gated requirePermission (legacy fallback when the actor has no rows).
+// --- Team & access: users, roles, audit (CMS RBAC; Owner only — see
+// src/lib/routePermissions.ts) ---
 
 const createUserSchema = z.object({
   email: z.string().email(),
   name: z.string().trim().min(1).max(120),
   password: z.string().min(8).max(200),
-  role: z.enum(['OWNER', 'MANAGER', 'VIEWER']).optional(),
+  roleId: z.string().min(1),
 });
 
 const updateUserSchema = z.object({
   name: z.string().trim().min(1).max(120).optional(),
-  role: z.enum(['OWNER', 'MANAGER', 'VIEWER']).optional(),
+  roleId: z.string().min(1).optional(),
   password: z.string().min(8).max(200).optional(),
+  unlock: z.boolean().optional(),
 });
 
 const facilityAccessSchema = z.object({
@@ -3002,18 +3002,20 @@ const facilityAccessSchema = z.object({
   ),
 });
 
-const grantPermissionSchema = z.object({
-  permission: z.string().trim().min(1).max(80),
+const roleSchema = z.object({
+  name: z.string().trim().min(1).max(60),
+  description: z.string().trim().max(200).nullable().optional(),
+  permissions: z.array(z.string().min(1).max(80)).max(500),
 });
+
+const actorOf = (req: Request) => {
+  const p = adminOf(req);
+  return { id: p?.id, email: p?.email };
+};
 
 router.get('/users', requireAuth, async (_req: Request, res: Response) => {
   const rows = await listUsers();
   ok(res, rows, { count: rows.length });
-});
-
-router.get('/users/permissions', requireAuth, async (_req: Request, res: Response) => {
-  // Permission catalog (reference for the Settings Users section).
-  ok(res, [...PERMISSIONS]);
 });
 
 router.post('/users', requireAuth, async (req: Request, res: Response) => {
@@ -3022,8 +3024,7 @@ router.post('/users', requireAuth, async (req: Request, res: Response) => {
     fail(res, 400, 'VALIDATION', 'Invalid user payload', parsed.error.flatten());
     return;
   }
-  await requirePermission((req as any).user?.sub, 'users.manage');
-  created(res, await createUser(parsed.data));
+  created(res, await createUser(parsed.data, actorOf(req)));
 });
 
 router.patch('/users/:id', requireAuth, async (req: Request, res: Response) => {
@@ -3032,23 +3033,15 @@ router.patch('/users/:id', requireAuth, async (req: Request, res: Response) => {
     fail(res, 400, 'VALIDATION', 'Invalid user payload', parsed.error.flatten());
     return;
   }
-  await requirePermission((req as any).user?.sub, 'users.manage');
-  ok(res, await updateUser(String(req.params.id), parsed.data));
+  ok(res, await updateUser(String(req.params.id), parsed.data, actorOf(req)));
 });
 
 router.delete('/users/:id', requireAuth, async (req: Request, res: Response) => {
-  await requirePermission((req as any).user?.sub, 'users.manage');
-  ok(res, await deleteUser(String(req.params.id), { actorId: (req as any).user?.sub }));
+  ok(res, await deleteUser(String(req.params.id), actorOf(req)));
 });
 
 router.get('/users/:id/access', requireAuth, async (req: Request, res: Response) => {
-  const rows = await listUsers();
-  const user = rows.find((u) => u.id === String(req.params.id));
-  if (!user) {
-    fail(res, 404, 'NOT_FOUND', `User ${String(req.params.id)} not found`);
-    return;
-  }
-  ok(res, user.facilityAccess);
+  ok(res, (await getUser(String(req.params.id))).facilityAccess);
 });
 
 router.put('/users/:id/access', requireAuth, async (req: Request, res: Response) => {
@@ -3057,23 +3050,45 @@ router.put('/users/:id/access', requireAuth, async (req: Request, res: Response)
     fail(res, 400, 'VALIDATION', 'Invalid access payload', parsed.error.flatten());
     return;
   }
-  await requirePermission((req as any).user?.sub, 'users.manage');
-  ok(res, await setFacilityAccess(String(req.params.id), parsed.data.access));
+  ok(res, await setFacilityAccess(String(req.params.id), parsed.data.access, actorOf(req)));
 });
 
-router.post('/users/:id/permissions', requireAuth, async (req: Request, res: Response) => {
-  const parsed = grantPermissionSchema.safeParse(req.body);
+router.get('/roles', requireAuth, async (_req: Request, res: Response) => {
+  const rows = await listRoles();
+  ok(res, rows, { count: rows.length });
+});
+
+// Sidebar resources × actions, for the role editor grid.
+router.get('/roles/catalog', requireAuth, async (_req: Request, res: Response) => {
+  ok(res, roleCatalog());
+});
+
+router.post('/roles', requireAuth, async (req: Request, res: Response) => {
+  const parsed = roleSchema.safeParse(req.body);
   if (!parsed.success) {
-    fail(res, 400, 'VALIDATION', 'Invalid permission payload', parsed.error.flatten());
+    fail(res, 400, 'VALIDATION', 'Invalid role payload', parsed.error.flatten());
     return;
   }
-  await requirePermission((req as any).user?.sub, 'users.manage');
-  created(res, await grantPermission(String(req.params.id), parsed.data.permission));
+  created(res, await createRole(parsed.data, actorOf(req)));
 });
 
-router.delete('/users/:id/permissions/:permission', requireAuth, async (req: Request, res: Response) => {
-  await requirePermission((req as any).user?.sub, 'users.manage');
-  ok(res, await revokePermission(String(req.params.id), String(req.params.permission)));
+router.patch('/roles/:id', requireAuth, async (req: Request, res: Response) => {
+  const parsed = roleSchema.partial().safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid role payload', parsed.error.flatten());
+    return;
+  }
+  ok(res, await updateRole(String(req.params.id), parsed.data, actorOf(req)));
+});
+
+router.delete('/roles/:id', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await deleteRole(String(req.params.id), actorOf(req)));
+});
+
+router.get('/permission-audit', requireAuth, async (req: Request, res: Response) => {
+  const limit = Number(req.query.limit) || 100;
+  const rows = await listAudit(limit);
+  ok(res, rows, { count: rows.length });
 });
 
 // --- Booking extras (protection plans + packing-supply addons) ---
@@ -3314,5 +3329,9 @@ router.post(
 router.delete('/content/:key/image', requireAuth, async (req: Request, res: Response) => {
   ok(res, await removeContentItemImage(String(req.params.key)));
 });
+
+// Deny-by-default permission check on every route above (CMS RBAC). Must
+// stay last: it walks the routes registered so far.
+applyRoutePermissions(router);
 
 export default router;

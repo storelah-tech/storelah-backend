@@ -92,6 +92,32 @@ code changes marked `[backend-agent]`). Landing is done; booking is waiting on T
   via the pooled URL). Lambda reaches Neon over the public internet (no VPC, no NAT). Local
   Docker DB on port 5433 remains dev-only.
 
+## CMS ROLES & PERMISSIONS (sign-in + RBAC) — branch `feature/cms-rbac`, NOT deployed yet
+
+Replaces the shared-admin auto-login. **`GET /cms/config` is removed**; the dashboard shows a
+sign-in screen and every `/api/v1/cms` route checks the operator's role
+(`src/lib/routePermissions.ts`, deny by default). Roles are editable by an Owner in Global
+Settings › Team & access. Notes that supersede the `/config` material further down:
+
+- **Migration `20261027120000_cms_rbac`** (prod mutation — explicit owner authorization
+  required): creates `AdminRole` / `AdminRolePermission` / `PermissionAudit`, seeds Owner /
+  Manager / Viewer, maps each `AdminUser` to the role matching its old enum value, and **if no
+  Owner exists promotes the oldest `AdminUser` to Owner** (the seeded `admin@storelah.sg` row is
+  `MANAGER`, so on prod it becomes the Owner). Then drops the `Role` enum and the `Permission`
+  table (old `promotions.approve` / `fees.manage` / `businessRules.manage` / `users.manage`
+  grants are superseded). Tested on a copy of the dev DB.
+- **Order:** migrate (direct Neon URL) → Lambda `update-function-code`. Every existing JWT is
+  invalid after deploy (tokens now carry a password version), so everyone signs in again.
+- **After deploy:** the Owner signs in with the existing `admin@storelah.sg` password, creates
+  one account per operator, and changes their own password. `STORELAH_ADMIN_EMAIL` /
+  `STORELAH_ADMIN_PASSWORD` are no longer read by the app (only by `db:seed` and
+  `db:rotate-admin-password`); they can be removed from the Lambda env later.
+- **Basic Auth gate:** unchanged and compatible (sign-in sends no `Authorization` header, so
+  Basic rides along; later calls use Bearer on `/api/*`). Removing the gate is an
+  **owner action**, only after sign-in + RBAC are verified live.
+- **Not yet enforced server-side:** facility scope (`OperatorFacilityAccess`) is stored,
+  editable and returned by `GET /cms/me`, but list endpoints do not filter by it yet.
+
 ## CMS GATE (Basic Auth on cms.storelah.sg) — deployed 2026-08-19
 
 ### Problem

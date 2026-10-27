@@ -1212,11 +1212,9 @@ export async function createMetricsSnapshot(floorId: string, effectiveDate: stri
 //
 // - DRAFT → VALIDATED: recomputes live metrics, requires zero ERROR blockers.
 // - VALIDATED → SCHEDULED: re-checks zero blockers (a canvas edited after
-//   validation cannot slip through stale) + requires the verified
-//   'promotions.approve' permission via requirePermission (same gated pattern
-//   as setPlanStatus: actors without any permission row keep the legacy
-//   label-only behavior). No new 'metrics.approve' permission was invented —
-//   reusing the promotions vocabulary keeps one approval capability.
+//   validation cannot slip through stale) + requires the
+//   'facility-floorplans:approve' role permission via requirePermission
+//   (CMS RBAC; same approval capability as publishing the floor plan).
 // - SCHEDULED → ACTIVE (publish): same permission gate; the payload +
 //   geometryHash + schemaVersion refresh from a final live recompute (zero
 //   blockers required) so ACTIVE is always fresh canvas truth; publishedAt is
@@ -1260,13 +1258,12 @@ export async function transitionSnapshotStatus(
   }
   if (from === status) return serializeSnapshot(existing);
 
-  // Gated go-live edges (promotions mirror — lazy import avoids a
-  // core/users ⇄ metrics service cycle; legacy fallback when the actor holds
-  // no permission rows — see mayAct in src/core/users.ts).
+  // Go-live edges need 'facility-floorplans:approve' (lazy import avoids a
+  // core/users ⇄ metrics service cycle).
   if (status === 'SCHEDULED' || status === 'ACTIVE') {
     if (opts?.actorId) {
       const { requirePermission } = await import('./users');
-      await requirePermission(opts.actorId, 'promotions.approve');
+      await requirePermission(opts.actorId, 'facility-floorplans:approve');
     }
   }
 

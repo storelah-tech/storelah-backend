@@ -59,7 +59,8 @@ export async function loadPrincipal(adminUserId: string): Promise<Principal | nu
     role: { id: u.role.id, key: u.role.key, name: u.role.name },
     isOwner,
     permissions: isOwner ? [...ALL_PERMISSIONS] : u.role.permissions.map((p) => p.permission).filter(isKnownPermission),
-    branchIds: scoped ? u.facilityAccess.map((a) => a.branchId).filter((b): b is string => !!b) : null,
+    // Owners are never facility-limited (they manage every site and user).
+    branchIds: scoped && !isOwner ? u.facilityAccess.map((a) => a.branchId).filter((b): b is string => !!b) : null,
     passwordChangedAt: u.passwordChangedAt,
   };
 }

@@ -115,8 +115,11 @@ Settings › Team & access. Notes that supersede the `/config` material further 
 - **Basic Auth gate:** unchanged and compatible (sign-in sends no `Authorization` header, so
   Basic rides along; later calls use Bearer on `/api/*`). Removing the gate is an
   **owner action**, only after sign-in + RBAC are verified live.
-- **Not yet enforced server-side:** facility scope (`OperatorFacilityAccess`) is stored,
-  editable and returned by `GET /cms/me`, but list endpoints do not filter by it yet.
+- **Facility scope:** an operator limited to some facilities only sees and changes those
+  facilities' data on every CMS route (Prisma query extension, `src/lib/facilityScope.ts`;
+  out-of-scope records read as not found). Owners and operators with no facility rows see
+  everything; records with no facility (e.g. a lead with no preferred site) stay visible.
+  Public/customer APIs are never scoped.
 
 ## CMS GATE (Basic Auth on cms.storelah.sg) — deployed 2026-08-19
 

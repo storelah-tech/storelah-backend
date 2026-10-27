@@ -2,6 +2,7 @@ import { NextFunction, Request, Response } from 'express';
 import jwt from 'jsonwebtoken';
 import { AppError, fail } from '../lib/http';
 import { loadPrincipal, type Principal } from '../core/users';
+import { runScoped } from '../lib/facilityScope';
 
 export interface AdminJwt {
   sub: string;
@@ -42,7 +43,8 @@ export function signCustomerToken(user: { id: string; email: string; name: strin
  * so a role change or deletion applies on the next call. A token whose
  * password version (pwv) no longer matches the operator's passwordChangedAt
  * is rejected, so a password change signs out every other session. Sets
- * req.user (JWT claims, unchanged shape) and req.admin.
+ * req.user (JWT claims, unchanged shape) and req.admin, and runs the rest
+ * of the request inside the operator's facility scope (lib/facilityScope.ts).
  */
 export async function requireAuth(req: Request, res: Response, next: NextFunction): Promise<void> {
   const header = req.headers.authorization;
@@ -73,7 +75,8 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
   }
   (req as any).user = { sub: principal.id, email: principal.email, name: principal.name };
   (req as any).admin = principal;
-  next();
+  // The rest of the request only sees the operator's facilities.
+  runScoped(principal.branchIds, next);
 }
 
 export function adminOf(req: Request): Principal | undefined {

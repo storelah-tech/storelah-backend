@@ -41,7 +41,9 @@ async function main(): Promise<void> {
 
   const result = await prisma.adminUser.updateMany({
     where: { email },
-    data: { passwordHash },
+    // Also sign out every existing session (tokens carry the password
+    // version) and clear any sign-in lockout — same as an Owner reset.
+    data: { passwordHash, passwordChangedAt: new Date(), failedLoginCount: 0, lockedUntil: null },
   });
 
   if (result.count === 0) {
@@ -49,7 +51,7 @@ async function main(): Promise<void> {
   }
 
   console.log(
-    `rotate-admin-password: updated password hash for AdminUser "${email}" (${result.count} row) — no re-seed performed.`,
+    `rotate-admin-password: updated password for AdminUser "${email}" (${result.count} row); existing sessions signed out — no re-seed performed.`,
   );
 }
 

@@ -12,12 +12,6 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-enum Role {
-  OWNER
-  MANAGER
-  VIEWER
-}
-
 enum BranchStatus {
   ACTIVE
   INACTIVE
@@ -114,18 +108,68 @@ enum MessageDirection {
 }
 
 model AdminUser {
-  id           String   @id @default(cuid())
-  email        String   @unique
+  id           String    @id @default(cuid())
+  email        String    @unique
   name         String
   passwordHash String
-  role         Role     @default(MANAGER)
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  roleId       String
+  role         AdminRole @relation(fields: [roleId], references: [id])
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
 
-  // P1 item 6: facility scoping + verified permissions. Empty rows = legacy
-  // role behavior (fallback); enforcement is gated behind these rows.
+  // Sign-in lockout (5 failures → 15 min) and session invalidation: a JWT
+  // issued before passwordChangedAt is rejected by requireAuth.
+  failedLoginCount  Int       @default(0)
+  lockedUntil       DateTime?
+  passwordChangedAt DateTime  @default(now())
+
+  // Facility scope: no rows = every facility (see core/users.ts).
   facilityAccess OperatorFacilityAccess[]
-  permissions    Permission[]
+
+  @@index([roleId])
+}
+
+// CMS RBAC (2026-10-27): editable roles. Each role holds a set of
+// `<resource>:<action>` keys from src/lib/permissions.ts. The OWNER role is a
+// locked system row that implicitly holds every permission and is the only
+// role that may manage users and roles.
+model AdminRole {
+  id          String                @id @default(cuid())
+  key         String                @unique // OWNER | MANAGER | VIEWER | custom slug
+  name        String
+  description String?
+  isSystem    Boolean               @default(false) // locked: cannot be edited or deleted
+  createdAt   DateTime              @default(now())
+  updatedAt   DateTime              @updatedAt
+  permissions AdminRolePermission[]
+  users       AdminUser[]
+}
+
+model AdminRolePermission {
+  id         String    @id @default(cuid())
+  roleId     String
+  role       AdminRole @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission String // `<resource>:<action>`
+
+  @@unique([roleId, permission])
+  @@index([roleId])
+}
+
+// Append-only record of role and permission changes (role edits, role
+// assignment, facility scope, user create/delete). Never updated or deleted.
+model PermissionAudit {
+  id         String   @id @default(cuid())
+  actorId    String?
+  actorEmail String?
+  action     String // ROLE_CREATE | ROLE_UPDATE | ROLE_DELETE | USER_CREATE | USER_UPDATE | USER_DELETE | USER_ACCESS
+  targetType String // ROLE | USER
+  targetId   String
+  before     Json?
+  after      Json?
+  createdAt  DateTime @default(now())
+
+  @@index([targetType, targetId])
+  @@index([createdAt])
 }
 
 model Customer {
@@ -1461,9 +1505,9 @@ model BusinessRule {
   @@index([category])
 }
 
-// P1 item 6: which facilities an operator may act on. One row per
-// (admin, branch); scope "ALL" with branchId NULL grants every facility.
-// An operator with NO rows is unscoped (legacy behavior — full access).
+// Which facilities an operator may act on. One row per (admin, branch);
+// scope "ALL" with branchId NULL grants every facility. An operator with NO
+// rows is unscoped (every facility). Combined with the role's permissions.
 model OperatorFacilityAccess {
   id          String   @id @default(cuid())
   adminUserId String
@@ -1570,22 +1614,6 @@ model Addon {
   updatedAt DateTime @updatedAt
 
   @@index([active, sortOrder])
-}
-
-// P1 item 6: verified permission grants (replaces free-text approverRole ONLY
-// where gated — see mayAct in src/core/users.ts). Catalog: promotions.approve,
-// fees.manage, businessRules.manage, users.manage. An operator with NO
-// permission rows is unchecked (legacy fallback); enforcement applies only to
-// operators that have at least one row.
-model Permission {
-  id          String   @id @default(cuid())
-  adminUserId String
-  adminUser   AdminUser @relation(fields: [adminUserId], references: [id], onDelete: Cascade)
-  permission  String
-  createdAt   DateTime @default(now())
-
-  @@unique([adminUserId, permission])
-  @@index([adminUserId])
 }
 
 // Landing-page CMS content (minimal v1: tickerItems | heroSlides | testimonials).

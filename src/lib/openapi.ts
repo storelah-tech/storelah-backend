@@ -5636,8 +5636,8 @@ export const openapiSpec = {
           },
           provider: {
             type: 'string',
-            enum: ['mock', 'singpass'],
-            description: '`singpass` for real Singpass Myinfo rows (method `singpass-myinfo`).',
+            enum: ['mock', 'singpass', 'corppass'],
+            description: '`singpass` for Singpass Myinfo rows (method `singpass-myinfo`); `corppass` for Myinfo Business company rows (method `myinfo-business`).',
           },
         },
       },
@@ -5697,8 +5697,8 @@ export const openapiSpec = {
           },
           provider: {
             type: 'string',
-            enum: ['mock', 'singpass'],
-            description: '`singpass` for real Singpass Myinfo rows (method `singpass-myinfo`).',
+            enum: ['mock', 'singpass', 'corppass'],
+            description: '`singpass` for Singpass Myinfo rows (method `singpass-myinfo`); `corppass` for Myinfo Business company rows (method `myinfo-business`).',
           },
           reviewStatus: { $ref: openapiSchemaRef('VerificationReviewStatus') },
           reviewedAt: {

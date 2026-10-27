@@ -13,16 +13,25 @@ import { listPublishedContent, getPublishedContent } from '../core/content';
 import { readLocalImage } from '../lib/contentStorage';
 import { createPublicLead } from '../core/leads';
 import {
+  CORPPASS_COOKIE,
+  CORPPASS_COOKIE_PATH,
   SINGPASS_COOKIE,
   SINGPASS_COOKIE_PATH,
   SINGPASS_SESSION_TTL_S,
+  completeCorppassLogin,
   completeSingpassLogin,
   openSession,
+  providerSettings,
   singpassReturnUrl,
   singpassSettings,
+  startFapiLogin,
   startSingpassLogin,
 } from '../core/singpass';
 import {
+  cancelBusinessReview,
+  confirmBusinessReview,
+  createPendingBusinessVerification,
+  getBusinessReview,
   cancelSingpassReview,
   confirmSingpassReview,
   createPendingSingpassVerification,
@@ -459,6 +468,114 @@ router.post('/singpass/review/cancel', async (req: Request, res: Response) => {
     return;
   }
   await cancelSingpassReview(parsed.data.token);
+  ok(res, { cancelled: true });
+});
+
+// ---------- Myinfo Business via Corppass (see core/singpass.ts + docs/myinfo-business-plan.md) ----------
+//
+// Same browser-redirect shape as Singpass, on its own cookie/path. Runs on
+// the booking Details step BEFORE a booking exists, so it is keyed by the
+// booking draft ref (`DRAFT-…`). The callback returns to the booking app with
+// `?corppass=review|cancelled|failed&ref=…&review=<token>` (no company data
+// in the URL); the Details step then shows the company review.
+
+router.get('/corppass/status', (_req: Request, res: Response) => {
+  ok(res, { enabled: providerSettings('corppass') !== null });
+});
+
+const corppassStartSchema = z.object({
+  ref: z.string().trim().min(1).max(64).regex(/^[A-Za-z0-9_-]+$/),
+  returnPath: z.string().max(512).optional(),
+});
+
+router.get('/corppass/start', publicLeadLimiter, async (req: Request, res: Response) => {
+  const parsed = corppassStartSchema.safeParse(req.query);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid Myinfo Business start query', parsed.error.flatten());
+    return;
+  }
+  const { redirectUrl, sealedSession } = await startFapiLogin('corppass', parsed.data.ref, parsed.data.returnPath);
+  res.cookie(CORPPASS_COOKIE, sealedSession, {
+    httpOnly: true,
+    secure: config.isProd,
+    sameSite: 'lax',
+    path: CORPPASS_COOKIE_PATH,
+    maxAge: SINGPASS_SESSION_TTL_S * 1000,
+  });
+  res.redirect(302, redirectUrl);
+});
+
+router.get('/corppass/callback', async (req: Request, res: Response) => {
+  const settings = providerSettings('corppass');
+  if (!settings) {
+    fail(res, 503, 'CORPPASS_NOT_CONFIGURED', 'Myinfo Business is not available yet.');
+    return;
+  }
+  let returnPath: string | undefined;
+  const back = (outcome: 'review' | 'cancelled' | 'failed', ref?: string, reviewToken?: string) => {
+    const url = singpassReturnUrl(settings.returnUrl, returnPath);
+    url.searchParams.set('corppass', outcome);
+    if (ref) url.searchParams.set('ref', ref);
+    if (reviewToken) url.searchParams.set('review', reviewToken);
+    res.clearCookie(CORPPASS_COOKIE, { path: CORPPASS_COOKIE_PATH });
+    res.redirect(302, url.toString());
+  };
+
+  let ref: string | undefined;
+  try {
+    const session = await openSession(req.cookies?.[CORPPASS_COOKIE]);
+    ref = session.bookingRef;
+    returnPath = session.returnPath;
+    const q = req.query as Record<string, string | undefined>;
+    if (q.state !== session.state) {
+      back('failed', ref);
+      return;
+    }
+    if (q.error || !q.code) {
+      back(q.error === 'access_denied' ? 'cancelled' : 'failed', ref);
+      return;
+    }
+    const company = await completeCorppassLogin(session, q.code);
+    const reviewToken = await createPendingBusinessVerification(ref, company);
+    back('review', ref, reviewToken);
+  } catch (err) {
+    console.error('[corppass] callback failed:', err instanceof Error ? err.message : 'unknown error');
+    back('failed', ref);
+  }
+});
+
+router.get('/corppass/review', async (req: Request, res: Response) => {
+  const parsed = singpassReviewTokenSchema.safeParse(req.query.token);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid review token');
+    return;
+  }
+  res.set('Cache-Control', 'no-store');
+  ok(res, await getBusinessReview(parsed.data));
+});
+
+const corppassConfirmSchema = z.object({
+  token: singpassReviewTokenSchema,
+  email: z.string().trim().email().max(254).optional().or(z.literal('')),
+});
+
+router.post('/corppass/review/confirm', async (req: Request, res: Response) => {
+  const parsed = corppassConfirmSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid confirmation', parsed.error.flatten());
+    return;
+  }
+  res.set('Cache-Control', 'no-store');
+  ok(res, await confirmBusinessReview(parsed.data.token, { email: parsed.data.email || undefined }));
+});
+
+router.post('/corppass/review/cancel', async (req: Request, res: Response) => {
+  const parsed = z.object({ token: singpassReviewTokenSchema }).safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid review token');
+    return;
+  }
+  await cancelBusinessReview(parsed.data.token);
   ok(res, { cancelled: true });
 });
 

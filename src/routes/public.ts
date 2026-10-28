@@ -554,10 +554,8 @@ router.get('/corppass/review', async (req: Request, res: Response) => {
   ok(res, await getBusinessReview(parsed.data));
 });
 
-const corppassConfirmSchema = z.object({
-  token: singpassReviewTokenSchema,
-  email: z.string().trim().email().max(254).optional().or(z.literal('')),
-});
+// Company data only: contact email/mobile are typed on the Details step.
+const corppassConfirmSchema = z.object({ token: singpassReviewTokenSchema });
 
 router.post('/corppass/review/confirm', async (req: Request, res: Response) => {
   const parsed = corppassConfirmSchema.safeParse(req.body);
@@ -566,7 +564,7 @@ router.post('/corppass/review/confirm', async (req: Request, res: Response) => {
     return;
   }
   res.set('Cache-Control', 'no-store');
-  ok(res, await confirmBusinessReview(parsed.data.token, { email: parsed.data.email || undefined }));
+  ok(res, await confirmBusinessReview(parsed.data.token));
 });
 
 router.post('/corppass/review/cancel', async (req: Request, res: Response) => {

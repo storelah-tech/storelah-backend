@@ -331,11 +331,9 @@ interface BusinessPayload {
   uenStatus: string | null;
   entityType: string | null;
   registeredAddress: string | null;
-  email: string | null;
   reviewTokenHash?: string;
   reviewExpiresAt?: string;
   confirmedAt?: string;
-  contactEdited?: boolean;
 }
 
 export interface BusinessReview {
@@ -349,8 +347,6 @@ export interface BusinessReview {
     entityType: string | null;
     registeredAddress: string | null;
   };
-  /** Corppass account email — editable contact detail. */
-  editable: { email: string | null };
 }
 
 export async function createPendingBusinessVerification(draftRef: string, biz: MyinfoBusiness): Promise<string> {
@@ -363,7 +359,6 @@ export async function createPendingBusinessVerification(draftRef: string, biz: M
     uenStatus: biz.uenStatus,
     entityType: biz.entityType,
     registeredAddress: biz.registeredAddress,
-    email: biz.corppassEmail,
     reviewTokenHash: sha256(secret),
     reviewExpiresAt: new Date(Date.now() + SINGPASS_REVIEW_TTL_MS).toISOString(),
   };
@@ -394,7 +389,6 @@ function businessReviewOf(row: Verification, payload: BusinessPayload): Business
       entityType: payload.entityType,
       registeredAddress: payload.registeredAddress,
     },
-    editable: { email: payload.email },
   };
 }
 
@@ -406,15 +400,11 @@ export async function getBusinessReview(token: string): Promise<BusinessReview> 
 /** "Use these details": VERIFIED + the confirmed company data for the form. */
 export async function confirmBusinessReview(
   token: string,
-  contact: { email?: string },
 ): Promise<{ verification: SerializedVerification; company: BusinessReview }> {
   const { row, payload } = await loadPendingReview<BusinessPayload>(token, MYINFO_BUSINESS_METHOD);
-  const email = contact.email?.trim() || payload.email;
   const { reviewTokenHash: _h, reviewExpiresAt: _e, ...rest } = payload;
   const confirmed: BusinessPayload = {
     ...rest,
-    email,
-    contactEdited: email !== payload.email,
     confirmedAt: new Date().toISOString(),
   };
   const updated = await prisma.verification.update({

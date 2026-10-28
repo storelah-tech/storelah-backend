@@ -19,12 +19,11 @@ const ENTITY = {
   uenStatus: 'Live Company',
   entityType: 'Local Company',
   registeredAddress: '1 RAFFLES PLACE #20-01 Singapore 048616',
-  corppassEmail: 'admin@sample-trading.test',
 };
 
 async function confirmedVerification(draftRef = DRAFT): Promise<string> {
   const token = await createPendingBusinessVerification(draftRef, ENTITY);
-  const { verification } = await confirmBusinessReview(token, {});
+  const { verification } = await confirmBusinessReview(token);
   return verification.id;
 }
 

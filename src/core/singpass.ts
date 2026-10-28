@@ -68,7 +68,8 @@ export const SINGPASS_SESSION_TTL_S = 15 * 60;
 const DEFAULT_ISSUER = 'https://stg-id.singpass.gov.sg/fapi';
 const DEFAULT_SCOPES = 'openid uinfin name dob regadd mobileno email';
 const DEFAULT_CORPPASS_ISSUER = 'https://stg-id.corppass.gov.sg';
-// Data minimisation: only what renting a unit to a company needs.
+// Data minimisation: only what renting a unit to a company needs. Contact
+// email and mobile are not Myinfo Business data — the booker types them in.
 const DEFAULT_CORPPASS_SCOPES = [
   'openid',
   'entity.basic_profile.name',
@@ -76,7 +77,6 @@ const DEFAULT_CORPPASS_SCOPES = [
   'entity.basic_profile.uen_status',
   'entity.basic_profile.type',
   'entity.address',
-  'corppass.email',
 ].join(' ');
 const ASSERTION_TTL_S = 60; // Singpass rejects client assertions / DPoP proofs older than 120s.
 const DISCOVERY_TTL_MS = 60 * 60 * 1000;
@@ -528,7 +528,6 @@ export interface MyinfoBusiness {
   uenStatus: string | null;
   entityType: string | null;
   registeredAddress: string | null;
-  corppassEmail: string | null;
 }
 
 /**
@@ -562,7 +561,6 @@ function formatEntityAddress(v: unknown): string | null {
 export function parseMyinfoBusiness(claims: Record<string, unknown>): MyinfoBusiness {
   const entity = (claims.entity_info ?? {}) as Record<string, unknown>;
   const profile = (entity.basic_profile ?? {}) as Record<string, unknown>;
-  const corppass = (claims.corppass_info ?? {}) as Record<string, unknown>;
   return {
     sub: String(claims.sub ?? ''),
     entityName: businessAttr(profile.name),
@@ -570,7 +568,6 @@ export function parseMyinfoBusiness(claims: Record<string, unknown>): MyinfoBusi
     uenStatus: businessAttr(profile.uen_status),
     entityType: businessAttr(profile.type),
     registeredAddress: formatEntityAddress(entity.address),
-    corppassEmail: businessAttr(corppass.email),
   };
 }
 

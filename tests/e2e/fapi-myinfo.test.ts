@@ -265,15 +265,15 @@ describe('Corppass Myinfo Business (company prefill)', () => {
         entityType: 'Local Company',
         registeredAddress: '1 RAFFLES PLACE #20-01 Singapore 048616',
       },
-      editable: { email: 'admin@sample-trading.test' },
     });
+    expect(review.body.data.editable).toBeUndefined(); // contact details are not Myinfo Business data
 
     const confirm = await request(app)
       .post('/api/v1/public/corppass/review/confirm')
-      .send({ token, email: 'ops@sample-trading.test' })
+      .send({ token })
       .expect(200);
     expect(confirm.body.data.verification).toMatchObject({ status: 'VERIFIED', provider: 'corppass', idType: 'uen' });
-    expect(confirm.body.data.company.editable.email).toBe('ops@sample-trading.test');
+    expect(confirm.body.data.company.verified.uen).toBe('201912345K');
     const row = await prisma.verification.findFirstOrThrow({ where: { bookingRef: 'DRAFT-ABC123' } });
     expect(row.method).toBe('myinfo-business');
     expect((row.payload as Record<string, unknown>).reviewTokenHash).toBeUndefined();

@@ -2,7 +2,7 @@
 // Talks to /api/v1/cms endpoints. Preserves all unit/tenant/booking/floorplan views.
 import { ALL_FACILITIES } from './constants.js';
 import { $, $$, escapeHtml, timeAgo, showBanner, initSelectAll, resetSelectAll } from './dom.js';
-import { get, post, put, patch, del, describeError, getCurrentUser, restoreSession, signIn, signOut, setAuthLostHandler, changePassword } from './api.js';
+import { get, post, put, patch, del, describeError, getCurrentUser, restoreSession, signIn, signOut, setAuthLostHandler, changePassword, requestReset, inspectAuthLink, redeemAuthLink, signOutAll } from './api.js';
 import { applySidebar, applyUser, pageAllowed, firstAllowedPage, canView, watchActions, guardHiddenClicks } from './access.js';
 import { confirmDialog } from './confirmDialog.js';
 import { state, ensureActiveLevel, isAllFacilities } from './state.js';
@@ -4556,13 +4556,91 @@ async function refreshUnitsView() {
 // ====================== SIGN-IN (CMS RBAC) ======================
 // Real operator accounts replace the old /config auto-login. The app stays
 // hidden (body.auth-pending) until a session is restored or signed in.
+// One overlay, three cards: sign in · forgot password · set password.
+function showAuthCard(id) {
+  document.body.classList.add('auth-pending');
+  $('#signin').hidden = false;
+  ['#signinForm', '#forgotForm', '#setPwForm'].forEach((sel) => { $(sel).hidden = sel !== id; });
+}
+
+function wireForgot() {
+  const form = $('#forgotForm');
+  $('#forgotOpen').addEventListener('click', () => {
+    $('#forgotEmail').value = $('#signinEmail').value.trim();
+    $('#forgotDone').hidden = true;
+    $('#forgotError').hidden = true;
+    showAuthCard('#forgotForm');
+    $('#forgotEmail').focus();
+  });
+  $('#forgotBack').addEventListener('click', () => { showAuthCard('#signinForm'); $('#signinEmail').focus(); });
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const err = $('#forgotError');
+    const done = $('#forgotDone');
+    err.hidden = true;
+    const email = $('#forgotEmail').value.trim();
+    if (!email) { err.textContent = 'Enter your email.'; err.hidden = false; return; }
+    const btn = $('#forgotSubmit');
+    btn.disabled = true;
+    try {
+      const r = await requestReset(email);
+      done.textContent = r.message;
+      done.hidden = false;
+    } catch (ex) {
+      err.textContent = describeError(ex);
+      err.hidden = false;
+    } finally {
+      btn.disabled = false;
+    }
+  });
+}
+
+// Invite / reset link: /admin?auth=<token>. Resolves once a password is set
+// and the operator is signed in; falls back to sign-in on a dead link.
+async function showSetPassword(token) {
+  const err = $('#setPwError');
+  showAuthCard('#setPwForm');
+  let info;
+  try {
+    info = await inspectAuthLink(token);
+  } catch (ex) {
+    return showSignIn(describeError(ex));
+  }
+  const invite = info.kind === 'INVITE';
+  $('#setPwTitle').textContent = invite ? 'Set up your account' : 'Choose a new password';
+  $('#setPwSub').textContent = (invite ? `Welcome, ${info.name}. ` : '') + `Choose a password for ${info.email}.`;
+  $('#setPwUser').value = info.email;
+  $('#setPwBack').onclick = () => showSignIn();
+  setTimeout(() => $('#setPwNew').focus(), 0);
+  return new Promise((resolve) => {
+    $('#setPwForm').onsubmit = async (e) => {
+      e.preventDefault();
+      err.hidden = true;
+      const pw = $('#setPwNew').value;
+      if (pw.length < 8) { err.textContent = 'Use at least 8 characters.'; err.hidden = false; return; }
+      if (pw !== $('#setPwConfirm').value) { err.textContent = 'The passwords do not match.'; err.hidden = false; return; }
+      const btn = $('#setPwSubmit');
+      btn.disabled = true;
+      try {
+        await redeemAuthLink(token, pw);
+        $('#signin').hidden = true;
+        document.body.classList.remove('auth-pending');
+        resolve();
+      } catch (ex) {
+        err.textContent = describeError(ex);
+        err.hidden = false;
+      } finally {
+        btn.disabled = false;
+      }
+    };
+  });
+}
+
 function showSignIn(note) {
-  const screen = $('#signin');
   const form = $('#signinForm');
   const err = $('#signinError');
   const noteEl = $('#signinNote');
-  document.body.classList.add('auth-pending');
-  screen.hidden = false;
+  showAuthCard('#signinForm');
   noteEl.hidden = !note;
   noteEl.textContent = note || '';
   err.hidden = true;
@@ -4604,6 +4682,17 @@ function showNoAccess() {
 }
 
 function wireAccount() {
+  $('#signOutAllBtn')?.addEventListener('click', async () => {
+    try {
+      await signOutAll();
+    } catch (ex) {
+      $('#pwError').textContent = describeError(ex);
+      $('#pwError').hidden = false;
+      return;
+    }
+    location.hash = '';
+    location.reload();
+  });
   $('#signOutBtn')?.addEventListener('click', () => {
     signOut();
     location.hash = '';
@@ -4664,7 +4753,22 @@ async function boot() {
       if (!$('#signin').hidden) return; // several calls can 401 at once
       showSignIn(msg).then(() => location.reload());
     });
-    if (!(await restoreSession())) await showSignIn();
+    wireForgot();
+    // Invite / reset links land on /admin?auth=<token>; ?forgot=1 opens the
+    // forgot-password form (link in the account-locked email).
+    const params = new URLSearchParams(location.search);
+    const authToken = params.get('auth');
+    if (authToken || params.has('forgot')) {
+      try { history.replaceState(null, '', location.pathname + location.hash); } catch (e) { }
+    }
+    if (authToken) {
+      await showSetPassword(authToken);
+      // A dead link falls back to sign-in, which resolves on its own.
+    } else if (!(await restoreSession())) {
+      const signedIn = showSignIn();
+      if (params.has('forgot')) $('#forgotOpen').click();
+      await signedIn;
+    }
     document.body.classList.remove('auth-pending');
     applyUser();
     applySidebar();

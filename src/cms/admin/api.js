@@ -104,6 +104,52 @@ export function signOut() {
   armAuthGate();
 }
 
+// Public (no session) calls for the sign-in screen. Raw fetch, never
+// request(): they must not wait on the auth gate.
+async function publicCall(method, path, body) {
+  let res;
+  try {
+    res = await fetch(`${API}${path}`, {
+      method,
+      headers: body ? { 'Content-Type': 'application/json' } : {},
+      body: body ? JSON.stringify(body) : undefined,
+    });
+  } catch (e) {
+    throw new ApiError(0, 'NETWORK', 'Network error — is the backend up?');
+  }
+  const json = await res.json().catch(() => null);
+  if (!res.ok) {
+    const e = json && json.error;
+    throw new ApiError(res.status, (e && e.code) || 'HTTP', (e && e.message) || `Request failed (${res.status})`, e && e.details);
+  }
+  return json.data;
+}
+
+/** Forgot password: emails a reset link if the account exists (same reply either way). */
+export function requestReset(email) {
+  return publicCall('POST', '/auth/forgot', { email });
+}
+
+/** What an invite / reset link is for: { kind, email, name, expiresAt }. */
+export function inspectAuthLink(token) {
+  return publicCall('GET', `/auth/token?token=${encodeURIComponent(token)}`);
+}
+
+/** Sets a password from an invite / reset link and signs in. */
+export async function redeemAuthLink(token, password) {
+  const data = await publicCall('POST', '/auth/token', { token, password });
+  writeToken(data.token);
+  const meData = await fetchMe();
+  if (!meData) throw new ApiError(401, 'UNAUTHORIZED', 'Password saved. Sign in to continue.');
+  settle(meData);
+}
+
+/** Ends every session of the signed-in operator, this one included. */
+export async function signOutAll() {
+  await post('/me/sign-out-all', {});
+  signOut();
+}
+
 /** Changes the signed-in operator's password and keeps this session. */
 export async function changePassword(currentPassword, newPassword) {
   const data = await post('/me/password', { currentPassword, newPassword });

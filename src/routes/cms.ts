@@ -4,6 +4,8 @@ import { prisma } from '../lib/prisma';
 import { ok, created, fail } from '../lib/http';
 import { dateRangeFields, resolveDateRange } from '../lib/dateRange';
 import { requireAuth, signToken, adminOf } from '../middleware/auth';
+import { cmsBaseUrl } from '../lib/host';
+import { inspectToken, redeemToken, requestPasswordReset, sendInvite, sendResetLink, signOutEverywhere } from '../core/cmsAuth';
 import { applyRoutePermissions } from '../lib/routePermissions';
 import { getSummary } from '../core/summary';
 import {
@@ -466,7 +468,7 @@ router.post('/login', async (req: Request, res: Response) => {
     fail(res, 400, 'VALIDATION', 'Enter your email and password', parsed.error.flatten());
     return;
   }
-  const admin = await authenticate(parsed.data.email, parsed.data.password);
+  const admin = await authenticate(parsed.data.email, parsed.data.password, { baseUrl: cmsBaseUrl(req) });
   ok(res, { token: signToken(admin), user: { email: admin.email, name: admin.name, role: admin.role.key } });
 });
 
@@ -489,6 +491,54 @@ router.get('/me', requireAuth, async (req: Request, res: Response) => {
 const changePasswordSchema = z.object({
   currentPassword: z.string().min(1).max(200),
   newPassword: z.string().min(8, 'Use at least 8 characters').max(200),
+});
+
+// Sign out on every device (including this one).
+router.post('/me/sign-out-all', requireAuth, async (req: Request, res: Response) => {
+  const me = adminOf(req) as Principal;
+  await signOutEverywhere(me.id, { id: me.id, email: me.email });
+  ok(res, { signedOut: true });
+});
+
+// ---- Invite + password-reset links (public; the token is the credential) ----
+
+const forgotSchema = z.object({ email: z.string().trim().email() });
+const authTokenSchema = z.object({ token: z.string().min(20).max(200) });
+const setPasswordSchema = authTokenSchema.extend({
+  password: z.string().min(8, 'Use at least 8 characters').max(200),
+});
+
+// Forgot password: always the same answer, so it never reveals which emails
+// have an account. Throttled per account in the core.
+router.post('/auth/forgot', async (req: Request, res: Response) => {
+  const parsed = forgotSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Enter a valid email address', parsed.error.flatten());
+    return;
+  }
+  await requestPasswordReset(parsed.data.email, cmsBaseUrl(req));
+  ok(res, { message: 'If that email has a CMS account, a reset link is on its way. It expires in 1 hour.' });
+});
+
+// What an invite/reset link is for (the set-password screen shows it).
+router.get('/auth/token', async (req: Request, res: Response) => {
+  const parsed = authTokenSchema.safeParse(req.query);
+  if (!parsed.success) {
+    fail(res, 400, 'LINK_INVALID', 'This link has expired or was already used. Ask for a new one.');
+    return;
+  }
+  ok(res, await inspectToken(parsed.data.token));
+});
+
+// Set a password from an invite/reset link, then sign in.
+router.post('/auth/token', async (req: Request, res: Response) => {
+  const parsed = setPasswordSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Use a password of at least 8 characters', parsed.error.flatten());
+    return;
+  }
+  const user = await redeemToken(parsed.data.token, parsed.data.password);
+  ok(res, { token: signToken(user) });
 });
 
 // Change own password. Signs out every other session; returns a fresh token.
@@ -2998,7 +3048,8 @@ router.put('/business-rules', requireAuth, async (req: Request, res: Response) =
 const createUserSchema = z.object({
   email: z.string().email(),
   name: z.string().trim().min(1).max(120),
-  password: z.string().min(8).max(200),
+  // Omit to invite: the operator sets their own password from an emailed link.
+  password: z.string().min(8).max(200).optional(),
   roleId: z.string().min(1),
 });
 
@@ -3040,7 +3091,28 @@ router.post('/users', requireAuth, async (req: Request, res: Response) => {
     fail(res, 400, 'VALIDATION', 'Invalid user payload', parsed.error.flatten());
     return;
   }
-  created(res, await createUser(parsed.data, actorOf(req)));
+  const user = await createUser(parsed.data, actorOf(req));
+  if (parsed.data.password) {
+    created(res, user);
+    return;
+  }
+  const invite = await sendInvite(user.id, actorOf(req), cmsBaseUrl(req));
+  created(res, { ...user, invite });
+});
+
+// Resend an invite (new link; the old one stops working).
+router.post('/users/:id/invite', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await sendInvite(String(req.params.id), actorOf(req), cmsBaseUrl(req)));
+});
+
+// Email a password-reset link to an operator.
+router.post('/users/:id/reset-password', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await sendResetLink(String(req.params.id), actorOf(req), cmsBaseUrl(req)));
+});
+
+// Sign an operator out on every device.
+router.post('/users/:id/sign-out', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await signOutEverywhere(String(req.params.id), actorOf(req)));
 });
 
 router.patch('/users/:id', requireAuth, async (req: Request, res: Response) => {

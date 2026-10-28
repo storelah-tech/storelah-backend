@@ -161,7 +161,7 @@ async function main() {
   // if missing. The seeded admin is the Owner (the only role that can add users).
   await ensureSystemRoles();
   await prisma.adminUser.create({
-    data: { email: adminEmail, name: 'Faisal Z.', passwordHash, roleId: await roleIdByKey(OWNER_ROLE_KEY) },
+    data: { email: adminEmail, name: 'Faisal Z.', passwordHash, roleId: await roleIdByKey(OWNER_ROLE_KEY), activatedAt: new Date() },
   });
 
   const sizeIds: Record<SizeKey, string> = {} as any;

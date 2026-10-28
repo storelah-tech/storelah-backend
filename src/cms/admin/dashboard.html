@@ -982,6 +982,13 @@ body.lead-drawer-open{overflow-x:hidden}
 .role-grid input[type=checkbox]{width:16px;height:16px;accent-color:var(--olive);cursor:pointer}
 .role-actions{display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end;margin-top:12px}
 .role-note{color:var(--muted);font-size:12px;margin:0 0 10px}
+.signin-card[hidden]{display:none}
+.signin-sub{margin:0;color:var(--muted);font-size:13.5px;line-height:1.5}
+.signin-link{border:0;background:none;padding:2px 0;color:var(--olive);font:600 13px Manrope,system-ui,sans-serif;cursor:pointer;justify-self:start;text-decoration:underline;text-underline-offset:3px}
+.signin-link:focus-visible{outline:2px solid var(--amber);outline-offset:2px}
+.pw-card footer .pw-signout{margin-right:auto}
+.link-box{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:6px}
+.link-box input{flex:1 1 280px;min-width:0;font:12px ui-monospace,Menlo,monospace;padding:7px 9px;border:1.5px solid var(--line);border-radius:7px;background:var(--white)}
 /* ---- CMS RBAC: sign-in screen, user menu, permission hiding ---- */
 body.auth-pending .app{visibility:hidden}
 .signin[hidden]{display:none}
@@ -1009,7 +1016,8 @@ body.auth-pending .app{visibility:hidden}
 </head>
 <body class="auth-pending">
 
-<!-- SIGN-IN (CMS RBAC: real operator accounts; replaces the old auto-login) -->
+<!-- SIGN-IN (CMS RBAC: real operator accounts). One card, three views:
+     sign in · forgot password · set password (from an invite/reset link). -->
 <div class="signin" id="signin" hidden>
   <form class="signin-card" id="signinForm" novalidate>
     <div class="signin-brand">StoreLah</div>
@@ -1019,7 +1027,29 @@ body.auth-pending .app{visibility:hidden}
     <div class="field"><label for="signinPassword">Password</label><input id="signinPassword" name="password" type="password" autocomplete="current-password" required></div>
     <p class="signin-error" id="signinError" role="alert" hidden></p>
     <button class="primary" type="submit" id="signinSubmit">Sign in</button>
-    <small>Forgot your password? Ask an Owner to reset it in Global Settings › Team &amp; access.</small>
+    <button class="signin-link" type="button" id="forgotOpen">Forgot your password?</button>
+  </form>
+  <form class="signin-card" id="forgotForm" novalidate hidden>
+    <div class="signin-brand">StoreLah</div>
+    <h1>Reset your password</h1>
+    <p class="signin-sub">Enter your work email. If it has a CMS account, we&rsquo;ll email a link to choose a new password.</p>
+    <div class="field"><label for="forgotEmail">Email</label><input id="forgotEmail" type="email" autocomplete="username" required></div>
+    <p class="signin-note" id="forgotDone" role="status" hidden></p>
+    <p class="signin-error" id="forgotError" role="alert" hidden></p>
+    <button class="primary" type="submit" id="forgotSubmit">Email me a reset link</button>
+    <button class="signin-link" type="button" id="forgotBack">Back to sign in</button>
+  </form>
+  <form class="signin-card" id="setPwForm" novalidate hidden>
+    <div class="signin-brand">StoreLah</div>
+    <h1 id="setPwTitle">Choose a password</h1>
+    <p class="signin-sub" id="setPwSub"></p>
+    <input type="email" id="setPwUser" autocomplete="username" hidden>
+    <div class="field"><label for="setPwNew">New password</label><input id="setPwNew" type="password" autocomplete="new-password" minlength="8" required></div>
+    <div class="field"><label for="setPwConfirm">Repeat new password</label><input id="setPwConfirm" type="password" autocomplete="new-password" minlength="8" required></div>
+    <small>At least 8 characters. A longer passphrase is stronger.</small>
+    <p class="signin-error" id="setPwError" role="alert" hidden></p>
+    <button class="primary" type="submit" id="setPwSubmit">Save password and sign in</button>
+    <button class="signin-link" type="button" id="setPwBack">Back to sign in</button>
   </form>
 </div>
 
@@ -1034,7 +1064,7 @@ body.auth-pending .app{visibility:hidden}
       <div class="field"><label for="pwConfirm">Repeat new password</label><input id="pwConfirm" type="password" autocomplete="new-password" minlength="8" required></div>
       <p class="pw-error" id="pwError" role="alert" hidden></p>
     </section>
-    <footer><button class="btn" type="button" data-close-pw>Cancel</button><button class="primary" type="submit" id="pwSubmit">Change password</button></footer>
+    <footer><button class="btn pw-signout" type="button" id="signOutAllBtn">Sign out on all devices</button><button class="btn" type="button" data-close-pw>Cancel</button><button class="primary" type="submit" id="pwSubmit">Change password</button></footer>
   </form>
 </div>
 
@@ -1984,14 +2014,14 @@ body.auth-pending .app{visibility:hidden}
            (sidebar × View/Create/Edit/Delete/Approve), recent permission changes. -->
       <div class="module-panel" id="settings-team">
         <div class="tbl-card" id="usersSection">
-          <div class="sec-hdr"><div><div class="sec-title">Operators</div><div class="sec-sub">Role decides what each person sees and can change · facilities limit which sites · saves immediately — header Save does not apply here</div></div></div>
+          <div class="sec-hdr"><div><div class="sec-title">Operators</div><div class="sec-sub">Invite people by email — they choose their own password · role decides what they see and can change · facilities limit which sites</div></div></div>
+          <div class="link-note" id="teamLinkNote" hidden></div>
           <table class="data-tbl" id="usersTable"><thead><tr><th>Operator</th><th>Role</th><th>Facilities</th><th></th></tr></thead><tbody id="usersBody"></tbody></table>
           <div class="tbl-toolbar team-add">
             <input type="email" id="uf-email" class="tbl-search" placeholder="Email" aria-label="New operator email" autocomplete="off">
             <input type="text" id="uf-name" class="tbl-search" placeholder="Name" aria-label="New operator name" autocomplete="off">
-            <input type="password" id="uf-password" class="tbl-search" placeholder="Temporary password (8+ characters)" aria-label="Temporary password" autocomplete="new-password">
             <select id="uf-role" class="tbl-select" aria-label="Role"></select>
-            <button class="tb-btn primary" id="uf-add" type="button">+ Add operator</button>
+            <button class="tb-btn primary" id="uf-add" type="button">Send invite</button>
           </div>
         </div>
         <div class="tbl-card" id="rolesSection" style="margin-top:16px;">

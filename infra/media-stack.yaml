@@ -1,6 +1,10 @@
 # =============================================================================
 # storelah-media — CMS media bucket + CloudFront CDN (site builder Phase 0)
 #
+# !! DO NOT DEPLOY AS-IS (2026-10-29): prod already uses the hand-made bucket
+# !! storelah-content-prod. This creates a SECOND bucket. Rework to front the
+# !! existing bucket first. See docs/backend-deploy.md.
+#
 # Stack: storelah-media      Region: ap-southeast-1
 #
 # WHY

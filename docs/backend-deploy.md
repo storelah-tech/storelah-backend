@@ -128,8 +128,13 @@ owner's explicit go-ahead. Neither touches the gates.
 
 ### 1. Media bucket (`infra/media-stack.yaml`, stack `storelah-media`)
 
-Why: without `CONTENT_S3_BUCKET` the Lambda saves CMS uploads to its own
-ephemeral disk, so they vanish on the next cold start.
+> **DO NOT DEPLOY AS-IS (2026-10-29).** Prod already has a hand-made bucket
+> `storelah-content-prod` (public read on `content/*`, inline role policy
+> `storelah-content-s3-write`, Lambda env `CONTENT_S3_BUCKET`/`CONTENT_S3_REGION`),
+> and it is verified working. This template would create a second bucket. Keep it
+> only as the basis for an optional CloudFront-in-front change that targets the
+> existing bucket. The env-merge procedure below remains the reference for any
+> Lambda env change.
 
 1. Confirm the live role name: `aws lambda get-function-configuration
    --function-name storelah-backend --query Role` (expect

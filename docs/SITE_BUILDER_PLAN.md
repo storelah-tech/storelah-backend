@@ -19,7 +19,7 @@ storelah.sg stays a fully static export on CloudFront (standing rule).
 | `ContentItem` (v2, typed items + image upload, drafts) | Live on prod, editable in **Content Management** (`contentView.js`). |
 | Landing consumption | **None.** The Oct-8 IA rework (`ac1fd44`) replaced the homepage. `src/components/Home.tsx` (the only `useSiteContent()` caller) is now orphaned. All 22 routes are hard-coded JSX in `src/app/**/page.tsx` plus arrays in `src/lib/site.ts` / `src/data/site.ts`. |
 | Landing CI | `landing-deploy.yaml` runs on push to `main` and `workflow_dispatch`, then builds, syncs S3 and invalidates CloudFront. The build does **not** pass `NEXT_PUBLIC_API_URL`. |
-| Image storage | `CONTENT_S3_BUCKET` is not provisioned, so uploads use the local fallback. **That is ephemeral on Lambda**, so prod uploads are effectively broken. |
+| Image storage | **Provisioned** (decision log, owner-requested): bucket `storelah-content-prod` (ap-southeast-1), public `GetObject` on `content/*` only, inline role policy `storelah-content-s3-write`, Lambda env `CONTENT_S3_BUCKET` + `CONTENT_S3_REGION`. Served from the S3 regional URL (no CDN). Public read re-verified 2026-10-29. |
 | Styling | One hand-written design system in `globals.css` (3.5k lines). Brand tokens are `--terra/--paper/--ink/--sage/--line…`. Sections are `.section.{white,pink,sage,terra}`, `.split`, `.container`. This is a good base for a block library. |
 
 Summary: we have two half-used content stores and a landing site that reads
@@ -268,16 +268,17 @@ Each phase ends deployable. Lane in brackets.
 
 > **Status 2026-10-29: repo work done, prod steps pending.** Branch
 > `feature/site-builder-phase0` in both backend and landing (cut from `main`,
-> because `develop` is behind `main` in both repos). Done: `infra/media-stack.yaml`,
+> because `develop` is behind `main` in both repos). Done: `infra/media-stack.yaml` (superseded, see step 1),
 > runbook `backend-deploy.md` › "CMS MEDIA BUCKET + SITE-BUILDER PUBLISH
 > TRIGGER", landing workflow env + `publishId` input, and the dead pre-Oct-8
-> tree deleted (9 files). Pending: stack deploy + Lambda env merge (owner
-> go-ahead, AWS re-login), GitHub token (owner), Q1 preview hosting.
+> tree deleted (9 files). Correction 2026-10-29: the media bucket already existed
+> (`storelah-content-prod`), so the stack was **not** deployed. Pending: optional
+> CDN in front of the existing bucket, GitHub token (owner), Q1 preview hosting.
 >
-1. [devops] Provision the media S3 bucket + CloudFront (OAC), grant the
-   Lambda role `s3:PutObject/DeleteObject` on the prefix, and set
-   `CONTENT_S3_*`. *This fixes today's broken prod uploads, so do it
-   regardless of the rest of the plan.*
+1. [devops] ~~Provision the media bucket~~ **Already done** (`storelah-content-prod`).
+   Optional: put CloudFront in front of it (edge caching, `media.storelah.sg`).
+   `infra/media-stack.yaml` currently creates a *new* bucket and **must not be
+   deployed as-is**. It must be reworked to front the existing bucket first.
 2. [devops] Create the GitHub dispatch token. Add `NEXT_PUBLIC_API_URL/PREFIX`
    to the landing workflow.
 3. [owner decision] Preview hosting. See §7, Q1.

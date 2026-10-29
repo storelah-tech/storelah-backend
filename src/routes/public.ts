@@ -9,6 +9,7 @@ import { getPublicFloorPlan } from '../core/floorPlans';
 import { listProtectionPlans, listAddons } from '../core/extras';
 import { getPublicSettings } from '../core/settings';
 import { getSiteContentWithMeta } from '../core/siteContent';
+import { getSiteBundle, getPageDocJsonSchema } from '../core/sitePages';
 import { listPublishedContent, getPublishedContent } from '../core/content';
 import { readLocalImage } from '../lib/contentStorage';
 import { createPublicLead } from '../core/leads';
@@ -192,6 +193,18 @@ router.get('/settings', async (_req: Request, res: Response) => {
 router.get('/site-content', async (_req: Request, res: Response) => {
   const { values, updatedAt } = await getSiteContentWithMeta();
   ok(res, values, { updatedAt });
+});
+
+// PUBLIC site-builder bundle: live page versions only (never drafts), read by
+// the landing build (storelah-landing src/site-builder/bundle.ts). No auth,
+// no PII. Envelope { data: { pages: [{ slug, version, doc }], publishId, publishedAt } }.
+router.get('/site/bundle', async (_req: Request, res: Response) => {
+  ok(res, await getSiteBundle());
+});
+
+// PUBLIC JSON Schema of the page document, for the landing contract test.
+router.get('/site/schema', async (_req: Request, res: Response) => {
+  ok(res, getPageDocJsonSchema());
 });
 
 // PUBLIC landing content (mini-WordPress read surface for the landing site).

@@ -1,0 +1,3091 @@
+{
+  "version": 1,
+  "note": "Last-known-good site-builder content. Used when the backend bundle is unavailable; also the seed the backend imports (site-builder Phase 1). Edit via the CMS once live — hand edits here are overwritten by publish snapshots.",
+  "settings": {
+    "topline": {
+      "show": true,
+      "text": "Opening soon in Sembawang · Launch code **StoreLah100** · [Explore the launch offer](/promotions/)"
+    },
+    "contact": {
+      "email": "hello@storelah.sg"
+    },
+    "header": {
+      "links": [
+        {
+          "label": "Sizes & prices",
+          "href": "/sizes-pricing/"
+        },
+        {
+          "label": "Locations",
+          "href": "/locations/"
+        },
+        {
+          "label": "Promotions",
+          "href": "/promotions/"
+        }
+      ],
+      "groups": [
+        {
+          "label": "Discover storage",
+          "links": [
+            {
+              "label": "What is self-storage?",
+              "href": "/what-is-self-storage/",
+              "desc": "Your own unit. Explained simply."
+            },
+            {
+              "label": "Ways to use your space",
+              "href": "/storage-ideas/",
+              "desc": "Moving, renovating, everyday things and stock."
+            },
+            {
+              "label": "How it works",
+              "href": "/how-it-works/",
+              "desc": "From choosing to moving in."
+            },
+            {
+              "label": "What you can store",
+              "href": "/what-you-can-store/",
+              "desc": "Suitable items and important limits."
+            }
+          ]
+        },
+        {
+          "label": "Help & advice",
+          "links": [
+            {
+              "label": "Find your size",
+              "href": "/size-guide/",
+              "desc": "Start with the things you own."
+            },
+            {
+              "label": "FAQs",
+              "href": "/faqs/",
+              "desc": "Answers to practical questions."
+            },
+            {
+              "label": "Access & security",
+              "href": "/access-security/",
+              "desc": "What to know before visiting."
+            },
+            {
+              "label": "Protection Plan",
+              "href": "/protection-plan/",
+              "desc": "Understand required cover."
+            },
+            {
+              "label": "Packing & moving",
+              "href": "/packing-supplies/",
+              "desc": "Plan an easier move."
+            },
+            {
+              "label": "Storage guides",
+              "href": "/guides/",
+              "desc": "Useful tips, in one place."
+            }
+          ]
+        },
+        {
+          "label": "About us",
+          "links": [
+            {
+              "label": "Our story",
+              "href": "/about/",
+              "desc": "A fresh approach to storage."
+            },
+            {
+              "label": "Why StoreLah",
+              "href": "/why-storelah/",
+              "desc": "The things we care about."
+            },
+            {
+              "label": "Contact us",
+              "href": "/contact/",
+              "desc": "A human conversation."
+            },
+            {
+              "label": "Promotions",
+              "href": "/promotions/",
+              "desc": "Value with clear conditions."
+            }
+          ]
+        }
+      ],
+      "cta": {
+        "label": "Reserve your space",
+        "href": "/reserve/",
+        "style": "primary"
+      }
+    },
+    "footer": {
+      "tagline": "Your personal storeroom.\nMore room for real life.",
+      "columns": [
+        {
+          "heading": "Choose your space",
+          "links": [
+            {
+              "label": "Sizes & prices",
+              "href": "/sizes-pricing/"
+            },
+            {
+              "label": "Locations",
+              "href": "/locations/"
+            },
+            {
+              "label": "Sembawang",
+              "href": "/locations/sembawang/"
+            },
+            {
+              "label": "Size guide",
+              "href": "/size-guide/"
+            },
+            {
+              "label": "Offers",
+              "href": "/promotions/"
+            }
+          ]
+        },
+        {
+          "heading": "Storage, explained",
+          "links": [
+            {
+              "label": "What is self-storage?",
+              "href": "/what-is-self-storage/"
+            },
+            {
+              "label": "Storage ideas",
+              "href": "/storage-ideas/"
+            },
+            {
+              "label": "How it works",
+              "href": "/how-it-works/"
+            },
+            {
+              "label": "FAQs",
+              "href": "/faqs/"
+            },
+            {
+              "label": "Storage guides",
+              "href": "/guides/"
+            }
+          ]
+        },
+        {
+          "heading": "Meet StoreLah",
+          "links": [
+            {
+              "label": "About us",
+              "href": "/about/"
+            },
+            {
+              "label": "Why StoreLah",
+              "href": "/why-storelah/"
+            },
+            {
+              "label": "Access & security",
+              "href": "/access-security/"
+            },
+            {
+              "label": "Protection Plan",
+              "href": "/protection-plan/"
+            },
+            {
+              "label": "Contact us",
+              "href": "/contact/"
+            },
+            {
+              "label": "Book a viewing",
+              "href": "/book-a-viewing/"
+            }
+          ]
+        }
+      ],
+      "copyright": "© 2026 StoreLah. All rights reserved.",
+      "legal": [
+        {
+          "label": "Privacy notice",
+          "href": "/privacy/"
+        },
+        {
+          "label": "Website terms",
+          "href": "/terms/"
+        }
+      ]
+    },
+    "ctaBand": {
+      "title": "Let’s find your space.",
+      "text": "See the sizes, ask a question or come take a look first.",
+      "ctas": [
+        {
+          "label": "Book your space",
+          "href": "/reserve/",
+          "style": "light"
+        },
+        {
+          "label": "Book a viewing",
+          "href": "/book-a-viewing/",
+          "style": "outline"
+        }
+      ]
+    },
+    "helpWidget": {
+      "show": true,
+      "eyebrow": "HELLO FROM STORELAH",
+      "heading": "A little help?",
+      "text": "Ask about a size, current offers or a viewing. We’re happy to help.",
+      "image": {
+        "src": "/assets/launch-service.webp",
+        "alt": "Illustrative StoreLah customer service team",
+        "frame": "plain"
+      }
+    }
+  },
+  "pages": {
+    "about": {
+      "seo": {
+        "title": "About Us | StoreLah Self Storage",
+        "description": "Small enough to care. Built to do it properly. StoreLah brings a fresh approach to self-storage."
+      },
+      "sections": [
+        {
+          "id": "hero",
+          "type": "pageHero",
+          "variant": "split",
+          "props": {
+            "crumb": "About Us",
+            "eyebrow": "ABOUT US",
+            "heading": "Small enough to care.\nBuilt to do it properly.",
+            "paragraphs": [
+              "StoreLah brings a fresh approach to self-storage: practical spaces, straightforward information and a human experience."
+            ],
+            "image": {
+              "src": "/assets/launch-service.webp",
+              "alt": "Illustrative StoreLah self-storage experience"
+            }
+          }
+        },
+        {
+          "id": "why",
+          "type": "split",
+          "style": {
+            "bg": "white"
+          },
+          "props": {
+            "columns": [
+              {
+                "kind": "text",
+                "eyebrow": "WHY WE’RE HERE",
+                "heading": "Storage should\ngive you space.\nNot more admin."
+              },
+              {
+                "kind": "text",
+                "paragraphs": [
+                  "Life in Singapore can feel full. Sometimes that means a busy home, a renovation in progress or a business taking its next step.",
+                  "StoreLah exists to make that extra space easier to find and easier to use. We focus on what matters: a suitable unit, understandable costs and access that fits around you.",
+                  "Our approach is shaped by hands-on experience in the self-storage industry, with a fresh focus on making the customer journey simpler."
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "values",
+          "type": "featureCards",
+          "style": {
+            "bg": "pink"
+          },
+          "props": {
+            "eyebrow": "OUR WAY OF DOING THINGS",
+            "heading": "Three things\nwe care about.",
+            "items": [
+              {
+                "n": "01",
+                "title": "Make it clear",
+                "text": "Explain the space, the price and the terms before someone commits."
+              },
+              {
+                "n": "02",
+                "title": "Make it useful",
+                "text": "Help customers choose around the things they actually own and how they’ll use their unit."
+              },
+              {
+                "n": "03",
+                "title": "Make it human",
+                "text": "Be approachable, answer the practical questions and make it easy to ask for help."
+              }
+            ]
+          }
+        },
+        {
+          "id": "local",
+          "type": "split",
+          "props": {
+            "columns": [
+              {
+                "kind": "image",
+                "image": {
+                  "src": "/assets/friends.webp",
+                  "alt": "Friends with a StoreLah moving trolley",
+                  "frame": "feature"
+                }
+              },
+              {
+                "kind": "text",
+                "eyebrow": "STARTING LOCAL",
+                "heading": "First, Sembawang.\nThen, more room.",
+                "paragraphs": [
+                  "We’re starting with a local facility and building from there. Every next step should make the experience better for the people using it."
+                ],
+                "ctas": [
+                  {
+                    "label": "Explore our location",
+                    "href": "/locations/sembawang/"
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "cta",
+          "type": "ctaBand",
+          "props": {}
+        }
+      ]
+    },
+    "how-it-works": {
+      "seo": {
+        "title": "How It Works | StoreLah Self Storage",
+        "description": "Your space. Booked on your terms. Choose your unit, see every cost, get your access code."
+      },
+      "sections": [
+        {
+          "id": "hero",
+          "type": "pageHero",
+          "variant": "split",
+          "props": {
+            "crumb": "How It Works",
+            "eyebrow": "HOW IT WORKS",
+            "heading": "Your space.\nBooked on your terms.",
+            "paragraphs": [
+              "Choose your unit and see every cost before you pay. Once open, complete your booking and get your access code on the spot."
+            ],
+            "image": {
+              "src": "/assets/launch-service.webp",
+              "alt": "Illustrative StoreLah self-storage experience"
+            }
+          }
+        },
+        {
+          "id": "steps",
+          "type": "featureCards",
+          "style": {
+            "bg": "white"
+          },
+          "props": {
+            "items": [
+              {
+                "n": "01",
+                "title": "Choose the exact space",
+                "text": "Pick the facility, storage size and start date. Explore the floorplan and select your preferred unit."
+              },
+              {
+                "n": "02",
+                "title": "Know your total. Then pay.",
+                "text": "See rental, required protection and selected extras. Complete verification, the agreement and payment."
+              },
+              {
+                "n": "03",
+                "title": "Get your code. Get moving.",
+                "text": "After a completed booking and payment, receive your access code. Use it from your confirmed start date, at any hour."
+              }
+            ]
+          }
+        },
+        {
+          "id": "reserve",
+          "type": "split",
+          "style": {
+            "bg": "pink"
+          },
+          "props": {
+            "columns": [
+              {
+                "kind": "text",
+                "heading": "Reserving before opening?",
+                "paragraphs": [
+                  "Your space can be planned ahead. Your move-in starts once the facility is open and your confirmed booking date begins."
+                ],
+                "ctas": [
+                  {
+                    "label": "Reserve your space",
+                    "href": "/reserve/"
+                  }
+                ]
+              },
+              {
+                "kind": "card",
+                "heading": "Prefer to see it first?",
+                "paragraphs": [
+                  "Once open, arrange a self-guided viewing. Verify your identity on arrival, follow the entry instructions and explore at your approved time. Book online on the spot if the unit is right for you."
+                ],
+                "ctas": [
+                  {
+                    "label": "Plan a viewing",
+                    "href": "/book-a-viewing/",
+                    "style": "link"
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "cta",
+          "type": "ctaBand",
+          "props": {}
+        }
+      ]
+    },
+    "faqs": {
+      "seo": {
+        "title": "FAQs | StoreLah Self Storage",
+        "description": ""
+      },
+      "sections": [
+        {
+          "id": "hero",
+          "type": "pageHero",
+          "variant": "textOnly",
+          "props": {
+            "crumb": "Faqs",
+            "eyebrow": "FAQS",
+            "heading": "Questions?\nStart here.",
+            "paragraphs": [
+              "Find the practical details on size, access, payments and getting started."
+            ]
+          }
+        },
+        {
+          "id": "faq",
+          "type": "faqSearch",
+          "style": {
+            "bg": "white"
+          },
+          "props": {
+            "searchLabel": "Search questions",
+            "placeholder": "Try “access”, “protection” or “move out”",
+            "emptyText": "No matching questions. Try another search, or contact us.",
+            "items": [
+              {
+                "q": "What is self-storage?",
+                "a": "Self-storage is your own lockable space in a shared facility. You choose a unit, bring your belongings and organise them yourself. Unlike collection-and-delivery storage, you can visit your unit directly.",
+                "cat": "getting started"
+              },
+              {
+                "q": "How do I choose a size?",
+                "a": "Make a list of your items and measure the largest pieces. Use our size guide as a starting point, then confirm dimensions and access space with the team. Packing style and stacking affect what fits.",
+                "cat": "getting started"
+              },
+              {
+                "q": "Can I access my belongings anytime?",
+                "a": "StoreLah offers 24/7 self-access after your booking and access are activated. Use your assigned PIN for facility entry and follow your unit access instructions.",
+                "cat": "access"
+              },
+              {
+                "q": "Do I pay a security deposit or admin fee?",
+                "a": "No security deposit or admin fee. Your quotation will separately show rental, mandatory protection and any optional services you select.",
+                "cat": "pricing"
+              },
+              {
+                "q": "Is protection included in the advertised rental?",
+                "a": "Starting rental figures do not include the mandatory Protection Plan unless your quotation explicitly says so. Review the coverage, premium, exclusions and total monthly cost before booking.",
+                "cat": "pricing"
+              },
+              {
+                "q": "Is there a long-term contract?",
+                "a": "Standard monthly storage has no long-term lock-in. If you choose a promotional commitment plan, a minimum stay and early-exit conditions may apply. Confirm those terms before agreeing.",
+                "cat": "pricing"
+              },
+              {
+                "q": "Can I move in today?",
+                "a": "Once the facility is open, you can book and move in on the same day. Complete the booking requirements and payment to receive your access code. Pre-opening reservations begin from the confirmed opening and start date.",
+                "cat": "getting started"
+              },
+              {
+                "q": "What can I store?",
+                "a": "Most clean, dry household belongings, furniture, documents, equipment and permitted business stock are suitable. Do not store perishables, hazardous materials, illegal items or living things. Ask about anything you are unsure of.",
+                "cat": "storage rules"
+              },
+              {
+                "q": "Can someone else access my unit?",
+                "a": "Only share access through the method permitted by your agreement. Ask the team about authorised users if a family member, colleague or mover will visit.",
+                "cat": "access"
+              },
+              {
+                "q": "Can I view a unit first?",
+                "a": "Once open, self-guided viewings can be arranged outside office hours. Verify your identity on arrival and follow the approved viewing access instructions. Pre-opening requests will be confirmed when visits become available.",
+                "cat": "getting started"
+              },
+              {
+                "q": "How does monthly billing work?",
+                "a": "Rental is billed monthly under your storage agreement. Your quotation should show billing dates, any initial part-month charges and the payment options available.",
+                "cat": "pricing"
+              },
+              {
+                "q": "Can I run my business from a unit?",
+                "a": "Units are for storing belongings and permitted stock. Office use, retail activity, fulfilment services and delivery acceptance are not included by default. Confirm permitted use before booking.",
+                "cat": "storage rules"
+              },
+              {
+                "q": "How do I move out?",
+                "a": "Follow the notice period in your agreement, clear your unit and complete the required move-out checks. Ask the team about the process before your planned departure.",
+                "cat": "storage rules"
+              },
+              {
+                "q": "Which location is available?",
+                "a": "Sembawang is taking reservations ahead of opening. Woodlands and Ubi are also coming soon. Your move-in or viewing begins only from the confirmed opening and booking date.",
+                "cat": "getting started"
+              }
+            ]
+          }
+        },
+        {
+          "id": "cta",
+          "type": "ctaBand",
+          "props": {
+            "title": "Still wondering about something?",
+            "text": "We’re happy to help you find the answer."
+          }
+        }
+      ]
+    },
+    "privacy": {
+      "seo": {
+        "title": "Privacy | StoreLah Self Storage",
+        "description": "Privacy, plainly. How this site handles an enquiry you choose to send."
+      },
+      "sections": [
+        {
+          "id": "hero",
+          "type": "pageHero",
+          "variant": "textOnly",
+          "props": {
+            "crumb": "Privacy Notice",
+            "eyebrow": "PRIVACY NOTICE",
+            "heading": "Privacy, plainly.",
+            "paragraphs": [
+              "How this site handles an enquiry you choose to send."
+            ]
+          }
+        },
+        {
+          "id": "body",
+          "type": "article",
+          "style": {
+            "bg": "white"
+          },
+          "props": {
+            "blocks": [
+              {
+                "kind": "heading",
+                "text": "Your enquiry stays in your hands."
+              },
+              {
+                "kind": "paragraph",
+                "text": "The contact and viewing forms prepare an email draft. They do not submit your enquiry to a website database. Information is sent to StoreLah only when you send that email."
+              },
+              {
+                "kind": "heading",
+                "text": "What you share"
+              },
+              {
+                "kind": "paragraph",
+                "text": "Your request can include your name, email address, preferred date, storage needs and message. Share only the information needed for the enquiry."
+              },
+              {
+                "kind": "heading",
+                "text": "Why you share it"
+              },
+              {
+                "kind": "paragraph",
+                "text": "The information helps the team respond about availability, a quote or a viewing. Contact hello@storelah.sg about access, correction or deletion of enquiry information."
+              },
+              {
+                "kind": "heading",
+                "text": "Website resources"
+              },
+              {
+                "kind": "paragraph",
+                "text": "This website loads fonts from Google Fonts. Your email application and linked services have their own privacy policies."
+              },
+              {
+                "kind": "paragraph",
+                "text": "A complete company privacy policy, data protection contact and retention details should be confirmed before adding online booking or further data collection.",
+                "tone": "fine"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "terms": {
+      "seo": {
+        "title": "Terms | StoreLah Self Storage",
+        "description": "Website terms. Useful information before relying on a price, image or request."
+      },
+      "sections": [
+        {
+          "id": "hero",
+          "type": "pageHero",
+          "variant": "textOnly",
+          "props": {
+            "crumb": "Website Terms",
+            "eyebrow": "WEBSITE TERMS",
+            "heading": "Website terms.",
+            "paragraphs": [
+              "Useful information before relying on a price, image or request."
+            ]
+          }
+        },
+        {
+          "id": "body",
+          "type": "article",
+          "style": {
+            "bg": "white"
+          },
+          "props": {
+            "blocks": [
+              {
+                "kind": "heading",
+                "text": "Information and pricing"
+              },
+              {
+                "kind": "paragraph",
+                "text": "Starting prices are indicative. Images are illustrative and do not verify an actual facility or unit. Obtain your final quotation and exact unit details before booking."
+              },
+              {
+                "kind": "heading",
+                "text": "Requests and bookings"
+              },
+              {
+                "kind": "paragraph",
+                "text": "An enquiry is not a confirmed appointment or storage agreement. A booking depends on availability, verification, agreement, payment and access activation."
+              },
+              {
+                "kind": "heading",
+                "text": "Storage conditions"
+              },
+              {
+                "kind": "paragraph",
+                "text": "Your storage agreement sets out payments, required protection, permitted items, notice periods and any promotion commitment. Review it before agreeing."
+              },
+              {
+                "kind": "heading",
+                "text": "Questions"
+              },
+              {
+                "kind": "paragraph",
+                "text": "Contact [hello@storelah.sg](mailto:hello@storelah.sg) for clarification."
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "guides": {
+      "seo": {
+        "title": "Guides | StoreLah Self Storage",
+        "description": "Useful ideas. Less guesswork. Practical advice for packing, moving and storage."
+      },
+      "sections": [
+        {
+          "id": "hero",
+          "type": "pageHero",
+          "variant": "textOnly",
+          "props": {
+            "crumb": "Storage Guides",
+            "eyebrow": "STORAGE GUIDES",
+            "heading": "Useful ideas.\nLess guesswork.",
+            "paragraphs": [
+              "Practical advice for packing, moving and getting more from your storage."
+            ]
+          }
+        },
+        {
+          "id": "guides",
+          "type": "cardGrid",
+          "props": {
+            "items": [
+              {
+                "image": {
+                  "src": "/assets/moving.webp",
+                  "alt": "A calmer home move."
+                },
+                "eyebrow": "Moving home",
+                "title": "A calmer home move.",
+                "text": "Simple steps for an easier storage experience.",
+                "cta": {
+                  "label": "Read guide",
+                  "href": "/guides/moving-home/",
+                  "style": "link"
+                }
+              },
+              {
+                "image": {
+                  "src": "/assets/business-owner.webp",
+                  "alt": "Make space for your stock."
+                },
+                "eyebrow": "Stock & equipment",
+                "title": "Make space for your stock.",
+                "text": "Simple steps for an easier storage experience.",
+                "cta": {
+                  "label": "Read guide",
+                  "href": "/guides/business-storage/",
+                  "style": "link"
+                }
+              },
+              {
+                "image": {
+                  "src": "/assets/packing.webp",
+                  "alt": "Pack once. Find it easily."
+                },
+                "eyebrow": "Packing basics",
+                "title": "Pack once. Find it easily.",
+                "text": "Simple steps for an easier storage experience.",
+                "cta": {
+                  "label": "Read guide",
+                  "href": "/guides/packing/",
+                  "style": "link"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "id": "cta",
+          "type": "ctaBand",
+          "props": {}
+        }
+      ]
+    },
+    "guides/packing": {
+      "seo": {
+        "title": "Packing | StoreLah Self Storage",
+        "description": "Pack once. Find it easily. Practical steps to make storage work better for you."
+      },
+      "nav": {
+        "current": "/guides/"
+      },
+      "sections": [
+        {
+          "id": "hero",
+          "type": "pageHero",
+          "variant": "textOnly",
+          "props": {
+            "crumb": "Packing Basics",
+            "eyebrow": "Packing basics",
+            "heading": "Pack once.\nFind it easily.",
+            "paragraphs": [
+              "A few practical steps to make storage work better for you."
+            ]
+          }
+        },
+        {
+          "id": "body",
+          "type": "article",
+          "style": {
+            "bg": "white"
+          },
+          "props": {
+            "blocks": [
+              {
+                "kind": "image",
+                "image": {
+                  "src": "/assets/packing.webp",
+                  "alt": "Pack once. Find it easily."
+                }
+              },
+              {
+                "kind": "heading",
+                "text": "Use boxes you can lift."
+              },
+              {
+                "kind": "paragraph",
+                "text": "Put heavier things in smaller boxes and avoid overpacking. Fill gaps to reduce movement."
+              },
+              {
+                "kind": "heading",
+                "text": "Clean and dry first."
+              },
+              {
+                "kind": "paragraph",
+                "text": "Dry belongings fully before packing. Clean appliances and protect fragile surfaces."
+              },
+              {
+                "kind": "heading",
+                "text": "Keep fittings together."
+              },
+              {
+                "kind": "paragraph",
+                "text": "Put furniture screws and fittings in a labelled bag with the relevant item."
+              },
+              {
+                "kind": "heading",
+                "text": "Label more than one side."
+              },
+              {
+                "kind": "paragraph",
+                "text": "Use room names, contents and box numbers. Keep a separate inventory when you have many boxes."
+              },
+              {
+                "kind": "link",
+                "cta": {
+                  "label": "All storage guides",
+                  "href": "/guides/",
+                  "style": "link"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "id": "cta",
+          "type": "ctaBand",
+          "props": {}
+        }
+      ]
+    },
+    "guides/moving-home": {
+      "seo": {
+        "title": "Moving Home | StoreLah Self Storage",
+        "description": "A calmer home move. Practical steps to make storage work better for you."
+      },
+      "nav": {
+        "current": "/guides/"
+      },
+      "sections": [
+        {
+          "id": "hero",
+          "type": "pageHero",
+          "variant": "textOnly",
+          "props": {
+            "crumb": "Moving Home",
+            "eyebrow": "Moving home",
+            "heading": "A calmer home move.",
+            "paragraphs": [
+              "A few practical steps to make storage work better for you."
+            ]
+          }
+        },
+        {
+          "id": "body",
+          "type": "article",
+          "style": {
+            "bg": "white"
+          },
+          "props": {
+            "blocks": [
+              {
+                "kind": "image",
+                "image": {
+                  "src": "/assets/moving.webp",
+                  "alt": "A calmer home move."
+                }
+              },
+              {
+                "kind": "heading",
+                "text": "Start with your essentials."
+              },
+              {
+                "kind": "paragraph",
+                "text": "Keep daily items, documents and valuables separate from boxes going into storage."
+              },
+              {
+                "kind": "heading",
+                "text": "Label by room."
+              },
+              {
+                "kind": "paragraph",
+                "text": "Mark the top and side of each box. Use a short contents list so you can find things without unpacking everything."
+              },
+              {
+                "kind": "heading",
+                "text": "Confirm the route."
+              },
+              {
+                "kind": "paragraph",
+                "text": "Ask for directions and loading information. Make sure your access is activated before your mover arrives."
+              },
+              {
+                "kind": "heading",
+                "text": "Plan your unit."
+              },
+              {
+                "kind": "paragraph",
+                "text": "Store occasional-use items at the back and leave a path if you’ll visit regularly."
+              },
+              {
+                "kind": "link",
+                "cta": {
+                  "label": "All storage guides",
+                  "href": "/guides/",
+                  "style": "link"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "id": "cta",
+          "type": "ctaBand",
+          "props": {}
+        }
+      ]
+    },
+    "guides/business-storage": {
+      "seo": {
+        "title": "Business Storage | StoreLah Self Storage",
+        "description": "Make space for your stock. Practical steps to make storage work better for you."
+      },
+      "nav": {
+        "current": "/guides/"
+      },
+      "sections": [
+        {
+          "id": "hero",
+          "type": "pageHero",
+          "variant": "textOnly",
+          "props": {
+            "crumb": "Stock & Equipment",
+            "eyebrow": "Stock & equipment",
+            "heading": "Make space for your stock.",
+            "paragraphs": [
+              "A few practical steps to make storage work better for you."
+            ]
+          }
+        },
+        {
+          "id": "body",
+          "type": "article",
+          "style": {
+            "bg": "white"
+          },
+          "props": {
+            "blocks": [
+              {
+                "kind": "image",
+                "image": {
+                  "src": "/assets/business-owner.webp",
+                  "alt": "Make space for your stock."
+                }
+              },
+              {
+                "kind": "heading",
+                "text": "Group what moves together."
+              },
+              {
+                "kind": "paragraph",
+                "text": "Arrange stock by product or project. Keep fast-moving items near the front."
+              },
+              {
+                "kind": "heading",
+                "text": "Measure your setup."
+              },
+              {
+                "kind": "paragraph",
+                "text": "Measure cartons, shelving and the largest equipment before choosing a unit."
+              },
+              {
+                "kind": "heading",
+                "text": "Keep a stock record."
+              },
+              {
+                "kind": "paragraph",
+                "text": "Track what goes in and out. A simple shared list can prevent duplicate purchases and searching."
+              },
+              {
+                "kind": "heading",
+                "text": "Check the practical rules."
+              },
+              {
+                "kind": "paragraph",
+                "text": "Confirm delivery arrangements and permitted use before booking. Storage does not automatically include office or fulfilment services."
+              },
+              {
+                "kind": "link",
+                "cta": {
+                  "label": "All storage guides",
+                  "href": "/guides/",
+                  "style": "link"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "id": "cta",
+          "type": "ctaBand",
+          "props": {}
+        }
+      ]
+    },
+    "access-security": {
+      "seo": {
+        "title": "Access & Security | StoreLah Self Storage",
+        "description": "Your things. Your access. Understand how to visit your unit and how facility access is managed."
+      },
+      "sections": [
+        {
+          "id": "hero",
+          "type": "pageHero",
+          "variant": "split",
+          "props": {
+            "crumb": "Access & Security",
+            "eyebrow": "ACCESS & SECURITY",
+            "heading": "Your things.\nYour access.",
+            "paragraphs": [
+              "Understand how to visit your unit and how facility access is managed."
+            ],
+            "image": {
+              "src": "/assets/security.webp",
+              "alt": "Illustrative StoreLah self-storage experience"
+            }
+          }
+        },
+        {
+          "id": "points",
+          "type": "featureCards",
+          "variant": "info",
+          "style": {
+            "bg": "white"
+          },
+          "props": {
+            "items": [
+              {
+                "title": "24/7 self-access",
+                "text": "Activated customers can access their storage outside normal working hours, including weekends."
+              },
+              {
+                "title": "PIN-controlled entry",
+                "text": "Use the entry details assigned to your booking. Ask the team about permitted access for family, colleagues or movers."
+              },
+              {
+                "title": "Keep your unit secure",
+                "text": "Follow the lock and unit-access instructions given at move-in. Keep your credentials private and report any issue promptly."
+              }
+            ]
+          }
+        },
+        {
+          "id": "first-visit",
+          "type": "split",
+          "style": {
+            "bg": "pink"
+          },
+          "props": {
+            "columns": [
+              {
+                "kind": "text",
+                "heading": "A quick check\nbefore your first visit.",
+                "paragraphs": [
+                  "Make your first move-in a little smoother."
+                ]
+              },
+              {
+                "kind": "blocks",
+                "blocks": [
+                  {
+                    "kind": "list",
+                    "items": [
+                      "Wait for access activation",
+                      "Save your unit details and instructions",
+                      "Confirm loading access and directions",
+                      "Ask about authorised visitors",
+                      "Check your chosen protection cover"
+                    ]
+                  },
+                  {
+                    "kind": "link",
+                    "cta": {
+                      "label": "Read about protection",
+                      "href": "/protection-plan/",
+                      "style": "link"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "cta",
+          "type": "ctaBand",
+          "props": {}
+        }
+      ]
+    },
+    "what-you-can-store": {
+      "seo": {
+        "title": "What You Can Store | StoreLah Self Storage",
+        "description": "Most clean, dry household belongings and permitted stock can be stored. Suitable items and important limits."
+      },
+      "sections": [
+        {
+          "id": "hero",
+          "type": "pageHero",
+          "variant": "split",
+          "props": {
+            "crumb": "What You Can Store",
+            "eyebrow": "WHAT YOU CAN STORE",
+            "heading": "Keep the things\nyou want to keep.",
+            "paragraphs": [
+              "Most clean, dry household belongings and permitted stock can be stored. Some items need extra care; others cannot go in."
+            ],
+            "image": {
+              "src": "/assets/family-unit.webp",
+              "alt": "Illustrative StoreLah self-storage experience"
+            }
+          }
+        },
+        {
+          "id": "suitable",
+          "type": "featureCards",
+          "variant": "info",
+          "style": {
+            "bg": "white"
+          },
+          "props": {
+            "items": [
+              {
+                "title": "Everyday belongings",
+                "text": "Luggage, clothes, sports gear, books and seasonal items."
+              },
+              {
+                "title": "Furniture & equipment",
+                "text": "Clean, dry furniture, packed household items and suitable equipment."
+              },
+              {
+                "title": "Stock & documents",
+                "text": "Permitted boxed inventory, business supplies and records."
+              }
+            ]
+          }
+        },
+        {
+          "id": "not-allowed",
+          "type": "split",
+          "style": {
+            "bg": "pink"
+          },
+          "props": {
+            "columns": [
+              {
+                "kind": "text",
+                "heading": "Keep these\nout of storage.",
+                "paragraphs": [
+                  "Protect yourself, other customers and the facility."
+                ]
+              },
+              {
+                "kind": "blocks",
+                "blocks": [
+                  {
+                    "kind": "list",
+                    "items": [
+                      "Food, perishables and anything that attracts pests",
+                      "Flammable, explosive or hazardous materials",
+                      "Illegal goods or substances",
+                      "Living things",
+                      "Wet, contaminated or leaking items"
+                    ]
+                  },
+                  {
+                    "kind": "paragraph",
+                    "tone": "fine",
+                    "text": "This is not the full prohibited-items list. The storage agreement sets the final rules. Ask about sensitive, valuable or unusual items before bringing them in."
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "cta",
+          "type": "ctaBand",
+          "props": {}
+        }
+      ]
+    },
+    "why-storelah": {
+      "seo": {
+        "title": "Why StoreLah | StoreLah Self Storage",
+        "description": "Good storage. Without the unnecessary stuff. A considered experience built around your decisions."
+      },
+      "sections": [
+        {
+          "id": "hero",
+          "type": "pageHero",
+          "variant": "textOnly",
+          "props": {
+            "crumb": "Why Storelah",
+            "eyebrow": "WHY STORELAH",
+            "heading": "Good storage.\nWithout the unnecessary stuff.",
+            "paragraphs": [
+              "A considered experience built around the decisions you actually need to make."
+            ]
+          }
+        },
+        {
+          "id": "reasons",
+          "type": "featureCards",
+          "variant": "info",
+          "style": {
+            "bg": "white"
+          },
+          "props": {
+            "items": [
+              {
+                "n": "01",
+                "title": "Access on your terms",
+                "text": "24/7 self-access with controlled PIN entry after activation."
+              },
+              {
+                "n": "02",
+                "title": "Payments that make sense",
+                "text": "Monthly billing, no admin fee and no security deposit."
+              },
+              {
+                "n": "03",
+                "title": "Know what you’re choosing",
+                "text": "Compare size examples and starting rental before asking for your exact unit quote."
+              },
+              {
+                "n": "04",
+                "title": "A unit for your things",
+                "text": "The same practical storage whether your boxes contain keepsakes or business stock."
+              },
+              {
+                "n": "05",
+                "title": "A clearer total",
+                "text": "Rental, required protection and chosen extras shown separately."
+              },
+              {
+                "n": "06",
+                "title": "Help when you need it",
+                "text": "Use the size guide, ask a question or request a viewing."
+              }
+            ]
+          }
+        },
+        {
+          "id": "cta",
+          "type": "ctaBand",
+          "props": {}
+        }
+      ]
+    },
+    "sizes-pricing": {
+      "seo": {
+        "title": "Storage Sizes & Pricing | StoreLah Self Storage",
+        "description": "One storage product. Five size categories from S$50/month. Choose around your belongings with straightforward starting prices."
+      },
+      "sections": [
+        {
+          "id": "hero",
+          "type": "pageHero",
+          "variant": "textOnly",
+          "props": {
+            "crumb": "Sizes & Pricing",
+            "eyebrow": "SIZES & PRICING",
+            "heading": "Find your fit.\nKnow your starting price.",
+            "paragraphs": [
+              "One storage product. Five size categories. Choose around your belongings, not whether you’re storing for home or work."
+            ]
+          }
+        },
+        {
+          "id": "sizes",
+          "type": "widget",
+          "props": {
+            "widget": "sizeFilter"
+          }
+        },
+        {
+          "id": "quote",
+          "type": "split",
+          "style": {
+            "bg": "pink"
+          },
+          "props": {
+            "columns": [
+              {
+                "kind": "text",
+                "heading": "A clear total.\nBefore you commit.",
+                "paragraphs": [
+                  "Rental is only one part of choosing a unit. See the complete monthly cost before you book."
+                ]
+              },
+              {
+                "kind": "blocks",
+                "box": "info",
+                "blocks": [
+                  {
+                    "kind": "heading",
+                    "level": 3,
+                    "text": "Your quote should show"
+                  },
+                  {
+                    "kind": "list",
+                    "items": [
+                      "Exact unit size and rental",
+                      "Mandatory Protection Plan and its premium",
+                      "GST treatment and any initial part-month charges",
+                      "Selected extras and promotion conditions"
+                    ]
+                  },
+                  {
+                    "kind": "link",
+                    "cta": {
+                      "label": "Understand protection",
+                      "href": "/protection-plan/",
+                      "style": "link"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "cta",
+          "type": "ctaBand",
+          "props": {}
+        }
+      ]
+    },
+    "what-is-self-storage": {
+      "seo": {
+        "title": "What Is Self-Storage? | StoreLah Self Storage",
+        "description": "Self-storage is a lockable unit you rent for your belongings. Your own space, outside your home."
+      },
+      "sections": [
+        {
+          "id": "hero",
+          "type": "pageHero",
+          "variant": "split",
+          "style": {
+            "bg": "paper"
+          },
+          "props": {
+            "crumb": "What Is Self-Storage?",
+            "eyebrow": "WHAT IS SELF-STORAGE?",
+            "heading": "Your own space.\nOutside your home.",
+            "paragraphs": [
+              "Self-storage is a lockable unit you rent for your belongings. You decide what goes in, organise it yourself and visit when you need it."
+            ],
+            "image": {
+              "src": "/assets/launch-small.webp",
+              "alt": "Illustrative StoreLah self-storage experience",
+              "frame": "plain"
+            }
+          }
+        },
+        {
+          "id": "basics",
+          "type": "featureCards",
+          "variant": "info",
+          "style": {
+            "bg": "white"
+          },
+          "props": {
+            "head": "intro",
+            "heading": "Not a spare bedroom.\nNot a warehouse service.",
+            "paragraphs": [
+              "It’s a dedicated space for your things inside a storage facility. You rent the unit, move your items in and keep control of your access."
+            ],
+            "items": [
+              {
+                "title": "Choose your own size",
+                "text": "Pay for a unit that fits your belongings, from a small locker to a larger space."
+              },
+              {
+                "title": "Arrange it your way",
+                "text": "Keep a list, label your boxes and leave an aisle if you’ll visit regularly."
+              },
+              {
+                "title": "Get to your things directly",
+                "text": "At StoreLah, 24/7 self-access begins once your booking and access are activated."
+              }
+            ]
+          }
+        },
+        {
+          "id": "compare",
+          "type": "comparisonTable",
+          "style": {
+            "bg": "paper"
+          },
+          "props": {
+            "heading": "Which kind of storage suits you?",
+            "columns": [
+              "Consideration",
+              "Self-storage",
+              "Collection & delivery storage"
+            ],
+            "rows": [
+              {
+                "label": "Moving your belongings",
+                "cells": [
+                  "You bring your items, or arrange a mover.",
+                  "The provider typically arranges collection."
+                ]
+              },
+              {
+                "label": "Visiting your things",
+                "cells": [
+                  "You access your rented unit directly.",
+                  "Retrieval is usually arranged with the provider."
+                ]
+              },
+              {
+                "label": "Organising your items",
+                "cells": [
+                  "You arrange your unit yourself.",
+                  "The provider manages the storage arrangement."
+                ]
+              }
+            ],
+            "note": "Services and access differ by provider. Compare the specific terms before choosing."
+          }
+        },
+        {
+          "id": "cta",
+          "type": "ctaBand",
+          "style": {
+            "bg": "terra"
+          },
+          "props": {}
+        }
+      ]
+    },
+    "storage-ideas": {
+      "seo": {
+        "title": "Storage Ideas | StoreLah Self Storage",
+        "description": "Same storage. Different chapters. Moving, renovating, everyday things and stock."
+      },
+      "sections": [
+        {
+          "id": "hero",
+          "type": "pageHero",
+          "variant": "split",
+          "style": {
+            "bg": "paper"
+          },
+          "props": {
+            "crumb": "Storage Ideas",
+            "eyebrow": "STORAGE IDEAS",
+            "heading": "Same storage.\nDifferent chapters.",
+            "paragraphs": [
+              "You don’t need a different product for every reason. Just enough space for the things you need to keep."
+            ],
+            "image": {
+              "src": "/assets/friends.webp",
+              "alt": "Illustrative StoreLah self-storage experience",
+              "frame": "plain"
+            }
+          }
+        },
+        {
+          "id": "everyday",
+          "type": "split",
+          "style": {
+            "bg": "white",
+            "anchor": "everyday"
+          },
+          "props": {
+            "columns": [
+              {
+                "kind": "text",
+                "heading": "When home feels full.",
+                "paragraphs": [
+                  "Seasonal clothes, luggage, sports gear and keepsakes can live elsewhere without leaving your life."
+                ],
+                "list": [
+                  "Keep everyday essentials at home",
+                  "Group occasional-use items together",
+                  "Choose a smaller unit and organise it well"
+                ],
+                "ctas": [
+                  {
+                    "label": "Find a size",
+                    "href": "/sizes-pricing/",
+                    "style": "primary"
+                  },
+                  {
+                    "label": "Try the size guide",
+                    "href": "/size-guide/",
+                    "style": "link"
+                  }
+                ]
+              },
+              {
+                "kind": "image",
+                "image": {
+                  "src": "/assets/home.webp",
+                  "alt": "When home feels full.",
+                  "frame": "feature"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "id": "moving",
+          "type": "split",
+          "style": {
+            "bg": "paper",
+            "anchor": "moving"
+          },
+          "props": {
+            "columns": [
+              {
+                "kind": "text",
+                "heading": "Between one home and the next.",
+                "paragraphs": [
+                  "Bridge the gap between moving out and getting your new keys."
+                ],
+                "list": [
+                  "Pack a separate essentials box",
+                  "Label by room",
+                  "Confirm access before your mover arrives"
+                ],
+                "ctas": [
+                  {
+                    "label": "Find a size",
+                    "href": "/sizes-pricing/",
+                    "style": "primary"
+                  },
+                  {
+                    "label": "Try the size guide",
+                    "href": "/size-guide/",
+                    "style": "link"
+                  }
+                ]
+              },
+              {
+                "kind": "image",
+                "image": {
+                  "src": "/assets/moving.webp",
+                  "alt": "Between one home and the next.",
+                  "frame": "feature"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "id": "renovation",
+          "type": "split",
+          "style": {
+            "bg": "white",
+            "anchor": "renovation"
+          },
+          "props": {
+            "columns": [
+              {
+                "kind": "text",
+                "heading": "Let the work happen.",
+                "paragraphs": [
+                  "Give the contractor space to work while your furniture and boxes stay out of the way."
+                ],
+                "list": [
+                  "Store clean, dry belongings",
+                  "Protect corners and surfaces",
+                  "Allow for a changing renovation timeline"
+                ],
+                "ctas": [
+                  {
+                    "label": "Find a size",
+                    "href": "/sizes-pricing/",
+                    "style": "primary"
+                  },
+                  {
+                    "label": "Try the size guide",
+                    "href": "/size-guide/",
+                    "style": "link"
+                  }
+                ]
+              },
+              {
+                "kind": "image",
+                "image": {
+                  "src": "/assets/renovation.webp",
+                  "alt": "Let the work happen.",
+                  "frame": "feature"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "id": "stock",
+          "type": "split",
+          "style": {
+            "bg": "paper",
+            "anchor": "stock"
+          },
+          "props": {
+            "columns": [
+              {
+                "kind": "text",
+                "heading": "For stock that outgrows the spare room.",
+                "paragraphs": [
+                  "Create a place for inventory, equipment and supplies without taking over your home."
+                ],
+                "list": [
+                  "Measure your shelving and stock",
+                  "Track what goes in and out",
+                  "Confirm delivery and permitted-use requirements"
+                ],
+                "ctas": [
+                  {
+                    "label": "Find a size",
+                    "href": "/sizes-pricing/",
+                    "style": "primary"
+                  },
+                  {
+                    "label": "Try the size guide",
+                    "href": "/size-guide/",
+                    "style": "link"
+                  }
+                ]
+              },
+              {
+                "kind": "image",
+                "image": {
+                  "src": "/assets/business-owner.webp",
+                  "alt": "For stock that outgrows the spare room.",
+                  "frame": "feature"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "id": "collections",
+          "type": "split",
+          "style": {
+            "bg": "white",
+            "anchor": "collections"
+          },
+          "props": {
+            "columns": [
+              {
+                "kind": "text",
+                "heading": "Keep the collection. Lose the clutter.",
+                "paragraphs": [
+                  "Find a home for the things that mean something to you, with room to organise them properly."
+                ],
+                "list": [
+                  "Check storage conditions for sensitive items",
+                  "Use labelled protective packaging",
+                  "Keep an inventory for easy retrieval"
+                ],
+                "ctas": [
+                  {
+                    "label": "Find a size",
+                    "href": "/sizes-pricing/",
+                    "style": "primary"
+                  },
+                  {
+                    "label": "Try the size guide",
+                    "href": "/size-guide/",
+                    "style": "link"
+                  }
+                ]
+              },
+              {
+                "kind": "image",
+                "image": {
+                  "src": "/assets/collector.webp",
+                  "alt": "Keep the collection. Lose the clutter.",
+                  "frame": "feature"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "id": "cta",
+          "type": "ctaBand",
+          "style": {
+            "bg": "terra"
+          },
+          "props": {}
+        }
+      ]
+    },
+    "packing-supplies": {
+      "seo": {
+        "title": "Packing Supplies | StoreLah Self Storage",
+        "description": "A better move starts with better packing. Ask about suitable supplies and moving support."
+      },
+      "sections": [
+        {
+          "id": "hero",
+          "type": "pageHero",
+          "variant": "split",
+          "style": {
+            "bg": "paper"
+          },
+          "props": {
+            "crumb": "Packing & Moving",
+            "eyebrow": "PACKING & MOVING",
+            "heading": "A better move\nstarts with better packing.",
+            "paragraphs": [
+              "Ask about suitable supplies and moving support when you plan your storage."
+            ],
+            "image": {
+              "src": "/assets/supplies.webp",
+              "alt": "Illustrative StoreLah self-storage experience",
+              "frame": "plain"
+            }
+          }
+        },
+        {
+          "id": "supplies",
+          "type": "featureCards",
+          "variant": "supplies",
+          "style": {
+            "bg": "white"
+          },
+          "props": {
+            "items": [
+              {
+                "title": "Boxes",
+                "text": "Choose manageable sizes and keep heavy items in smaller cartons."
+              },
+              {
+                "title": "Tape & labels",
+                "text": "Secure your boxes and label more than one side."
+              },
+              {
+                "title": "Protective wrap",
+                "text": "Protect furniture surfaces, edges and fragile items."
+              },
+              {
+                "title": "Moving support",
+                "text": "Ask about mover referrals, loading access and any available rates."
+              }
+            ],
+            "note": "Supply availability, prices and moving arrangements are confirmed separately. This page does not sell goods or book a mover."
+          }
+        },
+        {
+          "id": "cta",
+          "type": "ctaBand",
+          "style": {
+            "bg": "terra"
+          },
+          "props": {
+            "title": "Need a hand planning the move?",
+            "text": "Tell us what you’re moving and ask about the options available."
+          }
+        }
+      ]
+    },
+    "protection-plan": {
+      "seo": {
+        "title": "Protection Plan | StoreLah Self Storage",
+        "description": "A Protection Plan is required with storage. Confirm the coverage and extra monthly cost before agreeing."
+      },
+      "sections": [
+        {
+          "id": "hero",
+          "type": "pageHero",
+          "variant": "textOnly",
+          "style": {
+            "bg": "paper"
+          },
+          "props": {
+            "crumb": "Protection Plan",
+            "eyebrow": "PROTECTION PLAN",
+            "heading": "Protection deserves\na clear explanation.",
+            "paragraphs": [
+              "A Protection Plan is required with storage. Confirm the coverage and extra monthly cost before agreeing."
+            ]
+          }
+        },
+        {
+          "id": "questions",
+          "type": "split",
+          "style": {
+            "bg": "white"
+          },
+          "props": {
+            "columns": [
+              {
+                "kind": "text",
+                "heading": "Keep the cover\nin the conversation.",
+                "paragraphs": [
+                  "Choose protection around the belongings you store, and read the policy before deciding whether the cover meets your needs."
+                ]
+              },
+              {
+                "kind": "blocks",
+                "box": "form",
+                "blocks": [
+                  {
+                    "kind": "heading",
+                    "level": 3,
+                    "text": "Ask these five questions."
+                  },
+                  {
+                    "kind": "list",
+                    "style": "checklist",
+                    "items": [
+                      "What events are covered?",
+                      "What belongings or circumstances are excluded?",
+                      "What is the coverage limit?",
+                      "Is there an excess or deductible?",
+                      "What is the monthly premium and claims process?"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "total",
+          "type": "article",
+          "variant": "intro",
+          "style": {
+            "bg": "paper"
+          },
+          "props": {
+            "blocks": [
+              {
+                "kind": "heading",
+                "level": 2,
+                "text": "See it in your total."
+              },
+              {
+                "kind": "paragraph",
+                "text": "Your itemised quotation should show storage rental and the Protection Plan separately. Higher-value or unusual items may need a discussion with the team."
+              },
+              {
+                "kind": "paragraph",
+                "tone": "fine",
+                "text": "Coverage options, policy wording, premiums, insurer or administrator details and claims procedures must be confirmed before booking. Nothing here guarantees coverage for a specific item or event."
+              }
+            ]
+          }
+        },
+        {
+          "id": "cta",
+          "type": "ctaBand",
+          "style": {
+            "bg": "terra"
+          },
+          "props": {
+            "title": "Questions about your belongings?",
+            "text": "Tell us what you plan to store and ask for the current protection information."
+          }
+        }
+      ]
+    },
+    "locations": {
+      "seo": {
+        "title": "Locations | StoreLah Self Storage",
+        "description": "Sembawang reservations are open ahead of launch. Woodlands and Ubi will follow."
+      },
+      "sections": [
+        {
+          "id": "hero",
+          "type": "pageHero",
+          "variant": "textOnly",
+          "style": {
+            "bg": "paper"
+          },
+          "props": {
+            "crumb": "Locations",
+            "eyebrow": "LOCATIONS",
+            "heading": "A little closer\nto more space.",
+            "paragraphs": [
+              "Sembawang reservations are open ahead of launch. Woodlands and Ubi will follow."
+            ]
+          }
+        },
+        {
+          "id": "sites",
+          "type": "cardGrid",
+          "style": {
+            "bg": "paper"
+          },
+          "props": {
+            "items": [
+              {
+                "image": {
+                  "src": "/assets/trolley.webp",
+                  "alt": "Illustrative storage corridor and trolley",
+                  "frame": "plain"
+                },
+                "badge": {
+                  "text": "Reservations open",
+                  "tone": "open"
+                },
+                "title": "StoreLah Sembawang",
+                "text": "Your personal storeroom in the north, with 24/7 self-access and monthly payments.",
+                "cta": {
+                  "label": "Explore Sembawang",
+                  "href": "/locations/sembawang/",
+                  "style": "link"
+                }
+              },
+              {
+                "badge": {
+                  "text": "Opening soon",
+                  "tone": "soon"
+                },
+                "title": "StoreLah Woodlands",
+                "text": "More locations are on the way. Ask us for updates as plans are confirmed.",
+                "cta": {
+                  "label": "Ask about Woodlands",
+                  "href": "/contact/?intent=updates&location=Woodlands",
+                  "style": "link"
+                }
+              },
+              {
+                "badge": {
+                  "text": "Opening soon",
+                  "tone": "soon"
+                },
+                "title": "StoreLah Ubi",
+                "text": "More locations are on the way. Ask us for updates as plans are confirmed.",
+                "cta": {
+                  "label": "Ask about Ubi",
+                  "href": "/contact/?intent=updates&location=Ubi",
+                  "style": "link"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "id": "cta",
+          "type": "ctaBand",
+          "style": {
+            "bg": "terra"
+          },
+          "props": {}
+        }
+      ]
+    },
+    "locations/sembawang": {
+      "seo": {
+        "title": "Self-Storage in Sembawang | StoreLah Self Storage",
+        "description": "Your personal storeroom in the north. 24/7 self-access, monthly payments. Reserve at StoreLah Sembawang ahead of opening."
+      },
+      "sections": [
+        {
+          "id": "hero",
+          "type": "pageHero",
+          "variant": "split",
+          "style": {
+            "bg": "paper"
+          },
+          "props": {
+            "parents": [
+              {
+                "href": "/locations/",
+                "label": "Locations"
+              }
+            ],
+            "crumb": "Storelah Sembawang",
+            "eyebrow": "STORELAH SEMBAWANG",
+            "heading": "Hello, Sembawang.",
+            "paragraphs": [
+              "Your personal storeroom in the north. For moving boxes, everyday overflow, stock and the things you want to keep."
+            ],
+            "image": {
+              "src": "/assets/trolley.webp",
+              "alt": "Illustrative StoreLah self-storage experience",
+              "frame": "plain"
+            }
+          }
+        },
+        {
+          "id": "visit",
+          "type": "split",
+          "style": {
+            "bg": "white"
+          },
+          "props": {
+            "columns": [
+              {
+                "kind": "text",
+                "badge": {
+                  "text": "Reservations open",
+                  "tone": "open"
+                },
+                "heading": "Visit on your schedule.",
+                "paragraphs": [
+                  "24/7 self-access after activation. Monthly payments. No admin fee or security deposit."
+                ],
+                "ctas": [
+                  {
+                    "label": "See sizes & prices",
+                    "href": "/sizes-pricing/",
+                    "style": "primary"
+                  },
+                  {
+                    "label": "Book a viewing",
+                    "href": "/book-a-viewing/",
+                    "style": "outline"
+                  }
+                ]
+              },
+              {
+                "kind": "blocks",
+                "box": "form",
+                "blocks": [
+                  {
+                    "kind": "heading",
+                    "level": 3,
+                    "text": "Plan your visit"
+                  },
+                  {
+                    "kind": "facts",
+                    "items": [
+                      {
+                        "label": "Location",
+                        "text": "Sembawang, Singapore"
+                      },
+                      {
+                        "label": "Access",
+                        "text": "24/7 for activated customers"
+                      },
+                      {
+                        "label": "First visit",
+                        "text": "Request an appointment and exact directions"
+                      }
+                    ]
+                  },
+                  {
+                    "kind": "paragraph",
+                    "tone": "fine",
+                    "text": "Sembawang is opening soon. Reserve ahead of launch. Your confirmed viewing or move-in details will include the address and loading instructions."
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "gallery",
+          "type": "gallery",
+          "style": {
+            "bg": "paper"
+          },
+          "props": {
+            "eyebrow": "TAKE A CLOSER LOOK",
+            "heading": "A feel for the space.",
+            "aside": "Illustrative interiors show the design direction. See the actual unit during your viewing.",
+            "images": [
+              {
+                "src": "/assets/unit-large.webp",
+                "alt": "Illustrative larger storage unit",
+                "frame": "plain"
+              },
+              {
+                "src": "/assets/security.webp",
+                "alt": "Illustrative lock on a storage door",
+                "frame": "plain"
+              },
+              {
+                "src": "/assets/viewing.webp",
+                "alt": "Illustrative customer viewing a storage unit",
+                "frame": "plain"
+              }
+            ]
+          }
+        },
+        {
+          "id": "cta",
+          "type": "ctaBand",
+          "style": {
+            "bg": "terra"
+          },
+          "props": {
+            "title": "Come see what fits.",
+            "text": "Tell us when you’d like to visit. We’ll confirm the details."
+          }
+        }
+      ]
+    },
+    "promotions": {
+      "seo": {
+        "title": "Promotions | StoreLah Self Storage",
+        "description": "Plan ahead for StoreLah Sembawang. Mention launch code StoreLah100 when you request your reservation."
+      },
+      "sections": [
+        {
+          "id": "hero",
+          "type": "pageHero",
+          "variant": "split",
+          "style": {
+            "bg": "paper"
+          },
+          "props": {
+            "crumb": "Launch Promotion",
+            "eyebrow": "LAUNCH PROMOTION",
+            "heading": "Get first dibs.\nMake a little more room.",
+            "paragraphs": [
+              "Plan ahead for StoreLah Sembawang. Mention the launch code when you request your reservation."
+            ],
+            "image": {
+              "src": "/assets/launch-business.webp",
+              "alt": "Illustrative StoreLah self-storage experience",
+              "frame": "plain"
+            }
+          }
+        },
+        {
+          "id": "code",
+          "type": "split",
+          "style": {
+            "bg": "white"
+          },
+          "props": {
+            "columns": [
+              {
+                "kind": "text",
+                "eyebrow": "OUR LAUNCH CODE",
+                "heading": "StoreLah100",
+                "paragraphs": [
+                  "A head start on your next storeroom. Ask about the launch offer for your chosen unit before Sembawang opens."
+                ],
+                "promo": {
+                  "label": "Launch code",
+                  "code": "StoreLah100"
+                },
+                "ctas": [
+                  {
+                    "label": "Reserve with StoreLah100",
+                    "href": "/reserve/?promo=StoreLah100",
+                    "style": "primary"
+                  }
+                ]
+              },
+              {
+                "kind": "blocks",
+                "box": "form",
+                "blocks": [
+                  {
+                    "kind": "heading",
+                    "level": 3,
+                    "text": "Know the offer before you commit."
+                  },
+                  {
+                    "kind": "list",
+                    "style": "checklist",
+                    "items": [
+                      "Confirm the saving and eligible unit",
+                      "Check the offer period and minimum stay",
+                      "See the full price including protection",
+                      "Confirm your earliest move-in date"
+                    ]
+                  },
+                  {
+                    "kind": "paragraph",
+                    "tone": "fine",
+                    "text": "The launch benefit, eligible sizes, validity period and minimum-stay terms are confirmed with your reservation."
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "cta",
+          "type": "ctaBand",
+          "style": {
+            "bg": "terra"
+          },
+          "props": {}
+        }
+      ]
+    },
+    "size-guide": {
+      "seo": {
+        "title": "Storage Size Calculator | StoreLah Self Storage",
+        "description": "Find your personal storeroom at StoreLah Sembawang. Compare storage sizes, starting prices, 24/7 self-access and flexible monthly payments."
+      },
+      "sections": [
+        {
+          "id": "calculator",
+          "type": "sizeCalculator",
+          "style": {
+            "bg": "paper"
+          },
+          "props": {
+            "crumb": "Find your size",
+            "eyebrow": "LET’S FIND YOUR FIT",
+            "heading": "What are you storing?",
+            "paragraphs": [
+              "Add your items, or tell us what’s going in. We’ll help you find a starting size."
+            ]
+          }
+        }
+      ]
+    },
+    "contact": {
+      "seo": {
+        "title": "Contact | StoreLah Self Storage",
+        "description": "Let’s talk space. Ask a question, check availability or arrange a viewing."
+      },
+      "sections": [
+        {
+          "id": "hero",
+          "type": "pageHero",
+          "variant": "textOnly",
+          "style": {
+            "bg": "paper"
+          },
+          "props": {
+            "crumb": "Contact Us",
+            "eyebrow": "CONTACT US",
+            "heading": "Let’s talk space.",
+            "paragraphs": [
+              "Ask a question, check availability or arrange a viewing. We’ll help you take the next step."
+            ]
+          }
+        },
+        {
+          "id": "enquiry",
+          "type": "split",
+          "style": {
+            "bg": "paper"
+          },
+          "props": {
+            "align": "start",
+            "columns": [
+              {
+                "kind": "blocks",
+                "box": "none",
+                "blocks": [
+                  {
+                    "kind": "eyebrow",
+                    "text": "A HUMAN ON THE OTHER SIDE"
+                  },
+                  {
+                    "kind": "heading",
+                    "level": 2,
+                    "text": "A clearer answer.\nA better next step."
+                  },
+                  {
+                    "kind": "paragraph",
+                    "text": "Share your items, timing and questions. We can help with size choices, availability and a viewing."
+                  },
+                  {
+                    "kind": "facts",
+                    "items": [
+                      {
+                        "label": "Email",
+                        "text": "[hello@storelah.sg](mailto:hello@storelah.sg)"
+                      },
+                      {
+                        "label": "Reservations open",
+                        "text": "[StoreLah Sembawang](/locations/sembawang/)"
+                      },
+                      {
+                        "label": "Before visiting",
+                        "text": "Confirm the address, appointment and directions with the team."
+                      }
+                    ]
+                  },
+                  {
+                    "kind": "image",
+                    "image": {
+                      "src": "/assets/viewing.webp",
+                      "alt": "Illustrative StoreLah unit viewing",
+                      "frame": "feature"
+                    }
+                  }
+                ]
+              },
+              {
+                "kind": "form",
+                "form": "enquiry",
+                "title": "Tell us what you need.",
+                "request": "Storage enquiry"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "book-a-viewing": {
+      "seo": {
+        "title": "Book a Viewing | StoreLah Self Storage",
+        "description": "Come take a look. Arrange a viewing at StoreLah Sembawang."
+      },
+      "sections": [
+        {
+          "id": "hero",
+          "type": "pageHero",
+          "variant": "textOnly",
+          "style": {
+            "bg": "paper"
+          },
+          "props": {
+            "crumb": "Book A Viewing",
+            "eyebrow": "BOOK A VIEWING",
+            "heading": "Come take a look.",
+            "paragraphs": [
+              "Ask a question, check availability or arrange a viewing. We’ll help you take the next step."
+            ]
+          }
+        },
+        {
+          "id": "enquiry",
+          "type": "split",
+          "style": {
+            "bg": "paper"
+          },
+          "props": {
+            "align": "start",
+            "columns": [
+              {
+                "kind": "blocks",
+                "box": "none",
+                "blocks": [
+                  {
+                    "kind": "eyebrow",
+                    "text": "A HUMAN ON THE OTHER SIDE"
+                  },
+                  {
+                    "kind": "heading",
+                    "level": 2,
+                    "text": "A clearer answer.\nA better next step."
+                  },
+                  {
+                    "kind": "paragraph",
+                    "text": "Share your items, timing and questions. We can help with size choices, availability and a viewing."
+                  },
+                  {
+                    "kind": "facts",
+                    "items": [
+                      {
+                        "label": "Email",
+                        "text": "[hello@storelah.sg](mailto:hello@storelah.sg)"
+                      },
+                      {
+                        "label": "Reservations open",
+                        "text": "[StoreLah Sembawang](/locations/sembawang/)"
+                      },
+                      {
+                        "label": "Before visiting",
+                        "text": "Confirm the address, appointment and directions with the team."
+                      }
+                    ]
+                  },
+                  {
+                    "kind": "image",
+                    "image": {
+                      "src": "/assets/viewing.webp",
+                      "alt": "Illustrative StoreLah unit viewing",
+                      "frame": "feature"
+                    }
+                  }
+                ]
+              },
+              {
+                "kind": "form",
+                "form": "enquiry",
+                "title": "Plan your viewing.",
+                "request": "Viewing request"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "reserve": {
+      "seo": {
+        "title": "Reserve | StoreLah Self Storage",
+        "description": "First dibs on your next storeroom. Share your preferred size and timing for a pre-opening reservation."
+      },
+      "sections": [
+        {
+          "id": "hero",
+          "type": "pageHero",
+          "variant": "split",
+          "style": {
+            "bg": "paper"
+          },
+          "props": {
+            "crumb": "Reserve Your Space",
+            "eyebrow": "RESERVE YOUR SPACE",
+            "heading": "First dibs on\nyour next storeroom.",
+            "paragraphs": [
+              "Sembawang is opening soon. Share your preferred size and timing to discuss a pre-opening reservation."
+            ],
+            "image": {
+              "src": "/assets/launch-home.webp",
+              "alt": "Illustrative StoreLah self-storage experience",
+              "frame": "plain"
+            }
+          }
+        },
+        {
+          "id": "start",
+          "type": "split",
+          "style": {
+            "bg": "white"
+          },
+          "props": {
+            "columns": [
+              {
+                "kind": "text",
+                "heading": "Start with your space.",
+                "paragraphs": [
+                  "Choose your preferred size, mention StoreLah100 and tell us when you’ll need storage. We’ll confirm availability, the launch offer and the earliest move-in date."
+                ],
+                "list": [
+                  "Your exact unit and full price are confirmed before you commit",
+                  "Pre-opening reservations do not allow immediate facility access",
+                  "Once open, completed bookings receive an access code after payment"
+                ],
+                "ctas": [
+                  {
+                    "label": "Request a reservation",
+                    "href": "/contact/?intent=reserve&promo=StoreLah100",
+                    "style": "primary"
+                  },
+                  {
+                    "label": "Compare sizes first",
+                    "href": "/sizes-pricing/",
+                    "style": "outline"
+                  }
+                ]
+              },
+              {
+                "kind": "card",
+                "heading": "When online booking opens",
+                "paragraphs": [
+                  "Select your facility and size, choose an exact unit on the floorplan and see your full price breakdown. Complete your booking and payment to receive your access code."
+                ],
+                "ctas": [
+                  {
+                    "label": "Explore the booking journey",
+                    "href": "/how-it-works/",
+                    "style": "link"
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "selection",
+          "type": "widget",
+          "style": {
+            "bg": "white"
+          },
+          "props": {
+            "widget": "reservationSelection"
+          }
+        }
+      ]
+    },
+    "/": {
+      "seo": {
+        "title": "Self-storage in Sembawang | StoreLah Self Storage",
+        "description": "Find your personal storeroom at StoreLah Sembawang. Compare storage sizes, starting prices, 24/7 self-access and flexible monthly payments."
+      },
+      "sections": [
+        {
+          "id": "hero",
+          "type": "heroCarousel",
+          "style": {
+            "bg": "paper"
+          },
+          "props": {
+            "label": "Discover StoreLah",
+            "slides": [
+              {
+                "key": "hero-launch",
+                "label": "StoreLah launch",
+                "image": {
+                  "src": "/assets/launch-team-v11.webp",
+                  "alt": "Illustrative StoreLah team members beside a trolley in a warm sage-green self-storage facility",
+                  "frame": "plain"
+                },
+                "eyebrow": "OPENING SOON IN SEMBAWANG",
+                "heading": "Self-storage.\nMade simple.",
+                "text": "More room for your belongings. Straightforward pricing. Easy access. Reserve ahead of our Sembawang opening.",
+                "ctas": [
+                  {
+                    "label": "Reserve your space",
+                    "href": "/reserve/?promo=StoreLah100",
+                    "style": "primary"
+                  },
+                  {
+                    "label": "See the launch offer",
+                    "href": "/promotions/",
+                    "style": "outline"
+                  }
+                ],
+                "note": "A new name. Years of self-storage experience."
+              },
+              {
+                "key": "hero-home",
+                "label": "More room for your belongings",
+                "image": {
+                  "src": "/assets/launch-home.webp",
+                  "alt": "Friends making room for their belongings at StoreLah",
+                  "frame": "plain"
+                },
+                "eyebrow": "YOUR THINGS. A LITTLE MORE ROOM.",
+                "heading": "A storeroom.\nJust outside home.",
+                "text": "Renovating the flat, moving homes or keeping the things that matter? Give them a space of their own.",
+                "ctas": [
+                  {
+                    "label": "See sizes & prices",
+                    "href": "/sizes-pricing/",
+                    "style": "primary"
+                  },
+                  {
+                    "label": "New to storage?",
+                    "href": "/what-is-self-storage/",
+                    "style": "outline"
+                  }
+                ],
+                "note": "Monthly storage. No admin fee. No security deposit."
+              },
+              {
+                "key": "hero-work",
+                "label": "More room for stock and equipment",
+                "image": {
+                  "src": "/assets/launch-business.webp",
+                  "alt": "Singaporean business owners organising their stock at StoreLah",
+                  "frame": "plain"
+                },
+                "eyebrow": "SPACE FOR YOUR NEXT STEP",
+                "heading": "More room for stock.\nMore room to grow.",
+                "text": "Keep stock, tools and equipment organised, without turning your home into the storeroom.",
+                "ctas": [
+                  {
+                    "label": "See sizes & prices",
+                    "href": "/sizes-pricing/",
+                    "style": "primary"
+                  },
+                  {
+                    "label": "Find my size",
+                    "href": "/size-guide/",
+                    "style": "outline"
+                  }
+                ],
+                "note": "Same storage. Whatever you’re making room for."
+              }
+            ]
+          }
+        },
+        {
+          "id": "finder",
+          "type": "bookingFinder",
+          "style": {
+            "bg": "paper"
+          },
+          "props": {
+            "facts": [
+              {
+                "title": "Prices upfront",
+                "text": "See the full breakdown."
+              },
+              {
+                "title": "Pay monthly",
+                "text": "No admin fee or deposit."
+              },
+              {
+                "title": "24/7 self-access",
+                "text": "After your move-in date."
+              },
+              {
+                "title": "Book online. Move in anytime.",
+                "text": "Instant access after payment, once open."
+              }
+            ]
+          }
+        },
+        {
+          "id": "extra-space",
+          "type": "split",
+          "style": {
+            "bg": "white"
+          },
+          "props": {
+            "columns": [
+              {
+                "kind": "text",
+                "eyebrow": "EXTRA SPACE. STILL YOURS.",
+                "heading": "A storeroom.\nJust outside home.",
+                "paragraphs": [
+                  "Your own lockable unit for luggage, furniture, keepsakes or stock. Pack it your way. Find your things easily. Visit when you need them.",
+                  "Moving between homes? Renovating the flat? Growing an online shop? Same storage. Different reasons to need a little more room."
+                ],
+                "ctas": [
+                  {
+                    "label": "New to self-storage?",
+                    "href": "/what-is-self-storage/",
+                    "style": "primary"
+                  },
+                  {
+                    "label": "What can I store?",
+                    "href": "/what-you-can-store/",
+                    "style": "link"
+                  }
+                ]
+              },
+              {
+                "kind": "image",
+                "image": {
+                  "src": "/assets/launch-small.webp",
+                  "alt": "Neatly arranged StoreLah cartons labelled books and clothes, luggage and shelving inside a sage-green unit",
+                  "frame": "plain"
+                },
+                "caption": {
+                  "title": "Your things. Your space.",
+                  "text": "Choose from sizes starting at 10 sq ft."
+                }
+              }
+            ]
+          }
+        },
+        {
+          "id": "sizes",
+          "type": "sizeShowcase",
+          "style": {
+            "bg": "paper"
+          },
+          "props": {
+            "head": {
+              "eyebrow": "FIND YOUR FIT",
+              "heading": "A few boxes.\nA whole new chapter.",
+              "aside": "Five size ranges, familiar examples and a clear starting price. See what fits before you choose."
+            },
+            "ctas": [
+              {
+                "label": "See sizes & prices",
+                "href": "/sizes-pricing/",
+                "style": "primary"
+              },
+              {
+                "label": "Try the interactive size calculator",
+                "href": "/size-guide/",
+                "style": "link"
+              }
+            ]
+          }
+        },
+        {
+          "id": "calculator",
+          "type": "calculatorTeaser",
+          "style": {
+            "bg": "white"
+          },
+          "props": {
+            "eyebrow": "NOT SURE HOW MUCH SPACE?",
+            "heading": "Start with your things.",
+            "paragraphs": [
+              "A few boxes? Furniture? Stock? Add your items or describe them, then see a suggested size and an interactive 3D layout."
+            ],
+            "cta": {
+              "label": "Help me choose a size",
+              "href": "/size-guide/",
+              "style": "primary"
+            },
+            "examples": [
+              {
+                "label": "Boxes & bags",
+                "href": "/size-guide/?q=12%20medium%20boxes%2C%202%20suitcases"
+              },
+              {
+                "label": "A home move",
+                "href": "/size-guide/?q=10%20medium%20boxes%2C%20a%20sofa%2C%20a%20queen%20mattress"
+              },
+              {
+                "label": "Business stock",
+                "href": "/size-guide/?q=20%20medium%20boxes%2C%202%20shelving%20units"
+              }
+            ],
+            "image": {
+              "src": "/assets/launch-small.webp",
+              "alt": "Illustrative compact storage with neatly arranged household belongings",
+              "frame": "plain"
+            },
+            "caption": "Choose it. Describe it. See what fits."
+          }
+        },
+        {
+          "id": "offer",
+          "type": "split",
+          "variant": "offer",
+          "style": {
+            "bg": "pink"
+          },
+          "props": {
+            "columns": [
+              {
+                "kind": "text",
+                "eyebrow": "GET FIRST DIBS",
+                "heading": "A new opening.\nA head start for you.",
+                "paragraphs": [
+                  "Plan your space before Sembawang opens. Ask about the launch offer for your chosen unit and mention our launch code."
+                ],
+                "promo": {
+                  "label": "Launch code",
+                  "code": "StoreLah100"
+                },
+                "ctas": [
+                  {
+                    "label": "Explore the launch offer",
+                    "href": "/promotions/",
+                    "style": "primary"
+                  },
+                  {
+                    "label": "Reserve your space",
+                    "href": "/reserve/?promo=StoreLah100",
+                    "style": "outline"
+                  }
+                ],
+                "note": "Launch savings, eligible units and commitment terms are confirmed with your reservation. Move-in starts once the facility opens."
+              },
+              {
+                "kind": "image",
+                "image": {
+                  "src": "/assets/launch-business.webp",
+                  "alt": "Local entrepreneurs planning more room for their business",
+                  "frame": "feature"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "id": "journey",
+          "type": "bookingJourney",
+          "style": {
+            "bg": "white"
+          },
+          "props": {
+            "head": {
+              "eyebrow": "BOOKING THAT FITS AROUND YOU",
+              "heading": "See it. Choose it.\nMake it yours.",
+              "aside": "A clear price before you pay. Your access code after payment. Once open, you can book and move in on the spot."
+            },
+            "steps": [
+              {
+                "n": "01",
+                "title": "Choose your facility and size.",
+                "text": "Pick the location, size and start date that suit you."
+              },
+              {
+                "n": "02",
+                "title": "Choose the exact unit.",
+                "text": "Explore the floorplan and select your preferred position."
+              },
+              {
+                "n": "03",
+                "title": "See every cost before paying.",
+                "text": "Rental, required protection and any selected extras, shown separately."
+              },
+              {
+                "n": "04",
+                "title": "Pay. Get your code. Move in.",
+                "text": "After completing your booking and payment, your access code is issued. Move in from your confirmed start date, at any hour."
+              }
+            ],
+            "cta": {
+              "label": "Reserve your space",
+              "href": "/reserve/",
+              "style": "primary"
+            }
+          }
+        },
+        {
+          "id": "viewing",
+          "type": "split",
+          "style": {
+            "bg": "sage"
+          },
+          "props": {
+            "columns": [
+              {
+                "kind": "text",
+                "eyebrow": "COME TAKE A LOOK, ON YOUR TIME",
+                "heading": "See the space.\nSkip the scheduling dance.",
+                "paragraphs": [
+                  "Once open, self-guided viewings let you explore the space at a time that suits you—even outside office hours.",
+                  "Book your visit, verify your identity on arrival and follow the entry instructions. Found your fit? Complete your storage booking online, right there."
+                ],
+                "ctas": [
+                  {
+                    "label": "Plan a self-guided viewing",
+                    "href": "/book-a-viewing/",
+                    "style": "light"
+                  }
+                ],
+                "note": "Viewing access is limited to the approved time and areas. Pre-opening requests will be confirmed when visits become available."
+              },
+              {
+                "kind": "image",
+                "image": {
+                  "src": "/assets/launch-service.webp",
+                  "alt": "Young StoreLah customer service staff helping a customer plan a viewing",
+                  "frame": "feature"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "id": "uses",
+          "type": "cardGrid",
+          "style": {
+            "bg": "paper"
+          },
+          "props": {
+            "head": {
+              "eyebrow": "LOCAL SPACE, REAL-LIFE USES",
+              "heading": "Life gets full.\nKeep a little room.",
+              "link": {
+                "label": "See more storage ideas",
+                "href": "/storage-ideas/",
+                "style": "link"
+              }
+            },
+            "items": [
+              {
+                "image": {
+                  "src": "/assets/renovation.webp",
+                  "alt": "Room for the work to happen.",
+                  "frame": "plain"
+                },
+                "eyebrow": "RENOVATING THE FLAT",
+                "title": "Room for the work to happen.",
+                "text": "Keep furniture and packed belongings out of the way while your home gets its next chapter.",
+                "cta": {
+                  "label": "Plan renovation storage",
+                  "href": "/storage-ideas/#renovation",
+                  "style": "link"
+                }
+              },
+              {
+                "image": {
+                  "src": "/assets/home.webp",
+                  "alt": "Keep the things. Lose the squeeze.",
+                  "frame": "plain"
+                },
+                "eyebrow": "HOME, WITH A LITTLE MORE ROOM",
+                "title": "Keep the things. Lose the squeeze.",
+                "text": "Luggage, seasonal clothes and keepsakes don’t have to take over the spare room.",
+                "cta": {
+                  "label": "Make room at home",
+                  "href": "/storage-ideas/#everyday",
+                  "style": "link"
+                }
+              },
+              {
+                "image": {
+                  "src": "/assets/business-owner.webp",
+                  "alt": "Give your stock a space of its own.",
+                  "frame": "plain"
+                },
+                "eyebrow": "THE ONLINE SHOP IS GROWING",
+                "title": "Give your stock a space of its own.",
+                "text": "Keep inventory and equipment organised without making your home the storeroom.",
+                "cta": {
+                  "label": "Make room for stock",
+                  "href": "/storage-ideas/#stock",
+                  "style": "link"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "id": "sembawang",
+          "type": "locationFeature",
+          "style": {
+            "bg": "pink"
+          },
+          "props": {
+            "eyebrow": "OUR FIRST HOME: SEMBAWANG",
+            "heading": "More room.\nCloser to home.",
+            "intro": "We’re starting in the north. Reserve a space at StoreLah Sembawang ahead of opening.",
+            "badge": {
+              "text": "Sembawang · opening soon",
+              "tone": "open"
+            },
+            "text": "Woodlands and Ubi are next on the horizon. Join the update list for news as plans are confirmed.",
+            "ctas": [
+              {
+                "label": "Explore Sembawang",
+                "href": "/locations/sembawang/",
+                "style": "primary"
+              },
+              {
+                "label": "Get location updates",
+                "href": "/contact/?intent=updates",
+                "style": "outline"
+              }
+            ],
+            "note": "Exact address, directions and loading information will be confirmed before your visit.",
+            "card": {
+              "image": {
+                "src": "/assets/launch-home.webp",
+                "alt": "Sage-green StoreLah storage doors with customers",
+                "frame": "feature"
+              },
+              "title": "StoreLah Sembawang",
+              "text": "Singapore’s north · reservations open",
+              "link": {
+                "label": "See our locations",
+                "href": "/locations/",
+                "style": "link"
+              }
+            }
+          }
+        },
+        {
+          "id": "approach",
+          "type": "split",
+          "style": {
+            "bg": "white"
+          },
+          "props": {
+            "columns": [
+              {
+                "kind": "text",
+                "eyebrow": "A NEW NAME. A CONSIDERED APPROACH.",
+                "heading": "Fresh thinking.\nExperienced hands.",
+                "paragraphs": [
+                  "StoreLah is new. The experience behind it isn’t. Our approach draws on years working in self-storage, with a simple aim: make the whole experience clearer and easier.",
+                  "From the size you choose to the total you pay, you should know what you’re getting. And when you need a person, we’re here to help."
+                ],
+                "ctas": [
+                  {
+                    "label": "Meet StoreLah",
+                    "href": "/about/",
+                    "style": "primary"
+                  },
+                  {
+                    "label": "Talk to us",
+                    "href": "/contact/",
+                    "style": "link"
+                  }
+                ]
+              },
+              {
+                "kind": "image",
+                "image": {
+                  "src": "/assets/launch-service.webp",
+                  "alt": "Young Chinese Singaporean StoreLah team member helping a local customer",
+                  "frame": "feature"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "id": "why",
+          "type": "featureCards",
+          "variant": "numbered",
+          "style": {
+            "bg": "paper"
+          },
+          "props": {
+            "eyebrow": "WHY STORELAH",
+            "heading": "Storage, without\nthe unnecessary stuff.",
+            "headLink": {
+              "label": "The StoreLah difference",
+              "href": "/why-storelah/",
+              "style": "link"
+            },
+            "items": [
+              {
+                "n": "01",
+                "title": "Every cost, upfront.",
+                "text": "See rental, required protection and chosen extras before you pay. No admin fee. No security deposit."
+              },
+              {
+                "n": "02",
+                "title": "Your time, respected.",
+                "text": "Online booking, self-guided viewings and 24/7 self-access once the facility is open and your booking starts."
+              },
+              {
+                "n": "03",
+                "title": "A human when you need one.",
+                "text": "Straightforward guidance from people who understand storage. Use the tools, or just ask."
+              }
+            ]
+          }
+        },
+        {
+          "id": "faq",
+          "type": "faqTeaser",
+          "style": {
+            "bg": "white"
+          },
+          "props": {
+            "eyebrow": "BEFORE YOU RESERVE",
+            "heading": "Good questions.\nSimple answers.",
+            "text": "What opens when? How does access work? Find the practical details before you take the next step.",
+            "link": {
+              "label": "See all FAQs",
+              "href": "/faqs/",
+              "style": "link"
+            },
+            "items": [
+              {
+                "q": "What is self-storage?",
+                "a": "Self-storage is your own lockable space in a shared facility. You choose a unit, bring your belongings and organise them yourself. Unlike collection-and-delivery storage, you can visit your unit directly.",
+                "cat": "getting started"
+              },
+              {
+                "q": "How do I choose a size?",
+                "a": "Make a list of your items and measure the largest pieces. Use our size guide as a starting point, then confirm dimensions and access space with the team. Packing style and stacking affect what fits.",
+                "cat": "getting started"
+              },
+              {
+                "q": "Can I access my belongings anytime?",
+                "a": "StoreLah offers 24/7 self-access after your booking and access are activated. Use your assigned PIN for facility entry and follow your unit access instructions.",
+                "cat": "access"
+              },
+              {
+                "q": "Do I pay a security deposit or admin fee?",
+                "a": "No security deposit or admin fee. Your quotation will separately show rental, mandatory protection and any optional services you select.",
+                "cat": "pricing"
+              }
+            ]
+          }
+        },
+        {
+          "id": "cta",
+          "type": "ctaBand",
+          "style": {
+            "bg": "terra"
+          },
+          "props": {
+            "title": "Your next storeroom is on its way.",
+            "text": "Get first dibs on your space at StoreLah Sembawang."
+          }
+        }
+      ]
+    }
+  }
+}

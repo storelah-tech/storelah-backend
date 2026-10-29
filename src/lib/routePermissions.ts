@@ -261,6 +261,28 @@ export const ROUTE_PERMISSIONS: Record<string, PermissionSpec> = {
   'POST /content/:key/image': 'content-list:update',
   'DELETE /content/:key/image': 'content-list:update',
 
+  // ---- site builder (approve = publish) ----
+  'GET /site/schema': v('site-builder'),
+  'GET /site/config': v('site-builder'),
+  'GET /site/pages': v('site-builder'),
+  'POST /site/pages': 'site-builder:create',
+  'GET /site/pages/:id': v('site-builder'),
+  'PATCH /site/pages/:id': 'site-builder:update',
+  'PUT /site/pages/:id/draft': 'site-builder:update',
+  'POST /site/pages/:id/duplicate': 'site-builder:create',
+  'DELETE /site/pages/:id': 'site-builder:delete',
+  'GET /site/pages/:id/versions': v('site-builder'),
+  'GET /site/pages/:id/versions/:versionId': v('site-builder'),
+  'POST /site/pages/:id/rollback/:versionId': 'site-builder:approve',
+  'POST /site/publish': 'site-builder:approve',
+  'GET /site/publishes': v('site-builder'),
+  'GET /site/settings': v('site-builder'),
+  'PUT /site/settings/draft': 'site-builder:update',
+  'GET /site/media': v('site-builder'),
+  'POST /site/media': 'site-builder:create',
+  'PATCH /site/media/:id': 'site-builder:update',
+  'DELETE /site/media/:id': 'site-builder:delete',
+
   // ---- global settings ----
   'PUT /settings': ['settings-general:update', 'settings-booking:update'],
   'GET /fees': v('settings-fees', 'bill-invoices', 'customer-tenants'),

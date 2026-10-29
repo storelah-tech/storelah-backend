@@ -121,6 +121,94 @@ Settings › Team & access. Notes that supersede the `/config` material further 
   everything; records with no facility (e.g. a lead with no preferred site) stay visible.
   Public/customer APIs are never scoped.
 
+## CMS MEDIA BUCKET + SITE-BUILDER PUBLISH TRIGGER — Phase 0, NOT deployed yet
+
+Plan: `docs/SITE_BUILDER_PLAN.md` (Phase 0). Two prod changes, each needing the
+owner's explicit go-ahead. Neither touches the gates.
+
+### 1. Media bucket (`infra/media-stack.yaml`, stack `storelah-media`)
+
+> **DO NOT DEPLOY AS-IS (2026-10-29).** Prod already has a hand-made bucket
+> `storelah-content-prod` (public read on `content/*`, inline role policy
+> `storelah-content-s3-write`, Lambda env `CONTENT_S3_BUCKET`/`CONTENT_S3_REGION`),
+> and it is verified working. This template would create a second bucket. Keep it
+> only as the basis for an optional CloudFront-in-front change that targets the
+> existing bucket. The env-merge procedure below remains the reference for any
+> Lambda env change.
+
+1. Confirm the live role name: `aws lambda get-function-configuration
+   --function-name storelah-backend --query Role` (expect
+   `.../storelah-backend-exec`).
+2. Deploy the stack (command in the template header), then read its outputs
+   with `aws cloudformation describe-stacks --stack-name storelah-media
+   --query 'Stacks[0].Outputs'`.
+3. **Merge** the env. `update-function-configuration --environment` REPLACES
+   the whole map (the 2026-10-07 wipe), so never pass only the new keys:
+   ```bash
+   aws lambda get-function-configuration --function-name storelah-backend      --query 'Environment.Variables' --output json > /tmp/env.json   # local only, delete after
+   # add CONTENT_S3_BUCKET, CONTENT_S3_PUBLIC_BASE_URL, CONTENT_S3_PREFIX (+ CONTENT_S3_REGION=ap-southeast-1)
+   jq --arg b "<BucketName>" --arg u "<PublicBaseUrl>" \
+     '. + {CONTENT_S3_BUCKET:$b, CONTENT_S3_PUBLIC_BASE_URL:$u, CONTENT_S3_PREFIX:"content", CONTENT_S3_REGION:"ap-southeast-1"}' \
+     /tmp/env.json > /tmp/env.new.json
+   jq 'keys|length' /tmp/env.json /tmp/env.new.json   # new = old + (0..4); abort if smaller
+   aws lambda update-function-configuration --function-name storelah-backend \
+     --environment "{\"Variables\": $(cat /tmp/env.new.json)}" --no-cli-pager
+   rm -f /tmp/env.json /tmp/env.new.json
+   ```
+   Never print the env JSON to the terminal or logs (it holds secrets).
+4. Verify: in the CMS, Content Management, upload an image to a draft item.
+   The response has `storage: "s3"`, and `imageUrl` loads from the CDN
+   domain. Then delete the test item; its object is removed best-effort.
+5. Existing `local/` items on prod point at files that are already gone.
+   Re-upload them or delete them (list them with `GET /api/v1/cms/content`
+   and look for `imageKey` starting with `local/`).
+
+Rollback: remove the four `CONTENT_S3_*` keys with the same merge procedure,
+then delete the stack (the bucket is retained).
+
+### 2. Landing publish trigger (GitHub token)
+
+Used from site-builder Phase 4. Provision it now so Phase 4 isn't blocked.
+
+1. **Owner** creates a fine-grained GitHub token. Resource owner:
+   `storelah-tech`. Repository: `storelah-landing` only. Permissions:
+   **Actions: Read and write** (Metadata: read is automatic). Nothing else.
+   Expiry is at most 1 year; record the rotation date in the decision log
+   (date only, never the value).
+2. Add it to the Lambda env with the merge procedure above as
+   `LANDING_DISPATCH_TOKEN`, plus `LANDING_DISPATCH_REPO=storelah-tech/storelah-landing`
+   and `LANDING_DISPATCH_WORKFLOW=landing-deploy.yaml`.
+3. In the landing repo, add the Actions **variable** (not a secret)
+   `NEXT_PUBLIC_API_URL=https://api.storelah.sg`.
+4. Smoke test (token from the env, never echoed):
+   `curl -fsS -X POST -H "Authorization: Bearer $LANDING_DISPATCH_TOKEN" -H "Accept: application/vnd.github+json" https://api.github.com/repos/storelah-tech/storelah-landing/actions/workflows/landing-deploy.yaml/dispatches -d '{"ref":"main","inputs":{"publishId":"smoke-test"}}'`
+   should return 204, and a run named `cms publish smoke-test` should appear.
+   This is a real prod landing deploy of current `main`, so run it only with
+   the owner's OK.
+
+Optional: `LANDING_PREVIEW_ORIGIN` (origin serving the landing `/site-preview/`, e.g. the
+preview host from plan §7 Q1) turns on the CMS editor's live preview; that landing build must
+list `https://cms.storelah.sg` in `NEXT_PUBLIC_PREVIEW_PARENT_ORIGINS`. Optional: `LANDING_DISPATCH_REF` (default `main`). Without the token and repo,
+`POST /cms/site/publish` still makes versions live but records
+`status: NOT_CONFIGURED` and no rebuild runs.
+
+### 3. Site-builder rollout (Phase 1 backend)
+
+Each prod step needs the owner's go-ahead (prod migration + prod data).
+
+1. Migrate first: `prisma migrate deploy` with the direct Neon URL (adds
+   `20261029000000_site_builder`; additive, also grants `site-builder:*` to the
+   default Manager/Viewer roles).
+2. Lambda code update (no env change needed). Owner gets the new permissions
+   on the next cold start (`ensureSystemRoles`).
+3. Import the landing copy as v1 of every page, from the landing repo's
+   `content/snapshot.json` on the commit being deployed:
+   `pnpm db:site-import <path>/content/snapshot.json` (dry run), then `--apply`.
+   Additive: existing slugs are skipped; it never triggers a rebuild.
+4. Check `GET https://api.storelah.sg/api/v1/public/site/bundle` returns the pages.
+   Only then set the landing variable `NEXT_PUBLIC_API_URL` (step 2.3 above):
+   until then landing builds from its snapshot, which is identical.
+
 ## CMS GATE (Basic Auth on cms.storelah.sg) — deployed 2026-08-19
 
 ### Problem

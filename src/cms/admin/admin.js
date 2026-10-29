@@ -26,6 +26,7 @@ import { bindQuotes, bindMoveouts, wireOpsQueues } from './opsQueuesView.js';
 import { bindFeesSection, bindBusinessRulesSection, bindUsersSection, wireSettingsExt } from './settingsExtView.js';
 import { bindExtrasSection, wireExtras } from './extrasView.js';
 import { bindContentSection, wireContent } from './contentView.js';
+import { bindSiteBuilder } from './siteBuilderView.js';
 import {
   setRefreshAll as leadDrawerSetRefreshAll, setLeadDrawerActions, openLeadDrawer, wireLeadDrawer,
 } from './leadsDetailDrawer.js';
@@ -79,7 +80,7 @@ const sideNav = {
     ['Assets & vendors', 'facilities', 'facility-assets'], ['Incidents', 'facilities', 'facility-incidents'],
     ['Access control', 'facilities', 'facility-access'], ['Inspections', 'facilities', 'facility-inspections']],
   extras: [['Protection plans', 'extras', 'extras-plans'], ['Addons', 'extras', 'extras-addons']],
-  content: [['All content', 'content', 'content-list']],
+  content: [['All content', 'content', 'content-list'], ['Site builder', 'content', 'site-builder']],
   promotions: [['Dashboard', 'promotions', 'promo-overview'], ['Discount plan builder', 'promotions', 'promo-discount-matrix'], ['Free months', 'promotions', 'promo-free-months'], ['Promo code builder', 'promotions', 'promo-code-builder'], ['Promotions library', 'promotions', 'promo-library'], ['History', 'promotions', 'promo-history'], ['Safeguards', 'promotions', 'promo-safeguards'], ['Performance', 'promotions', 'promo-performance']],
   billing: [['Overview', 'billing', 'bill-overview'], ['Invoices', 'billing', 'bill-invoices'],
     ['Arrears', 'billing', 'bill-arrears']],
@@ -4020,7 +4021,8 @@ function wireEvents() {
         p.classList.toggle('active', p.id === this.dataset.tab);
       });
       activateSide('content', this.dataset.tab);
-      bindContentSection().catch((err) => showBanner('Content: ' + describeError(err)));
+      if (this.dataset.tab === 'site-builder') bindSiteBuilder().catch((err) => showBanner('Site builder: ' + describeError(err)));
+      else bindContentSection().catch((err) => showBanner('Content: ' + describeError(err)));
     });
   });
   // Customer tabs (data-tabs="customer")

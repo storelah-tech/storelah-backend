@@ -217,6 +217,30 @@ import {
   setContentItemImage,
   removeContentItemImage,
 } from '../core/content';
+import {
+  listSitePages,
+  getSitePage,
+  listSitePageVersions,
+  getSitePageVersion,
+  createSitePage,
+  createPageInput,
+  saveSitePageDraft,
+  saveDraftInput,
+  updateSitePage,
+  updatePageInput,
+  duplicateSitePage,
+  duplicatePageInput,
+  archiveSitePage,
+  publishSitePages,
+  publishInput,
+  rollbackSitePage,
+  listSitePublishes,
+  getPageDocJsonSchema,
+  getSiteEditorConfig,
+  getSiteSettingsDraft,
+  saveSiteSettingsDraft,
+} from '../core/sitePages';
+import { listMedia, listMediaQuery, uploadMedia, uploadMediaInput, updateMedia, updateMediaInput, deleteMedia } from '../core/siteMedia';
 
 const router = Router();
 
@@ -3368,6 +3392,118 @@ router.post('/units/:code/images/:imageId/cover', requireAuth, async (req: Reque
 
 router.delete('/units/:code/images/:imageId', requireAuth, async (req: Request, res: Response) => {
   ok(res, await removeUnitImage(String(req.params.code), String(req.params.imageId)));
+});
+
+// --- Site builder (landing pages as JSON docs; docs/SITE_BUILDER_PLAN.md §4.4) ---
+// Drafts autosave with an optimistic lock ({ doc, rev } → 409 when stale).
+// Publish freezes drafts into versions and triggers the landing rebuild;
+// `site-builder:approve` = publish. The 1 MB body limit for docs is in app.ts.
+
+function parseOr400<T>(schema: z.ZodType<T>, body: unknown, res: Response, message: string): T | undefined {
+  const parsed = schema.safeParse(body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', message, parsed.error.flatten());
+    return undefined;
+  }
+  return parsed.data;
+}
+
+router.get('/site/schema', requireAuth, async (_req: Request, res: Response) => {
+  ok(res, getPageDocJsonSchema());
+});
+
+router.get('/site/config', requireAuth, async (_req: Request, res: Response) => {
+  ok(res, getSiteEditorConfig());
+});
+
+router.get('/site/pages', requireAuth, async (req: Request, res: Response) => {
+  const rows = await listSitePages({ includeArchived: req.query.archived === 'true' });
+  ok(res, rows, { count: rows.length });
+});
+
+router.post('/site/pages', requireAuth, async (req: Request, res: Response) => {
+  const input = parseOr400(createPageInput, req.body, res, 'Page payload must be { slug, title, doc? }');
+  if (input) created(res, await createSitePage(input, actorOf(req).id));
+});
+
+router.get('/site/pages/:id', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await getSitePage(String(req.params.id)));
+});
+
+router.patch('/site/pages/:id', requireAuth, async (req: Request, res: Response) => {
+  const input = parseOr400(updatePageInput, req.body, res, 'Page update must be { title?, slug? }');
+  if (input) ok(res, await updateSitePage(String(req.params.id), input, actorOf(req).id));
+});
+
+router.put('/site/pages/:id/draft', requireAuth, async (req: Request, res: Response) => {
+  const input = parseOr400(saveDraftInput, req.body, res, 'Draft payload must be { doc, rev }');
+  if (input) ok(res, await saveSitePageDraft(String(req.params.id), input, actorOf(req).id));
+});
+
+router.post('/site/pages/:id/duplicate', requireAuth, async (req: Request, res: Response) => {
+  const input = parseOr400(duplicatePageInput, req.body, res, 'Duplicate payload must be { slug, title }');
+  if (input) created(res, await duplicateSitePage(String(req.params.id), input, actorOf(req).id));
+});
+
+router.delete('/site/pages/:id', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await archiveSitePage(String(req.params.id), actorOf(req).id));
+});
+
+router.get('/site/pages/:id/versions', requireAuth, async (req: Request, res: Response) => {
+  const rows = await listSitePageVersions(String(req.params.id));
+  ok(res, rows, { count: rows.length });
+});
+
+router.get('/site/pages/:id/versions/:versionId', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await getSitePageVersion(String(req.params.id), String(req.params.versionId)));
+});
+
+router.post('/site/pages/:id/rollback/:versionId', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await rollbackSitePage(String(req.params.id), String(req.params.versionId), actorOf(req).id));
+});
+
+router.post('/site/publish', requireAuth, async (req: Request, res: Response) => {
+  const input = parseOr400(publishInput, req.body ?? {}, res, 'Publish payload must be { pageIds?, note? }');
+  if (input) created(res, await publishSitePages(input, actorOf(req).id));
+});
+
+// Global settings (header, footer, announcement bar, contact, defaults):
+// same draft → publish flow as pages; publish with { pageIds: [], settings: true }.
+router.get('/site/settings', requireAuth, async (_req: Request, res: Response) => {
+  ok(res, await getSiteSettingsDraft());
+});
+
+router.put('/site/settings/draft', requireAuth, async (req: Request, res: Response) => {
+  const input = parseOr400(saveDraftInput, req.body, res, 'Settings payload must be { doc, rev }');
+  if (input) ok(res, await saveSiteSettingsDraft(input, actorOf(req).id));
+});
+
+// Media library: the browser uploads pre-resized variants ({ filename, alt,
+// tags?, variants: [{ dataBase64 }] }, smallest first; 30 MB limit in app.ts).
+router.get('/site/media', requireAuth, async (req: Request, res: Response) => {
+  const q = parseOr400(listMediaQuery, req.query, res, 'Invalid media query (q, tag)');
+  if (!q) return;
+  const rows = await listMedia(q);
+  ok(res, rows, { count: rows.length });
+});
+
+router.post('/site/media', requireAuth, async (req: Request, res: Response) => {
+  const input = parseOr400(uploadMediaInput, req.body, res, 'Upload must be { filename, alt, tags?, variants: [{ dataBase64 }] }');
+  if (input) created(res, await uploadMedia(input, { actorId: actorOf(req).id, localBaseUrl: `${req.protocol}://${req.get('host')}` }));
+});
+
+router.patch('/site/media/:id', requireAuth, async (req: Request, res: Response) => {
+  const input = parseOr400(updateMediaInput, req.body, res, 'Media update must be { alt?, tags? }');
+  if (input) ok(res, await updateMedia(String(req.params.id), input));
+});
+
+router.delete('/site/media/:id', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await deleteMedia(String(req.params.id)));
+});
+
+router.get('/site/publishes', requireAuth, async (_req: Request, res: Response) => {
+  const rows = await listSitePublishes();
+  ok(res, rows, { count: rows.length });
 });
 
 // Deny-by-default permission check on every route above (CMS RBAC). Must

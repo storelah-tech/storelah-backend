@@ -25,7 +25,7 @@ export const openapiSpec = {
   openapi: '3.0.3',
   info: {
     title: 'StoreLah Booking API',
-    version: '1.11.0',
+    version: '1.12.0',
     description: [
       'Customer-facing booking API for the StoreLah self-storage business.',
       '',
@@ -375,6 +375,20 @@ export const openapiSpec = {
          '(null clears); a length/width change re-derives `sqft` (still 409 `SIZE_OWNED_BY_PLAN` on a ' +
          'placed unit whose area would change). CMS unit reads gain `lengthFt`, `widthFt`, `heightFt` and ' +
          '`volumeCuft` (null when any dimension is unknown). Public shapes unchanged.',
+      'v1.12.0 is ADDITIVE: site builder (docs/SITE_BUILDER_PLAN.md). Landing pages are validated JSON ' +
+        'documents with immutable published versions. CMS (Bearer JWT, permission `site-builder:*`, ' +
+        '`approve` = publish): `GET|POST /cms/site/pages`, `GET|PATCH|DELETE /cms/site/pages/{id}` (DELETE ' +
+        'archives; core pages refuse), `PUT /cms/site/pages/{id}/draft` (`{ doc, rev }`, 409 when `rev` is ' +
+        'stale), `POST /cms/site/pages/{id}/duplicate`, `GET /cms/site/pages/{id}/versions[/{versionId}]`, ' +
+        '`POST /cms/site/pages/{id}/rollback/{versionId}`, `POST /cms/site/publish` (`{ pageIds?, note? }`; ' +
+        'triggers the landing rebuild when configured), `GET /cms/site/publishes`, `GET /cms/site/schema`. ' +
+        'Public (no auth, live versions only): `GET /public/site/bundle`, `GET /public/site/schema`. ' +
+        'Media library: `GET|POST /cms/site/media`, `PATCH|DELETE /cms/site/media/{id}` (browser-resized ' +
+        'variants, server-sniffed type + size; delete 409 while a page uses it). `GET /cms/site/config` ' +
+        '(editor preview URL). Global settings: `GET /cms/site/settings` (draft, live version, JSON Schema), ' +
+        '`PUT /cms/site/settings/draft` (`{ doc, rev }`, 409 when stale); publish takes `settings` ' +
+        '(default true when `pageIds` is omitted; `{ pageIds: [], settings: true }` = settings only); ' +
+        'the bundle gains `settings` + `settingsVersion`, publishes gain `settingsVersion`.',
     ].join('\n'),
   },
   servers: [
@@ -4471,6 +4485,381 @@ export const openapiSpec = {
         },
       },
     },
+    '/public/site/bundle': {
+      get: {
+        tags: ['Public'],
+        summary: 'Live site-builder pages for the landing build',
+        description: 'Published versions only (never drafts or archived pages). Read at build time by the landing static export.',
+        operationId: 'getSiteBundle',
+        security: [],
+        responses: {
+          '200': openapiResponse({
+            type: 'object',
+            properties: {
+              pages: { type: 'array', items: { type: 'object', properties: { slug: { type: 'string' }, version: { type: 'integer' }, doc: { type: 'object', description: 'Page document (see GET /public/site/schema).' } } } },
+              publishId: { type: 'string', nullable: true },
+              publishedAt: { type: 'string', format: 'date-time', nullable: true },
+            },
+          }),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+    },
+    '/public/site/schema': {
+      get: {
+        tags: ['Public'],
+        summary: 'JSON Schema of the page document',
+        description: 'For the landing contract test. Same schema the CMS validates drafts with.',
+        operationId: 'getSitePageSchema',
+        security: [],
+        responses: {
+          '200': openapiResponse({ type: 'object' }),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+    },
+    '/cms/site/schema': {
+      get: {
+        tags: ['Operator CMS'],
+        summary: 'JSON Schema of the page document',
+        description: 'Drives the CMS page editor forms.',
+        operationId: 'getCmsSitePageSchema',
+        security: [{ bearerAuth: [] }],
+        responses: {
+          '200': openapiResponse({ type: 'object' }),
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '403': openapiErrorResponse('Missing site-builder permission.'),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+    },
+    '/cms/site/pages': {
+      get: {
+        tags: ['Operator CMS'],
+        summary: 'List site pages',
+        description: 'Non-archived pages by slug; `?archived=true` includes archived. No draft bodies.',
+        operationId: 'listSitePages',
+        security: [{ bearerAuth: [] }],
+        responses: {
+          '200': openapiResponse({ type: 'array', items: { $ref: openapiSchemaRef('SitePage') } }),
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '403': openapiErrorResponse('Missing site-builder permission.'),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+      post: {
+        tags: ['Operator CMS'],
+        summary: 'Create a site page',
+        description: 'Body `{ slug, title, doc? }`. Slug is `/` or lowercase words joined by - or /. 409 on a used slug.',
+        operationId: 'createSitePage',
+        security: [{ bearerAuth: [] }],
+        requestBody: {
+          required: true,
+          content: { 'application/json': { schema: { type: 'object', required: ['slug', 'title'], properties: { slug: { type: 'string' }, title: { type: 'string' }, doc: { type: 'object', description: 'Page document (see GET /public/site/schema).' } } } } },
+        },
+        responses: {
+          '201': openapiCreatedResponse({ $ref: openapiSchemaRef('SitePage') }),
+          '400': openapiErrorResponse('Invalid slug or document (details lists field paths).'),
+          '409': openapiErrorResponse('Slug already used.'),
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '403': openapiErrorResponse('Missing site-builder permission.'),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+    },
+    '/cms/site/pages/{id}': {
+      get: {
+        tags: ['Operator CMS'],
+        summary: 'Get a site page with its draft',
+        description: 'Includes `draft`, `draftRev` and the live version summary.',
+        operationId: 'getSitePage',
+        security: [{ bearerAuth: [] }],
+        responses: {
+          '200': openapiResponse({ $ref: openapiSchemaRef('SitePage') }),
+          '404': openapiErrorResponse('Page not found.'),
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '403': openapiErrorResponse('Missing site-builder permission.'),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+      patch: {
+        tags: ['Operator CMS'],
+        summary: 'Rename a site page or change its slug',
+        description: 'Body `{ title?, slug? }`. Core (system) pages keep their slug (409).',
+        operationId: 'updateSitePage',
+        security: [{ bearerAuth: [] }],
+        requestBody: {
+          required: true,
+          content: { 'application/json': { schema: { type: 'object', properties: { title: { type: 'string' }, slug: { type: 'string' } } } } },
+        },
+        responses: {
+          '200': openapiResponse({ $ref: openapiSchemaRef('SitePage') }),
+          '404': openapiErrorResponse('Page not found.'),
+          '409': openapiErrorResponse('Slug used or page is a core page.'),
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '403': openapiErrorResponse('Missing site-builder permission.'),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+      delete: {
+        tags: ['Operator CMS'],
+        summary: 'Archive a site page',
+        description: 'Removes it from the public bundle; versions are kept. Core pages refuse (409).',
+        operationId: 'archiveSitePage',
+        security: [{ bearerAuth: [] }],
+        responses: {
+          '200': openapiResponse({ $ref: openapiSchemaRef('SitePage') }),
+          '404': openapiErrorResponse('Page not found.'),
+          '409': openapiErrorResponse('Core page.'),
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '403': openapiErrorResponse('Missing site-builder permission.'),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+    },
+    '/cms/site/pages/{id}/draft': {
+      put: {
+        tags: ['Operator CMS'],
+        summary: 'Save a page draft (optimistic lock)',
+        description: 'Body `{ doc, rev }`; `rev` must equal the current `draftRev` or 409 returns the current rev.',
+        operationId: 'saveSitePageDraft',
+        security: [{ bearerAuth: [] }],
+        requestBody: {
+          required: true,
+          content: { 'application/json': { schema: { type: 'object', required: ['doc', 'rev'], properties: { doc: { type: 'object', description: 'Page document (see GET /public/site/schema).' }, rev: { type: 'integer' } } } } },
+        },
+        responses: {
+          '200': openapiResponse({ $ref: openapiSchemaRef('SitePage') }),
+          '400': openapiErrorResponse('Invalid document (details lists field paths).'),
+          '404': openapiErrorResponse('Page not found.'),
+          '409': openapiErrorResponse('Stale rev or archived page.'),
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '403': openapiErrorResponse('Missing site-builder permission.'),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+    },
+    '/cms/site/pages/{id}/duplicate': {
+      post: {
+        tags: ['Operator CMS'],
+        summary: 'Duplicate a page draft',
+        description: 'Body `{ slug, title }`; copies the current draft into a new DRAFT page.',
+        operationId: 'duplicateSitePage',
+        security: [{ bearerAuth: [] }],
+        requestBody: {
+          required: true,
+          content: { 'application/json': { schema: { type: 'object', required: ['slug', 'title'], properties: { slug: { type: 'string' }, title: { type: 'string' } } } } },
+        },
+        responses: {
+          '201': openapiCreatedResponse({ $ref: openapiSchemaRef('SitePage') }),
+          '404': openapiErrorResponse('Page not found.'),
+          '409': openapiErrorResponse('Slug already used.'),
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '403': openapiErrorResponse('Missing site-builder permission.'),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+    },
+    '/cms/site/pages/{id}/versions': {
+      get: {
+        tags: ['Operator CMS'],
+        summary: 'List published versions of a page',
+        description: 'Newest first; no document bodies.',
+        operationId: 'listSitePageVersions',
+        security: [{ bearerAuth: [] }],
+        responses: {
+          '200': openapiResponse({ type: 'array', items: { type: 'object' } }),
+          '404': openapiErrorResponse('Page not found.'),
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '403': openapiErrorResponse('Missing site-builder permission.'),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+    },
+    '/cms/site/pages/{id}/versions/{versionId}': {
+      get: {
+        tags: ['Operator CMS'],
+        summary: 'Get one published version',
+        description: 'Includes the frozen document.',
+        operationId: 'getSitePageVersion',
+        security: [{ bearerAuth: [] }],
+        responses: {
+          '200': openapiResponse({ type: 'object' }),
+          '404': openapiErrorResponse('Version not found.'),
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '403': openapiErrorResponse('Missing site-builder permission.'),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+    },
+    '/cms/site/pages/{id}/rollback/{versionId}': {
+      post: {
+        tags: ['Operator CMS'],
+        summary: 'Roll a page back to an old version',
+        description: 'Copies the version into the draft and publishes it as the next version. Needs `site-builder:approve`.',
+        operationId: 'rollbackSitePage',
+        security: [{ bearerAuth: [] }],
+        responses: {
+          '200': openapiResponse({ $ref: openapiSchemaRef('SitePublish') }),
+          '400': openapiErrorResponse('That version is already live.'),
+          '404': openapiErrorResponse('Page or version not found.'),
+          '409': openapiErrorResponse('Archived page.'),
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '403': openapiErrorResponse('Missing site-builder permission.'),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+    },
+    '/cms/site/publish': {
+      post: {
+        tags: ['Operator CMS'],
+        summary: 'Publish page drafts',
+        description: 'Body `{ pageIds?, note? }` (default: every page with unpublished changes). Freezes each draft as the next version, then triggers the landing rebuild (status NOT_CONFIGURED / DISPATCHED / FAILED). Needs `site-builder:approve`.',
+        operationId: 'publishSitePages',
+        security: [{ bearerAuth: [] }],
+        requestBody: {
+          required: true,
+          content: { 'application/json': { schema: { type: 'object', properties: { pageIds: { type: 'array', items: { type: 'string' } }, settings: { type: 'boolean' }, note: { type: 'string' } } } } },
+        },
+        responses: {
+          '201': openapiCreatedResponse({ $ref: openapiSchemaRef('SitePublish') }),
+          '400': openapiErrorResponse('Nothing to publish or an invalid draft.'),
+          '404': openapiErrorResponse('A page id was not found.'),
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '403': openapiErrorResponse('Missing site-builder permission.'),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+    },
+    '/cms/site/config': {
+      get: {
+        tags: ['Operator CMS'],
+        summary: 'Site editor config',
+        description: '`previewUrl` (landing /site-preview/ from LANDING_PREVIEW_ORIGIN, or null) and whether the rebuild trigger is configured. Never returns secrets.',
+        operationId: 'getSiteEditorConfig',
+        security: [{ bearerAuth: [] }],
+        responses: {
+          '200': openapiResponse({ type: 'object', properties: { previewUrl: { type: 'string', nullable: true }, rebuildConfigured: { type: 'boolean' } } }),
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '403': openapiErrorResponse('Missing site-builder permission.'),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+    },
+    '/cms/site/settings': {
+      get: {
+        tags: ['Operator CMS'],
+        summary: 'Global site settings draft',
+        description: 'Header, footer, announcement bar, contact email, CTA-band and help-widget defaults: `{ draft, draftRev, live: { version, publishedAt } | null, hasUnpublishedChanges, schema }` (`schema` = JSON Schema for the editor). 404 until imported.',
+        operationId: 'getSiteSettings',
+        security: [{ bearerAuth: [] }],
+        responses: {
+          '200': openapiResponse({ type: 'object' }),
+          '404': openapiErrorResponse('Not imported yet (pnpm db:site-import).'),
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '403': openapiErrorResponse('Missing site-builder permission.'),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+    },
+    '/cms/site/settings/draft': {
+      put: {
+        tags: ['Operator CMS'],
+        summary: 'Save the global settings draft (optimistic lock)',
+        description: 'Body `{ doc, rev }`; 409 with the current rev when stale. Goes live with `POST /cms/site/publish`.',
+        operationId: 'saveSiteSettingsDraft',
+        security: [{ bearerAuth: [] }],
+        requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['doc', 'rev'], properties: { doc: { type: 'object' }, rev: { type: 'integer' } } } } } },
+        responses: {
+          '200': openapiResponse({ type: 'object' }),
+          '400': openapiErrorResponse('Invalid settings (details lists field paths).'),
+          '409': openapiErrorResponse('Stale rev.'),
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '403': openapiErrorResponse('Missing site-builder permission.'),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+    },
+    '/cms/site/media': {
+      get: {
+        tags: ['Operator CMS'],
+        summary: 'List media library images',
+        description: 'Newest first (max 500). Optional `?q=` (alt text / file name) and `?tag=`.',
+        operationId: 'listSiteMedia',
+        security: [{ bearerAuth: [] }],
+        responses: {
+          '200': openapiResponse({ type: 'array', items: { $ref: openapiSchemaRef('MediaAsset') } }),
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '403': openapiErrorResponse('Missing site-builder permission.'),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+      post: {
+        tags: ['Operator CMS'],
+        summary: 'Upload an image (pre-resized variants)',
+        description: 'Body `{ filename, alt, tags?, variants: [{ dataBase64 }] }`: 1–3 PNG/JPEG/WebP variants, smallest first, same aspect ratio (≤ 30 MB body). Type and pixel size are read from the bytes. `url` is the variant ≤ 1200 px wide.',
+        operationId: 'uploadSiteMedia',
+        security: [{ bearerAuth: [] }],
+        requestBody: {
+          required: true,
+          content: { 'application/json': { schema: { type: 'object', required: ['filename', 'alt', 'variants'], properties: { filename: { type: 'string' }, alt: { type: 'string' }, tags: { type: 'array', items: { type: 'string' } }, variants: { type: 'array', items: { type: 'object', properties: { dataBase64: { type: 'string' } } } } } } } },
+        },
+        responses: {
+          '201': openapiCreatedResponse({ $ref: openapiSchemaRef('MediaAsset') }),
+          '400': openapiErrorResponse('Not an accepted image, missing alt, or bad variant order / aspect.'),
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '403': openapiErrorResponse('Missing site-builder permission.'),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+    },
+    '/cms/site/media/{id}': {
+      patch: {
+        tags: ['Operator CMS'],
+        summary: 'Edit image alt text / tags',
+        description: 'Body `{ alt?, tags? }`. Pages keep the alt text they were given when the image was picked.',
+        operationId: 'updateSiteMedia',
+        security: [{ bearerAuth: [] }],
+        requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', properties: { alt: { type: 'string' }, tags: { type: 'array', items: { type: 'string' } } } } } } },
+        responses: {
+          '200': openapiResponse({ $ref: openapiSchemaRef('MediaAsset') }),
+          '404': openapiErrorResponse('Image not found.'),
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '403': openapiErrorResponse('Missing site-builder permission.'),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+      delete: {
+        tags: ['Operator CMS'],
+        summary: 'Delete an image',
+        description: 'Refused (409, details.pages) while any page draft or live version uses one of its URLs. Removes the stored files.',
+        operationId: 'deleteSiteMedia',
+        security: [{ bearerAuth: [] }],
+        responses: {
+          '200': openapiResponse({ type: 'object', properties: { id: { type: 'string' }, deleted: { type: 'boolean' } } }),
+          '404': openapiErrorResponse('Image not found.'),
+          '409': openapiErrorResponse('Image still used on a page.'),
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '403': openapiErrorResponse('Missing site-builder permission.'),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+    },
+    '/cms/site/publishes': {
+      get: {
+        tags: ['Operator CMS'],
+        summary: 'Publish history',
+        description: 'Newest 50 publishes with scope and rebuild status.',
+        operationId: 'listSitePublishes',
+        security: [{ bearerAuth: [] }],
+        responses: {
+          '200': openapiResponse({ type: 'array', items: { $ref: openapiSchemaRef('SitePublish') } }),
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '403': openapiErrorResponse('Missing site-builder permission.'),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+    },
   },
   components: {
     securitySchemes: {
@@ -4831,6 +5220,57 @@ export const openapiSpec = {
             type: 'string',
             description: 'Additive v1.5.2: scope token (FIRST_MONTH / ONE_TIME / DUE_TODAY / RECURRING).',
           },
+        },
+      },
+      SitePage: {
+        type: 'object',
+        properties: {
+          id: { type: 'string' },
+          slug: { type: 'string', example: 'guides/packing' },
+          title: { type: 'string' },
+          status: { type: 'string', enum: ['DRAFT', 'PUBLISHED', 'ARCHIVED'] },
+          system: { type: 'boolean', description: 'Core landing route: slug locked, cannot be archived.' },
+          draftRev: { type: 'integer', description: 'Send back as `rev` when saving the draft.' },
+          live: {
+            type: 'object',
+            nullable: true,
+            properties: { versionId: { type: 'string' }, number: { type: 'integer' }, publishedAt: { type: 'string', format: 'date-time' } },
+          },
+          hasUnpublishedChanges: { type: 'boolean' },
+          draft: { type: 'object', description: 'Single-page reads only.' },
+          updatedById: { type: 'string', nullable: true },
+          updatedAt: { type: 'string', format: 'date-time' },
+          createdAt: { type: 'string', format: 'date-time' },
+        },
+      },
+      MediaAsset: {
+        type: 'object',
+        properties: {
+          id: { type: 'string' },
+          filename: { type: 'string' },
+          url: { type: 'string', description: 'Variant to use as a page image src.' },
+          variants: { type: 'array', items: { type: 'object', properties: { width: { type: 'integer' }, height: { type: 'integer' }, bytes: { type: 'integer' }, url: { type: 'string' } } } },
+          width: { type: 'integer' },
+          height: { type: 'integer' },
+          alt: { type: 'string' },
+          tags: { type: 'array', items: { type: 'string' } },
+          createdAt: { type: 'string', format: 'date-time' },
+          updatedAt: { type: 'string', format: 'date-time' },
+        },
+      },
+      SitePublish: {
+        type: 'object',
+        properties: {
+          id: { type: 'string' },
+          scope: {
+            type: 'array',
+            items: { type: 'object', properties: { pageId: { type: 'string' }, slug: { type: 'string' }, versionId: { type: 'string' }, number: { type: 'integer' } } },
+          },
+          note: { type: 'string', nullable: true },
+          status: { type: 'string', enum: ['NOT_CONFIGURED', 'SKIPPED', 'DISPATCHED', 'FAILED'] },
+          error: { type: 'string', nullable: true },
+          createdById: { type: 'string', nullable: true },
+          createdAt: { type: 'string', format: 'date-time' },
         },
       },
       ContentItem: {

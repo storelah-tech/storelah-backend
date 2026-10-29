@@ -17,6 +17,7 @@ import { $, escapeHtml, showBanner } from './dom.js';
 import { get, post, put, patch, del, can, describeError, ApiError } from './api.js';
 import { confirmDialog } from './confirmDialog.js';
 import { h, buildField, applyIssues, defaultFor, labelFor, short, summary, friendlyMessage } from './siteBuilderForm.js';
+import { openMediaLibrary } from './siteBuilderMedia.js';
 
 const TYPE_INFO = {
   heroCarousel: ['Hero carousel', 'Rotating full-width banners (homepage).'],
@@ -127,6 +128,17 @@ function ensureStyles() {
 .sb-gallery b{display:block;font-size:12.5px}.sb-gallery span{font-size:11px;color:var(--muted)}
 .sb-issues{background:var(--red-light);color:#9e3f38;border-radius:8px;padding:7px 9px;font-size:11.5px;margin-bottom:8px}
 .sb-vers td{vertical-align:top}
+.sb-image{display:grid;grid-template-columns:84px minmax(0,1fr);gap:9px;align-items:start}
+.sb-thumb{width:84px;height:64px;object-fit:cover;border-radius:7px;border:1px solid var(--line);background:var(--cream)}
+.sb-thumb-empty{display:grid;place-items:center;font-size:10px;color:var(--muted)}
+.sb-media-upload{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:10px;border:1.5px dashed var(--line);border-radius:10px;margin-bottom:10px}
+.sb-media-upload>input[type=file]{grid-column:1/-1}
+.sb-media-upload input[type=text],.sb-media-search,.sb-media-tile input{border:1.5px solid var(--line);border-radius:7px;padding:6px 8px;font:600 12px Manrope,system-ui,sans-serif;width:100%;box-sizing:border-box}
+.sb-media-search{margin-bottom:10px}
+.sb-media-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;max-height:52vh;overflow:auto}
+.sb-media-tile{border:1px solid var(--line);border-radius:10px;padding:6px;background:var(--white);display:flex;flex-direction:column;gap:5px}
+.sb-media-tile img{width:100%;height:100px;object-fit:cover;border-radius:7px;background:var(--cream)}
+.sb-media-tile.pickable img{cursor:pointer}.sb-media-tile.pickable:hover{border-color:var(--terra)}
 `;
   document.head.appendChild(st);
 }
@@ -199,6 +211,7 @@ async function showList() {
     '<div style="display:flex;gap:7px;">' +
     (canPublish() ? `<button class="tb-btn" id="sb-publish-all" data-perm="site-builder:approve" ${changed.length ? '' : 'disabled'}>Publish all changes (${changed.length})</button>` : '') +
     '<button class="tb-btn" id="sb-history">Publish history</button>' +
+    '<button class="tb-btn" id="sb-media">Media library</button>' +
     (canCreate() ? '<button class="tb-btn primary" id="sb-new" data-perm="site-builder:create">+ New page</button>' : '') +
     '</div></div>' +
     (S.pages.length
@@ -221,6 +234,7 @@ async function showList() {
     '</div>';
   el.querySelector('#sb-new')?.addEventListener('click', () => openNewPage(null));
   el.querySelector('#sb-history')?.addEventListener('click', () => openHistory().catch(fail));
+  el.querySelector('#sb-media')?.addEventListener('click', () => openMediaLibrary());
   el.querySelector('#sb-publish-all')?.addEventListener('click', () => publish(null).catch(fail));
   el.querySelectorAll('tr[data-id] [data-act]').forEach((b) =>
     b.addEventListener('click', () => {
@@ -510,7 +524,7 @@ function renderProps() {
   const scroll = box.scrollTop;
   box.innerHTML = '';
   const readOnly = !canEdit() || S.page.status === 'ARCHIVED';
-  const ctx = { set: setAt };
+  const ctx = { set: setAt, siteOrigin: previewOrigin(), pickImage: readOnly ? null : () => openMediaLibrary({ pick: true }) };
   if (S.selected === null) {
     hdr.textContent = 'Page settings';
     box.append(pageMetaFields(readOnly));

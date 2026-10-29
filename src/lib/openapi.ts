@@ -382,7 +382,10 @@ export const openapiSpec = {
         'stale), `POST /cms/site/pages/{id}/duplicate`, `GET /cms/site/pages/{id}/versions[/{versionId}]`, ' +
         '`POST /cms/site/pages/{id}/rollback/{versionId}`, `POST /cms/site/publish` (`{ pageIds?, note? }`; ' +
         'triggers the landing rebuild when configured), `GET /cms/site/publishes`, `GET /cms/site/schema`. ' +
-        'Public (no auth, live versions only): `GET /public/site/bundle`, `GET /public/site/schema`.',
+        'Public (no auth, live versions only): `GET /public/site/bundle`, `GET /public/site/schema`. ' +
+        'Media library: `GET|POST /cms/site/media`, `PATCH|DELETE /cms/site/media/{id}` (browser-resized ' +
+        'variants, server-sniffed type + size; delete 409 while a page uses it). `GET /cms/site/config` ' +
+        '(editor preview URL).',
     ].join('\n'),
   },
   servers: [
@@ -4725,6 +4728,86 @@ export const openapiSpec = {
         },
       },
     },
+    '/cms/site/config': {
+      get: {
+        tags: ['Operator CMS'],
+        summary: 'Site editor config',
+        description: '`previewUrl` (landing /site-preview/ from LANDING_PREVIEW_ORIGIN, or null) and whether the rebuild trigger is configured. Never returns secrets.',
+        operationId: 'getSiteEditorConfig',
+        security: [{ bearerAuth: [] }],
+        responses: {
+          '200': openapiResponse({ type: 'object', properties: { previewUrl: { type: 'string', nullable: true }, rebuildConfigured: { type: 'boolean' } } }),
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '403': openapiErrorResponse('Missing site-builder permission.'),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+    },
+    '/cms/site/media': {
+      get: {
+        tags: ['Operator CMS'],
+        summary: 'List media library images',
+        description: 'Newest first (max 500). Optional `?q=` (alt text / file name) and `?tag=`.',
+        operationId: 'listSiteMedia',
+        security: [{ bearerAuth: [] }],
+        responses: {
+          '200': openapiResponse({ type: 'array', items: { $ref: openapiSchemaRef('MediaAsset') } }),
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '403': openapiErrorResponse('Missing site-builder permission.'),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+      post: {
+        tags: ['Operator CMS'],
+        summary: 'Upload an image (pre-resized variants)',
+        description: 'Body `{ filename, alt, tags?, variants: [{ dataBase64 }] }`: 1–3 PNG/JPEG/WebP variants, smallest first, same aspect ratio (≤ 30 MB body). Type and pixel size are read from the bytes. `url` is the variant ≤ 1200 px wide.',
+        operationId: 'uploadSiteMedia',
+        security: [{ bearerAuth: [] }],
+        requestBody: {
+          required: true,
+          content: { 'application/json': { schema: { type: 'object', required: ['filename', 'alt', 'variants'], properties: { filename: { type: 'string' }, alt: { type: 'string' }, tags: { type: 'array', items: { type: 'string' } }, variants: { type: 'array', items: { type: 'object', properties: { dataBase64: { type: 'string' } } } } } } } },
+        },
+        responses: {
+          '201': openapiCreatedResponse({ $ref: openapiSchemaRef('MediaAsset') }),
+          '400': openapiErrorResponse('Not an accepted image, missing alt, or bad variant order / aspect.'),
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '403': openapiErrorResponse('Missing site-builder permission.'),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+    },
+    '/cms/site/media/{id}': {
+      patch: {
+        tags: ['Operator CMS'],
+        summary: 'Edit image alt text / tags',
+        description: 'Body `{ alt?, tags? }`. Pages keep the alt text they were given when the image was picked.',
+        operationId: 'updateSiteMedia',
+        security: [{ bearerAuth: [] }],
+        requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', properties: { alt: { type: 'string' }, tags: { type: 'array', items: { type: 'string' } } } } } } },
+        responses: {
+          '200': openapiResponse({ $ref: openapiSchemaRef('MediaAsset') }),
+          '404': openapiErrorResponse('Image not found.'),
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '403': openapiErrorResponse('Missing site-builder permission.'),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+      delete: {
+        tags: ['Operator CMS'],
+        summary: 'Delete an image',
+        description: 'Refused (409, details.pages) while any page draft or live version uses one of its URLs. Removes the stored files.',
+        operationId: 'deleteSiteMedia',
+        security: [{ bearerAuth: [] }],
+        responses: {
+          '200': openapiResponse({ type: 'object', properties: { id: { type: 'string' }, deleted: { type: 'boolean' } } }),
+          '404': openapiErrorResponse('Image not found.'),
+          '409': openapiErrorResponse('Image still used on a page.'),
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '403': openapiErrorResponse('Missing site-builder permission.'),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+    },
     '/cms/site/publishes': {
       get: {
         tags: ['Operator CMS'],
@@ -5121,6 +5204,21 @@ export const openapiSpec = {
           updatedById: { type: 'string', nullable: true },
           updatedAt: { type: 'string', format: 'date-time' },
           createdAt: { type: 'string', format: 'date-time' },
+        },
+      },
+      MediaAsset: {
+        type: 'object',
+        properties: {
+          id: { type: 'string' },
+          filename: { type: 'string' },
+          url: { type: 'string', description: 'Variant to use as a page image src.' },
+          variants: { type: 'array', items: { type: 'object', properties: { width: { type: 'integer' }, height: { type: 'integer' }, bytes: { type: 'integer' }, url: { type: 'string' } } } },
+          width: { type: 'integer' },
+          height: { type: 'integer' },
+          alt: { type: 'string' },
+          tags: { type: 'array', items: { type: 'string' } },
+          createdAt: { type: 'string', format: 'date-time' },
+          updatedAt: { type: 'string', format: 'date-time' },
         },
       },
       SitePublish: {

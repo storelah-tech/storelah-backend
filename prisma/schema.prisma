@@ -1787,3 +1787,22 @@ model SitePublish {
   createdById String?
   createdAt   DateTime          @default(now())
 }
+
+// Site-builder media library. The browser uploads pre-resized webp variants
+// (≤ 3 widths); the server checks type and real dimensions from the bytes.
+// Stored via src/lib/contentStorage.ts (S3 in prod, local disk in dev).
+model MediaAsset {
+  id          String   @id @default(cuid())
+  filename    String // original upload name (display only)
+  url         String // default variant for pages (~1200 px wide)
+  variants    Json // [{ width, height, bytes, url, key }] ascending by width
+  width       Int // largest variant
+  height      Int
+  alt         String // required, reused as the default alt text when picked
+  tags        String[]
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([createdAt])
+}

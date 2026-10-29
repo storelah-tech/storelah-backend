@@ -156,6 +156,7 @@ export function buildField(node, value, path, label, ctx, opts = {}) {
 
   switch (node.type) {
     case 'object': {
+      if (isImageNode(node)) return buildImage(node, value || {}, path, label, ctx, opts);
       const body = buildObject(node, value || {}, path, ctx, opts.skip);
       if (!label) return body;
       return h('div', { class: 'sb-group', dataset: { path: path.join('.') } },
@@ -197,6 +198,34 @@ export function buildField(node, value, path, label, ctx, opts = {}) {
       return fieldWrap(path, label, ctl, multi ? RICH_HINT : null);
     }
   }
+}
+
+/** An image object ({ src, alt, frame? }) gets a thumbnail + library picker. */
+function isImageNode(node) {
+  const p = node.properties || {};
+  return !!(p.src && p.alt && p.src.type === 'string');
+}
+
+function buildImage(node, value, path, label, ctx, opts) {
+  // "/assets/x.webp" is a landing-site path: resolve it against the landing
+  // origin (ctx.siteOrigin), never the CMS host.
+  const isSitePath = typeof value.src === 'string' && value.src.startsWith('/');
+  const src = isSitePath ? (ctx.siteOrigin ? ctx.siteOrigin + value.src : null) : value.src;
+  const thumb = src
+    ? h('img', { class: 'sb-thumb', src, alt: value.alt || '' })
+    : h('div', { class: 'sb-thumb sb-thumb-empty', text: value.src ? 'Site image' : 'No image' });
+  const pick = ctx.pickImage
+    ? h('button', { class: 'sb-mini', type: 'button', text: value.src ? 'Replace…' : 'Choose…', onclick: async () => {
+        const asset = await ctx.pickImage();
+        if (asset) ctx.set(path, { ...value, src: asset.url, alt: asset.alt }, true);
+      } })
+    : null;
+  return h('div', { class: 'sb-group', dataset: { path: path.join('.') } },
+    h('div', { class: 'sb-group-hdr' }, h('span', { text: label || 'Image' }),
+      h('span', { class: 'sb-tools' }, pick,
+        opts.removable ? h('button', { class: 'sb-mini', type: 'button', text: 'Remove', onclick: () => ctx.set(path, undefined, true) }) : null)),
+    h('div', { class: 'sb-err' }),
+    h('div', { class: 'sb-image' }, thumb, buildObject(node, value, path, ctx)));
 }
 
 function buildObject(node, value, path, ctx, skip) {

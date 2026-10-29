@@ -238,6 +238,7 @@ import {
   getPageDocJsonSchema,
   getSiteEditorConfig,
 } from '../core/sitePages';
+import { listMedia, listMediaQuery, uploadMedia, uploadMediaInput, updateMedia, updateMediaInput, deleteMedia } from '../core/siteMedia';
 
 const router = Router();
 
@@ -3462,6 +3463,29 @@ router.post('/site/pages/:id/rollback/:versionId', requireAuth, async (req: Requ
 router.post('/site/publish', requireAuth, async (req: Request, res: Response) => {
   const input = parseOr400(publishInput, req.body ?? {}, res, 'Publish payload must be { pageIds?, note? }');
   if (input) created(res, await publishSitePages(input, actorOf(req).id));
+});
+
+// Media library: the browser uploads pre-resized variants ({ filename, alt,
+// tags?, variants: [{ dataBase64 }] }, smallest first; 30 MB limit in app.ts).
+router.get('/site/media', requireAuth, async (req: Request, res: Response) => {
+  const q = parseOr400(listMediaQuery, req.query, res, 'Invalid media query (q, tag)');
+  if (!q) return;
+  const rows = await listMedia(q);
+  ok(res, rows, { count: rows.length });
+});
+
+router.post('/site/media', requireAuth, async (req: Request, res: Response) => {
+  const input = parseOr400(uploadMediaInput, req.body, res, 'Upload must be { filename, alt, tags?, variants: [{ dataBase64 }] }');
+  if (input) created(res, await uploadMedia(input, { actorId: actorOf(req).id, localBaseUrl: `${req.protocol}://${req.get('host')}` }));
+});
+
+router.patch('/site/media/:id', requireAuth, async (req: Request, res: Response) => {
+  const input = parseOr400(updateMediaInput, req.body, res, 'Media update must be { alt?, tags? }');
+  if (input) ok(res, await updateMedia(String(req.params.id), input));
+});
+
+router.delete('/site/media/:id', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await deleteMedia(String(req.params.id)));
 });
 
 router.get('/site/publishes', requireAuth, async (_req: Request, res: Response) => {

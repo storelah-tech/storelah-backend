@@ -30,7 +30,8 @@ export const ctaSchema = z.object({
 });
 
 export const imageSchema = z.object({
-  src: z.string().max(500).regex(/^(\/|https:\/\/)/, "Image must be a site path or https URL"),
+  // http://localhost only for local-dev media uploads; publish refuses it in production.
+  src: z.string().max(500).regex(/^(\/|https:\/\/|http:\/\/(localhost|127\.0\.0\.1)(:\d+)?\/)/, "Image must be a site path or https URL"),
   alt: text(200).min(1, "Alt text is required"),
   frame: z.enum(["plain", "feature"]).default("plain"),
 });

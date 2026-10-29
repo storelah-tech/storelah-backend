@@ -12,6 +12,7 @@ import { Prisma, SitePageStatus, SitePublishStatus } from '@prisma/client';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma';
 import { AppError } from '../lib/http';
+import { config } from '../lib/config';
 import { pageDocSchema, type PageDoc } from './sitePageSchema';
 
 /** "/" (home) or lowercase path segments: "about", "guides/packing". */
@@ -227,6 +228,9 @@ export async function publishSitePages(
 
   // Re-validate: the schema may have changed since the draft was saved.
   const docs = pending.map((p) => {
+    if (config.isProd && /"http:\/\/(localhost|127\.0\.0\.1)/.test(JSON.stringify(p.draft))) {
+      throw new AppError(400, 'VALIDATION', `Page "${p.slug}" links an image on a local development server`);
+    }
     try {
       return validatePageDoc(p.draft);
     } catch (e) {

@@ -2,7 +2,8 @@
 
 Status: **Phases 0–3 built on feature branches (2026-10-29); not deployed.** Phase 2 =
 all 25 landing pages are page documents; Phase 1 = backend model + API; Phase 3 = CMS
-editor v1 (status notes under §5). Next: Phase 4 (publish pipeline status) + media library. Drafted 2026-10-29 (orchestrator). Cross-cutting:
+editor v1 + media library (status notes under §5). Next: global settings editor, Phase 4
+(publish pipeline status). Drafted 2026-10-29 (orchestrator). Cross-cutting:
 backend (API + CMS UI), landing (renderer + build), devops (S3, CI trigger).
 Contracts in §4 must be agreed by all three lanes before any code lands.
 
@@ -365,9 +366,19 @@ Layout: **Pages list | Section outline (drag to reorder) | Preview iframe
 > New sections start from the first live section of that type (sample copy), else schema
 > defaults. Preview needs `LANDING_PREVIEW_ORIGIN` on the backend (`GET /cms/site/config`)
 > and the CMS origin in landing `NEXT_PUBLIC_PREVIEW_PARENT_ORIGINS`.
-> Not yet: media library / image picker (images are URL + alt text), global settings editor
-> (nav, footer, ticker), OG preview, spacing / desktop-only visibility presets (not in the
-> v1 schema), link picker. Browser-tested as Owner and Manager on an isolated local DB.
+> **Media library (2026-10-29):** migration `20261029010000_site_media` (`MediaAsset`),
+> `src/core/siteMedia.ts`, `GET|POST /cms/site/media`, `PATCH|DELETE /cms/site/media/:id`.
+> The browser resizes to ≤ 3 webp variants (600 / 1200 / 2400, never upscaled); the server
+> reads type + pixel size from the bytes (PNG / JPEG / WebP), requires ascending widths and one
+> aspect ratio, and stores via `contentStorage` (S3 `content/site-*` in prod; local disk in dev
+> with an absolute URL). Image fields in the editor get a thumbnail + "Choose / Replace…" picker
+> (sets `src` to the ≤ 1200 px variant and the asset's alt text). Delete is refused while any
+> draft or live page uses the image. Deviation from §4.2: pages store the image URL, not
+> `media:<id>`; no `srcset` yet. Image `src` now also accepts `http://localhost|127.0.0.1` (dev
+> uploads); publish refuses those in production.
+> Not yet: global settings editor (nav, footer, ticker), OG preview, spacing / desktop-only
+> visibility presets (not in the v1 schema), link picker, srcset. Browser-tested as Owner and
+> Manager on an isolated local DB.
 
 ### Phase 4: Publish pipeline + history (≈1 week) [backend + devops]
 - `POST /site/publish` snapshots the versions, writes `SitePublish`, and

@@ -325,6 +325,19 @@ export async function getSiteBundle() {
   };
 }
 
+/**
+ * Editor config. The live preview iframes the landing app's /site-preview/
+ * (it must list the CMS origin in NEXT_PUBLIC_PREVIEW_PARENT_ORIGINS).
+ * Unset LANDING_PREVIEW_ORIGIN = no preview; editing still works.
+ */
+export function getSiteEditorConfig() {
+  const origin = (process.env.LANDING_PREVIEW_ORIGIN || '').trim().replace(/\/+$/, '');
+  return {
+    previewUrl: /^https?:\/\/[^\s/]+$/.test(origin) ? `${origin}/site-preview/` : null,
+    rebuildConfigured: !!(process.env.LANDING_DISPATCH_TOKEN && process.env.LANDING_DISPATCH_REPO),
+  };
+}
+
 /** JSON Schema of the page document, for the landing contract test. */
 export function getPageDocJsonSchema() {
   return z.toJSONSchema(pageDocSchema, { io: 'input', unrepresentable: 'any' });

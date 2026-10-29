@@ -236,6 +236,7 @@ import {
   rollbackSitePage,
   listSitePublishes,
   getPageDocJsonSchema,
+  getSiteEditorConfig,
 } from '../core/sitePages';
 
 const router = Router();
@@ -3406,6 +3407,10 @@ function parseOr400<T>(schema: z.ZodType<T>, body: unknown, res: Response, messa
 
 router.get('/site/schema', requireAuth, async (_req: Request, res: Response) => {
   ok(res, getPageDocJsonSchema());
+});
+
+router.get('/site/config', requireAuth, async (_req: Request, res: Response) => {
+  ok(res, getSiteEditorConfig());
 });
 
 router.get('/site/pages', requireAuth, async (req: Request, res: Response) => {

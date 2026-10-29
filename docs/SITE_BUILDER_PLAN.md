@@ -1,8 +1,8 @@
 # Site Builder ("mini Wix") — CMS ↔ landing plan
 
-Status: **Phases 0–2 built on feature branches (2026-10-29); not deployed.** Phase 2 =
-all 25 landing pages are page documents; Phase 1 = backend model + API (status note under
-§5 Phase 1). Next: Phase 3 (CMS editor UI). Drafted 2026-10-29 (orchestrator). Cross-cutting:
+Status: **Phases 0–3 built on feature branches (2026-10-29); not deployed.** Phase 2 =
+all 25 landing pages are page documents; Phase 1 = backend model + API; Phase 3 = CMS
+editor v1 (status notes under §5). Next: Phase 4 (publish pipeline status) + media library. Drafted 2026-10-29 (orchestrator). Cross-cutting:
 backend (API + CMS UI), landing (renderer + build), devops (S3, CI trigger).
 Contracts in §4 must be agreed by all three lanes before any code lands.
 
@@ -354,6 +354,20 @@ Layout: **Pages list | Section outline (drag to reorder) | Preview iframe
 - Global settings editor: nav, footer, ticker, contact, promo code.
 - Reuses the frozen v8 theme classes and patterns (`extrasView.js`,
   `contentView.js`).
+
+> **Status 2026-10-29: editor v1 built, not deployed** (backend `feature/site-builder-phase1`).
+> Content › Site builder (`src/cms/admin/siteBuilderView.js` + `siteBuilderForm.js`):
+> page list (status, unpublished changes, new / duplicate / archive, publish all, publish
+> history) and editor (section outline with add-from-gallery, drag / ↑↓ reorder, duplicate,
+> hide, delete; live preview iframe at true 1280 / 768 / 390 px, scaled, click-to-select;
+> properties generated from `GET /cms/site/schema`; page settings incl. SEO + rename;
+> autosave 1.5 s with rev-conflict reload prompt; undo / redo; publish; versions + rollback).
+> New sections start from the first live section of that type (sample copy), else schema
+> defaults. Preview needs `LANDING_PREVIEW_ORIGIN` on the backend (`GET /cms/site/config`)
+> and the CMS origin in landing `NEXT_PUBLIC_PREVIEW_PARENT_ORIGINS`.
+> Not yet: media library / image picker (images are URL + alt text), global settings editor
+> (nav, footer, ticker), OG preview, spacing / desktop-only visibility presets (not in the
+> v1 schema), link picker. Browser-tested as Owner and Manager on an isolated local DB.
 
 ### Phase 4: Publish pipeline + history (≈1 week) [backend + devops]
 - `POST /site/publish` snapshots the versions, writes `SitePublish`, and

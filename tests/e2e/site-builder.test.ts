@@ -191,6 +191,23 @@ describe('site builder API', () => {
     expect(copy.body.data.draft.sections[0].props.heading).toBe('Original');
   });
 
+  it('editor config: no preview until LANDING_PREVIEW_ORIGIN is set; never exposes the dispatch token', async () => {
+    const before = await api.get(`${CMS}/site/config`).set('Authorization', owner.auth);
+    expect(before.body.data).toEqual({ previewUrl: null, rebuildConfigured: false });
+    process.env.LANDING_PREVIEW_ORIGIN = 'https://preview.storelah.sg/';
+    process.env.LANDING_DISPATCH_TOKEN = 'secret-value';
+    process.env.LANDING_DISPATCH_REPO = 'example/repo';
+    try {
+      const after = await api.get(`${CMS}/site/config`).set('Authorization', owner.auth);
+      expect(after.body.data).toEqual({ previewUrl: 'https://preview.storelah.sg/site-preview/', rebuildConfigured: true });
+      expect(JSON.stringify(after.body)).not.toContain('secret-value');
+    } finally {
+      delete process.env.LANDING_PREVIEW_ORIGIN;
+      delete process.env.LANDING_DISPATCH_TOKEN;
+      delete process.env.LANDING_DISPATCH_REPO;
+    }
+  });
+
   it('serves the page JSON Schema publicly and to the CMS', async () => {
     const res = await api.get(`${PUB}/site/schema`);
     expect(res.status).toBe(200);

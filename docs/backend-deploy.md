@@ -186,7 +186,9 @@ Used from site-builder Phase 4. Provision it now so Phase 4 isn't blocked.
    This is a real prod landing deploy of current `main`, so run it only with
    the owner's OK.
 
-Optional: `LANDING_DISPATCH_REF` (default `main`). Without the token and repo,
+Optional: `LANDING_PREVIEW_ORIGIN` (origin serving the landing `/site-preview/`, e.g. the
+preview host from plan §7 Q1) turns on the CMS editor's live preview; that landing build must
+list `https://cms.storelah.sg` in `NEXT_PUBLIC_PREVIEW_PARENT_ORIGINS`. Optional: `LANDING_DISPATCH_REF` (default `main`). Without the token and repo,
 `POST /cms/site/publish` still makes versions live but records
 `status: NOT_CONFIGURED` and no rebuild runs.
 

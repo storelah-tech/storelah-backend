@@ -263,6 +263,7 @@ export const ROUTE_PERMISSIONS: Record<string, PermissionSpec> = {
 
   // ---- site builder (approve = publish) ----
   'GET /site/schema': v('site-builder'),
+  'GET /site/config': v('site-builder'),
   'GET /site/pages': v('site-builder'),
   'POST /site/pages': 'site-builder:create',
   'GET /site/pages/:id': v('site-builder'),

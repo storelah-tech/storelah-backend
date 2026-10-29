@@ -5,6 +5,9 @@
 //   editor — section outline (add / reorder / duplicate / hide / delete) |
 //            live preview iframe (landing /site-preview/, desktop / tablet /
 //            mobile) | properties panel generated from the page JSON Schema
+//   global settings — same editor in `settings` mode (S.mode): no outline,
+//            the form edits the settings doc, the preview shows the live
+//            homepage with the draft settings
 // Drafts autosave (PUT /site/pages/:id/draft { doc, rev }); a 409 means
 // someone else saved first. Undo / redo are in memory. Publish and rollback
 // need `site-builder:approve`; the server re-checks every permission.
@@ -47,6 +50,9 @@ const AUTOSAVE_MS = 1500;
 
 const S = {
   bound: false,
+  mode: 'page', // 'page' | 'settings'
+  settings: null, // GET /site/settings (draft + schema); null until imported
+  homeDoc: null, // live homepage doc (settings preview)
   schema: null, // page JSON Schema
   sectionSchemas: {}, // type → schema node
   config: { previewUrl: null, rebuildConfigured: false },
@@ -85,6 +91,7 @@ function ensureStyles() {
 .sb-chip.live{background:var(--sage);color:#39503f}.sb-chip.draft{background:var(--amber-light);color:#8b6324}
 .sb-chip.changed{background:var(--terra-light);color:var(--terra2)}.sb-chip.archived{background:#ece9e4;color:var(--muted)}
 .sb-editor{display:grid;grid-template-columns:250px minmax(0,1fr) 360px;gap:12px;height:calc(100vh - 230px);min-height:520px}
+.sb-editor.sb-settings{grid-template-columns:minmax(0,1fr) 420px}
 .sb-pane{background:var(--paper);border:1px solid var(--line);border-radius:12px;display:flex;flex-direction:column;min-height:0}
 .sb-pane-hdr{display:flex;align-items:center;gap:6px;padding:10px 12px;border-bottom:1px solid var(--line);font-weight:800;font-size:12px}
 .sb-pane-body{overflow:auto;padding:10px 12px;flex:1;min-height:0}
@@ -168,8 +175,19 @@ export async function bindSiteBuilder() {
     for (const node of schema.properties.sections.items.oneOf) S.sectionSchemas[node.properties.type.const] = node;
     loadExamples();
   }
+  await loadSettings();
   if (S.page) renderEditor();
   else await showList();
+}
+
+/** Settings draft (page previews render with it). 404 = site not imported yet. */
+async function loadSettings() {
+  try {
+    S.settings = await get('/site/settings');
+  } catch (err) {
+    if (!(err instanceof ApiError && err.status === 404)) throw err;
+    S.settings = null;
+  }
 }
 
 /** Templates for "Add section": the first live section of each type. */
@@ -178,6 +196,7 @@ async function loadExamples() {
     const res = await fetch('/api/v1/public/site/bundle');
     const body = await res.json();
     for (const p of body.data.pages) {
+      if (p.slug === '/') S.homeDoc = p.doc;
       for (const s of p.doc.sections) if (!S.examples[s.type]) S.examples[s.type] = s;
     }
   } catch (e) {
@@ -200,8 +219,11 @@ async function showList() {
   S.doc = null;
   const el = host();
   el.innerHTML = '<div class="tbl-card"><div class="sb-empty">Loading pages…</div></div>';
-  S.pages = await get('/site/pages');
+  S.mode = 'page';
+  [S.pages] = await Promise.all([get('/site/pages'), loadSettings()]);
+  const settingsChanged = !!(S.settings && S.settings.hasUnpublishedChanges);
   const changed = S.pages.filter((p) => p.hasUnpublishedChanges);
+  const changeCount = changed.length + (settingsChanged ? 1 : 0);
   el.innerHTML =
     '<div class="tbl-card">' +
     '<div class="sec-hdr"><div><div class="sec-title">Site pages</div>' +
@@ -209,7 +231,8 @@ async function showList() {
     (S.config.rebuildConfigured ? '' : ' (rebuild trigger not configured yet: publishing makes versions live in the API only)') +
     '.</div></div>' +
     '<div style="display:flex;gap:7px;">' +
-    (canPublish() ? `<button class="tb-btn" id="sb-publish-all" data-perm="site-builder:approve" ${changed.length ? '' : 'disabled'}>Publish all changes (${changed.length})</button>` : '') +
+    (canPublish() ? `<button class="tb-btn" id="sb-publish-all" data-perm="site-builder:approve" ${changeCount ? '' : 'disabled'}>Publish all changes (${changeCount})</button>` : '') +
+    (S.settings ? `<button class="tb-btn" id="sb-settings">Global settings${settingsChanged ? ' •' : ''}</button>` : '') +
     '<button class="tb-btn" id="sb-history">Publish history</button>' +
     '<button class="tb-btn" id="sb-media">Media library</button>' +
     (canCreate() ? '<button class="tb-btn primary" id="sb-new" data-perm="site-builder:create">+ New page</button>' : '') +
@@ -235,6 +258,7 @@ async function showList() {
   el.querySelector('#sb-new')?.addEventListener('click', () => openNewPage(null));
   el.querySelector('#sb-history')?.addEventListener('click', () => openHistory().catch(fail));
   el.querySelector('#sb-media')?.addEventListener('click', () => openMediaLibrary());
+  el.querySelector('#sb-settings')?.addEventListener('click', () => openSettingsEditor().catch(fail));
   el.querySelector('#sb-publish-all')?.addEventListener('click', () => publish(null).catch(fail));
   el.querySelectorAll('tr[data-id] [data-act]').forEach((b) =>
     b.addEventListener('click', () => {
@@ -330,6 +354,7 @@ async function openHistory() {
 
 async function openEditor(id) {
   const page = await get(`/site/pages/${id}`);
+  S.mode = 'page';
   S.page = page;
   S.doc = JSON.parse(JSON.stringify(page.draft));
   S.selected = null;
@@ -339,6 +364,30 @@ async function openEditor(id) {
   S.issues = [];
   S.previewReady = false;
   renderEditor();
+}
+
+async function openSettingsEditor() {
+  const st = await get('/site/settings');
+  S.settings = st;
+  S.mode = 'settings';
+  S.page = settingsPageRow(st);
+  S.doc = JSON.parse(JSON.stringify(st.draft));
+  S.selected = null;
+  S.undo = [];
+  S.redo = [];
+  S.dirty = false;
+  S.issues = [];
+  S.previewReady = false;
+  renderEditor();
+}
+
+/** Settings shown through the editor's page-shaped toolbar / status. */
+function settingsPageRow(st) {
+  return {
+    id: 'settings', title: 'Global settings', slug: '/', system: true,
+    status: st.live ? 'PUBLISHED' : 'DRAFT', draftRev: st.draftRev,
+    live: st.live ? { number: st.live.version } : null, hasUnpublishedChanges: st.hasUnpublishedChanges,
+  };
 }
 
 async function leaveEditor() {
@@ -360,17 +409,17 @@ function renderEditor() {
     h('div', { class: 'sb-toolbar' },
       h('button', { class: 'tb-btn', type: 'button', text: '← Pages', onclick: () => leaveEditor().catch(fail) }),
       h('span', { class: 'sb-title', text: p.title }),
-      h('code', { text: pagePath(p.slug) }),
+      S.mode === 'settings' ? h('span', { class: 'sb-hint', text: 'Header, footer and shared copy on every page' }) : h('code', { text: pagePath(p.slug) }),
       h('span', { id: 'sb-status' }),
       h('span', { class: 'sb-save', id: 'sb-save' }),
       h('span', { style: 'flex:1' }),
       readOnly ? h('span', { class: 'sb-chip archived', text: 'Read only' }) : null,
       h('button', { class: 'tb-btn', type: 'button', id: 'sb-undo', text: '↶ Undo', title: 'Undo (Ctrl/Cmd+Z)', onclick: undo }),
       h('button', { class: 'tb-btn', type: 'button', id: 'sb-redo', text: '↷ Redo', title: 'Redo (Ctrl/Cmd+Shift+Z)', onclick: redo }),
-      h('button', { class: 'tb-btn', type: 'button', text: 'Versions', onclick: () => openVersions().catch(fail) }),
-      canPublish() && !readOnly ? h('button', { class: 'tb-btn primary', type: 'button', id: 'sb-publish', 'data-perm': 'site-builder:approve', text: 'Publish', onclick: () => publish([p.id]).catch(fail) }) : null),
-    h('div', { class: 'sb-editor' },
-      h('div', { class: 'sb-pane' },
+      S.mode === 'page' ? h('button', { class: 'tb-btn', type: 'button', text: 'Versions', onclick: () => openVersions().catch(fail) }) : null,
+      canPublish() && !readOnly ? h('button', { class: 'tb-btn primary', type: 'button', id: 'sb-publish', 'data-perm': 'site-builder:approve', text: 'Publish', onclick: () => publish(S.mode === 'settings' ? 'settings' : [p.id]).catch(fail) }) : null),
+    h('div', { class: 'sb-editor' + (S.mode === 'settings' ? ' sb-settings' : '') },
+      S.mode === 'settings' ? null : h('div', { class: 'sb-pane' },
         h('div', { class: 'sb-pane-hdr' }, h('span', { text: 'Sections', style: 'flex:1' }),
           readOnly ? null : h('button', { class: 'sb-mini', type: 'button', 'data-perm': 'site-builder:update', text: '+ Add', onclick: openAddSection })),
         h('div', { class: 'sb-pane-body', id: 'sb-outline' })),
@@ -411,7 +460,7 @@ function sectionIssues(i) {
 
 function renderOutline() {
   const box = $('#sb-outline');
-  if (!box) return;
+  if (!box || S.mode !== 'page') return;
   box.innerHTML = '';
   const readOnly = !canEdit() || S.page.status === 'ARCHIVED';
   box.append(h('div', { class: 'sb-sec' + (S.selected === null ? ' sel' : ''), onclick: () => select(null) },
@@ -525,7 +574,10 @@ function renderProps() {
   box.innerHTML = '';
   const readOnly = !canEdit() || S.page.status === 'ARCHIVED';
   const ctx = { set: setAt, siteOrigin: previewOrigin(), pickImage: readOnly ? null : () => openMediaLibrary({ pick: true }) };
-  if (S.selected === null) {
+  if (S.mode === 'settings') {
+    hdr.textContent = 'Global settings';
+    box.append(buildField(S.settings.schema, S.doc, [], null, ctx));
+  } else if (S.selected === null) {
     hdr.textContent = 'Page settings';
     box.append(pageMetaFields(readOnly));
     const node = S.schema;
@@ -548,7 +600,7 @@ function renderProps() {
   // hides them by label ("+ Add" / "Remove") for a role with update only.
   box.querySelectorAll('button').forEach((b) => b.setAttribute('data-perm', 'site-builder:update'));
   const unplaced = applyIssues(box, S.issues);
-  const here = S.selected === null ? unplaced.filter((x) => !x.path.startsWith('sections.')) : [];
+  const here = S.mode === 'settings' ? unplaced : S.selected === null ? unplaced.filter((x) => !x.path.startsWith('sections.')) : [];
   if (here.length) box.prepend(h('div', { class: 'sb-issues', text: here.map((x) => `${x.path}: ${friendlyMessage(x.message)}`).join(' · ') }));
   box.scrollTop = scroll;
 }
@@ -667,8 +719,14 @@ async function saveNow() {
   renderStatus();
   const sentDoc = JSON.stringify(S.doc);
   try {
-    const next = await put(`/site/pages/${S.page.id}/draft`, { doc: S.doc, rev: S.page.draftRev });
-    S.page = { ...S.page, ...next, draft: undefined };
+    if (S.mode === 'settings') {
+      const next = await put('/site/settings/draft', { doc: S.doc, rev: S.page.draftRev });
+      S.settings = { ...S.settings, ...next };
+      S.page = settingsPageRow(S.settings);
+    } else {
+      const next = await put(`/site/pages/${S.page.id}/draft`, { doc: S.doc, rev: S.page.draftRev });
+      S.page = { ...S.page, ...next, draft: undefined };
+    }
     S.issues = [];
     S.dirty = JSON.stringify(S.doc) !== sentDoc; // edits made while saving
   } catch (err) {
@@ -678,11 +736,11 @@ async function saveNow() {
     } else if (err instanceof ApiError && err.status === 409) {
       S.saving = false;
       const reload = await confirmDialog({
-        title: 'Someone else changed this page',
+        title: S.mode === 'settings' ? 'Someone else changed the settings' : 'Someone else changed this page',
         message: 'Another session saved this draft after you opened it. Reload to see their version (your unsaved edits here are discarded), or cancel to keep editing without saving.',
         confirmLabel: 'Reload page', danger: true,
       });
-      if (reload) return openEditor(S.page.id);
+      if (reload) return S.mode === 'settings' ? openSettingsEditor() : openEditor(S.page.id);
       return;
     } else {
       throw err;
@@ -745,9 +803,22 @@ function postPreview(msg) {
   if (f && f.contentWindow && origin && S.previewReady) f.contentWindow.postMessage(msg, origin);
 }
 
+/** Settings mode previews the live homepage with the draft settings. */
+function previewMessage() {
+  if (S.mode === 'settings') {
+    return S.homeDoc ? { type: 'storelah:preview:doc', slug: '/', doc: S.homeDoc, settings: S.doc } : null;
+  }
+  const msg = { type: 'storelah:preview:doc', slug: S.page.slug, doc: S.doc };
+  if (S.settings) msg.settings = S.settings.draft;
+  return msg;
+}
+
 function schedulePreview() {
   clearTimeout(S.previewTimer);
-  S.previewTimer = setTimeout(() => postPreview({ type: 'storelah:preview:doc', slug: S.page.slug, doc: S.doc }), 250);
+  S.previewTimer = setTimeout(() => {
+    const msg = previewMessage();
+    if (msg) postPreview(msg);
+  }, 250);
 }
 
 function onPreviewMessage(e) {
@@ -756,12 +827,15 @@ function onPreviewMessage(e) {
   const msg = e.data || {};
   if (msg.type === 'storelah:preview:ready') {
     S.previewReady = true;
-    postPreview({ type: 'storelah:preview:doc', slug: S.page.slug, doc: S.doc });
+    const first = previewMessage();
+    if (first) postPreview(first);
   } else if (msg.type === 'storelah:preview:clicked' && typeof msg.id === 'string') {
-    if (S.doc.sections.some((s) => s.id === msg.id)) select(msg.id);
+    if (S.mode === 'page' && S.doc.sections.some((s) => s.id === msg.id)) select(msg.id);
   } else if (msg.type === 'storelah:preview:invalid' && Array.isArray(msg.issues)) {
-    // Instant feedback before the autosave round trip.
-    S.issues = msg.issues;
+    // Instant feedback before the autosave round trip (settings paths arrive as "settings.…").
+    S.issues = S.mode === 'settings'
+      ? msg.issues.filter((x) => x.path.startsWith('settings.')).map((x) => ({ ...x, path: x.path.slice('settings.'.length) }))
+      : msg.issues.filter((x) => !x.path.startsWith('settings.'));
     S.issuesFrom = 'preview';
     renderStatus();
     renderOutline();
@@ -777,7 +851,8 @@ function onPreviewMessage(e) {
 
 // ---------- publish / versions ----------
 
-async function publish(pageIds) {
+/** scope: [pageId] (one page), 'settings' (global settings only) or null (everything changed). */
+async function publish(scope) {
   if (S.page) {
     await saveNow();
     if (S.dirty || S.issues.length) {
@@ -785,25 +860,38 @@ async function publish(pageIds) {
       return;
     }
   }
-  const pages = pageIds ? S.pages.filter((p) => pageIds.includes(p.id)) : S.pages.filter((p) => p.hasUnpublishedChanges);
-  const names = S.page && pageIds ? [S.page.title] : pages.map((p) => p.title);
+  let title;
+  let list = '';
+  if (scope === 'settings') title = 'Publish global settings?';
+  else if (scope) title = `Publish “${S.page.title}”?`;
+  else {
+    const names = S.pages.filter((p) => p.hasUnpublishedChanges).map((p) => p.title);
+    if (S.settings && S.settings.hasUnpublishedChanges) names.push('Global settings');
+    title = `Publish ${names.length} change(s)?`;
+    list = names.join(', ') + '. ';
+  }
   const ok = await confirmDialog({
-    title: pageIds ? `Publish “${names[0]}”?` : `Publish ${names.length} page(s)?`,
-    message: (pageIds ? '' : names.join(', ') + '. ') +
+    title,
+    message: list + (scope === 'settings' ? 'Header, footer and shared copy change on every page. ' : '') +
       (S.config.rebuildConfigured ? 'storelah.sg rebuilds in a few minutes.' : 'The rebuild trigger is not configured yet, so storelah.sg updates at its next deploy.'),
     confirmLabel: 'Publish',
   });
   if (!ok) return;
+  const body = scope === 'settings' ? { pageIds: [], settings: true } : scope ? { pageIds: scope } : {};
   try {
-    const res = await post('/site/publish', pageIds ? { pageIds } : {});
+    const res = await post('/site/publish', body);
     const msg = res.status === 'DISPATCHED' ? 'Published. storelah.sg is rebuilding.' : res.status === 'FAILED' ? 'Published, but the site rebuild did not start (' + (res.error || 'error') + ').' : 'Published.';
     showBanner(msg, res.status !== 'FAILED');
   } catch (err) {
     if (err instanceof ApiError && err.status === 400 && /Nothing to publish/.test(err.message)) {
-      showBanner('Nothing to publish: this page is already live.', true);
+      showBanner('Nothing to publish: already live.', true);
     } else throw err;
   }
-  if (S.page) {
+  if (S.page && S.mode === 'settings') {
+    await loadSettings();
+    S.page = settingsPageRow(S.settings);
+    renderStatus();
+  } else if (S.page) {
     const fresh = await get(`/site/pages/${S.page.id}`);
     S.page = { ...fresh, draft: undefined };
     renderStatus();

@@ -17,8 +17,9 @@ async function main() {
   console.log(`site-import (${apply ? 'APPLY' : 'dry run'}): ${r.created.length} to create, ${r.skipped.length} already present`);
   if (r.created.length) console.log(`  create: ${r.created.join(', ')}`);
   if (r.skipped.length) console.log(`  skip:   ${r.skipped.join(', ')}`);
+  console.log(`  global settings: ${r.settings ? 'create' : 'already present or not in snapshot'}`);
   if (apply && r.publishId) console.log(`  published as ${r.publishId} (rebuild trigger skipped)`);
-  if (!apply && r.created.length) console.log('Re-run with --apply to write.');
+  if (!apply && (r.created.length || r.settings)) console.log('Re-run with --apply to write.');
 }
 
 main()

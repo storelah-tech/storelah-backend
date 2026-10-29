@@ -385,7 +385,10 @@ export const openapiSpec = {
         'Public (no auth, live versions only): `GET /public/site/bundle`, `GET /public/site/schema`. ' +
         'Media library: `GET|POST /cms/site/media`, `PATCH|DELETE /cms/site/media/{id}` (browser-resized ' +
         'variants, server-sniffed type + size; delete 409 while a page uses it). `GET /cms/site/config` ' +
-        '(editor preview URL).',
+        '(editor preview URL). Global settings: `GET /cms/site/settings` (draft, live version, JSON Schema), ' +
+        '`PUT /cms/site/settings/draft` (`{ doc, rev }`, 409 when stale); publish takes `settings` ' +
+        '(default true when `pageIds` is omitted; `{ pageIds: [], settings: true }` = settings only); ' +
+        'the bundle gains `settings` + `settingsVersion`, publishes gain `settingsVersion`.',
     ].join('\n'),
   },
   servers: [
@@ -4716,7 +4719,7 @@ export const openapiSpec = {
         security: [{ bearerAuth: [] }],
         requestBody: {
           required: true,
-          content: { 'application/json': { schema: { type: 'object', properties: { pageIds: { type: 'array', items: { type: 'string' } }, note: { type: 'string' } } } } },
+          content: { 'application/json': { schema: { type: 'object', properties: { pageIds: { type: 'array', items: { type: 'string' } }, settings: { type: 'boolean' }, note: { type: 'string' } } } } },
         },
         responses: {
           '201': openapiCreatedResponse({ $ref: openapiSchemaRef('SitePublish') }),
@@ -4737,6 +4740,40 @@ export const openapiSpec = {
         security: [{ bearerAuth: [] }],
         responses: {
           '200': openapiResponse({ type: 'object', properties: { previewUrl: { type: 'string', nullable: true }, rebuildConfigured: { type: 'boolean' } } }),
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '403': openapiErrorResponse('Missing site-builder permission.'),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+    },
+    '/cms/site/settings': {
+      get: {
+        tags: ['Operator CMS'],
+        summary: 'Global site settings draft',
+        description: 'Header, footer, announcement bar, contact email, CTA-band and help-widget defaults: `{ draft, draftRev, live: { version, publishedAt } | null, hasUnpublishedChanges, schema }` (`schema` = JSON Schema for the editor). 404 until imported.',
+        operationId: 'getSiteSettings',
+        security: [{ bearerAuth: [] }],
+        responses: {
+          '200': openapiResponse({ type: 'object' }),
+          '404': openapiErrorResponse('Not imported yet (pnpm db:site-import).'),
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '403': openapiErrorResponse('Missing site-builder permission.'),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+    },
+    '/cms/site/settings/draft': {
+      put: {
+        tags: ['Operator CMS'],
+        summary: 'Save the global settings draft (optimistic lock)',
+        description: 'Body `{ doc, rev }`; 409 with the current rev when stale. Goes live with `POST /cms/site/publish`.',
+        operationId: 'saveSiteSettingsDraft',
+        security: [{ bearerAuth: [] }],
+        requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['doc', 'rev'], properties: { doc: { type: 'object' }, rev: { type: 'integer' } } } } } },
+        responses: {
+          '200': openapiResponse({ type: 'object' }),
+          '400': openapiErrorResponse('Invalid settings (details lists field paths).'),
+          '409': openapiErrorResponse('Stale rev.'),
           '401': openapiErrorResponse('Missing/invalid bearer token.'),
           '403': openapiErrorResponse('Missing site-builder permission.'),
           '500': openapiErrorResponse('Unexpected server error'),

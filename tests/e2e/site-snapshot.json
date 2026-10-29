@@ -1,6 +1,245 @@
 {
   "version": 1,
   "note": "Last-known-good site-builder content. Used when the backend bundle is unavailable; also the seed the backend imports (site-builder Phase 1). Edit via the CMS once live — hand edits here are overwritten by publish snapshots.",
+  "settings": {
+    "topline": {
+      "show": true,
+      "text": "Opening soon in Sembawang · Launch code **StoreLah100** · [Explore the launch offer](/promotions/)"
+    },
+    "contact": {
+      "email": "hello@storelah.sg"
+    },
+    "header": {
+      "links": [
+        {
+          "label": "Sizes & prices",
+          "href": "/sizes-pricing/"
+        },
+        {
+          "label": "Locations",
+          "href": "/locations/"
+        },
+        {
+          "label": "Promotions",
+          "href": "/promotions/"
+        }
+      ],
+      "groups": [
+        {
+          "label": "Discover storage",
+          "links": [
+            {
+              "label": "What is self-storage?",
+              "href": "/what-is-self-storage/",
+              "desc": "Your own unit. Explained simply."
+            },
+            {
+              "label": "Ways to use your space",
+              "href": "/storage-ideas/",
+              "desc": "Moving, renovating, everyday things and stock."
+            },
+            {
+              "label": "How it works",
+              "href": "/how-it-works/",
+              "desc": "From choosing to moving in."
+            },
+            {
+              "label": "What you can store",
+              "href": "/what-you-can-store/",
+              "desc": "Suitable items and important limits."
+            }
+          ]
+        },
+        {
+          "label": "Help & advice",
+          "links": [
+            {
+              "label": "Find your size",
+              "href": "/size-guide/",
+              "desc": "Start with the things you own."
+            },
+            {
+              "label": "FAQs",
+              "href": "/faqs/",
+              "desc": "Answers to practical questions."
+            },
+            {
+              "label": "Access & security",
+              "href": "/access-security/",
+              "desc": "What to know before visiting."
+            },
+            {
+              "label": "Protection Plan",
+              "href": "/protection-plan/",
+              "desc": "Understand required cover."
+            },
+            {
+              "label": "Packing & moving",
+              "href": "/packing-supplies/",
+              "desc": "Plan an easier move."
+            },
+            {
+              "label": "Storage guides",
+              "href": "/guides/",
+              "desc": "Useful tips, in one place."
+            }
+          ]
+        },
+        {
+          "label": "About us",
+          "links": [
+            {
+              "label": "Our story",
+              "href": "/about/",
+              "desc": "A fresh approach to storage."
+            },
+            {
+              "label": "Why StoreLah",
+              "href": "/why-storelah/",
+              "desc": "The things we care about."
+            },
+            {
+              "label": "Contact us",
+              "href": "/contact/",
+              "desc": "A human conversation."
+            },
+            {
+              "label": "Promotions",
+              "href": "/promotions/",
+              "desc": "Value with clear conditions."
+            }
+          ]
+        }
+      ],
+      "cta": {
+        "label": "Reserve your space",
+        "href": "/reserve/",
+        "style": "primary"
+      }
+    },
+    "footer": {
+      "tagline": "Your personal storeroom.\nMore room for real life.",
+      "columns": [
+        {
+          "heading": "Choose your space",
+          "links": [
+            {
+              "label": "Sizes & prices",
+              "href": "/sizes-pricing/"
+            },
+            {
+              "label": "Locations",
+              "href": "/locations/"
+            },
+            {
+              "label": "Sembawang",
+              "href": "/locations/sembawang/"
+            },
+            {
+              "label": "Size guide",
+              "href": "/size-guide/"
+            },
+            {
+              "label": "Offers",
+              "href": "/promotions/"
+            }
+          ]
+        },
+        {
+          "heading": "Storage, explained",
+          "links": [
+            {
+              "label": "What is self-storage?",
+              "href": "/what-is-self-storage/"
+            },
+            {
+              "label": "Storage ideas",
+              "href": "/storage-ideas/"
+            },
+            {
+              "label": "How it works",
+              "href": "/how-it-works/"
+            },
+            {
+              "label": "FAQs",
+              "href": "/faqs/"
+            },
+            {
+              "label": "Storage guides",
+              "href": "/guides/"
+            }
+          ]
+        },
+        {
+          "heading": "Meet StoreLah",
+          "links": [
+            {
+              "label": "About us",
+              "href": "/about/"
+            },
+            {
+              "label": "Why StoreLah",
+              "href": "/why-storelah/"
+            },
+            {
+              "label": "Access & security",
+              "href": "/access-security/"
+            },
+            {
+              "label": "Protection Plan",
+              "href": "/protection-plan/"
+            },
+            {
+              "label": "Contact us",
+              "href": "/contact/"
+            },
+            {
+              "label": "Book a viewing",
+              "href": "/book-a-viewing/"
+            }
+          ]
+        }
+      ],
+      "copyright": "© 2026 StoreLah. All rights reserved.",
+      "legal": [
+        {
+          "label": "Privacy notice",
+          "href": "/privacy/"
+        },
+        {
+          "label": "Website terms",
+          "href": "/terms/"
+        }
+      ]
+    },
+    "ctaBand": {
+      "title": "Let’s find your space.",
+      "text": "See the sizes, ask a question or come take a look first.",
+      "ctas": [
+        {
+          "label": "Book your space",
+          "href": "/reserve/",
+          "style": "light"
+        },
+        {
+          "label": "Book a viewing",
+          "href": "/book-a-viewing/",
+          "style": "outline"
+        }
+      ]
+    },
+    "helpWidget": {
+      "show": true,
+      "eyebrow": "HELLO FROM STORELAH",
+      "heading": "A little help?",
+      "text": "Ask about a size, current offers or a viewing. We’re happy to help.",
+      "image": {
+        "src": "/assets/launch-service.webp",
+        "alt": "Illustrative StoreLah customer service team",
+        "frame": "plain"
+      }
+    }
+  },
   "pages": {
     "about": {
       "seo": {

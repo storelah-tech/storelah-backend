@@ -13,7 +13,7 @@ import { z } from 'zod';
 import { prisma } from '../lib/prisma';
 import { AppError } from '../lib/http';
 import { config } from '../lib/config';
-import { pageDocSchema, type PageDoc } from './sitePageSchema';
+import { pageDocSchema, siteSettingsSchema, type PageDoc, type SiteSettings } from './sitePageSchema';
 
 /** "/" (home) or lowercase path segments: "about", "guides/packing". */
 export const SLUG_RE = /^(\/|[a-z0-9]+(-[a-z0-9]+)*(\/[a-z0-9]+(-[a-z0-9]+)*)*)$/;
@@ -44,7 +44,7 @@ export function validatePageDoc(raw: unknown): PageDoc {
   return r.data;
 }
 
-const asJson = (doc: PageDoc) => doc as unknown as Prisma.InputJsonValue;
+const asJson = (doc: PageDoc | SiteSettings) => doc as unknown as Prisma.InputJsonValue;
 
 const PAGE_INCLUDE = {
   liveVersion: { select: { id: true, number: true, doc: true, createdAt: true } },
@@ -196,8 +196,10 @@ export async function archiveSitePage(id: string, actorId?: string) {
 // ---------- publish ----------
 
 export const publishInput = z.object({
-  /** Defaults to every page with unpublished changes. */
+  /** Defaults to every page with unpublished changes. `[]` = no pages (settings only). */
   pageIds: z.array(z.string().min(1)).max(200).optional(),
+  /** Include global settings if they changed. Defaults to true when pageIds is omitted. */
+  settings: z.boolean().optional(),
   note: z.string().trim().max(300).optional(),
 });
 
@@ -224,7 +226,9 @@ export async function publishSitePages(
     if (missing.length) throw new AppError(404, 'NOT_FOUND', 'Some pages were not found or are archived', { missing });
   }
   const pending = rows.filter(hasUnpublishedChanges);
-  if (pending.length === 0) throw new AppError(400, 'VALIDATION', 'Nothing to publish: every selected page is already live.');
+  const settingsRow = (input.settings ?? input.pageIds === undefined) ? await prisma.siteSettings.findUnique({ where: { id: SETTINGS_ID } }) : null;
+  const settingsDoc = settingsRow && settingsChanged(settingsRow) ? validateSettings(settingsRow.draft) : null;
+  if (pending.length === 0 && !settingsDoc) throw new AppError(400, 'VALIDATION', 'Nothing to publish: everything selected is already live.');
 
   // Re-validate: the schema may have changed since the draft was saved.
   const docs = pending.map((p) => {
@@ -240,8 +244,16 @@ export async function publishSitePages(
   });
 
   const publish = await prisma.$transaction(async (tx) => {
+    let settingsVersion: number | null = null;
+    if (settingsDoc && settingsRow) {
+      const next = await tx.siteSettings.update({
+        where: { id: SETTINGS_ID },
+        data: { live: asJson(settingsDoc), liveVersion: { increment: 1 }, publishedAt: new Date() },
+      });
+      settingsVersion = next.liveVersion;
+    }
     const pub = await tx.sitePublish.create({
-      data: { scope: [], note: input.note, status: SitePublishStatus.NOT_CONFIGURED, createdById: actorId },
+      data: { scope: [], settingsVersion, note: input.note, status: SitePublishStatus.NOT_CONFIGURED, createdById: actorId },
     });
     const scope: { pageId: string; slug: string; versionId: string; number: number }[] = [];
     for (const [i, p] of pending.entries()) {
@@ -260,6 +272,58 @@ export async function publishSitePages(
   // its outcome is recorded on the publish row (never rolls the publish back).
   const outcome = opts.dispatch === false ? { status: SitePublishStatus.SKIPPED } : await dispatchLandingBuild(publish.id);
   return prisma.sitePublish.update({ where: { id: publish.id }, data: outcome });
+}
+
+// ---------- global settings ----------
+
+const SETTINGS_ID = 'global';
+
+function validateSettings(raw: unknown): SiteSettings {
+  const r = siteSettingsSchema.safeParse(raw);
+  if (!r.success) {
+    throw new AppError(
+      400,
+      'VALIDATION',
+      'Site settings are invalid',
+      r.error.issues.map((i) => ({ path: i.path.join('.'), message: i.message })),
+    );
+  }
+  return r.data;
+}
+
+function settingsChanged(row: { draft: unknown; live: unknown }) {
+  return JSON.stringify(row.draft) !== JSON.stringify(row.live ?? null);
+}
+
+/** Draft settings + JSON Schema for the CMS editor (404 until the site is imported). */
+export async function getSiteSettingsDraft() {
+  const row = await prisma.siteSettings.findUnique({ where: { id: SETTINGS_ID } });
+  if (!row) throw new AppError(404, 'NOT_FOUND', 'Site settings have not been imported yet (pnpm db:site-import).');
+  return {
+    draft: row.draft,
+    draftRev: row.draftRev,
+    live: row.liveVersion ? { version: row.liveVersion, publishedAt: row.publishedAt } : null,
+    hasUnpublishedChanges: settingsChanged(row),
+    updatedById: row.updatedById,
+    updatedAt: row.updatedAt,
+    schema: z.toJSONSchema(siteSettingsSchema, { io: 'input', unrepresentable: 'any' }),
+  };
+}
+
+/** Optimistic lock like page drafts: a stale `rev` answers 409 with the current one. */
+export async function saveSiteSettingsDraft(input: z.infer<typeof saveDraftInput>, actorId?: string) {
+  const doc = validateSettings(input.doc);
+  const r = await prisma.siteSettings.updateMany({
+    where: { id: SETTINGS_ID, draftRev: input.rev },
+    data: { draft: asJson(doc), draftRev: { increment: 1 }, updatedById: actorId },
+  });
+  if (r.count === 0) {
+    const current = await prisma.siteSettings.findUnique({ where: { id: SETTINGS_ID }, select: { draftRev: true, updatedById: true, updatedAt: true } });
+    if (!current) throw new AppError(404, 'NOT_FOUND', 'Site settings have not been imported yet (pnpm db:site-import).');
+    throw new AppError(409, 'CONFLICT', 'Site settings were changed since you opened them. Reload to see the latest draft.', current);
+  }
+  const { schema: _schema, ...rest } = await getSiteSettingsDraft();
+  return rest;
 }
 
 export async function rollbackSitePage(id: string, versionId: string, actorId?: string) {
@@ -314,15 +378,18 @@ async function dispatchLandingBuild(publishId: string): Promise<{ status: SitePu
 
 /** Live versions only — the single thing the landing build reads. */
 export async function getSiteBundle() {
-  const [pages, last] = await Promise.all([
+  const [pages, last, settings] = await Promise.all([
     prisma.sitePage.findMany({
       where: { status: SitePageStatus.PUBLISHED, liveVersionId: { not: null } },
       select: { slug: true, liveVersion: { select: { doc: true, number: true } } },
       orderBy: { slug: 'asc' },
     }),
     prisma.sitePublish.findFirst({ orderBy: { createdAt: 'desc' }, select: { id: true, createdAt: true } }),
+    prisma.siteSettings.findUnique({ where: { id: SETTINGS_ID }, select: { live: true, liveVersion: true } }),
   ]);
   return {
+    settings: settings?.live ?? null,
+    settingsVersion: settings?.liveVersion || null,
     pages: pages.map((p) => ({ slug: p.slug, version: p.liveVersion!.number, doc: p.liveVersion!.doc })),
     publishId: last?.id ?? null,
     publishedAt: last?.createdAt ?? null,
@@ -374,8 +441,14 @@ export async function importSiteSnapshot(raw: unknown, opts: { apply: boolean; a
     (await prisma.sitePage.findMany({ where: { slug: { in: entries.map((e) => e.slug) } }, select: { slug: true } })).map((p) => p.slug),
   );
   const toCreate = entries.filter((e) => !existing.has(e.slug));
-  const result = { created: toCreate.map((e) => e.slug), skipped: [...existing].sort(), publishId: null as string | null };
-  if (!opts.apply || toCreate.length === 0) return result;
+  const rawSettings = (raw as { settings?: unknown }).settings;
+  const settings = rawSettings === undefined ? null : validateSettings(rawSettings);
+  const createSettings = !!settings && !(await prisma.siteSettings.findUnique({ where: { id: SETTINGS_ID } }));
+  const result = { created: toCreate.map((e) => e.slug), skipped: [...existing].sort(), settings: createSettings, publishId: null as string | null };
+  if (!opts.apply || (toCreate.length === 0 && !createSettings)) return result;
+  if (createSettings && settings) {
+    await prisma.siteSettings.create({ data: { id: SETTINGS_ID, draft: asJson(settings), updatedById: opts.actorId } });
+  }
 
   const ids: string[] = [];
   for (const e of toCreate) {
@@ -390,7 +463,7 @@ export async function importSiteSnapshot(raw: unknown, opts: { apply: boolean; a
     });
     ids.push(p.id);
   }
-  const pub = await publishSitePages({ pageIds: ids, note: 'Imported from landing content/snapshot.json' }, opts.actorId, { dispatch: false });
+  const pub = await publishSitePages({ pageIds: ids, settings: createSettings, note: 'Imported from landing content/snapshot.json' }, opts.actorId, { dispatch: false });
   result.publishId = pub.id;
   return result;
 }

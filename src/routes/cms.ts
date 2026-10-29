@@ -237,6 +237,8 @@ import {
   listSitePublishes,
   getPageDocJsonSchema,
   getSiteEditorConfig,
+  getSiteSettingsDraft,
+  saveSiteSettingsDraft,
 } from '../core/sitePages';
 import { listMedia, listMediaQuery, uploadMedia, uploadMediaInput, updateMedia, updateMediaInput, deleteMedia } from '../core/siteMedia';
 
@@ -3463,6 +3465,17 @@ router.post('/site/pages/:id/rollback/:versionId', requireAuth, async (req: Requ
 router.post('/site/publish', requireAuth, async (req: Request, res: Response) => {
   const input = parseOr400(publishInput, req.body ?? {}, res, 'Publish payload must be { pageIds?, note? }');
   if (input) created(res, await publishSitePages(input, actorOf(req).id));
+});
+
+// Global settings (header, footer, announcement bar, contact, defaults):
+// same draft → publish flow as pages; publish with { pageIds: [], settings: true }.
+router.get('/site/settings', requireAuth, async (_req: Request, res: Response) => {
+  ok(res, await getSiteSettingsDraft());
+});
+
+router.put('/site/settings/draft', requireAuth, async (req: Request, res: Response) => {
+  const input = parseOr400(saveDraftInput, req.body, res, 'Settings payload must be { doc, rev }');
+  if (input) ok(res, await saveSiteSettingsDraft(input, actorOf(req).id));
 });
 
 // Media library: the browser uploads pre-resized variants ({ filename, alt,

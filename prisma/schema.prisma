@@ -1779,9 +1779,10 @@ enum SitePublishStatus {
 }
 
 model SitePublish {
-  id          String            @id @default(cuid())
-  scope       Json // [{ pageId, slug, versionId, number }]
-  note        String?
+  id              String            @id @default(cuid())
+  scope           Json // [{ pageId, slug, versionId, number }]
+  settingsVersion Int? // global settings version published here, if any
+  note            String?
   status      SitePublishStatus
   error       String?
   createdById String?
@@ -1805,4 +1806,18 @@ model MediaAsset {
   updatedAt   DateTime @updatedAt
 
   @@index([createdAt])
+}
+
+// Global site settings (header, footer, announcement bar, contact, CTA band
+// and help-widget defaults): one row, id "global". Same draft → publish model
+// as pages; validated with siteSettingsSchema in src/core/sitePageSchema.ts.
+model SiteSettings {
+  id          String    @id // "global"
+  draft       Json
+  draftRev    Int       @default(0)
+  live        Json?
+  liveVersion Int       @default(0) // 0 = never published
+  publishedAt DateTime?
+  updatedById String?
+  updatedAt   DateTime  @updatedAt
 }

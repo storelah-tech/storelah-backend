@@ -433,6 +433,56 @@ export const pageDocSchema = z.object({
   sections: z.array(sectionSchema).max(60),
 });
 
+// ---------- global site settings (header, footer, shared copy) ----------
+
+const navLinkSchema = z.object({ label: text(60).min(1), href: hrefSchema });
+
+/** One document for the site shell; published with pages, served in the bundle. */
+export const siteSettingsSchema = z.object({
+  /** Announcement bar above the header (rich-lite; links render without the .link style). */
+  topline: z.object({ show: z.boolean().default(true), text: rich(300).min(1) }),
+  contact: z.object({ email: z.string().email().max(120) }),
+  header: z.object({
+    links: z.array(navLinkSchema).max(6).default([]),
+    groups: z
+      .array(
+        z.object({
+          label: text(40).min(1),
+          links: z.array(navLinkSchema.extend({ desc: text(120).optional() })).min(1).max(10),
+        })
+      )
+      .max(5)
+      .default([]),
+    cta: ctaSchema.optional(),
+  }),
+  footer: z.object({
+    tagline: rich(300).default(""),
+    columns: z
+      .array(z.object({ heading: text(60).min(1), links: z.array(navLinkSchema).max(10) }))
+      .max(5)
+      .default([]),
+    copyright: text(160).min(1),
+    legal: z.array(navLinkSchema).max(5).default([]),
+  }),
+  /** Defaults for every `ctaBand` section without its own title/text. */
+  ctaBand: z.object({ title: text(160).min(1), text: text(400).default(""), ctas: z.array(ctaSchema).max(2).default([]) }),
+  helpWidget: z.object({
+    show: z.boolean().default(true),
+    eyebrow: text(80).optional(),
+    heading: text(120).min(1),
+    text: rich(400).default(""),
+    image: imageSchema.optional(),
+  }),
+});
+
+export type SiteSettings = z.infer<typeof siteSettingsSchema>;
+
+/** Parse the settings document; returns null (never throws) when invalid. */
+export function parseSiteSettings(raw: unknown): SiteSettings | null {
+  const r = siteSettingsSchema.safeParse(raw);
+  return r.success ? r.data : null;
+}
+
 export type Cta = z.infer<typeof ctaSchema>;
 export type Badge = z.infer<typeof badgeSchema>;
 export type SiteImage = z.infer<typeof imageSchema>;

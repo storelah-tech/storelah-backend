@@ -276,6 +276,8 @@ export const ROUTE_PERMISSIONS: Record<string, PermissionSpec> = {
   'POST /site/pages/:id/rollback/:versionId': 'site-builder:approve',
   'POST /site/publish': 'site-builder:approve',
   'GET /site/publishes': v('site-builder'),
+  'GET /site/settings': v('site-builder'),
+  'PUT /site/settings/draft': 'site-builder:update',
   'GET /site/media': v('site-builder'),
   'POST /site/media': 'site-builder:create',
   'PATCH /site/media/:id': 'site-builder:update',

@@ -6,12 +6,13 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { api, createOperator, prisma, resetDb, type Operator } from './fixtures';
-import { pageDocSchema } from '../../src/core/sitePageSchema';
+import { pageDocSchema, siteSettingsSchema } from '../../src/core/sitePageSchema';
 import { importSiteSnapshot } from '../../src/core/sitePages';
 
 const CMS = '/api/v1/cms';
 const PUB = '/api/v1/public';
 const snapshot = JSON.parse(readFileSync(join(__dirname, 'site-snapshot.json'), 'utf8')) as {
+  settings: Record<string, any>;
   pages: Record<string, { sections: { type: string }[] }>;
 };
 
@@ -36,6 +37,16 @@ describe('page document schema', () => {
       .filter(([, r]) => !r.success)
       .map(([slug, r]) => [slug, r.success ? null : r.error.issues.slice(0, 2)]);
     expect(bad).toEqual([]);
+  });
+
+  it('accepts the landing snapshot settings and rejects a bad contact email / link', () => {
+    expect(siteSettingsSchema.safeParse(snapshot.settings).success).toBe(true);
+    const bad = siteSettingsSchema.safeParse({
+      ...snapshot.settings,
+      contact: { email: 'not-an-email' },
+      footer: { ...snapshot.settings.footer, legal: [{ label: 'x', href: 'javascript:alert(1)' }] },
+    });
+    expect(bad.success ? [] : bad.error.issues.map((i) => i.path.join('.'))).toEqual(['contact.email', 'footer.legal.0.href']);
   });
 
   it('the snapshot exercises every section type', () => {
@@ -223,6 +234,58 @@ describe('site builder API', () => {
     expect(JSON.stringify(big).length).toBeGreaterThan(290_000);
     const res = await api.put(`${CMS}/site/pages/${p.id}/draft`).set('Authorization', owner.auth).send({ doc: big, rev: 0 });
     expect(res.status).toBe(200);
+  });
+});
+
+describe('global site settings', () => {
+  let owner: Operator;
+  beforeEach(async () => {
+    await resetDb();
+    owner = await createOperator('OWNER');
+  });
+
+  it('import creates v1; drafts lock on rev; publish scoping; the bundle serves live settings only', async () => {
+    expect((await api.get(`${CMS}/site/settings`).set('Authorization', owner.auth)).status).toBe(404);
+    const imp = await importSiteSnapshot(snapshot, { apply: true });
+    expect(imp.settings).toBe(true);
+    const pub0 = await prisma.sitePublish.findUniqueOrThrow({ where: { id: imp.publishId! } });
+    expect(pub0.settingsVersion).toBe(1);
+
+    const cur = await api.get(`${CMS}/site/settings`).set('Authorization', owner.auth);
+    expect(cur.body.data).toMatchObject({ draftRev: 0, live: { version: 1 }, hasUnpublishedChanges: false });
+    expect(cur.body.data.schema.properties.header.type).toBe('object');
+    let bundle = await api.get(`${PUB}/site/bundle`);
+    expect(bundle.body.data.settings).toEqual(siteSettingsSchema.parse(snapshot.settings));
+    expect(bundle.body.data.settingsVersion).toBe(1);
+
+    const edited = { ...cur.body.data.draft, topline: { show: true, text: 'Now open in **Sembawang**' } };
+    const bad = await api.put(`${CMS}/site/settings/draft`).set('Authorization', owner.auth).send({ doc: { ...edited, contact: { email: 'x' } }, rev: 0 });
+    expect(bad.status).toBe(400);
+    expect(bad.body.error.details).toEqual([expect.objectContaining({ path: 'contact.email' })]);
+    const saved = await api.put(`${CMS}/site/settings/draft`).set('Authorization', owner.auth).send({ doc: edited, rev: 0 });
+    expect(saved.body.data).toMatchObject({ draftRev: 1, hasUnpublishedChanges: true });
+    expect((await api.put(`${CMS}/site/settings/draft`).set('Authorization', owner.auth).send({ doc: edited, rev: 0 })).status).toBe(409);
+
+    // Draft settings never reach the bundle.
+    bundle = await api.get(`${PUB}/site/bundle`);
+    expect(bundle.body.data.settings.topline.text).not.toContain('Now open');
+
+    // Publishing named pages leaves settings alone…
+    const about = await prisma.sitePage.findUniqueOrThrow({ where: { slug: 'about' } });
+    await prisma.sitePage.update({ where: { id: about.id }, data: { title: 'About (renamed)' } });
+    const pagesOnly = await api.post(`${CMS}/site/publish`).set('Authorization', owner.auth).send({ pageIds: [about.id] });
+    expect(pagesOnly.status).toBe(400); // renaming is not a content change; settings not included
+    // …settings-only publish takes them live.
+    const settingsOnly = await api.post(`${CMS}/site/publish`).set('Authorization', owner.auth).send({ pageIds: [], settings: true });
+    expect(settingsOnly.status).toBe(201);
+    expect(settingsOnly.body.data).toMatchObject({ settingsVersion: 2, scope: [] });
+    bundle = await api.get(`${PUB}/site/bundle`);
+    expect(bundle.body.data.settings.topline.text).toBe('Now open in **Sembawang**');
+    expect((await api.post(`${CMS}/site/publish`).set('Authorization', owner.auth).send({})).status).toBe(400); // nothing left
+
+    const viewer = await createOperator('VIEWER');
+    expect((await api.get(`${CMS}/site/settings`).set('Authorization', viewer.auth)).status).toBe(200);
+    expect((await api.put(`${CMS}/site/settings/draft`).set('Authorization', viewer.auth).send({ doc: edited, rev: 1 })).status).toBe(403);
   });
 });
 

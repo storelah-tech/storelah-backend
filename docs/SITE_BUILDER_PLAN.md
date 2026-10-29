@@ -2,8 +2,8 @@
 
 Status: **Phases 0–3 built on feature branches (2026-10-29); not deployed.** Phase 2 =
 all 25 landing pages are page documents; Phase 1 = backend model + API; Phase 3 = CMS
-editor v1 + media library (status notes under §5). Next: global settings editor, Phase 4
-(publish pipeline status). Drafted 2026-10-29 (orchestrator). Cross-cutting:
+editor v1 + media library + global settings (status notes under §5). Next: Phase 4 (publish
+pipeline status / build callback), operator-created page routes on landing, srcset. Drafted 2026-10-29 (orchestrator). Cross-cutting:
 backend (API + CMS UI), landing (renderer + build), devops (S3, CI trigger).
 Contracts in §4 must be agreed by all three lanes before any code lands.
 
@@ -376,7 +376,18 @@ Layout: **Pages list | Section outline (drag to reorder) | Preview iframe
 > draft or live page uses the image. Deviation from §4.2: pages store the image URL, not
 > `media:<id>`; no `srcset` yet. Image `src` now also accepts `http://localhost|127.0.0.1` (dev
 > uploads); publish refuses those in production.
-> Not yet: global settings editor (nav, footer, ticker), OG preview, spacing / desktop-only
+> **Global settings (2026-10-29):** `siteSettingsSchema` (in both schema copies): announcement
+> bar, contact email, header links / dropdown groups / CTA, footer tagline / columns / copyright /
+> legal, CTA-band defaults, help widget. Landing shell (Header, Footer, HelpWidget, CtaBand,
+> EnquiryForm mailto) renders from it: live settings from the bundle, else `snapshot.json`
+> `settings`. Backend: migration `20261029020000_site_settings` (`SiteSettings` row "global",
+> `SitePublish.settingsVersion`), `GET /cms/site/settings`, `PUT /cms/site/settings/draft`;
+> publish `{ settings }` (default with "publish all"; `{ pageIds: [], settings: true }` alone).
+> CMS: "Global settings" opens the editor in settings mode (no outline; preview = live homepage +
+> draft settings); page previews use the settings draft. Shell parity: header/footer/help widget
+> identical on all 28 built pages (snapshot and backend-fed builds). Not yet: settings version
+> history / rollback, wordmark/logo editing, WhatsApp link.
+> Not yet (pages): OG preview, spacing / desktop-only
 > visibility presets (not in the v1 schema), link picker, srcset. Browser-tested as Owner and
 > Manager on an isolated local DB.
 

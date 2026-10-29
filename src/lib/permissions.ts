@@ -77,6 +77,8 @@ export const RESOURCES: readonly ResourceDef[] = [
   { group: 'Finance', key: 'bill-arrears', label: 'Arrears', actions: R },
 
   { group: 'Content', key: 'content-list', label: 'All content', actions: CRUD },
+  // Landing site builder: approve = publish to storelah.sg (site-builder plan §4.4).
+  { group: 'Content', key: 'site-builder', label: 'Site builder', actions: CRUDA },
 
   { group: 'Global Settings', key: 'settings-general', label: 'General', actions: RU },
   { group: 'Global Settings', key: 'settings-booking', label: 'Booking & billing', actions: RU },
@@ -118,6 +120,7 @@ const MANAGER_DENY: Record<string, readonly Action[]> = {
   'settings-facilities': ['create', 'update', 'delete'],
   'promo-library': ['approve'],
   'facility-floorplans': ['approve'],
+  'site-builder': ['approve'],
   'customer-tenants': ['delete'],
   leads: ['delete'],
 };

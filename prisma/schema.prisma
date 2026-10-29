@@ -1726,3 +1726,64 @@ model Verification {
   @@index([customerId])
   @@index([reviewStatus])
 }
+
+// ---------- Site builder (landing pages as JSON documents) ----------
+// docs/SITE_BUILDER_PLAN.md §4. A page keeps one working `draft`; publishing
+// freezes it into an immutable SitePageVersion and points `liveVersionId` at
+// it. The public bundle serves live versions only. Rollback = copy a version
+// into the draft and publish it again. Docs are validated in core with the
+// zod schema in src/core/siteBuilder/schema.ts before they are stored.
+
+enum SitePageStatus {
+  DRAFT // never published
+  PUBLISHED // has a live version
+  ARCHIVED // removed from the site; versions kept
+}
+
+model SitePage {
+  id            String            @id @default(cuid())
+  slug          String            @unique // "/", "about", "guides/packing"
+  title         String // CMS label
+  status        SitePageStatus    @default(DRAFT)
+  system        Boolean           @default(false) // core landing route: slug locked, can't be archived
+  draft         Json
+  draftRev      Int               @default(0) // optimistic lock: a stale save answers 409
+  liveVersionId String?           @unique
+  liveVersion   SitePageVersion?  @relation("SitePageLive", fields: [liveVersionId], references: [id])
+  versions      SitePageVersion[] @relation("SitePageVersions")
+  updatedById   String?
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+}
+
+model SitePageVersion {
+  id          String    @id @default(cuid())
+  pageId      String
+  page        SitePage  @relation("SitePageVersions", fields: [pageId], references: [id])
+  liveFor     SitePage? @relation("SitePageLive")
+  number      Int
+  doc         Json
+  note        String?
+  publishId   String?
+  createdById String?
+  createdAt   DateTime  @default(now())
+
+  @@unique([pageId, number])
+}
+
+enum SitePublishStatus {
+  NOT_CONFIGURED // versions went live; no landing rebuild trigger is set up
+  SKIPPED // trigger deliberately not sent (import script)
+  DISPATCHED // GitHub workflow_dispatch accepted
+  FAILED // trigger rejected or unreachable; versions are still live
+}
+
+model SitePublish {
+  id          String            @id @default(cuid())
+  scope       Json // [{ pageId, slug, versionId, number }]
+  note        String?
+  status      SitePublishStatus
+  error       String?
+  createdById String?
+  createdAt   DateTime          @default(now())
+}

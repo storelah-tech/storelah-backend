@@ -186,6 +186,27 @@ Used from site-builder Phase 4. Provision it now so Phase 4 isn't blocked.
    This is a real prod landing deploy of current `main`, so run it only with
    the owner's OK.
 
+Optional: `LANDING_DISPATCH_REF` (default `main`). Without the token and repo,
+`POST /cms/site/publish` still makes versions live but records
+`status: NOT_CONFIGURED` and no rebuild runs.
+
+### 3. Site-builder rollout (Phase 1 backend)
+
+Each prod step needs the owner's go-ahead (prod migration + prod data).
+
+1. Migrate first: `prisma migrate deploy` with the direct Neon URL (adds
+   `20261029000000_site_builder`; additive, also grants `site-builder:*` to the
+   default Manager/Viewer roles).
+2. Lambda code update (no env change needed). Owner gets the new permissions
+   on the next cold start (`ensureSystemRoles`).
+3. Import the landing copy as v1 of every page, from the landing repo's
+   `content/snapshot.json` on the commit being deployed:
+   `pnpm db:site-import <path>/content/snapshot.json` (dry run), then `--apply`.
+   Additive: existing slugs are skipped; it never triggers a rebuild.
+4. Check `GET https://api.storelah.sg/api/v1/public/site/bundle` returns the pages.
+   Only then set the landing variable `NEXT_PUBLIC_API_URL` (step 2.3 above):
+   until then landing builds from its snapshot, which is identical.
+
 ## CMS GATE (Basic Auth on cms.storelah.sg) — deployed 2026-08-19
 
 ### Problem

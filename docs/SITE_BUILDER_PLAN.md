@@ -1,6 +1,8 @@
 # Site Builder ("mini Wix") — CMS ↔ landing plan
 
-Status: **PLAN — not started.** Drafted 2026-10-29 (orchestrator). Cross-cutting:
+Status: **Phases 0–2 built on feature branches (2026-10-29); not deployed.** Phase 2 =
+all 25 landing pages are page documents; Phase 1 = backend model + API (status note under
+§5 Phase 1). Next: Phase 3 (CMS editor UI). Drafted 2026-10-29 (orchestrator). Cross-cutting:
 backend (API + CMS UI), landing (renderer + build), devops (S3, CI trigger).
 Contracts in §4 must be agreed by all three lanes before any code lands.
 
@@ -296,6 +298,31 @@ Each phase ends deployable. Lane in brackets.
   first CMS-driven build is identical.
 - Tests: validation for each section type, optimistic-lock 409, the
   publish-version rules, and a public bundle that excludes drafts.
+
+> **Status 2026-10-29: built, not deployed.** Branch `feature/site-builder-phase1`
+> (backend). Migration `20261029000000_site_builder` (SitePage / SitePageVersion /
+> SitePublish; additive). Canonical zod schema `src/core/sitePageSchema.ts` (body
+> byte-identical to landing `src/site-builder/schema.ts`). Core `src/core/sitePages.ts`,
+> routes in `routes/cms.ts` + `routes/public.ts`, OpenAPI 1.12.0, import
+> `pnpm db:site-import <snapshot.json> [--apply]` (dry run by default; additive;
+> never triggers a rebuild). Tests `tests/e2e/site-builder.test.ts`.
+> Proven end to end on an isolated DB: the landing build fed by `GET /public/site/bundle`
+> matches the snapshot build; a published edit shows after rebuild; rollback restores it.
+>
+> Deviations from §4 (deliberate):
+> - **Permissions** use the RBAC catalogue's resource:action model: one resource
+>   `site-builder` with view / create / update / delete / **approve (= publish, rollback)**.
+>   Owner gets all; Manager all but approve; Viewer view. (§4.4's view/edit/publish map onto these.)
+> - **DELETE archives** (status ARCHIVED, versions kept) instead of deleting rows.
+> - Added `PATCH /site/pages/:id` (rename / re-slug custom pages) and
+>   `GET /site/pages/:id/versions/:versionId` (read a frozen version).
+> - Publish status is `NOT_CONFIGURED | SKIPPED | DISPATCHED | FAILED` (dispatch result
+>   only). Build progress (BUILDING / LIVE) needs the Phase 4 run callback.
+> - **Deferred to later phases:** `SiteSettings` (nav / footer / ticker are still code),
+>   `MediaAsset` + `/site/media` (browser-resized upload). Neither table exists yet.
+> - Doc bodies up to 1 MB: mounted in `app.ts` ahead of the global 100 KB parser.
+>   (Known separate bug: the route-level 12 MB parsers on `/content/:key/image` and
+>   unit photos never take effect for the same reason.)
 
 ### Phase 2: Landing renderer (≈1.5 weeks) [landing]
 - `src/sections/<type>/{Component.tsx, fixture.json}`, `registry.ts`,

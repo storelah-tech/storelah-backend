@@ -171,6 +171,20 @@ describe('role enforcement', () => {
   });
 });
 
+describe('investor role (Finance Phase 5, spec §15.4)', () => {
+  beforeEach(resetDb);
+
+  it('sees only the masked summary — every other finance route is 403', async () => {
+    const investor = await createOperator('INVESTOR');
+    // No CURRENT baseline yet: the route is reachable (permission passes) and
+    // the service answers 404, proving the guard is permission — not absence.
+    expect((await api.get(`${CMS}/finance/investor/summary`).set('Authorization', investor.auth)).status).toBe(404);
+    expect((await api.get(`${CMS}/finance/overview`).set('Authorization', investor.auth)).status).toBe(403);
+    expect((await api.get(`${CMS}/finance/returns`).set('Authorization', investor.auth)).status).toBe(403);
+    expect((await api.post(`${CMS}/finance/models`).set('Authorization', investor.auth).send({ name: 'X' })).status).toBe(403);
+  });
+});
+
 describe('users guard rails + audit', () => {
   beforeEach(resetDb);
 

@@ -22,7 +22,9 @@ const CORE_CHILDREN = {
   extras: ['extras-plans', 'extras-addons'],
   promotions: ['promo-overview', 'promo-discount-matrix', 'promo-free-months', 'promo-code-builder', 'promo-library',
     'promo-history', 'promo-safeguards', 'promo-performance'],
-  billing: ['bill-overview', 'bill-invoices', 'bill-arrears'],
+  billing: ['bill-overview', 'bill-transactions', 'bill-models', 'bill-performance', 'bill-budgets',
+    'bill-pricing', 'bill-returns', 'bill-library', 'bill-invoices', 'bill-arrears', 'bill-credits', 'bill-reconciliation',
+    'bill-investor'],
   content: ['content-list'],
   settings: ['settings-general', 'settings-booking', 'settings-fees', 'settings-team', 'settings-facilities'],
 };

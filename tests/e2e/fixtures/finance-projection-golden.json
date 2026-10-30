@@ -1,0 +1,44 @@
+{
+  "name": "sembawang-launch-plan",
+  "specRef": "FINANCE_MODULE_SPEC §28",
+  "derivation": "Hand/spreadsheet derivation (see docs/finance/TEST_MATRIX.md §golden). Weighted PSF = 12821.8/2274 = 5.638434… → 5.6384 (4dp). Revenue_t = round2(closing × psf × factor). Costs = 5000 lease + 1200 opex. NOI = revenue − cost. Cash opens at −108000. Churn 2.5% from month 7. Cap = 2274 × 0.92 = 2092.08. Milestones verified by hand: NOI-positive m7 (m6 −110.53, m7 +442.04); 70% = 1591.8 sqft crossed m12 (m11 1546.10, m12 1632.45); stabilisation = first month ≥ 0.99 × 2092.08 = 2071.16 → m18 (m17 ≈ 2032.8); payback asserted as invariant cash[31] < 0 ≤ cash[32]. IRR pinned as regression; solver independently verified on CF [−1000, +1100] → (1.1)^12 − 1.",
+  "input": {
+    "startDate": "2026-12-01",
+    "horizonMonths": 60,
+    "nlaSqft": 2274,
+    "sizeMix": [
+      { "name": "XS", "nlaSqft": 455, "units": 31, "psf": 6.8 },
+      { "name": "S", "nlaSqft": 500, "units": 20, "psf": 6.2 },
+      { "name": "M", "nlaSqft": 650, "units": 16, "psf": 5.5 },
+      { "name": "L", "nlaSqft": 405, "units": 7, "psf": 4.8 },
+      { "name": "XL", "nlaSqft": 264, "units": 2, "psf": 4.2 }
+    ],
+    "occupancy": { "rampFirst6": 180, "rampFrom7": 125, "moveOutRatePct": 2.5, "churnStartMonth": 7, "targetPct": 92 },
+    "pricing": { "annualIncreasePct": 3 },
+    "lease": { "monthlyByYear": [5000, 5000, 5000, 5000, 5000, 5000, 5000], "rentFreeMonths": 0 },
+    "opex": { "baseMonthly": 1200, "annualGrowthPct": 0 },
+    "capitalTotal": 108000
+  },
+  "expectedWeightedPsf": 5.6384,
+  "expectedMonths": [
+    { "t": 1, "month": "2026-12", "periodFactor": 1, "openingSqft": 0, "moveInSqft": 180, "moveOutSqft": 0, "netMoveInSqft": 180, "closingSqft": 180, "occupancyPct": 7.9, "psf": 5.6384, "revenue": 1014.91, "opexLease": 5000, "opexNonLease": 1200, "operatingCost": 6200,     "noi": -5185.09, "noiMarginPct": -510.9, "cash": -113185.09 },
+    { "t": 2, "month": "2027-01", "periodFactor": 1, "openingSqft": 180, "moveInSqft": 180, "moveOutSqft": 0, "netMoveInSqft": 180, "closingSqft": 360, "occupancyPct": 15.8, "psf": 5.6384, "revenue": 2029.82, "opexLease": 5000, "opexNonLease": 1200, "operatingCost": 6200, "noi": -4170.18, "noiMarginPct": -205.4, "cash": -117355.27 },
+    { "t": 3, "month": "2027-02", "periodFactor": 1, "openingSqft": 360, "moveInSqft": 180, "moveOutSqft": 0, "netMoveInSqft": 180, "closingSqft": 540, "occupancyPct": 23.7, "psf": 5.6384, "revenue": 3044.74, "opexLease": 5000, "opexNonLease": 1200, "operatingCost": 6200, "noi": -3155.26, "noiMarginPct": -103.6, "cash": -120510.53 },
+    { "t": 4, "month": "2027-03", "periodFactor": 1, "openingSqft": 540, "moveInSqft": 180, "moveOutSqft": 0, "netMoveInSqft": 180, "closingSqft": 720, "occupancyPct": 31.7, "psf": 5.6384, "revenue": 4059.65, "opexLease": 5000, "opexNonLease": 1200, "operatingCost": 6200, "noi": -2140.35, "noiMarginPct": -52.7, "cash": -122650.88 },
+    { "t": 5, "month": "2027-04", "periodFactor": 1, "openingSqft": 720, "moveInSqft": 180, "moveOutSqft": 0, "netMoveInSqft": 180, "closingSqft": 900, "occupancyPct": 39.6, "psf": 5.6384, "revenue": 5074.56, "opexLease": 5000, "opexNonLease": 1200, "operatingCost": 6200, "noi": -1125.44, "noiMarginPct": -22.2, "cash": -123776.32 },
+    { "t": 6, "month": "2027-05", "periodFactor": 1, "openingSqft": 900, "moveInSqft": 180, "moveOutSqft": 0, "netMoveInSqft": 180, "closingSqft": 1080, "occupancyPct": 47.5, "psf": 5.6384, "revenue": 6089.47, "opexLease": 5000, "opexNonLease": 1200, "operatingCost": 6200, "noi": -110.53, "noiMarginPct": -1.8, "cash": -123886.85 },
+    { "t": 7, "month": "2027-06", "periodFactor": 1, "openingSqft": 1080, "moveInSqft": 125, "moveOutSqft": 27, "netMoveInSqft": 98, "closingSqft": 1178, "occupancyPct": 51.8, "psf": 5.6384, "revenue": 6642.04, "opexLease": 5000, "opexNonLease": 1200, "operatingCost": 6200, "noi": 442.04, "noiMarginPct": 6.7, "cash": -123444.81 },
+    { "t": 8, "month": "2027-07", "periodFactor": 1, "openingSqft": 1178, "moveInSqft": 125, "moveOutSqft": 29.45, "netMoveInSqft": 95.55, "closingSqft": 1273.55, "occupancyPct": 56, "psf": 5.6384, "revenue": 7180.78, "opexLease": 5000, "opexNonLease": 1200, "operatingCost": 6200, "noi": 980.78, "noiMarginPct": 13.7, "cash": -122464.03 },
+    { "t": 9, "month": "2027-08", "periodFactor": 1, "openingSqft": 1273.55, "moveInSqft": 125, "moveOutSqft": 31.84, "netMoveInSqft": 93.16, "closingSqft": 1366.71, "occupancyPct": 60.1, "psf": 5.6384, "revenue": 7706.06, "opexLease": 5000, "opexNonLease": 1200, "operatingCost": 6200, "noi": 1506.06, "noiMarginPct": 19.5, "cash": -120957.97 },
+    { "t": 10, "month": "2027-09", "periodFactor": 1, "openingSqft": 1366.71, "moveInSqft": 125, "moveOutSqft": 34.17, "netMoveInSqft": 90.83, "closingSqft": 1457.54, "occupancyPct": 64.1, "psf": 5.6384, "revenue": 8218.19, "opexLease": 5000, "opexNonLease": 1200, "operatingCost": 6200, "noi": 2018.19, "noiMarginPct": 24.6, "cash": -118939.78 },
+    { "t": 11, "month": "2027-10", "periodFactor": 1, "openingSqft": 1457.54, "moveInSqft": 125, "moveOutSqft": 36.44, "netMoveInSqft": 88.56, "closingSqft": 1546.1, "occupancyPct": 68, "psf": 5.6384, "revenue": 8717.53, "opexLease": 5000, "opexNonLease": 1200, "operatingCost": 6200, "noi": 2517.53, "noiMarginPct": 28.9, "cash": -116422.25 },
+    { "t": 12, "month": "2027-11", "periodFactor": 1, "openingSqft": 1546.1, "moveInSqft": 125, "moveOutSqft": 38.65, "netMoveInSqft": 86.35, "closingSqft": 1632.45, "occupancyPct": 71.8, "psf": 5.6384, "revenue": 9204.41, "opexLease": 5000, "opexNonLease": 1200, "operatingCost": 6200, "noi": 3004.41, "noiMarginPct": 32.6, "cash": -113417.84 }
+  ],
+  "expectedYears": [
+    { "year": 1, "revenue": 68982.16, "operatingCost": 74400, "noi": -5417.84, "noiMarginPct": -7.9, "cashAtYearEnd": -113417.84, "closingSqft": 1632.45 },
+    { "year": 2, "revenue": 139546.8, "operatingCost": 74400, "noi": 65146.8, "noiMarginPct": 46.7, "cashAtYearEnd": -48271.04, "closingSqft": 2092.08 },
+    { "year": 3, "revenue": 150172.8, "operatingCost": 74400, "noi": 75772.8, "noiMarginPct": 50.5, "cashAtYearEnd": 27501.76, "closingSqft": 2092.08 }
+  ],
+  "expectedMilestones": { "noiPositiveMonth": 7, "stabilisedMonth": 18, "paybackMonth": 32, "occupancy70Month": 12 },
+  "expectedIrrAnnualised": 0.39492
+}

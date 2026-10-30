@@ -9,6 +9,8 @@ import { resolvePromoDueTodayScope } from './promotions';
 import { resolveSupportContact } from './emails';
 import { CUSTOMER_REQUEST_NOTE_PREFIX, leadIdentityColumns, normalizeLeadEmail } from './leads';
 import { CustomerJwtPayload, signCustomerToken } from '../middleware/auth';
+import { getFinancePolicies } from './finance/policies';
+import { toCustomerInvoice } from './invoicePayments';
 
 export interface RegisterCustomerInput {
   name: string;
@@ -600,6 +602,11 @@ export async function getCustomerPortal(payload: CustomerJwtPayload) {
 
   // Invoices across EVERY Tenant row for this email (one row per paid unit),
   // not just the first — multi-unit customers see all their billing.
+  // Portal-safe serialization lives in core/invoicePayments.toCustomerInvoice:
+  // DRAFT/APPROVED/VOID/WRITTEN_OFF rows are hidden, ISSUED shows as DUE,
+  // PARTIALLY_PAID shows as DUE with the remaining balance, and OVERDUE is
+  // derived from billing.graceDays. The response shape is unchanged (no new
+  // customer-facing fields).
   const tenantIds = customer.email
     ? (
         await prisma.tenant.findMany({
@@ -608,6 +615,7 @@ export async function getCustomerPortal(payload: CustomerJwtPayload) {
         })
       ).map((t) => t.id)
     : [];
+  const policies = await getFinancePolicies();
   const invoiceRows = tenantIds.length
     ? await prisma.invoice.findMany({
         where: { tenantId: { in: tenantIds } },
@@ -623,23 +631,21 @@ export async function getCustomerPortal(payload: CustomerJwtPayload) {
         select: { bookingRef: true, tenantId: true, unitId: true },
       })
     : [];
-  const invoices = invoiceRows.map((i) => ({
-    id: i.id,
-    no: i.invoiceNo,
-    amount: toNum(i.amount),
-    dueDate: i.dueDate,
-    status: i.status,
-    billedMonth: i.billedMonth,
-    method: i.method,
-    // --- appended (additive, Phase 2 portal payments) ---
-    unitCode: i.unit.unitCode,
-    paidAt: i.paidAt,
-    payable: i.status === 'DUE' || i.status === 'OVERDUE',
-    bookingRef:
-      i.status === 'PAID'
-        ? null
-        : (pendingBookings.find((b) => b.tenantId === i.tenantId && b.unitId === i.unitId)?.bookingRef ?? null),
-  }));
+  const invoices = invoiceRows.flatMap((i) => {
+    const mapped = toCustomerInvoice(i, policies.graceDays);
+    // Hidden statuses (pre-receivable drafts, voided rows) never reach the
+    // portal — unknown id semantics, same as a missing row.
+    if (!mapped) return [];
+    return [{
+      ...mapped,
+      // --- appended (additive, Phase 2 portal payments) ---
+      unitCode: i.unit.unitCode,
+      bookingRef:
+        mapped.status === 'PAID'
+          ? null
+          : (pendingBookings.find((b) => b.tenantId === i.tenantId && b.unitId === i.unitId)?.bookingRef ?? null),
+    }];
+  });
 
   const bookings = await listCustomerBookings(payload);
 
@@ -1185,7 +1191,9 @@ export async function createCustomerBooking(customer: Customer, input: CreateBoo
           mobile: customer.mobile,
           // unitId stays NULL until payment confirmation (see above) — this
           // row is booking/invoice identity only for now.
-          unitId: null,
+          // F-3: stamp the facility up front so facility-scoped reads
+          // (billing run keys off unit.branchId, never this cache alone).
+          ...(unit.branchId ? { branchId: unit.branchId } : {}),
           moveInDate,
           monthlyRate: unit.monthlyRate,
           psf: unit.sqft ? toNum(unit.monthlyRate) / unit.sqft : toNum(unit.monthlyRate),

@@ -13,7 +13,7 @@
 //
 // Adding a screen = one RESOURCES entry + its routes in routePermissions.ts.
 // The role matrix stored in the DB is authoritative at runtime; the defaults
-// below only seed Manager / Viewer (migration + ensureSystemRoles()).
+// below only seed Manager / Viewer / Finance roles (migration + ensureSystemRoles()).
 
 export const ACTIONS = ['view', 'create', 'update', 'delete', 'approve'] as const;
 export type Action = (typeof ACTIONS)[number];
@@ -29,6 +29,8 @@ const R: readonly Action[] = ['view'];
 const RU: readonly Action[] = ['view', 'update'];
 const RC: readonly Action[] = ['view', 'create'];
 const RCU: readonly Action[] = ['view', 'create', 'update'];
+const RUA: readonly Action[] = ['view', 'update', 'approve'];
+const RCUA: readonly Action[] = ['view', 'create', 'update', 'approve'];
 const CRUD: readonly Action[] = ['view', 'create', 'update', 'delete'];
 const CRUDA: readonly Action[] = ['view', 'create', 'update', 'delete', 'approve'];
 
@@ -73,8 +75,30 @@ export const RESOURCES: readonly ResourceDef[] = [
   { group: 'Discount & Promotion', key: 'promo-performance', label: 'Performance', actions: R },
 
   { group: 'Finance', key: 'bill-overview', label: 'Overview', actions: R },
-  { group: 'Finance', key: 'bill-invoices', label: 'Invoices', actions: R },
-  { group: 'Finance', key: 'bill-arrears', label: 'Arrears', actions: R },
+  // Finance Phase 1 (FINANCE_MODULE_SPEC §§3–4): one resource per submodule.
+  // Invoices: approve = APPROVED step; no delete — lifecycle uses VOID.
+  { group: 'Finance', key: 'bill-invoices', label: 'Invoices', actions: RCUA },
+  { group: 'Finance', key: 'bill-arrears', label: 'Arrears', actions: RUA },
+  // Transactions: approve = per-charge approval; bulk approval NEVER (spec §4.1).
+  { group: 'Finance', key: 'bill-transactions', label: 'Transactions & Approvals', actions: ['view', 'create', 'update', 'approve'] },
+  // Models: drafts deletable; CURRENT/ARCHIVED not deletable (service code).
+  { group: 'Finance', key: 'bill-models', label: 'Financial Models', actions: CRUDA },
+  // Performance: update = variance notes, approve = month close.
+  { group: 'Finance', key: 'bill-performance', label: 'Forecast vs Actuals', actions: RUA },
+  // Budgets: lease line protected — update denied in code unless protected override.
+  { group: 'Finance', key: 'bill-budgets', label: 'Budgets & Expenses', actions: RCUA },
+  // Pricing: update = manual override + audit.
+  { group: 'Finance', key: 'bill-pricing', label: 'Size Mix & Pricing', actions: RUA },
+  { group: 'Finance', key: 'bill-returns', label: 'Investment Returns', actions: R },
+  // Library: no delete — versions are immutable history (archive instead).
+  { group: 'Finance', key: 'bill-library', label: 'Model Library', actions: RUA },
+  // Credits: second approval = approve + threshold in code (Phase 4).
+  { group: 'Finance', key: 'bill-credits', label: 'Credits & Refunds', actions: RCUA },
+  // Reconciliation: import/match = create/update; close = approve.
+  { group: 'Finance', key: 'bill-reconciliation', label: 'Reconciliation', actions: RCUA },
+  // Investor: masked approved-only summary (Phase 5, spec §15.4). View only —
+  // no mutation action exists for this resource by design.
+  { group: 'Finance', key: 'bill-investor', label: 'Investor Summary', actions: R },
 
   { group: 'Content', key: 'content-list', label: 'All content', actions: CRUD },
 
@@ -120,8 +144,68 @@ const MANAGER_DENY: Record<string, readonly Action[]> = {
   'facility-floorplans': ['approve'],
   'customer-tenants': ['delete'],
   leads: ['delete'],
+  // Finance: Manager keeps read-only access to Overview / Invoices / Arrears
+  // (pre-existing billing keys). The 9 Phase-1 finance resources are never
+  // auto-granted — every action is denied here so the derived matrix stays put.
+  'bill-invoices': ['create', 'update', 'delete', 'approve'],
+  'bill-arrears': ['create', 'update', 'delete', 'approve'],
+  'bill-transactions': ['view', 'create', 'update', 'delete', 'approve'],
+  'bill-models': ['view', 'create', 'update', 'delete', 'approve'],
+  'bill-performance': ['view', 'update', 'approve'],
+  'bill-budgets': ['view', 'create', 'update', 'delete', 'approve'],
+  'bill-pricing': ['view', 'update', 'approve'],
+  'bill-returns': ['view'],
+  'bill-library': ['view', 'update', 'approve'],
+  'bill-credits': ['view', 'create', 'update', 'delete', 'approve'],
+  'bill-reconciliation': ['view', 'create', 'update', 'delete', 'approve'],
+  // Investor Summary is a separate masked surface — operators keep their
+  // existing finance screens; investors see only the summary.
+  'bill-investor': ['view'],
 };
-const VIEWER_HIDDEN = new Set(['bill-overview', 'bill-invoices', 'bill-arrears']);
+const VIEWER_HIDDEN = new Set([
+  'bill-overview', 'bill-invoices', 'bill-arrears', 'bill-transactions', 'bill-models', 'bill-performance',
+  'bill-budgets', 'bill-pricing', 'bill-returns', 'bill-library', 'bill-credits', 'bill-reconciliation',
+  'bill-investor',
+]);
+
+// Finance role permission sets (FINANCE_MODULE_SPEC §§3–4, IMPLEMENTATION_PLAN §2c).
+// Spec §4 wins where the plan is silent: the Approver can approve financial
+// models, and Operator/Approver can enter variance/actual notes.
+const FINANCE_VIEW_ALL = [
+  'bill-overview:view', 'bill-invoices:view', 'bill-arrears:view', 'bill-transactions:view', 'bill-models:view',
+  'bill-performance:view', 'bill-budgets:view', 'bill-pricing:view', 'bill-returns:view', 'bill-library:view',
+  'bill-credits:view', 'bill-reconciliation:view', 'bill-investor:view',
+] as const;
+const FINANCE_OPERATOR_PERMS = [
+  ...FINANCE_VIEW_ALL,
+  'bill-invoices:create', 'bill-invoices:update',
+  'bill-arrears:update',
+  // Phase 3: operators raise AND cancel instructions (mistake recovery,
+  // customer-paid-at-counter); charging stays approver-only.
+  'bill-transactions:create', 'bill-transactions:update',
+  'bill-models:create', 'bill-models:update',
+  'bill-performance:update',
+  'bill-budgets:create', 'bill-budgets:update',
+  'bill-pricing:update',
+  // Library update = submit / duplicate / restore / archive / save-version
+  // (spec §16.3; approve/reject/set-current stay approver-only). Draft
+  // deletion stays Owner-only (least privilege — operators archive instead).
+  'bill-library:update',
+  'bill-credits:create', 'bill-credits:update',
+  'bill-reconciliation:create', 'bill-reconciliation:update',
+] as const;
+const FINANCE_APPROVER_PERMS = [
+  ...FINANCE_OPERATOR_PERMS,
+  'bill-invoices:approve',
+  'bill-arrears:approve',
+  'bill-transactions:approve',
+  'bill-models:approve',
+  'bill-budgets:approve',
+  'bill-performance:approve',
+  'bill-credits:approve',
+  'bill-library:approve',
+  'bill-reconciliation:approve',
+] as const;
 
 export const SYSTEM_ROLES: ReadonlyArray<{ key: string; name: string; description: string; locked: boolean; permissions: readonly string[] }> = [
   {
@@ -146,5 +230,40 @@ export const SYSTEM_ROLES: ReadonlyArray<{ key: string; name: string; descriptio
     description: 'Read-only access. Finance is hidden.',
     locked: false,
     permissions: RESOURCES.filter((r) => !VIEWER_HIDDEN.has(r.key)).map((r) => permissionKey(r.key, 'view')),
+  },
+  // Finance Phase 1: seeded with ZERO members — the Owner assigns operators in
+  // Global Settings › Team & access (owner decision Q11). Auditor is read-only
+  // on all 12 finance resources; export rides on bill-overview:view (audited).
+  {
+    key: 'FINANCE_OPERATOR',
+    name: 'Finance Operator',
+    description: 'Day-to-day finance work. Cannot approve anything or touch the protected lease line.',
+    locked: false,
+    permissions: [...FINANCE_OPERATOR_PERMS],
+  },
+  {
+    key: 'FINANCE_APPROVER',
+    name: 'Finance Approver',
+    description: 'Everything the Finance Operator has, plus approvals. Maker-checker enforced in service code.',
+    locked: false,
+    permissions: [...FINANCE_APPROVER_PERMS],
+  },
+  {
+    key: 'FINANCE_AUDITOR',
+    name: 'Finance Auditor',
+    description: 'Read-only view of all finance areas. No mutations.',
+    locked: false,
+    permissions: [...FINANCE_VIEW_ALL],
+  },
+  // Finance Phase 5 (spec §15.4, owner Q10 FINAL): masked approved-only
+  // summary. Exactly one permission — the summary routes carry no customer
+  // names, emails, transaction detail or draft/open-month data. The Owner
+  // assigns operators to this role in Global Settings › Team & access.
+  {
+    key: 'INVESTOR',
+    name: 'Investor',
+    description: 'Masked approved-only summary (modelling + returns + closed months). No mutations, no customer data.',
+    locked: false,
+    permissions: ['bill-investor:view'],
   },
 ];

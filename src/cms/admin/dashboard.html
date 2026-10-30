@@ -9,6 +9,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<link rel="stylesheet" href="/admin/finance.css">
 <style>
 /* =============================================
    StoreLah v8 Design System
@@ -993,6 +994,32 @@ body.auth-pending .app{visibility:hidden}
 .pw-card footer{display:flex;justify-content:flex-end;gap:8px;padding:0 20px 20px}
 @media (max-width:760px){ body.sb-collapsed:not(.sb-hover) .side .user-actions{display:flex} }
 @media (min-width:761px){ body.sb-collapsed:not(.sb-hover) .side .user-actions{display:none} }
+/* Finance Phase 5 — visible keyboard focus everywhere (WCAG 2.2 AA 2.4.7/2.4.11):
+   the app previously styled :focus-visible only on the sign-in form. Outline
+   uses deep olive (≈12:1 on paper) so the indicator itself passes 3:1. */
+button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,[tabindex]:focus-visible{outline:2px solid var(--olive,#334437);outline-offset:2px;border-radius:6px}
+/* Screen-reader-only utility for table captions and live-region text. */
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
+/* Investor masked-summary watermark banner. */
+.inv-watermark .card-body{border-left:4px solid var(--amber,#b7791f);background:#fdf6e7}
+/* Investor print view (Phase 5, spec §15.4): the Print button adds
+   .printing-investor to <body>, prints, then removes it. On paper only the
+   investor panel survives — nav, topbar, tabs, buttons and other panels hide. */
+@media print{
+  body.printing-investor #sidebar,body.printing-investor header.top,body.printing-investor .subtabs,
+  body.printing-investor .module-panel:not(.active),body.printing-investor #bill-investor .tb-btn,
+  body.printing-investor #bill-investor select,body.printing-investor #bill-investor #finPrint,
+  body.printing-investor #bill-investor #finExport,body.printing-investor #bill-investor #finRefresh,
+  body.printing-investor #errorBanner{display:none!important}
+  body.printing-investor main{margin:0}
+  body.printing-investor .content{padding:0}
+  body.printing-investor .card{break-inside:avoid;border:1px solid #999;box-shadow:none}
+  body.printing-investor .inv-watermark .card-body{background:#fff}
+}
+/* Reduced motion (WCAG 2.2 AA 2.3.3): finance charts and transitions freeze. */
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}
+}
 </style>
 </head>
 <body class="auth-pending">
@@ -1899,17 +1926,47 @@ body.auth-pending .app{visibility:hidden}
 
     <!-- ============ FINANCE / BILLING ============ -->
     <section class="page" id="billing">
-      <div class="head"><div><h1>Finance Management</h1><p>Invoices, payments and revenue overview.</p></div><div class="actions"><button class="btn">Export</button><button class="primary">＋ Create invoice</button></div></div>
-      <div class="subtabs" data-tabs="billing"><button class="active" data-tab="bill-overview">Overview</button><button data-tab="bill-invoices">Invoices</button><button data-tab="bill-arrears">Arrears</button></div>
+      <div class="head"><div><h1>Finance Management</h1><p>Financial planning, budgets, performance tracking, billing and cash control.</p></div><div class="actions"></div></div>
+      <div class="subtabs" data-tabs="journey"><button class="active" data-fin-journey="bill-overview">Overview</button><button data-fin-journey="bill-models">Forecast</button><button data-fin-journey="bill-performance">Performance</button><button data-fin-journey="bill-budgets">Costs</button><button data-fin-journey="bill-pricing">Assumptions</button><button data-fin-journey="bill-returns">Returns</button><button data-fin-journey="bill-library">Governance</button></div>
+      <div class="subtabs" data-tabs="billing"><button class="active" data-tab="bill-overview">Overview</button><button data-tab="bill-transactions">Transactions</button><button data-tab="bill-models">Models</button><button data-tab="bill-performance">Performance</button><button data-tab="bill-budgets">Budgets</button><button data-tab="bill-pricing">Pricing</button><button data-tab="bill-returns">Returns</button><button data-tab="bill-library">Library</button><button data-tab="bill-invoices">Invoices</button><button data-tab="bill-arrears">Arrears</button><button data-tab="bill-credits">Credits</button><button data-tab="bill-reconciliation">Reconciliation</button><button data-tab="bill-investor">Investor</button></div>
       <div class="module-panel active" id="bill-overview">
-        <div class="stats" id="billingStats"></div>
-        <div class="aging" id="agingBreakdown"></div>
+        <div data-fin-mount></div>
+      </div>
+      <div class="module-panel" id="bill-transactions">
+        <div data-fin-mount></div>
+      </div>
+      <div class="module-panel" id="bill-models">
+        <div data-fin-mount></div>
+      </div>
+      <div class="module-panel" id="bill-performance">
+        <div data-fin-mount></div>
+      </div>
+      <div class="module-panel" id="bill-budgets">
+        <div data-fin-mount></div>
+      </div>
+      <div class="module-panel" id="bill-pricing">
+        <div data-fin-mount></div>
+      </div>
+      <div class="module-panel" id="bill-returns">
+        <div data-fin-mount></div>
+      </div>
+      <div class="module-panel" id="bill-library">
+        <div data-fin-mount></div>
       </div>
       <div class="module-panel" id="bill-invoices">
-        <div class="card"><div class="card-head"><h3>Invoices</h3></div><div class="table-wrap"><table class="lead-table"><thead><tr><th>Invoice</th><th>Customer</th><th>Unit</th><th>Amount</th><th>Due</th><th>Status</th></tr></thead><tbody id="invoiceRows"></tbody></table></div></div>
+        <div data-fin-mount></div>
       </div>
       <div class="module-panel" id="bill-arrears">
-        <div class="card"><div class="card-head"><h3>Overdue Invoices</h3></div><div class="table-wrap"><table class="lead-table"><thead><tr><th>Invoice</th><th>Customer</th><th>Amount</th><th>Overdue by</th></tr></thead><tbody id="arrearRows"></tbody></table></div></div>
+        <div data-fin-mount></div>
+      </div>
+      <div class="module-panel" id="bill-credits">
+        <div data-fin-mount></div>
+      </div>
+      <div class="module-panel" id="bill-reconciliation">
+        <div data-fin-mount></div>
+      </div>
+      <div class="module-panel" id="bill-investor">
+        <div data-fin-mount></div>
       </div>
     </section>
 

@@ -183,6 +183,10 @@ model Customer {
   uen              String?
   resetToken       String?     @unique
   resetTokenExpiry DateTime?
+  // Stripe Customer (cus_…) that owns this portal customer's saved cards
+  // (core/savedCards.ts). Created lazily on the first SetupIntent; NULL until
+  // then. No card data is stored here — the Stripe Customer is the wallet.
+  stripeCustomerId String?     @unique
   createdAt        DateTime    @default(now())
   updatedAt        DateTime    @updatedAt
   // Back-relation for Verification.customer (additive, Prisma-level only —

@@ -32,12 +32,23 @@ export function currentBranchScope(): string[] | null {
 }
 
 // Model → how it links to a facility.
-const DIRECT_REQUIRED = new Set(['Unit', 'Floor', 'FloorplanMetricsSnapshot']);
+const DIRECT_REQUIRED = new Set(['Unit', 'Floor', 'FloorplanMetricsSnapshot', 'Budget', 'Expense', 'SizePriceRule',
+  // Phase 4 close-and-controls tables with a required branch.
+  'MonthClose', 'ActualMetric', 'VarianceNote', 'ReconciliationBatch']);
 const DIRECT_NULLABLE = new Set([
   'Tenant', 'AccessCredential', 'AccessDoor', 'AccessEvent', 'Asset', 'ComplianceCertificate',
   'InspectionChecklist', 'PreventiveTask', 'WorkOrder', 'Incident', 'Appointment', 'FacilityFee',
+  'FinanceAuditEvent', 'FinancialModel',
+  // Phase 4 wallet/refund/arrears/reconciliation rows carry the tenant's (or
+  // import's) branch at creation; null stays visible to scoped operators.
+  'CreditWallet', 'Refund', 'ArrearsCase', 'LateFeeWaiver', 'SettlementImport',
 ]);
 const VIA_UNIT = new Set(['Booking', 'Invoice', 'Notice', 'RateChange', 'UnitAreaChange', 'UnitPlacement', 'UnitImage']);
+// Phase 3 billing tables: scoped through their parent invoice's unit.
+const VIA_INVOICE = new Set(['InvoiceLine', 'PaymentInstruction']);
+// Phase 4 ledger rows: scoped through their parent wallet / month-close.
+const VIA_WALLET = new Set(['CreditLedgerEntry']);
+const VIA_MONTH_CLOSE = new Set(['MonthCloseAdjustment']);
 const VIA_FLOOR = new Set(['FloorPlan', 'FloorPlanDraft']);
 const VIA_LEAD = new Set(['Quotation', 'Conversation']);
 // Creating these with no facility affects every site — needs all-facility access.
@@ -45,7 +56,8 @@ const CREATE_NEEDS_FACILITY = new Set(['FacilityFee']);
 
 export function isScopedModel(model: string): boolean {
   return model === 'Branch' || model === 'Lead' || DIRECT_REQUIRED.has(model) || DIRECT_NULLABLE.has(model)
-    || VIA_UNIT.has(model) || VIA_FLOOR.has(model) || VIA_LEAD.has(model);
+    || VIA_UNIT.has(model) || VIA_INVOICE.has(model) || VIA_WALLET.has(model) || VIA_MONTH_CLOSE.has(model)
+    || VIA_FLOOR.has(model) || VIA_LEAD.has(model);
 }
 
 /** Prisma where-fragment limiting `model` to the scope (null = no filter). */
@@ -57,6 +69,11 @@ export function scopeWhere(model: string, branchIds: string[]): Record<string, u
   if (DIRECT_REQUIRED.has(model)) return { branchId: inScope };
   if (DIRECT_NULLABLE.has(model)) return { OR: [{ branchId: inScope }, { branchId: null }] };
   if (VIA_UNIT.has(model)) return { unit: { branchId: inScope } };
+  if (VIA_INVOICE.has(model)) return { invoice: { unit: { branchId: inScope } } };
+  if (VIA_WALLET.has(model)) {
+    return { wallet: { OR: [{ branchId: inScope }, { branchId: null }] } };
+  }
+  if (VIA_MONTH_CLOSE.has(model)) return { monthClose: { branchId: inScope } };
   if (VIA_FLOOR.has(model)) return { floor: { branchId: inScope } };
   if (VIA_LEAD.has(model)) return { lead };
   return null;

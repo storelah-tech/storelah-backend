@@ -222,9 +222,11 @@ function heldUnitStatus(tenantStatus: string | null | undefined): 'OCCUPIED' | '
 
 export async function createTenant(input: CreateTenantInput) {
   let sqft = input.sqft;
+  let unitBranchId: string | null = null;
   if (input.unitId) {
     const unit = await assertUnitAssignable(input.unitId);
     sqft = unit.sqft;
+    unitBranchId = unit.branchId;
   }
 
   const tenant = await prisma.$transaction(async (tx) => {
@@ -237,7 +239,13 @@ export async function createTenant(input: CreateTenantInput) {
         // email-keyed lookups keep matching (same canonicalizer as Customer).
         email: input.email != null ? normalizeEmail(input.email) : input.email,
         mobile: input.mobile,
-        unitId: input.unitId,
+        // F-3: stamp the unit's facility so facility-scoped reads stay fast.
+        // The billing run keys off unit.branchId (never this cache alone).
+        // Relation form (connect) — scalar unitId + relation branch do not mix
+        // in the Prisma checked input.
+        ...(input.unitId
+          ? { unit: { connect: { id: input.unitId } }, ...(unitBranchId ? { branch: { connect: { id: unitBranchId } } } : {}) }
+          : {}),
         moveInDate: input.moveInDate,
         monthlyRate: input.monthlyRate,
         psf: sqft ? input.monthlyRate / sqft : input.monthlyRate,

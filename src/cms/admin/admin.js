@@ -35,6 +35,7 @@ import {
 } from './leadsGroups.js';
 import { setRefsLoader as fpSetRefsLoader, fpInitEvents, fpOpen, fpOpenLibrary, fpViewClose, getFpViewFloorId } from './floorplanView.js';
 import { setRefreshAll as floorsSetRefreshAll, setRefsLoader as floorsSetRefsLoader, bindFloorsView, wireFloorsView } from './floorsView.js';
+import { bindFinanceTab } from './financeIndex.js';
 import { setRefreshAll as branchesSetRefreshAll, setRefsLoader as branchesSetRefsLoader, bindBranchesSection, wireBranchesView } from './branchesView.js';
 import { wireMetricsPanel, refreshMetricsView } from './metricsView.js';
 import {
@@ -43,6 +44,8 @@ import {
 } from './facilitiesOps.js';
 
 // ====================== TOAST ======================
+// The finance workspace (prototype port) reports through the CMS toast.
+window.cmsToast = (msg) => toast(msg);
 function toast(msg) {
   const el = $('#toastEl');
   if (!el) return;
@@ -82,8 +85,13 @@ const sideNav = {
   extras: [['Protection plans', 'extras', 'extras-plans'], ['Addons', 'extras', 'extras-addons']],
   content: [['All content', 'content', 'content-list'], ['Site builder', 'content', 'site-builder']],
   promotions: [['Dashboard', 'promotions', 'promo-overview'], ['Discount plan builder', 'promotions', 'promo-discount-matrix'], ['Free months', 'promotions', 'promo-free-months'], ['Promo code builder', 'promotions', 'promo-code-builder'], ['Promotions library', 'promotions', 'promo-library'], ['History', 'promotions', 'promo-history'], ['Safeguards', 'promotions', 'promo-safeguards'], ['Performance', 'promotions', 'promo-performance']],
-  billing: [['Overview', 'billing', 'bill-overview'], ['Invoices', 'billing', 'bill-invoices'],
-    ['Arrears', 'billing', 'bill-arrears']],
+  // Prototype labels; the investor view opens from "Investor access" (no sidebar item).
+  billing: [['Finance overview', 'billing', 'bill-overview'], ['Transactions & approvals', 'billing', 'bill-transactions'],
+    ['Financial models', 'billing', 'bill-models'], ['Forecast vs actuals', 'billing', 'bill-performance'],
+    ['Budgets & expenses', 'billing', 'bill-budgets'], ['Size mix & pricing', 'billing', 'bill-pricing'],
+    ['Investment returns', 'billing', 'bill-returns'], ['Model library', 'billing', 'bill-library'],
+    ['Invoices', 'billing', 'bill-invoices'], ['Arrears', 'billing', 'bill-arrears'],
+    ['Credits & refunds', 'billing', 'bill-credits'], ['Reconciliation', 'billing', 'bill-reconciliation']],
   settings: [['Global Settings', 'settings']],
 };
 
@@ -175,7 +183,7 @@ function openPage(id) {
     if (firstTab) firstTab.click();
   }
   else if (id === 'promotions') { bootPromotions(); bindPromotionsOverview(); }
-  else if (id === 'billing') bindBilling();
+  else if (id === 'billing') bindFinanceTab('bill-overview').catch(() => {});
   else if (id === 'settings') {
     bindSettings();
     // closeAllViews() strips .active from every .module-panel, so restore the
@@ -3824,72 +3832,22 @@ function bootPromotions() {
   bindPromoDashboardCharts().catch(function () {});
 }
 
+// F-9: legacy billing binding removed. The pre-finance invoice/arrears tables
+// (billingStats/agingBreakdown/invoiceRows/arrearRows) no longer exist in
+// dashboard.html — every finance panel renders through finance*View.js on a
+// [data-fin-mount]. Kept as a no-op so stale callers fail loudly once, not
+// silently.
 async function bindBilling() {
-  try {
-    ensureBillingDateFilters();
-    const [invoices, summary] = await Promise.all([
-      get(withDateQuery('/invoices', state.invoiceDate)).catch(() => []),
-      get('/summary').catch(() => null),
-    ]);
-    const stats = $('#billingStats');
-    if (stats && summary?.kpis) {
-      const k = summary.kpis;
-      const totalDue = (invoices || []).reduce((s, i) => s + (i.amount || 0), 0);
-      stats.innerHTML = '<div class="stat"><div class="label">MRR</div><div class="val">$' + (k.mrr || 0).toLocaleString() + '</div></div>' +
-        '<div class="stat"><div class="label">Invoices</div><div class="val">' + (invoices || []).length + '</div></div>' +
-        '<div class="stat"><div class="label">Total due</div><div class="val">$' + totalDue.toLocaleString() + '</div></div>' +
-        '<div class="stat"><div class="label">Overdue units</div><div class="val">' + k.overdueUnits + '</div></div>' +
-        '<div class="stat"><div class="label">Collection rate</div><div class="val">—</div></div>';
-    }
-    // Aging
-    const aging = $('#agingBreakdown');
-    if (aging && invoices) {
-      const overdue = (invoices || []).filter(i => i.status === 'OVERDUE').length;
-      const due = (invoices || []).filter(i => i.status === 'DUE').length;
-      const paid = (invoices || []).filter(i => i.status === 'PAID').length;
-      aging.innerHTML = '<div class="agebox"><small>Paid</small><b>' + paid + '</b></div><div class="agebox"><small>Due</small><b>' + due + '</b></div><div class="agebox danger"><small>Overdue</small><b>' + overdue + '</b></div><div class="agebox"><small>Collection rate</small><b>' + (paid > 0 ? Math.round(paid / (paid + due + overdue) * 100) + '%' : '—') + '</b></div><div class="agebox"><small>Total</small><b>' + invoices.length + '</b></div>';
-    }
-    // Invoice rows
-    const invRows = $('#invoiceRows');
-    if (invRows && invoices) {
-      invRows.innerHTML = invoices.length ? invoices.slice(0, 20).map((i) =>
-        '<tr><td>' + escapeHtml(i.no || '—') + '</td><td>' + escapeHtml(i.tenant || '—') + '</td><td>' + escapeHtml(i.unit || '—') + '</td><td><b>$' + (i.amount || 0).toLocaleString() + '</b></td><td>' + fmtDay(i.dueDate) + '</td><td><span class="pill ' + (i.status === 'PAID' ? 'green' : i.status === 'OVERDUE' ? 'red' : 'amber') + '">' + i.status + '</span></td></tr>'
-      ).join('') : '<tr><td colspan="6"><div class="section-empty">' + escapeHtml(rangeEmptyText('invoices', state.invoiceDate, 'No invoices.')) + '</div></td></tr>';
-    }
-    // Arrears
-    const arrearRows = $('#arrearRows');
-    if (arrearRows && invoices) {
-      const overdue = invoices.filter(i => i.status === 'OVERDUE');
-      arrearRows.innerHTML = overdue.length ? overdue.map((i) =>
-        '<tr><td>' + escapeHtml(i.no || '—') + '</td><td>' + escapeHtml(i.tenant || '—') + '</td><td><b>$' + (i.amount || 0).toLocaleString() + '</b></td><td class="late">' + Math.round((Date.now() - new Date(i.dueDate).getTime()) / (1000 * 60 * 60 * 24)) + ' days</td></tr>'
-      ).join('') : '<tr><td colspan="4"><div class="section-empty">' + escapeHtml(rangeEmptyText('overdue invoices', state.invoiceDate, 'No overdue invoices.')) + '</div></td></tr>';
-    }
-  } catch (e) { /*noop*/ }
+  // eslint-disable-next-line no-console
+  console.warn('[finance] bindBilling is retired — finance panels bind via financeIndex.bindFinanceTab');
 }
 
-// Invoices + arrears share one Invoice.dueDate range (both tables read the same
-// GET /invoices rows). A control sits on each card-head; changing either syncs
-// the other silently and refetches.
+// Invoices + arrears shared one Invoice.dueDate range when the legacy tables
+// existed. The tables are gone (F-2/F-9: mount-only panels), so this is a
+// no-op kept so historical call sites keep resolving.
 const billingDateHandles = [];
 function ensureBillingDateFilters() {
-  const heads = [document.querySelector('#bill-invoices .card-head'), document.querySelector('#bill-arrears .card-head')];
-  heads.forEach((head) => {
-    if (!head || head.dataset.dateFilterMounted) return;
-    head.dataset.dateFilterMounted = '1';
-    const handle = createDateFilter({
-      onChange: (r) => {
-        state.invoiceDate = r;
-        billingDateHandles.forEach((h) => { if (h !== handle) h.set(r, true); });
-        bindBilling().catch(() => {});
-      },
-    });
-    billingDateHandles.push(handle);
-    // .card-head leads with the <h3> title — the date trigger goes right after
-    // it so it is the first (and currently only) control.
-    const billTitle = head.firstElementChild;
-    if (billTitle && billTitle.nextSibling) head.insertBefore(handle.el, billTitle.nextSibling);
-    else head.appendChild(handle.el);
-  });
+  return;
 }
 
 // ====================== ACTIVITY FEED ======================
@@ -4042,7 +4000,10 @@ function wireEvents() {
       else if (panel === 'customer-moveouts') bindMoveouts().catch((err) => showBanner('Move-outs: ' + describeError(err)));
     });
   });
-  // Billing tabs
+  // Billing tabs (12 finance submodules — spec §3). Every tab runs its
+  // finance view binder (Phase 1: full Overview, shells elsewhere); the
+  // legacy overview/invoice/arrears tables keep their existing binding.
+  // The sub-tab id travels as #bill-<sub> (never PII/draft) via replaceState.
   document.querySelectorAll('[data-tabs="billing"] [data-tab]').forEach((b) => {
     b.addEventListener('click', function () {
       document.querySelectorAll('[data-tabs="billing"] [data-tab]').forEach((x) => x.classList.remove('active'));
@@ -4051,7 +4012,18 @@ function wireEvents() {
         p.classList.toggle('active', p.id === this.dataset.tab);
       });
       activateSide('billing', this.dataset.tab);
-      if (this.dataset.tab === 'bill-overview') bindBilling();
+      try { history.replaceState(null, '', '#' + this.dataset.tab); } catch (e) { /* file:// or blocked */ }
+      bindFinanceTab(this.dataset.tab).catch((err) => showBanner('Finance: ' + describeError(err)));
+    });
+  });
+  // Top journey navigation (spec §3, prototype-identical): seven journey
+  // items mapping onto finance submodules. Names per the spec table,
+  // TO-CONFIRM against the prototype.
+  document.querySelectorAll('[data-fin-journey]').forEach((b) => {
+    b.addEventListener('click', function () {
+      document.querySelectorAll('[data-fin-journey]').forEach((x) => x.classList.remove('active'));
+      this.classList.add('active');
+      openPanel('billing', this.dataset.finJourney);
     });
   });
   // Settings tabs (data-tabs="settings") — mirrors the billing pattern:
@@ -4688,9 +4660,17 @@ async function boot() {
       else if (hash === 'promotions') openCoreDefault('promotions');
       else if (hash === 'billing') openCoreDefault('billing');
       else if (hash === 'settings') openCoreDefault('settings');
+    } else if (hash.startsWith('bill-')) {
+      // Deep link into a finance submodule (#bill-models, …): never PII/draft.
+      openPanel('billing', hash);
     } else {
       openPage('command');
     }
+    // Back/forward + manual hash edits into finance submodules.
+    window.addEventListener('hashchange', () => {
+      const h = location.hash ? location.hash.slice(1) : '';
+      if (h.startsWith('bill-')) openPanel('billing', h);
+    });
   } catch (e) {
     console.error('[storelah admin] boot failed', e);
     showBanner('Data layer error: ' + (e && e.message ? e.message : e));

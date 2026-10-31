@@ -25,6 +25,10 @@ app.use('/api/v1/customer/stripe/webhook', express.raw({ type: 'application/json
 // default would otherwise reject the body first (same skip-once-parsed rule as
 // the webhook mount above).
 app.use(/^\/api\/v1\/cms\/floor-plans\/[^/]+\/underlay$/, express.json({ limit: '6mb' }));
+// Site-builder page documents (create / draft autosave): long pages can pass 100 KB.
+app.use(/^\/api\/v1\/cms\/site\/pages(\/[^/]+\/draft)?$/, express.json({ limit: '1mb' }));
+// Site-builder media upload: up to 3 browser-resized variants as base64.
+app.use(/^\/api\/v1\/cms\/site\/media$/, express.json({ limit: '30mb' }));
 app.use(express.json());
 app.use(cookieParser());
 

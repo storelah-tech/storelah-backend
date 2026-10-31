@@ -22,8 +22,10 @@ const CORE_CHILDREN = {
   extras: ['extras-plans', 'extras-addons'],
   promotions: ['promo-overview', 'promo-discount-matrix', 'promo-free-months', 'promo-code-builder', 'promo-library',
     'promo-history', 'promo-safeguards', 'promo-performance'],
-  billing: ['bill-overview', 'bill-invoices', 'bill-arrears'],
-  content: ['content-list'],
+  billing: ['bill-overview', 'bill-transactions', 'bill-models', 'bill-performance', 'bill-budgets',
+    'bill-pricing', 'bill-returns', 'bill-library', 'bill-invoices', 'bill-arrears', 'bill-credits', 'bill-reconciliation',
+    'bill-investor'],
+  content: ['content-list', 'site-builder'],
   settings: ['settings-general', 'settings-booking', 'settings-fees', 'settings-team', 'settings-facilities'],
 };
 // Cores whose children are separate pages (the rest are one page with tabs).

@@ -38,10 +38,84 @@ import { loadCustomer } from './customers';
 import { resolveSupportContact, type BookingConfirmationData } from './emails';
 import { buildReceiptPdfBytes, deriveReceiptNumber } from './receiptPdf';
 import { loadOwnedPaymentMethod } from './savedCards';
+import { claimStripeEvent } from './finance/events';
 
 export const INVOICE_SESSION_KIND = 'invoice';
+/** Queued-charge PaymentIntents (core/finance/payments.ts) carry this kind. */
+export const INSTRUCTION_SESSION_KIND = 'instruction';
 
-const PAYABLE: Array<Invoice['status']> = ['DUE', 'OVERDUE'];
+/** Stored statuses that are real receivables (portal-visible, payable). */
+export const RECEIVABLE_STATUSES: Array<Invoice['status']> = ['ISSUED', 'DUE', 'OVERDUE', 'PARTIALLY_PAID'];
+/** Pre-receivable or terminal statuses — the portal never sees these rows. */
+export const PORTAL_HIDDEN_STATUSES: Array<Invoice['status']> = ['DRAFT', 'APPROVED', 'VOID', 'WRITTEN_OFF'];
+
+const PAYABLE: Array<Invoice['status']> = [...RECEIVABLE_STATUSES];
+
+/**
+ * Open balance of an invoice (SGD): stamped `balanceDue` when a write has set
+ * it, else lazily derived as total − paid (plan §1d — no mass backfill).
+ */
+export function openInvoiceBalance(inv: Pick<Invoice, 'amount' | 'amountPaid' | 'balanceDue'>): number {
+  if (inv.balanceDue != null) return toNum(inv.balanceDue);
+  return Math.round((toNum(inv.amount) - toNum(inv.amountPaid ?? 0)) * 100) / 100;
+}
+
+/** Calendar-day UTC truncation (Q5 timings: graceDays are whole days). */
+function startOfUtcDay(d: Date): number {
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+}
+
+/**
+ * OVERDUE derivation for the portal (Q5: graceDays = 0 default → overdue the
+ * next day after the due date; editable Global Setting, display-only — the
+ * billing run never flips statuses and Phase 3 posts no late fees).
+ */
+export function isInvoiceOverdueByGrace(dueDate: Date, graceDays: number): boolean {
+  const grace = Number.isFinite(graceDays) && graceDays > 0 ? Math.floor(graceDays) : 0;
+  return startOfUtcDay(new Date()) > startOfUtcDay(new Date(dueDate)) + grace * 86400000;
+}
+
+export interface CustomerInvoiceShape {
+  id: string;
+  no: string;
+  /** Invoice total — EXCEPT PARTIALLY_PAID, which shows the remaining balance
+   * (same field, corrected semantics for a status the portal never had; no
+   * new response fields — balanceDue/amountPaid stay deferred). */
+  amount: number;
+  dueDate: Date;
+  status: 'DUE' | 'OVERDUE' | 'PAID';
+  billedMonth: Date;
+  method: string | null;
+  paidAt: Date | null;
+  payable: boolean;
+}
+
+/**
+ * Single portal-serialization helper (EXACT shape, portal-safe). Both GET
+ * /portal and every per-invoice read use this: DRAFT/APPROVED/VOID/
+ * WRITTEN_OFF → null (hidden; callers 404 as "missing"), ISSUED → DUE,
+ * PARTIALLY_PAID → DUE showing the remaining balance, OVERDUE derived by
+ * billing.graceDays. PAID rows pass through unchanged.
+ */
+export function toCustomerInvoice(
+  inv: Pick<Invoice, 'id' | 'invoiceNo' | 'amount' | 'amountPaid' | 'balanceDue' | 'dueDate' | 'status' | 'billedMonth' | 'method' | 'paidAt'>,
+  graceDays = 0,
+): CustomerInvoiceShape | null {
+  if ((PORTAL_HIDDEN_STATUSES as Array<Invoice['status']>).includes(inv.status)) return null;
+  if (inv.status === 'PAID') {
+    return {
+      id: inv.id, no: inv.invoiceNo, amount: toNum(inv.amount), dueDate: inv.dueDate,
+      status: 'PAID', billedMonth: inv.billedMonth, method: inv.method, paidAt: inv.paidAt, payable: false,
+    };
+  }
+  const overdue = inv.status === 'OVERDUE' || isInvoiceOverdueByGrace(inv.dueDate, graceDays);
+  const amount = inv.status === 'PARTIALLY_PAID' ? Math.max(0, openInvoiceBalance(inv)) : toNum(inv.amount);
+  return {
+    id: inv.id, no: inv.invoiceNo, amount, dueDate: inv.dueDate,
+    status: overdue ? 'OVERDUE' : 'DUE', billedMonth: inv.billedMonth, method: inv.method,
+    paidAt: inv.paidAt, payable: true,
+  };
+}
 
 async function loadOwnedInvoice(caller: CustomerJwtPayload, invoiceId: string) {
   const customer = await loadCustomer(caller);
@@ -51,10 +125,13 @@ async function loadOwnedInvoice(caller: CustomerJwtPayload, invoiceId: string) {
     include: { tenant: true, unit: { include: { branch: true } } },
   });
   // Same 404 for "missing" and "not yours" — never confirms another
-  // customer's invoice id exists.
+  // customer's invoice id exists. Pre-receivable (DRAFT/APPROVED) and
+  // terminal (VOID/WRITTEN_OFF) rows are hidden the same way: the portal
+  // only ever sees DUE/OVERDUE/PAID (toCustomerInvoice).
   if (
     !invoice ||
     !email ||
+    (PORTAL_HIDDEN_STATUSES as Array<Invoice['status']>).includes(invoice.status) ||
     (invoice.tenant.email ?? '').trim().toLowerCase() !== email.toLowerCase()
   ) {
     throw new AppError(404, 'NOT_FOUND', 'Invoice not found');
@@ -88,7 +165,10 @@ export async function createInvoiceCheckoutSession(
     return createCheckoutSession({ bookingRef: pending.bookingRef }, caller);
   }
 
-  const amountSgd = toNum(invoice.amount);
+  // Server-owned charge = the OPEN balance (total for a fresh invoice,
+  // remaining balanceDue for PARTIALLY_PAID) — internal change only, the
+  // response shape is unchanged.
+  const amountSgd = openInvoiceBalance(invoice);
   if (!(amountSgd > 0)) {
     throw new AppError(409, 'CONFLICT', 'This invoice has no amount due');
   }
@@ -163,13 +243,71 @@ export async function createInvoiceCheckoutSession(
 }
 
 /**
- * Webhook side for invoice sessions. IDEMPOTENT: the write is conditional on
- * the invoice still being DUE/OVERDUE, so retried deliveries flip nothing.
+ * Shared receipt posting for every portal payment path (checkout sessions,
+ * saved-card PIs, queued-charge PIs): adds the received amount to amountPaid
+ * and flips to PAID only when the total is covered — otherwise the invoice
+ * stays PARTIALLY_PAID with updated amounts. The write is conditional on the
+ * invoice still being a receivable, so a retried delivery without an event id
+ * still flips nothing (the HTTP webhook additionally claims the Stripe event
+ * id first — duplicate event id → single apply).
+ */
+export async function postInvoiceReceiptTx(
+  db: Pick<typeof prisma, 'invoice' | 'processedStripeEvent'>,
+  invoice: Pick<Invoice, 'id' | 'invoiceNo' | 'amount' | 'amountPaid' | 'balanceDue' | 'status'>,
+  receivedSgd: number,
+  extra: { method?: string; stripeSessionId?: string | null; paymentIntentId?: string | null } = {},
+): Promise<{ invoiceNo: string; applied: boolean; status: Invoice['status'] }> {
+  const total = toNum(invoice.amount);
+  const nowPaid = Math.round((toNum(invoice.amountPaid ?? 0) + receivedSgd) * 100) / 100;
+  const paidInFull = nowPaid >= total - 0.005;
+  const data = paidInFull
+    ? {
+        status: 'PAID' as const,
+        method: extra.method ?? 'Card',
+        paidAt: new Date(),
+        amountPaid: nowPaid,
+        balanceDue: 0,
+        ...(extra.stripeSessionId !== undefined ? { stripeSessionId: extra.stripeSessionId } : {}),
+        ...(extra.paymentIntentId !== undefined ? { paymentIntentId: extra.paymentIntentId } : {}),
+      }
+    : {
+        status: 'PARTIALLY_PAID' as const,
+        amountPaid: nowPaid,
+        balanceDue: Math.round((total - nowPaid) * 100) / 100,
+        ...(extra.stripeSessionId !== undefined ? { stripeSessionId: extra.stripeSessionId } : {}),
+        ...(extra.paymentIntentId !== undefined ? { paymentIntentId: extra.paymentIntentId } : {}),
+      };
+  const flipped = await db.invoice.updateMany({
+    where: { id: invoice.id, status: { in: PAYABLE } },
+    data,
+  });
+  if (flipped.count > 0) {
+    console.log(`[invoice-pay] invoiceNo=${invoice.invoiceNo} receipt ${receivedSgd} → ${data.status}`);
+  }
+  const fresh = await db.invoice.findUnique({ where: { id: invoice.id }, select: { status: true } });
+  return { invoiceNo: invoice.invoiceNo, applied: flipped.count > 0, status: fresh?.status ?? invoice.status };
+}
+
+/** Non-transactional receipt posting (unit-level callers without an event id). */
+export async function postInvoiceReceipt(
+  invoice: Pick<Invoice, 'id' | 'invoiceNo' | 'amount' | 'amountPaid' | 'balanceDue' | 'status'>,
+  receivedSgd: number,
+  extra: { method?: string; stripeSessionId?: string | null; paymentIntentId?: string | null } = {},
+) {
+  return postInvoiceReceiptTx(prisma, invoice, receivedSgd, extra);
+}
+
+/**
+ * Webhook side for invoice sessions. IDEMPOTENT twice over: the HTTP route
+ * claims the Stripe event id first (duplicate delivery → applied:false
+ * before touching the ledger), and the write is conditional on the invoice
+ * still being a receivable, so retried deliveries flip nothing.
  * The invoice is matched by metadata.invoiceId AND (when stored) the session
  * id, so a stale/foreign session can never mark a different invoice paid.
  */
 export async function applyInvoiceCheckoutCompleted(
   session: Stripe.Checkout.Session,
+  opts: { eventId?: string } = {},
 ): Promise<{ invoiceNo: string | null; applied: boolean }> {
   const invoiceId = session.metadata?.invoiceId ?? null;
   if (!invoiceId) return { invoiceNo: null, applied: false };
@@ -187,24 +325,25 @@ export async function applyInvoiceCheckoutCompleted(
     typeof session.payment_intent === 'string'
       ? session.payment_intent
       : (session.payment_intent?.id ?? null);
-  const amountPaid =
-    typeof session.amount_total === 'number' ? toNum(session.amount_total / 100) : toNum(invoice.amount);
-
-  const flipped = await prisma.invoice.updateMany({
-    where: { id: invoice.id, status: { in: PAYABLE } },
-    data: {
-      status: 'PAID',
-      method: 'Card',
-      stripeSessionId: session.id,
-      paymentIntentId,
-      paidAt: new Date(),
-      amountPaid,
-    },
-  });
-  if (flipped.count > 0) {
-    console.log(`[invoice-checkout] invoiceNo=${invoice.invoiceNo} marked PAID`);
+  const received =
+    typeof session.amount_total === 'number' ? toNum(session.amount_total / 100) : openInvoiceBalance(invoice);
+  const extra = { method: 'Card', stripeSessionId: session.id, paymentIntentId };
+  // Unit-level callers (no event id) keep the historical conditional-write
+  // path. The HTTP webhook passes its Stripe event id: claim + receipt share
+  // one transaction, so a duplicate delivery applies exactly once and a crash
+  // rolls the claim back with the writes.
+  if (!opts.eventId) {
+    const out = await postInvoiceReceipt(invoice, received, extra);
+    return { invoiceNo: out.invoiceNo, applied: out.applied };
   }
-  return { invoiceNo: invoice.invoiceNo, applied: flipped.count > 0 };
+  return prisma.$transaction(async (tx) => {
+    const db = tx as unknown as Pick<typeof prisma, 'invoice' | 'processedStripeEvent'>;
+    if (!(await claimStripeEvent(db, opts.eventId as string, 'checkout.session.completed'))) {
+      return { invoiceNo: invoice.invoiceNo, applied: false };
+    }
+    const out = await postInvoiceReceiptTx(db, invoice, received, extra);
+    return { invoiceNo: out.invoiceNo, applied: out.applied };
+  });
 }
 
 // ── Saved-card payment (PaymentIntent) ─────────────────────────────────
@@ -266,7 +405,7 @@ export async function payInvoiceWithSavedCard(
       "This first payment confirms your booking — please pay it on Stripe's secure page",
     );
   }
-  const amountSgd = toNum(invoice.amount);
+  const amountSgd = openInvoiceBalance(invoice);
   if (!(amountSgd > 0)) {
     throw new AppError(409, 'CONFLICT', 'This invoice has no amount due');
   }
@@ -351,12 +490,16 @@ export async function payInvoiceWithSavedCard(
 
 /**
  * Webhook side for saved-card payments (payment_intent.succeeded with
- * metadata.kind === 'invoice'). IDEMPOTENT and scoped: the invoice must still
- * be DUE/OVERDUE AND carry this exact PaymentIntent id, so a stale or foreign
- * PI can never flip a different invoice. Bookings/units are never touched.
+ * metadata.kind === 'invoice'). IDEMPOTENT and scoped: the HTTP route claims
+ * the Stripe event id first (duplicate delivery → single apply), and the
+ * invoice must still be a receivable AND carry this exact PaymentIntent id,
+ * so a stale or foreign PI can never flip a different invoice. A receipt for
+ * less than the balance leaves the invoice PARTIALLY_PAID with updated
+ * amounts. Bookings/units are never touched.
  */
 export async function applyInvoicePaymentSucceeded(
   pi: Stripe.PaymentIntent,
+  opts: { eventId?: string } = {},
 ): Promise<{ invoiceNo: string | null; applied: boolean }> {
   const invoiceId = pi.metadata?.invoiceId ?? null;
   if (!invoiceId || pi.status !== 'succeeded') {
@@ -368,20 +511,21 @@ export async function applyInvoicePaymentSucceeded(
     console.log(`[invoice-pay] intent mismatch for invoiceNo=${invoice.invoiceNo} — ignored`);
     return { invoiceNo: invoice.invoiceNo, applied: false };
   }
-  const received = typeof pi.amount_received === 'number' && pi.amount_received > 0 ? pi.amount_received : pi.amount;
-  const flipped = await prisma.invoice.updateMany({
-    where: { id: invoice.id, status: { in: PAYABLE }, paymentIntentId: pi.id },
-    data: {
-      status: 'PAID',
-      method: 'Card',
-      paidAt: new Date(),
-      amountPaid: toNum(received / 100),
-    },
-  });
-  if (flipped.count > 0) {
-    console.log(`[invoice-pay] invoiceNo=${invoice.invoiceNo} marked PAID`);
+  const receivedCents =
+    typeof pi.amount_received === 'number' && pi.amount_received > 0 ? pi.amount_received : pi.amount;
+  const extra = { method: 'Card', paymentIntentId: pi.id };
+  if (!opts.eventId) {
+    const out = await postInvoiceReceipt(invoice, toNum(receivedCents / 100), extra);
+    return { invoiceNo: out.invoiceNo, applied: out.applied };
   }
-  return { invoiceNo: invoice.invoiceNo, applied: flipped.count > 0 };
+  return prisma.$transaction(async (tx) => {
+    const db = tx as unknown as Pick<typeof prisma, 'invoice' | 'processedStripeEvent'>;
+    if (!(await claimStripeEvent(db, opts.eventId as string, 'payment_intent.succeeded'))) {
+      return { invoiceNo: invoice.invoiceNo, applied: false };
+    }
+    const out = await postInvoiceReceiptTx(db, invoice, toNum(receivedCents / 100), extra);
+    return { invoiceNo: out.invoiceNo, applied: out.applied };
+  });
 }
 
 function monthLabel(d: Date): string {

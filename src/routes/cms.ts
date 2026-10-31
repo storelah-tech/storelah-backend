@@ -45,6 +45,31 @@ import {
 } from '../core/conversations';
 import { getActionItems } from '../core/actionCenter';
 import { listBookings, listInvoices } from '../core/finance';
+import { getFinanceOverview, overviewExportCsv } from '../core/finance/overview';
+import { getInvestorSummary, investorSummaryCsv } from '../core/finance/investor';
+import { queryAuditEvents, writeAuditEvent } from '../core/finance/audit';
+import { publishFinanceEvent } from '../core/finance/events';
+import { newCorrelationId, getIdempotencyKey } from '../core/finance/idempotency';
+import {
+  listModels, getModel, createModel, updateModelSection, deleteModel, modelExportCsv,
+  listLibrary, saveVersion, duplicateModel, submitModel, approveModel, rejectModel,
+  restoreVersion as restoreModelVersion, archiveModel, setCurrentModel,
+  listVersions as listModelVersions, modelAuditHistory,
+  listBudgets, createBudget, updateBudget, listExpenses, recordExpense, expensesExportCsv, updateExpense, EXPENSE_STATUSES,
+  getPricing, overridePricing, getReturns,
+  applyScenario, sensitivity, project as projectEngine,
+  listFinanceInvoices, getInvoiceDetail, createInvoice, approveInvoice, issueInvoice,
+  voidInvoice, writeOffInvoice, runBilling,
+  listInstructions, getInstructionDetail, createInstruction, approveInstruction, cancelInstruction,
+  submitInstruction,
+  getWallet, listCreditLedger, grantCredit, applyCredit, calculateRefund, listRefunds, getRefund,
+  requestRefund, approveRefund, rejectRefund, verifyRefundBank, payRefund,
+  listArrearsCases, listArrearsCandidates, openArrearsCase, advanceArrearsCase, closeArrearsCase,
+  getArrearsCase, requestTerminationHelp, listWaivers, requestWaiver, decideWaiver,
+  importSettlement, matchSettlement, suspenseSettlement, getReconciliation,
+  closeReconciliationBatch, reopenReconciliationBatch,
+  getMonthClose, closeMonth, postCloseAdjustment, getPerformance as getFinancePerformance, getPerformanceSeries, addVarianceNote,
+} from '../core/finance';
 import { listBranches, getMoveIns, getPortfolio, createBranch, updateBranch, deleteBranch } from '../core/branches';
 import { getSettings, upsertSettings } from '../core/settings';
 import { listSiteContent, getSiteContentByKey, upsertSiteContent } from '../core/siteContent';
@@ -60,6 +85,7 @@ import {
   deleteUser,
   setFacilityAccess,
   authenticate,
+  can,
   changeOwnPassword,
   listRoles,
   roleCatalog,
@@ -219,6 +245,30 @@ import {
   setContentItemImage,
   removeContentItemImage,
 } from '../core/content';
+import {
+  listSitePages,
+  getSitePage,
+  listSitePageVersions,
+  getSitePageVersion,
+  createSitePage,
+  createPageInput,
+  saveSitePageDraft,
+  saveDraftInput,
+  updateSitePage,
+  updatePageInput,
+  duplicateSitePage,
+  duplicatePageInput,
+  archiveSitePage,
+  publishSitePages,
+  publishInput,
+  rollbackSitePage,
+  listSitePublishes,
+  getPageDocJsonSchema,
+  getSiteEditorConfig,
+  getSiteSettingsDraft,
+  saveSiteSettingsDraft,
+} from '../core/sitePages';
+import { listMedia, listMediaQuery, uploadMedia, uploadMediaInput, updateMedia, updateMediaInput, deleteMedia } from '../core/siteMedia';
 
 const router = Router();
 
@@ -1038,6 +1088,1350 @@ router.get('/invoices', requireAuth, async (req: Request, res: Response) => {
     resolveDateRange(parsed.data),
   );
   ok(res, rows, { count: rows.length });
+});
+
+// ---- Finance module Phase 1 (FINANCE_MODULE_SPEC §9: read-only Overview +
+// audited CSV export + append-only audit reads; thin routes → src/core/finance) ----
+const financeOverviewQuerySchema = z.object({
+  ...dateRangeFields,
+  branchId: z.string().trim().min(1).optional(),
+  basis: z.enum(['accrual', 'cash']).optional(),
+});
+
+router.get('/finance/overview', requireAuth, async (req: Request, res: Response) => {
+  const parsed = financeOverviewQuerySchema.safeParse(req.query);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid overview filters', parsed.error.flatten());
+    return;
+  }
+  const overview = await getFinanceOverview({ ...resolveDateRange(parsed.data), branchId: parsed.data.branchId, basis: parsed.data.basis });
+  ok(res, overview);
+});
+
+router.get('/finance/overview/export.csv', requireAuth, async (req: Request, res: Response) => {
+  const parsed = financeOverviewQuerySchema.safeParse(req.query);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid overview filters', parsed.error.flatten());
+    return;
+  }
+  const admin = adminOf(req);
+  const correlationId = newCorrelationId();
+  const overview = await getFinanceOverview({ ...resolveDateRange(parsed.data), branchId: parsed.data.branchId, basis: parsed.data.basis });
+  // Export Summary writes an audit event with the frozen filter parameters
+  // and source timestamps (spec §9.5) — in the same commit as nothing else,
+  // so a failed export never claims completion.
+  await writeAuditEvent(prisma, {
+    branchId: parsed.data.branchId ?? null,
+    actor: admin?.email ?? 'unknown',
+    action: 'EXPORT_GENERATED',
+    entityType: 'finance-overview',
+    entityId: parsed.data.branchId ?? 'portfolio',
+    after: { filters: parsed.data, generatedAt: overview.generatedAt },
+    reason: 'Overview Export Summary',
+    source: 'cms',
+    correlationId,
+  });
+  await publishFinanceEvent(prisma, {
+    type: 'export.generated',
+    payload: { filters: parsed.data, generatedAt: overview.generatedAt },
+    branchId: parsed.data.branchId ?? null,
+    correlationId,
+  });
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', 'attachment; filename="finance-overview-summary.csv"');
+  res.send(overviewExportCsv(overview));
+});
+
+const financeAuditQuerySchema = z.object({
+  entityType: z.string().trim().min(1).max(80).optional(),
+  entityId: z.string().trim().min(1).max(80).optional(),
+  correlationId: z.string().trim().min(1).max(80).optional(),
+  limit: z.coerce.number().int().min(1).max(500).default(100),
+});
+
+  router.get('/finance/audit', requireAuth, async (req: Request, res: Response) => {
+  const parsed = financeAuditQuerySchema.safeParse(req.query);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid audit filters', parsed.error.flatten());
+    return;
+  }
+  const rows = await queryAuditEvents(parsed.data);
+  ok(res, rows, { count: rows.length });
+});
+
+// ---- Finance module Phase 2 — Planning workspace (§§11–16) ----
+const financeModelsQuerySchema = z.object({
+  branchId: z.string().trim().min(1).optional(),
+  status: z.string().trim().min(1).optional(),
+  search: z.string().trim().min(1).max(120).optional(),
+});
+
+const financeModelCreateSchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  branchId: z.string().trim().min(1).nullable().optional(),
+  inputs: z.record(z.string(), z.unknown()).optional(),
+});
+
+const financeSectionSchema = z.object({
+  version: z.number().int(),
+  patch: z.record(z.string(), z.unknown()),
+});
+
+const financeScenarioSchema = z.object({
+  scenario: z.enum(['downside', 'base', 'upside']),
+});
+
+router.get('/finance/models', requireAuth, async (req: Request, res: Response) => {
+  const parsed = financeModelsQuerySchema.safeParse(req.query);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid model filters', parsed.error.flatten());
+    return;
+  }
+  const rows = await listModels(parsed.data);
+  ok(res, rows, { count: rows.length });
+});
+
+router.post('/finance/models', requireAuth, async (req: Request, res: Response) => {
+  const parsed = financeModelCreateSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid model payload', parsed.error.flatten());
+    return;
+  }
+  const admin = adminOf(req);
+  const detail = await createModel({
+    name: parsed.data.name,
+    branchId: parsed.data.branchId ?? null,
+    inputs: parsed.data.inputs as never,
+    actor: admin?.email ?? 'unknown',
+  });
+  created(res, detail);
+});
+
+router.get('/finance/models/:id', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await getModel(String(req.params.id)));
+});
+
+for (const section of ['inputs', 'occupancy', 'capital', 'pricing', 'lease', 'assumptions', 'size-mix', 'opex'] as const) {
+  router.put(`/finance/models/:id/${section}`, requireAuth, async (req: Request, res: Response) => {
+    const parsed = financeSectionSchema.safeParse(req.body);
+    if (!parsed.success) {
+      fail(res, 400, 'VALIDATION', 'Invalid section payload', parsed.error.flatten());
+      return;
+    }
+    const admin = adminOf(req);
+    ok(res, await updateModelSection({
+      id: String(req.params.id),
+      section,
+      patch: parsed.data.patch,
+      expectedVersion: parsed.data.version,
+      actor: admin?.email ?? 'unknown',
+    }));
+  });
+}
+
+router.post('/finance/models/:id/scenarios', requireAuth, async (req: Request, res: Response) => {
+  const parsed = financeScenarioSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid scenario payload', parsed.error.flatten());
+    return;
+  }
+  // Scenario overlay: isolated compute over the SAVED base — never a fork,
+  // never persisted (spec §8.9).
+  const detail = await getModel(String(req.params.id));
+  const overlay = applyScenario(detail.inputs, parsed.data.scenario);
+  const preview = projectEngine({ ...detail.inputs, occupancy: overlay.occupancy });
+  ok(res, { scenario: overlay.scenario, note: overlay.note, kpis: preview.kpis, months: preview.months.slice(0, 12) });
+});
+
+router.post('/finance/models/:id/sensitivity', requireAuth, async (req: Request, res: Response) => {
+  const detail = await getModel(String(req.params.id));
+  ok(res, { cases: sensitivity(detail.inputs), note: 'Target occupancy × weighted PSF sensitivity (lower / base / stronger). The saved base is untouched.' });
+});
+
+router.get('/finance/models/:id/export.csv', requireAuth, async (req: Request, res: Response) => {
+  const detail = await getModel(String(req.params.id));
+  const admin = adminOf(req);
+  const correlationId = newCorrelationId();
+  await writeAuditEvent(prisma, {
+    branchId: detail.branchId,
+    actor: admin?.email ?? 'unknown',
+    action: 'EXPORT_GENERATED',
+    entityType: 'financial-model',
+    entityId: detail.id,
+    after: { inputHash: detail.inputHash, engineVersion: detail.engineVersion },
+    reason: 'Model month-table export',
+    source: 'cms',
+    correlationId,
+  });
+  await publishFinanceEvent(prisma, {
+    type: 'export.generated',
+    payload: { modelId: detail.id, inputHash: detail.inputHash },
+    branchId: detail.branchId,
+    correlationId,
+  });
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="financial-model-${detail.id}.csv"`);
+  res.send(modelExportCsv(detail));
+});
+
+router.delete('/finance/models/:id', requireAuth, async (req: Request, res: Response) => {
+  const admin = adminOf(req);
+  ok(res, await deleteModel(String(req.params.id), admin?.email ?? 'unknown'));
+});
+
+// ---- Model Library (§16) ----
+const financeLibraryQuerySchema = z.object({
+  branchId: z.string().trim().min(1).optional(),
+  status: z.string().trim().min(1).optional(),
+  search: z.string().trim().min(1).max(120).optional(),
+});
+
+const financeVersionSchema = z.object({
+  version: z.number().int().optional(),
+  changeSummary: z.string().trim().max(500).optional(),
+  comment: z.string().trim().max(500).optional(),
+  name: z.string().trim().min(1).max(120).optional(),
+  reason: z.string().trim().min(1).max(500).optional(),
+});
+
+// F-5: transitions on an existing versioned row require the expected version
+// (missing → 400, stale → 409 via assertFreshVersion). Save-version and
+// duplicate create new rows and deliberately take no version.
+const financeVersionRequiredSchema = z.object({
+  version: z.number().int(),
+  changeSummary: z.string().trim().max(500).optional(),
+  comment: z.string().trim().max(500).optional(),
+  name: z.string().trim().min(1).max(120).optional(),
+  reason: z.string().trim().min(1).max(500).optional(),
+});
+
+router.get('/finance/library', requireAuth, async (req: Request, res: Response) => {
+  const parsed = financeLibraryQuerySchema.safeParse(req.query);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid library filters', parsed.error.flatten());
+    return;
+  }
+  const rows = await listLibrary(parsed.data);
+  ok(res, rows, { count: rows.length });
+});
+
+router.post('/finance/library/:id/save-version', requireAuth, async (req: Request, res: Response) => {
+  const parsed = financeVersionSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid version payload', parsed.error.flatten());
+    return;
+  }
+  if (!parsed.data.changeSummary) {
+    fail(res, 400, 'VALIDATION', 'changeSummary (change note/purpose) is required to save a version.');
+    return;
+  }
+  const admin = adminOf(req);
+  created(res, await saveVersion({
+    modelId: String(req.params.id), changeSummary: parsed.data.changeSummary, actor: admin?.email ?? 'unknown',
+  }));
+});
+
+router.get('/finance/library/:id/versions', requireAuth, async (req: Request, res: Response) => {
+  const rows = await listModelVersions(String(req.params.id));
+  ok(res, rows, { count: rows.length });
+});
+
+router.post('/finance/library/:id/duplicate', requireAuth, async (req: Request, res: Response) => {
+  const parsed = financeVersionSchema.safeParse(req.body);
+  if (!parsed.success || !parsed.data.name || !parsed.data.reason) {
+    fail(res, 400, 'VALIDATION', 'Duplicate requires a new name and a reason.', parsed.error?.flatten());
+    return;
+  }
+  const admin = adminOf(req);
+  created(res, await duplicateModel({
+    modelId: String(req.params.id), name: parsed.data.name, reason: parsed.data.reason, actor: admin?.email ?? 'unknown',
+  }));
+});
+
+router.post('/finance/library/:id/submit', requireAuth, async (req: Request, res: Response) => {
+  const parsed = financeVersionRequiredSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid submit payload', parsed.error.flatten());
+    return;
+  }
+  const admin = adminOf(req);
+  ok(res, await submitModel({
+    modelId: String(req.params.id), expectedVersion: parsed.data.version,
+    actor: admin?.email ?? 'unknown', changeSummary: parsed.data.changeSummary,
+  }));
+});
+
+router.post('/finance/library/:id/approve', requireAuth, async (req: Request, res: Response) => {
+  const parsed = financeVersionRequiredSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid approve payload', parsed.error.flatten());
+    return;
+  }
+  const admin = adminOf(req);
+  ok(res, await approveModel({
+    modelId: String(req.params.id), expectedVersion: parsed.data.version,
+    actor: admin?.email ?? 'unknown', comment: parsed.data.comment,
+  }));
+});
+
+router.post('/finance/library/:id/reject', requireAuth, async (req: Request, res: Response) => {
+  const parsed = financeVersionRequiredSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid reject payload', parsed.error.flatten());
+    return;
+  }
+  const admin = adminOf(req);
+  ok(res, await rejectModel({
+    modelId: String(req.params.id), expectedVersion: parsed.data.version,
+    actor: admin?.email ?? 'unknown', comment: parsed.data.comment,
+  }));
+});
+
+router.post('/finance/library/:id/restore', requireAuth, async (req: Request, res: Response) => {
+  const schema = z.object({ version: z.number().int(), reason: z.string().trim().min(1).max(500) });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Restore requires a version and a reason.', parsed.error.flatten());
+    return;
+  }
+  const admin = adminOf(req);
+  created(res, await restoreModelVersion({
+    modelId: String(req.params.id), version: parsed.data.version, reason: parsed.data.reason, actor: admin?.email ?? 'unknown',
+  }));
+});
+
+router.post('/finance/library/:id/archive', requireAuth, async (req: Request, res: Response) => {
+  const parsed = financeVersionRequiredSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid archive payload', parsed.error.flatten());
+    return;
+  }
+  const admin = adminOf(req);
+  ok(res, await archiveModel({
+    modelId: String(req.params.id), expectedVersion: parsed.data.version,
+    actor: admin?.email ?? 'unknown', reason: parsed.data.reason,
+  }));
+});
+
+router.post('/finance/library/:id/set-current', requireAuth, async (req: Request, res: Response) => {
+  const parsed = financeVersionRequiredSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid set-current payload', parsed.error.flatten());
+    return;
+  }
+  const admin = adminOf(req);
+  ok(res, await setCurrentModel({
+    modelId: String(req.params.id), expectedVersion: parsed.data.version, actor: admin?.email ?? 'unknown',
+  }));
+});
+
+router.get('/finance/library/:id/audit', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await modelAuditHistory(String(req.params.id)));
+});
+
+// ---- Budgets & Expenses (§13) ----
+const financeBudgetsQuerySchema = z.object({
+  branchId: z.string().trim().min(1),
+  fiscalMonth: z.string().regex(/^\d{4}-\d{2}$/).optional(),
+});
+
+router.get('/finance/budgets', requireAuth, async (req: Request, res: Response) => {
+  const parsed = financeBudgetsQuerySchema.safeParse(req.query);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'branchId is required; fiscalMonth must be YYYY-MM.', parsed.error.flatten());
+    return;
+  }
+  ok(res, await listBudgets(parsed.data));
+});
+
+router.post('/finance/budgets', requireAuth, async (req: Request, res: Response) => {
+  const schema = z.object({
+    branchId: z.string().trim().min(1),
+    fiscalMonth: z.string().regex(/^\d{4}-\d{2}$/),
+    category: z.string().trim().min(1).max(80),
+    amount: z.number().nonnegative(),
+  });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid budget payload', parsed.error.flatten());
+    return;
+  }
+  const admin = adminOf(req);
+  created(res, await createBudget({ ...parsed.data, actor: admin?.email ?? 'unknown' }));
+});
+
+router.put('/finance/budgets/:id', requireAuth, async (req: Request, res: Response) => {
+  const schema = z.object({
+    amount: z.number().nonnegative(),
+    scope: z.enum(['month', 'month+future']).optional(),
+    version: z.number().int(),
+    protectedOverride: z.boolean().optional(),
+  });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid budget update', parsed.error.flatten());
+    return;
+  }
+  const principal = adminOf(req);
+  ok(res, await updateBudget({
+    id: String(req.params.id),
+    amount: parsed.data.amount,
+    scope: parsed.data.scope,
+    expectedVersion: parsed.data.version,
+    protectedOverride: parsed.data.protectedOverride,
+    canOverride: principal ? can(principal, 'bill-budgets:approve') : false,
+    actor: principal?.email ?? 'unknown',
+  }));
+});
+
+router.get('/finance/expenses', requireAuth, async (req: Request, res: Response) => {
+  const schema = z.object({
+    branchId: z.string().trim().min(1),
+    from: z.string().optional(),
+    to: z.string().optional(),
+    category: z.string().trim().min(1).max(80).optional(),
+  });
+  const parsed = schema.safeParse(req.query);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'branchId is required for expenses.', parsed.error.flatten());
+    return;
+  }
+  const toDate = (s?: string) => {
+    if (!s) return undefined;
+    const d = new Date(s);
+    return Number.isNaN(d.getTime()) ? undefined : d;
+  };
+  if ((parsed.data.from && !toDate(parsed.data.from)) || (parsed.data.to && !toDate(parsed.data.to))) {
+    fail(res, 400, 'VALIDATION', 'from/to must be valid dates.');
+    return;
+  }
+  const rows = await listExpenses({
+    branchId: parsed.data.branchId, from: toDate(parsed.data.from), to: toDate(parsed.data.to), category: parsed.data.category,
+  });
+  ok(res, rows, { count: rows.length });
+});
+
+router.post('/finance/expenses', requireAuth, async (req: Request, res: Response) => {
+  const schema = z.object({
+    branchId: z.string().trim().min(1),
+    category: z.string().trim().min(1).max(80),
+    amount: z.number().positive(),
+    incurredAt: z.string().min(1),
+    vendor: z.string().trim().max(160).optional(),
+    receiptRef: z.string().trim().max(300).optional(),
+    budgetId: z.string().trim().min(1).optional(),
+    description: z.string().trim().max(300).optional(),
+    status: z.enum(EXPENSE_STATUSES).optional(),
+    note: z.string().trim().max(1000).optional(),
+  });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid expense payload', parsed.error.flatten());
+    return;
+  }
+  const incurredAt = new Date(parsed.data.incurredAt);
+  if (Number.isNaN(incurredAt.getTime())) {
+    fail(res, 400, 'VALIDATION', 'incurredAt must be a valid date.');
+    return;
+  }
+  const admin = adminOf(req);
+  created(res, await recordExpense({ ...parsed.data, incurredAt, actor: admin?.email ?? 'unknown' }));
+});
+
+router.put('/finance/expenses/:id', requireAuth, async (req: Request, res: Response) => {
+  const schema = z.object({
+    category: z.string().trim().min(1).max(80).optional(),
+    amount: z.number().positive().optional(),
+    incurredAt: z.string().min(1).optional(),
+    vendor: z.string().trim().max(160).optional(),
+    receiptRef: z.string().trim().max(300).optional(),
+    description: z.string().trim().max(300).optional(),
+    status: z.enum(EXPENSE_STATUSES).optional(),
+    note: z.string().trim().max(1000).optional(),
+  });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid expense payload', parsed.error.flatten());
+    return;
+  }
+  const { incurredAt: rawDate, ...rest } = parsed.data;
+  const incurredAt = rawDate ? new Date(rawDate) : undefined;
+  if (incurredAt && Number.isNaN(incurredAt.getTime())) {
+    fail(res, 400, 'VALIDATION', 'incurredAt must be a valid date.');
+    return;
+  }
+  const admin = adminOf(req);
+  ok(res, await updateExpense({ id: String(req.params.id), actor: admin?.email ?? 'unknown', patch: { ...rest, ...(incurredAt ? { incurredAt } : {}) } }));
+});
+
+router.get('/finance/expenses/export.csv', requireAuth, async (req: Request, res: Response) => {
+  const schema = z.object({ branchId: z.string().trim().min(1) });
+  const parsed = schema.safeParse(req.query);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'branchId is required for the expense export.', parsed.error.flatten());
+    return;
+  }
+  const admin = adminOf(req);
+  const correlationId = newCorrelationId();
+  const rows = await listExpenses({ branchId: parsed.data.branchId });
+  await writeAuditEvent(prisma, {
+    branchId: parsed.data.branchId,
+    actor: admin?.email ?? 'unknown',
+    action: 'EXPORT_GENERATED',
+    entityType: 'expenses',
+    entityId: parsed.data.branchId,
+    after: { count: rows.length },
+    reason: 'Expense ledger export',
+    source: 'cms',
+    correlationId,
+  });
+  await publishFinanceEvent(prisma, {
+    type: 'export.generated',
+    payload: { entity: 'expenses', branchId: parsed.data.branchId, count: rows.length },
+    branchId: parsed.data.branchId,
+    correlationId,
+  });
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', 'attachment; filename="finance-expenses.csv"');
+  res.send(expensesExportCsv(rows));
+});
+
+// ---- Size Mix & Pricing (§14) ----
+router.get('/finance/pricing', requireAuth, async (req: Request, res: Response) => {
+  const schema = z.object({ branchId: z.string().trim().min(1) });
+  const parsed = schema.safeParse(req.query);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'branchId is required for pricing.', parsed.error.flatten());
+    return;
+  }
+  ok(res, await getPricing({ branchId: parsed.data.branchId }));
+});
+
+router.put('/finance/pricing/:sizeId', requireAuth, async (req: Request, res: Response) => {
+  const schema = z.object({
+    branchId: z.string().trim().min(1),
+    targetPsf: z.number().nonnegative().nullable().optional(),
+    targetRate: z.number().nonnegative().nullable().optional(),
+    reason: z.string().trim().min(1).max(500),
+    version: z.number().int().optional(),
+  });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid pricing override (branchId + reason + at least one target required).', parsed.error.flatten());
+    return;
+  }
+  const admin = adminOf(req);
+  ok(res, await overridePricing({
+    branchId: parsed.data.branchId,
+    sizeId: String(req.params.sizeId),
+    targetPsf: parsed.data.targetPsf ?? null,
+    targetRate: parsed.data.targetRate ?? null,
+    reason: parsed.data.reason,
+    expectedVersion: parsed.data.version,
+    actor: admin?.email ?? 'unknown',
+  }));
+});
+
+// ---- Investment Returns (§15, read-only) ----
+router.get('/finance/returns', requireAuth, async (req: Request, res: Response) => {
+  const schema = z.object({
+    modelId: z.string().trim().min(1).optional(),
+    branchId: z.string().trim().min(1).optional(),
+    horizonYears: z.coerce.number().int().min(1).max(5).optional(),
+    discountRatePct: z.coerce.number().min(0).max(100).optional(),
+  });
+  const parsed = schema.safeParse(req.query);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid returns filters', parsed.error.flatten());
+    return;
+  }
+  ok(res, await getReturns(parsed.data));
+});
+
+// ---- Finance module Phase 5 — Investor Summary (§15.4, masked) ----
+// Approved-only data via the same read models: CURRENT model + returns,
+// CLOSED months, issued/paid aggregates. Never drafts, never PII, never
+// customer names. Both routes carry the masked-summary watermark.
+router.get('/finance/investor/summary', requireAuth, async (req: Request, res: Response) => {
+  const schema = z.object({ branchId: z.string().trim().min(1).optional() });
+  const parsed = schema.safeParse(req.query);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid investor summary filters', parsed.error.flatten());
+    return;
+  }
+  ok(res, await getInvestorSummary(parsed.data));
+});
+
+router.get('/finance/investor/summary.csv', requireAuth, async (req: Request, res: Response) => {
+  const schema = z.object({ branchId: z.string().trim().min(1).optional() });
+  const parsed = schema.safeParse(req.query);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid investor summary filters', parsed.error.flatten());
+    return;
+  }
+  const admin = adminOf(req);
+  const correlationId = newCorrelationId();
+  const summary = await getInvestorSummary(parsed.data);
+  await writeAuditEvent(prisma, {
+    branchId: parsed.data.branchId ?? null,
+    actor: admin?.email ?? 'unknown',
+    action: 'EXPORT_GENERATED',
+    entityType: 'finance-investor-summary',
+    entityId: parsed.data.branchId ?? 'portfolio',
+    after: { masked: true, watermark: summary.watermark, generatedAt: summary.generatedAt },
+    reason: 'Investor masked-summary export',
+    source: 'cms',
+    correlationId,
+  });
+  await publishFinanceEvent(prisma, {
+    type: 'export.generated',
+    payload: { masked: true, entity: 'finance-investor-summary', generatedAt: summary.generatedAt },
+    branchId: parsed.data.branchId ?? null,
+    correlationId,
+  });
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', 'attachment; filename="finance-investor-summary.csv"');
+  res.send(investorSummaryCsv(summary));
+});
+
+// ---- Finance module Phase 3 — Invoices + billing run (§17) ----
+const financeInvoicesQuerySchema = z.object({
+  status: z.string().trim().min(1).optional(),
+  branchId: z.string().trim().min(1).optional(),
+  from: z.string().optional(),
+  to: z.string().optional(),
+});
+
+router.get('/finance/invoices', requireAuth, async (req: Request, res: Response) => {
+  const parsed = financeInvoicesQuerySchema.safeParse(req.query);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid invoice filters', parsed.error.flatten());
+    return;
+  }
+  const toDate = (s?: string) => {
+    if (!s) return undefined;
+    const d = new Date(s);
+    return Number.isNaN(d.getTime()) ? undefined : d;
+  };
+  if ((parsed.data.from && !toDate(parsed.data.from)) || (parsed.data.to && !toDate(parsed.data.to))) {
+    fail(res, 400, 'VALIDATION', 'from/to must be valid dates.');
+    return;
+  }
+  const rows = await listFinanceInvoices({
+    status: parsed.data.status,
+    branchId: parsed.data.branchId,
+    from: toDate(parsed.data.from),
+    to: toDate(parsed.data.to),
+  });
+  ok(res, rows, { count: rows.length });
+});
+
+router.get('/finance/invoices/:id', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await getInvoiceDetail(String(req.params.id)));
+});
+
+const financeInvoiceLineSchema = z.object({
+  kind: z.string().trim().min(1).max(20),
+  label: z.string().trim().min(1).max(120),
+  amount: z.number().finite(),
+  refId: z.string().trim().min(1).max(120).optional(),
+});
+
+const financeInvoiceCreateSchema = z.object({
+  tenantId: z.string().trim().min(1),
+  unitId: z.string().trim().min(1).optional(),
+  dueDate: z.string().min(1),
+  serviceStart: z.string().min(1).optional(),
+  serviceEnd: z.string().min(1).optional(),
+  lines: z.array(financeInvoiceLineSchema).min(1).max(50),
+});
+
+router.post('/finance/invoices', requireAuth, async (req: Request, res: Response) => {
+  const parsed = financeInvoiceCreateSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid invoice payload (tenantId, dueDate and at least one line required).', parsed.error.flatten());
+    return;
+  }
+  const admin = adminOf(req);
+  const out = await createInvoice({
+    ...parsed.data,
+    idempotencyKey: getIdempotencyKey(req.headers),
+    actor: admin?.email ?? 'unknown',
+  });
+  if (out.deduplicated) {
+    ok(res, out.invoice);
+    return;
+  }
+  created(res, out.invoice);
+});
+
+const financeInvoiceTransitionSchema = z.object({
+  version: z.number().int(),
+});
+
+router.post('/finance/invoices/:id/approve', requireAuth, async (req: Request, res: Response) => {
+  const parsed = financeInvoiceTransitionSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid approval payload', parsed.error.flatten());
+    return;
+  }
+  const admin = adminOf(req);
+  ok(res, await approveInvoice(String(req.params.id), {
+    expectedVersion: parsed.data.version,
+    actor: admin?.email ?? 'unknown',
+  }));
+});
+
+router.post('/finance/invoices/:id/issue', requireAuth, async (req: Request, res: Response) => {
+  const parsed = financeInvoiceTransitionSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid issue payload', parsed.error.flatten());
+    return;
+  }
+  const admin = adminOf(req);
+  ok(res, await issueInvoice(String(req.params.id), {
+    expectedVersion: parsed.data.version,
+    actor: admin?.email ?? 'unknown',
+  }));
+});
+
+router.post('/finance/invoices/:id/void', requireAuth, async (req: Request, res: Response) => {
+  const parsed = financeInvoiceTransitionSchema.extend({ reason: z.string().trim().min(1).max(500).optional() }).safeParse(req.body ?? {});
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid void payload (a reason is required).', parsed.error.flatten());
+    return;
+  }
+  const admin = adminOf(req);
+  ok(res, await voidInvoice(String(req.params.id), {
+    expectedVersion: parsed.data.version,
+    reason: parsed.data.reason,
+    actor: admin?.email ?? 'unknown',
+  }));
+});
+
+router.post('/finance/billing-run', requireAuth, async (req: Request, res: Response) => {
+  const schema = z.object({
+    branchId: z.string().trim().min(1),
+    billingMonth: z.string().regex(/^\d{4}-\d{2}$/),
+    dueDate: z.string().min(1).optional(),
+  });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'branchId and billingMonth (YYYY-MM) are required.', parsed.error.flatten());
+    return;
+  }
+  const admin = adminOf(req);
+  ok(res, await runBilling({ ...parsed.data, actor: admin?.email ?? 'unknown' }));
+});
+
+// ---- Finance module Phase 3 — Transactions & Approvals (§10) ----
+const financeTransactionsQuerySchema = z.object({
+  status: z.string().trim().min(1).optional(),
+  branchId: z.string().trim().min(1).optional(),
+  invoiceId: z.string().trim().min(1).optional(),
+});
+
+router.get('/finance/transactions', requireAuth, async (req: Request, res: Response) => {
+  const parsed = financeTransactionsQuerySchema.safeParse(req.query);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid transaction filters', parsed.error.flatten());
+    return;
+  }
+  const rows = await listInstructions(parsed.data);
+  ok(res, rows, { count: rows.length });
+});
+
+router.get('/finance/transactions/:id', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await getInstructionDetail(String(req.params.id)));
+});
+
+router.post('/finance/transactions', requireAuth, async (req: Request, res: Response) => {
+  const schema = z.object({
+    invoiceId: z.string().trim().min(1),
+    amount: z.number().positive().optional(),
+  });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'invoiceId is required (amount defaults to the open balance).', parsed.error.flatten());
+    return;
+  }
+  const admin = adminOf(req);
+  const out = await createInstruction({
+    ...parsed.data,
+    idempotencyKey: getIdempotencyKey(req.headers),
+    actor: admin?.email ?? 'unknown',
+  });
+  if (out.deduplicated) {
+    ok(res, out.instruction);
+    return;
+  }
+  created(res, out.instruction);
+});
+
+const financeInstructionTransitionSchema = z.object({
+  version: z.number().int(),
+});
+
+router.post('/finance/transactions/:id/approve', requireAuth, async (req: Request, res: Response) => {
+  const parsed = financeInstructionTransitionSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid approval payload', parsed.error.flatten());
+    return;
+  }
+  const admin = adminOf(req);
+  ok(res, await approveInstruction(String(req.params.id), {
+    expectedVersion: parsed.data.version,
+    actor: admin?.email ?? 'unknown',
+  }));
+});
+
+// Submit (first charge) or retry (same idempotency key → one PaymentIntent).
+// There is deliberately NO bulk approval/submit path (spec §4.1): one
+// instruction per call, every charge approved individually.
+// F-5 exception: retry keeps version OPTIONAL — a version-less repeat of an
+// already-SUBMITTED instruction is a safe replay (no write, same PI),
+// which the double-submit regression test pins. First submits pass version.
+router.post('/finance/transactions/:id/retry', requireAuth, async (req: Request, res: Response) => {
+  const parsed = z.object({ version: z.number().int().optional() }).safeParse(req.body ?? {});
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid submit payload', parsed.error.flatten());
+    return;
+  }
+  const admin = adminOf(req);
+  ok(res, await submitInstruction(String(req.params.id), {
+    expectedVersion: parsed.data.version,
+    actor: admin?.email ?? 'unknown',
+  }));
+});
+
+router.post('/finance/transactions/:id/cancel', requireAuth, async (req: Request, res: Response) => {
+  const parsed = financeInstructionTransitionSchema.extend({ reason: z.string().trim().max(500).optional() }).safeParse(req.body ?? {});
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid cancel payload', parsed.error.flatten());
+    return;
+  }
+  const admin = adminOf(req);
+  ok(res, await cancelInstruction(String(req.params.id), {
+    expectedVersion: parsed.data.version,
+    reason: parsed.data.reason,
+    actor: admin?.email ?? 'unknown',
+  }));
+});
+
+// ---- Finance module Phase 4 — Close and controls (§§12/18/19/20) ----
+// Credits wallet + refunds (§19). Every refund needs a distinct requestor +
+// approver (no threshold); only a Super Admin (Owner) may single-step, and
+// every bypass writes a FinanceAuditEvent with actor + reason.
+router.get('/finance/credits/ledger', requireAuth, async (req: Request, res: Response) => {
+  const branchId = typeof req.query.branchId === 'string' && req.query.branchId.trim() ? req.query.branchId.trim() : undefined;
+  ok(res, await listCreditLedger({ branchId }));
+});
+
+router.get('/finance/credits', requireAuth, async (req: Request, res: Response) => {
+  const tenantId = typeof req.query.tenantId === 'string' ? req.query.tenantId.trim() : '';
+  if (!tenantId) {
+    fail(res, 400, 'VALIDATION', 'tenantId is required (wallets are per tenant).');
+    return;
+  }
+  const wallet = await getWallet(tenantId);
+  if (!wallet) {
+    ok(res, null);
+    return;
+  }
+  ok(res, wallet);
+});
+
+router.post('/finance/credits/grant', requireAuth, async (req: Request, res: Response) => {
+  const schema = z.object({
+    tenantId: z.string().trim().min(1),
+    amount: z.number().finite(),
+    note: z.string().trim().max(500).optional(),
+    source: z.string().trim().max(120).optional(),
+  });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid grant payload (tenantId + positive amount required).', parsed.error.flatten());
+    return;
+  }
+  const admin = adminOf(req);
+  const out = await grantCredit({ ...parsed.data, idempotencyKey: getIdempotencyKey(req.headers), actor: admin?.email ?? 'unknown' });
+  if (out.deduplicated) {
+    ok(res, out.wallet);
+    return;
+  }
+  created(res, out.wallet);
+});
+
+router.post('/finance/credits/apply', requireAuth, async (req: Request, res: Response) => {
+  const schema = z.object({
+    tenantId: z.string().trim().min(1),
+    invoiceId: z.string().trim().min(1),
+    amount: z.number().finite().positive().optional(),
+    note: z.string().trim().max(500).optional(),
+  });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid apply payload (tenantId + invoiceId required).', parsed.error.flatten());
+    return;
+  }
+  const admin = adminOf(req);
+  const out = await applyCredit({ ...parsed.data, idempotencyKey: getIdempotencyKey(req.headers), actor: admin?.email ?? 'unknown' });
+  if (out.deduplicated) {
+    ok(res, out);
+    return;
+  }
+  created(res, out);
+});
+
+const refundCalcSchema = z.object({
+  monthlyRent: z.number().finite(),
+  daysInMonth: z.number().finite(),
+  unusedDays: z.number().finite(),
+  refundableCredit: z.number().finite().optional(),
+  earlyTerminationFee: z.number().finite().optional(),
+  damageCharge: z.number().finite().optional(),
+  override: z.number().finite().optional(),
+  reason: z.string().trim().max(500).optional(),
+});
+
+router.post('/finance/refunds/calculate', requireAuth, (req: Request, res: Response) => {
+  const parsed = refundCalcSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid calculator input.', parsed.error.flatten());
+    return;
+  }
+  ok(res, calculateRefund(parsed.data));
+});
+
+router.get('/finance/refunds', requireAuth, async (req: Request, res: Response) => {
+  const q = z.object({
+    tenantId: z.string().trim().min(1).optional(),
+    branchId: z.string().trim().min(1).optional(),
+    status: z.string().trim().min(1).optional(),
+  }).safeParse(req.query);
+  if (!q.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid refund filters', q.error.flatten());
+    return;
+  }
+  const rows = await listRefunds(q.data);
+  ok(res, rows, { count: rows.length });
+});
+
+router.get('/finance/refunds/:id', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await getRefund(String(req.params.id)));
+});
+
+router.post('/finance/refunds', requireAuth, async (req: Request, res: Response) => {
+  const schema = refundCalcSchema.extend({
+    tenantId: z.string().trim().min(1),
+    invoiceId: z.string().trim().min(1).optional(),
+  });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid refund request (tenantId + calculator inputs + reason required).', parsed.error.flatten());
+    return;
+  }
+  const admin = adminOf(req);
+  const out = await requestRefund({ ...parsed.data, idempotencyKey: getIdempotencyKey(req.headers), actor: admin?.email ?? 'unknown' });
+  if (out.refund) {
+    created(res, out.refund);
+    return;
+  }
+  // Negative computation → a DRAFT charge for the invoice approval flow.
+  created(res, out.charge);
+});
+
+const refundDecisionSchema = z.object({
+  version: z.number().int(),
+  reason: z.string().trim().max(500).optional(),
+});
+
+router.post('/finance/refunds/:id/approve', requireAuth, async (req: Request, res: Response) => {
+  const parsed = refundDecisionSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid approval payload', parsed.error.flatten());
+    return;
+  }
+  const admin = adminOf(req);
+  ok(res, await approveRefund(String(req.params.id), {
+    expectedVersion: parsed.data.version,
+    actor: admin?.email ?? 'unknown',
+    isOwner: admin?.isOwner ?? false,
+    reason: parsed.data.reason,
+  }));
+});
+
+router.post('/finance/refunds/:id/reject', requireAuth, async (req: Request, res: Response) => {
+  const parsed = refundDecisionSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid rejection payload', parsed.error.flatten());
+    return;
+  }
+  const admin = adminOf(req);
+  ok(res, await rejectRefund(String(req.params.id), {
+    expectedVersion: parsed.data.version,
+    actor: admin?.email ?? 'unknown',
+    isOwner: admin?.isOwner ?? false,
+    reason: parsed.data.reason,
+  }));
+});
+
+router.post('/finance/refunds/:id/bank-verify', requireAuth, async (req: Request, res: Response) => {
+  const parsed = z.object({ bankRef: z.string().trim().min(1).max(200) }).safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Verified bank details (bankRef) are required.', parsed.error.flatten());
+    return;
+  }
+  const admin = adminOf(req);
+  ok(res, await verifyRefundBank(String(req.params.id), { actor: admin?.email ?? 'unknown', bankRef: parsed.data.bankRef }));
+});
+
+router.post('/finance/refunds/:id/pay', requireAuth, async (req: Request, res: Response) => {
+  const parsed = refundDecisionSchema.extend({ gatewayRef: z.string().trim().max(200).optional() }).safeParse(req.body ?? {});
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid pay payload', parsed.error.flatten());
+    return;
+  }
+  const admin = adminOf(req);
+  ok(res, await payRefund(String(req.params.id), {
+    expectedVersion: parsed.data.version,
+    actor: admin?.email ?? 'unknown',
+    isOwner: admin?.isOwner ?? false,
+    reason: parsed.data.reason,
+    gatewayRef: parsed.data.gatewayRef,
+  }));
+});
+
+// Arrears + recovery workflow (§18). Advances are policy-gated by Global
+// Settings timings; late-fee posting needs a configured amount (else
+// BLOCKED); termination is an UNDECIDED stub (always 409).
+router.get('/finance/arrears', requireAuth, async (req: Request, res: Response) => {
+  const q = z.object({
+    tenantId: z.string().trim().min(1).optional(),
+    branchId: z.string().trim().min(1).optional(),
+    stage: z.string().trim().min(1).optional(),
+  }).safeParse(req.query);
+  if (!q.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid arrears filters', q.error.flatten());
+    return;
+  }
+  const rows = await listArrearsCases(q.data);
+  ok(res, rows, { count: rows.length });
+});
+
+router.get('/finance/arrears/candidates', requireAuth, async (req: Request, res: Response) => {
+  const branchId = typeof req.query.branchId === 'string' && req.query.branchId.trim() ? req.query.branchId.trim() : undefined;
+  const rows = await listArrearsCandidates(branchId);
+  ok(res, rows, { count: rows.length });
+});
+
+router.get('/finance/arrears/waivers', requireAuth, async (req: Request, res: Response) => {
+  const q = z.object({
+    tenantId: z.string().trim().min(1).optional(),
+    branchId: z.string().trim().min(1).optional(),
+    status: z.string().trim().min(1).optional(),
+  }).safeParse(req.query);
+  if (!q.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid waiver filters', q.error.flatten());
+    return;
+  }
+  const rows = await listWaivers(q.data);
+  ok(res, rows, { count: rows.length });
+});
+
+router.post('/finance/arrears/waivers', requireAuth, async (req: Request, res: Response) => {
+  const schema = z.object({
+    tenantId: z.string().trim().min(1),
+    invoiceId: z.string().trim().min(1),
+    amount: z.number().finite(),
+    reason: z.string().trim().min(1).max(500),
+  });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid waiver payload (tenantId + invoiceId + amount + reason required).', parsed.error.flatten());
+    return;
+  }
+  const admin = adminOf(req);
+  const out = await requestWaiver({ ...parsed.data, idempotencyKey: getIdempotencyKey(req.headers), actor: admin?.email ?? 'unknown' });
+  if (out.deduplicated) {
+    ok(res, out.waiver);
+    return;
+  }
+  created(res, out.waiver);
+});
+
+router.post('/finance/arrears/waivers/:id/decide', requireAuth, async (req: Request, res: Response) => {
+  const parsed = z.object({
+    approve: z.boolean(),
+    version: z.number().int(),
+    reason: z.string().trim().max(500).optional(),
+  }).safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid decision payload (approve: true/false required).', parsed.error.flatten());
+    return;
+  }
+  const admin = adminOf(req);
+  ok(res, await decideWaiver(String(req.params.id), {
+    approve: parsed.data.approve,
+    expectedVersion: parsed.data.version,
+    actor: admin?.email ?? 'unknown',
+    isOwner: admin?.isOwner ?? false,
+    reason: parsed.data.reason,
+  }));
+});
+
+router.get('/finance/arrears/:id', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await getArrearsCase(String(req.params.id)));
+});
+
+router.post('/finance/arrears', requireAuth, async (req: Request, res: Response) => {
+  const schema = z.object({
+    tenantId: z.string().trim().min(1),
+    invoiceId: z.string().trim().min(1).optional(),
+    assignee: z.string().trim().max(200).optional(),
+    note: z.string().trim().max(1000).optional(),
+  });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid case payload (tenantId required).', parsed.error.flatten());
+    return;
+  }
+  const admin = adminOf(req);
+  created(res, await openArrearsCase({ ...parsed.data, actor: admin?.email ?? 'unknown' }));
+});
+
+router.post('/finance/arrears/:id/advance', requireAuth, async (req: Request, res: Response) => {
+  const parsed = z.object({
+    version: z.number().int(),
+    note: z.string().trim().max(1000).optional(),
+  }).safeParse(req.body ?? {});
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid advance payload', parsed.error.flatten());
+    return;
+  }
+  const admin = adminOf(req);
+  ok(res, await advanceArrearsCase(String(req.params.id), {
+    expectedVersion: parsed.data.version,
+    note: parsed.data.note,
+    actor: admin?.email ?? 'unknown',
+  }));
+});
+
+router.post('/finance/arrears/:id/close', requireAuth, async (req: Request, res: Response) => {
+  const parsed = z.object({
+    version: z.number().int(),
+    reason: z.enum(['payment', 'write-off', 'other']),
+    note: z.string().trim().max(1000).optional(),
+  }).safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid close payload (reason must be payment, write-off or other).', parsed.error.flatten());
+    return;
+  }
+  const admin = adminOf(req);
+  ok(res, await closeArrearsCase(String(req.params.id), {
+    expectedVersion: parsed.data.version,
+    reason: parsed.data.reason,
+    note: parsed.data.note,
+    actor: admin?.email ?? 'unknown',
+  }));
+});
+
+router.post('/finance/arrears/:id/terminate', requireAuth, (_req: Request, _res: Response) => {
+  // UNDECIDED stub: termination steps need an owner decision first.
+  requestTerminationHelp();
+});
+
+// Approved write-off (terminal, reason required; resolves arrears via case close).
+router.post('/finance/invoices/:id/write-off', requireAuth, async (req: Request, res: Response) => {
+  const parsed = financeInvoiceTransitionSchema.extend({ reason: z.string().trim().min(1).max(500).optional() }).safeParse(req.body ?? {});
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid write-off payload (a reason is required).', parsed.error.flatten());
+    return;
+  }
+  const admin = adminOf(req);
+  ok(res, await writeOffInvoice(String(req.params.id), {
+    expectedVersion: parsed.data.version,
+    reason: parsed.data.reason,
+    actor: admin?.email ?? 'unknown',
+  }));
+});
+
+// Reconciliation (§20): settlement import, matching, suspense, close.
+router.post('/finance/reconciliation/import', requireAuth, async (req: Request, res: Response) => {
+  const lineSchema = z.object({
+    externalRef: z.string().trim().min(1).max(200),
+    amount: z.number().finite(),
+    currency: z.string().trim().max(10).optional(),
+    receivedAt: z.string().min(1).optional(),
+    invoiceRef: z.string().trim().max(120).optional(),
+    tenantRef: z.string().trim().max(200).optional(),
+    meta: z.unknown().optional(),
+  });
+  const schema = z.object({
+    branchId: z.string().trim().min(1).optional(),
+    batchRef: z.string().trim().min(1).max(200),
+    lines: z.array(lineSchema).min(1).max(500),
+  });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid import payload (batchRef + at least one line required).', parsed.error.flatten());
+    return;
+  }
+  const admin = adminOf(req);
+  const out = await importSettlement({ ...parsed.data, actor: admin?.email ?? 'unknown' });
+  if (out.deduplicated) {
+    ok(res, out);
+    return;
+  }
+  created(res, out);
+});
+
+router.get('/finance/reconciliation', requireAuth, async (req: Request, res: Response) => {
+  const q = z.object({
+    branchId: z.string().trim().min(1).optional(),
+    fiscalMonth: z.string().regex(/^\d{4}-\d{2}$/).optional(),
+  }).safeParse(req.query);
+  if (!q.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid reconciliation filters', q.error.flatten());
+    return;
+  }
+  ok(res, await getReconciliation(q.data));
+});
+
+router.post('/finance/reconciliation/:id/match', requireAuth, async (req: Request, res: Response) => {
+  const parsed = z.object({
+    invoiceId: z.string().trim().min(1),
+    amount: z.number().finite().positive().optional(),
+    version: z.number().int().optional(),
+  }).safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid match payload (invoiceId required).', parsed.error.flatten());
+    return;
+  }
+  const admin = adminOf(req);
+  ok(res, await matchSettlement(String(req.params.id), { ...parsed.data, actor: admin?.email ?? 'unknown' }));
+});
+
+router.post('/finance/reconciliation/:id/suspense', requireAuth, async (req: Request, res: Response) => {
+  const parsed = z.object({ reason: z.string().trim().min(1).max(500) }).safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'A suspense reason is required.', parsed.error.flatten());
+    return;
+  }
+  const admin = adminOf(req);
+  ok(res, await suspenseSettlement(String(req.params.id), { reason: parsed.data.reason, actor: admin?.email ?? 'unknown' }));
+});
+
+router.post('/finance/reconciliation/close', requireAuth, async (req: Request, res: Response) => {
+  const parsed = z.object({
+    branchId: z.string().trim().min(1),
+    fiscalMonth: z.string().regex(/^\d{4}-\d{2}$/),
+    version: z.number().int().optional(),
+  }).safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'branchId and fiscalMonth (YYYY-MM) are required.', parsed.error.flatten());
+    return;
+  }
+  const admin = adminOf(req);
+  ok(res, await closeReconciliationBatch({ ...parsed.data, actor: admin?.email ?? 'unknown' }));
+});
+
+router.post('/finance/reconciliation/reopen', requireAuth, async (req: Request, res: Response) => {
+  const parsed = z.object({
+    branchId: z.string().trim().min(1),
+    fiscalMonth: z.string().regex(/^\d{4}-\d{2}$/),
+    reason: z.string().trim().min(1).max(500),
+  }).safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'branchId, fiscalMonth and a reopen reason are required.', parsed.error.flatten());
+    return;
+  }
+  const admin = adminOf(req);
+  ok(res, await reopenReconciliationBatch({ ...parsed.data, actor: admin?.email ?? 'unknown', isOwner: admin?.isOwner ?? false }));
+});
+
+// Forecast vs Actuals (§12) + month close.
+router.get('/finance/performance', requireAuth, async (req: Request, res: Response) => {
+  const q = z.object({
+    branchId: z.string().trim().min(1),
+    fiscalMonth: z.string().regex(/^\d{4}-\d{2}$/),
+  }).safeParse(req.query);
+  if (!q.success) {
+    fail(res, 400, 'VALIDATION', 'branchId and fiscalMonth (YYYY-MM) are required.', q.error.flatten());
+    return;
+  }
+  ok(res, await getFinancePerformance(q.data.branchId, q.data.fiscalMonth));
+});
+
+router.post('/finance/performance/notes', requireAuth, async (req: Request, res: Response) => {
+  const parsed = z.object({
+    branchId: z.string().trim().min(1),
+    fiscalMonth: z.string().regex(/^\d{4}-\d{2}$/),
+    metric: z.string().trim().min(1).max(40),
+    note: z.string().trim().min(1).max(2000),
+  }).safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid note payload (branchId + fiscalMonth + metric + note required).', parsed.error.flatten());
+    return;
+  }
+  const admin = adminOf(req);
+  created(res, await addVarianceNote({ ...parsed.data, author: admin?.email ?? 'unknown' }));
+});
+
+router.get('/finance/performance/series', requireAuth, async (req: Request, res: Response) => {
+  const parsed = z.object({ branchId: z.string().trim().min(1) }).safeParse(req.query);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'branchId is required.', parsed.error.flatten());
+    return;
+  }
+  ok(res, await getPerformanceSeries(parsed.data.branchId));
+});
+
+router.get('/finance/month-close', requireAuth, async (req: Request, res: Response) => {
+  const q = z.object({
+    branchId: z.string().trim().min(1),
+    fiscalMonth: z.string().regex(/^\d{4}-\d{2}$/),
+  }).safeParse(req.query);
+  if (!q.success) {
+    fail(res, 400, 'VALIDATION', 'branchId and fiscalMonth (YYYY-MM) are required.', q.error.flatten());
+    return;
+  }
+  const row = await getMonthClose(q.data.branchId, q.data.fiscalMonth);
+  if (!row) {
+    ok(res, null);
+    return;
+  }
+  ok(res, row);
+});
+
+router.post('/finance/month-close', requireAuth, async (req: Request, res: Response) => {
+  const parsed = z.object({
+    branchId: z.string().trim().min(1),
+    fiscalMonth: z.string().regex(/^\d{4}-\d{2}$/),
+    version: z.number().int().optional(),
+  }).safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'branchId and fiscalMonth (YYYY-MM) are required.', parsed.error.flatten());
+    return;
+  }
+  const admin = adminOf(req);
+  ok(res, await closeMonth({ ...parsed.data, actor: admin?.email ?? 'unknown' }));
+});
+
+router.post('/finance/month-close/adjust', requireAuth, async (req: Request, res: Response) => {
+  const parsed = z.object({
+    branchId: z.string().trim().min(1),
+    fiscalMonth: z.string().regex(/^\d{4}-\d{2}$/),
+    metric: z.string().trim().min(1).max(40),
+    amount: z.number().finite(),
+    reason: z.string().trim().min(1).max(500),
+  }).safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid adjustment payload (branchId + fiscalMonth + metric + amount + reason required).', parsed.error.flatten());
+    return;
+  }
+  const admin = adminOf(req);
+  created(res, await postCloseAdjustment({ ...parsed.data, author: admin?.email ?? 'unknown' }));
 });
 
 router.get('/branches', requireAuth, async (_req: Request, res: Response) => {
@@ -3440,6 +4834,118 @@ router.post('/units/:code/images/:imageId/cover', requireAuth, async (req: Reque
 
 router.delete('/units/:code/images/:imageId', requireAuth, async (req: Request, res: Response) => {
   ok(res, await removeUnitImage(String(req.params.code), String(req.params.imageId)));
+});
+
+// --- Site builder (landing pages as JSON docs; docs/SITE_BUILDER_PLAN.md §4.4) ---
+// Drafts autosave with an optimistic lock ({ doc, rev } → 409 when stale).
+// Publish freezes drafts into versions and triggers the landing rebuild;
+// `site-builder:approve` = publish. The 1 MB body limit for docs is in app.ts.
+
+function parseOr400<T>(schema: z.ZodType<T>, body: unknown, res: Response, message: string): T | undefined {
+  const parsed = schema.safeParse(body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', message, parsed.error.flatten());
+    return undefined;
+  }
+  return parsed.data;
+}
+
+router.get('/site/schema', requireAuth, async (_req: Request, res: Response) => {
+  ok(res, getPageDocJsonSchema());
+});
+
+router.get('/site/config', requireAuth, async (_req: Request, res: Response) => {
+  ok(res, getSiteEditorConfig());
+});
+
+router.get('/site/pages', requireAuth, async (req: Request, res: Response) => {
+  const rows = await listSitePages({ includeArchived: req.query.archived === 'true' });
+  ok(res, rows, { count: rows.length });
+});
+
+router.post('/site/pages', requireAuth, async (req: Request, res: Response) => {
+  const input = parseOr400(createPageInput, req.body, res, 'Page payload must be { slug, title, doc? }');
+  if (input) created(res, await createSitePage(input, actorOf(req).id));
+});
+
+router.get('/site/pages/:id', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await getSitePage(String(req.params.id)));
+});
+
+router.patch('/site/pages/:id', requireAuth, async (req: Request, res: Response) => {
+  const input = parseOr400(updatePageInput, req.body, res, 'Page update must be { title?, slug? }');
+  if (input) ok(res, await updateSitePage(String(req.params.id), input, actorOf(req).id));
+});
+
+router.put('/site/pages/:id/draft', requireAuth, async (req: Request, res: Response) => {
+  const input = parseOr400(saveDraftInput, req.body, res, 'Draft payload must be { doc, rev }');
+  if (input) ok(res, await saveSitePageDraft(String(req.params.id), input, actorOf(req).id));
+});
+
+router.post('/site/pages/:id/duplicate', requireAuth, async (req: Request, res: Response) => {
+  const input = parseOr400(duplicatePageInput, req.body, res, 'Duplicate payload must be { slug, title }');
+  if (input) created(res, await duplicateSitePage(String(req.params.id), input, actorOf(req).id));
+});
+
+router.delete('/site/pages/:id', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await archiveSitePage(String(req.params.id), actorOf(req).id));
+});
+
+router.get('/site/pages/:id/versions', requireAuth, async (req: Request, res: Response) => {
+  const rows = await listSitePageVersions(String(req.params.id));
+  ok(res, rows, { count: rows.length });
+});
+
+router.get('/site/pages/:id/versions/:versionId', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await getSitePageVersion(String(req.params.id), String(req.params.versionId)));
+});
+
+router.post('/site/pages/:id/rollback/:versionId', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await rollbackSitePage(String(req.params.id), String(req.params.versionId), actorOf(req).id));
+});
+
+router.post('/site/publish', requireAuth, async (req: Request, res: Response) => {
+  const input = parseOr400(publishInput, req.body ?? {}, res, 'Publish payload must be { pageIds?, note? }');
+  if (input) created(res, await publishSitePages(input, actorOf(req).id));
+});
+
+// Global settings (header, footer, announcement bar, contact, defaults):
+// same draft → publish flow as pages; publish with { pageIds: [], settings: true }.
+router.get('/site/settings', requireAuth, async (_req: Request, res: Response) => {
+  ok(res, await getSiteSettingsDraft());
+});
+
+router.put('/site/settings/draft', requireAuth, async (req: Request, res: Response) => {
+  const input = parseOr400(saveDraftInput, req.body, res, 'Settings payload must be { doc, rev }');
+  if (input) ok(res, await saveSiteSettingsDraft(input, actorOf(req).id));
+});
+
+// Media library: the browser uploads pre-resized variants ({ filename, alt,
+// tags?, variants: [{ dataBase64 }] }, smallest first; 30 MB limit in app.ts).
+router.get('/site/media', requireAuth, async (req: Request, res: Response) => {
+  const q = parseOr400(listMediaQuery, req.query, res, 'Invalid media query (q, tag)');
+  if (!q) return;
+  const rows = await listMedia(q);
+  ok(res, rows, { count: rows.length });
+});
+
+router.post('/site/media', requireAuth, async (req: Request, res: Response) => {
+  const input = parseOr400(uploadMediaInput, req.body, res, 'Upload must be { filename, alt, tags?, variants: [{ dataBase64 }] }');
+  if (input) created(res, await uploadMedia(input, { actorId: actorOf(req).id, localBaseUrl: `${req.protocol}://${req.get('host')}` }));
+});
+
+router.patch('/site/media/:id', requireAuth, async (req: Request, res: Response) => {
+  const input = parseOr400(updateMediaInput, req.body, res, 'Media update must be { alt?, tags? }');
+  if (input) ok(res, await updateMedia(String(req.params.id), input));
+});
+
+router.delete('/site/media/:id', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await deleteMedia(String(req.params.id)));
+});
+
+router.get('/site/publishes', requireAuth, async (_req: Request, res: Response) => {
+  const rows = await listSitePublishes();
+  ok(res, rows, { count: rows.length });
 });
 
 // Deny-by-default permission check on every route above (CMS RBAC). Must

@@ -1,6 +1,6 @@
 import { Prisma } from '@prisma/client';
-import { prisma } from '../lib/prisma';
-import { toNum } from '../lib/format';
+import { prisma } from '../../lib/prisma';
+import { toNum } from '../../lib/format';
 
 type BookingWithRelations = Prisma.BookingGetPayload<{
   include: { tenant: true; unit: { include: { size: true; branch: true } } };
@@ -70,12 +70,16 @@ export async function listBookings(opts?: { from?: Date; to?: Date }) {
 }
 
 export async function listInvoices(status?: string, opts?: { from?: Date; to?: Date }) {
+  // Phase 3: pre-receivable (DRAFT/APPROVED) and terminal (VOID/WRITTEN_OFF)
+  // rows live in the billing workspace (GET /finance/invoices); this legacy
+  // tab keeps showing real receivables + paid, serializer shape unchanged.
+  const RECEIVABLE = ['ISSUED', 'DUE', 'OVERDUE', 'PARTIALLY_PAID', 'PAID'];
   const dueDate: { gte?: Date; lte?: Date } = {};
   if (opts?.from) dueDate.gte = opts.from;
   if (opts?.to) dueDate.lte = opts.to;
   const invoices = await prisma.invoice.findMany({
     where: {
-      ...(status && ['DUE', 'PAID', 'OVERDUE'].includes(status) ? { status: status as any } : {}),
+      ...(status && (RECEIVABLE as string[]).includes(status) ? { status: status as never } : {}),
       ...(dueDate.gte || dueDate.lte ? { dueDate } : {}),
     },
     include: { tenant: true, unit: true },

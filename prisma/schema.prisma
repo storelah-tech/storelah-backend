@@ -61,6 +61,31 @@ enum InvoiceStatus {
   PAID
   DUE
   OVERDUE
+  // Phase 3 billing lifecycle (additive — existing rows keep their values;
+  // Postgres `ALTER TYPE ADD VALUE` semantics via the create-and-swap
+  // migration, which runs inside a transaction safely).
+  DRAFT
+  APPROVED
+  ISSUED
+  PARTIALLY_PAID
+  VOID
+  WRITTEN_OFF
+}
+
+// Payment-instruction lifecycle (FINANCE_MODULE_SPEC §6.1/§10). Instructions
+// are created PENDING_APPROVAL and each one is approved INDIVIDUALLY —
+// there is no bulk path anywhere in src/. DRAFT/EXPIRED exist for
+// spec-completeness; Phase 3 never writes them.
+enum PaymentInstructionStatus {
+  DRAFT
+  PENDING_APPROVAL
+  APPROVED
+  QUEUED
+  SUBMITTED
+  SUCCEEDED
+  FAILED
+  CANCELLED
+  EXPIRED
 }
 
 enum LeadStage {
@@ -244,6 +269,20 @@ model Branch {
   facilityFees    FacilityFee[]
   operatorAccess  OperatorFacilityAccess[]
   metricsSnapshots FloorplanMetricsSnapshot[]
+  financeAuditEvents FinanceAuditEvent[]
+  financialModels FinancialModel[]
+  budgets Budget[]
+  expenses Expense[]
+  sizePriceRules SizePriceRule[]
+  creditWallets CreditWallet[]
+  refunds Refund[]
+  arrearsCases ArrearsCase[]
+  lateFeeWaivers LateFeeWaiver[]
+  settlementImports SettlementImport[]
+  reconciliationBatches ReconciliationBatch[]
+  monthCloses MonthClose[]
+  actualMetrics ActualMetric[]
+  varianceNotes VarianceNote[]
   createdAt       DateTime     @default(now())
   updatedAt       DateTime     @updatedAt
 }
@@ -551,6 +590,7 @@ model UnitSize {
   promotions Promotion[]
   safeguardRules SafeguardRule[]
   facilityFees FacilityFee[]
+  sizePriceRules SizePriceRule[]
 
   @@map("UnitSize")
 }
@@ -687,9 +727,21 @@ model Tenant {
 
   bookings  Booking[]
   invoices  Invoice[]
+  instructions PaymentInstruction[]
   notices   Notice[]
   // P1 item 5: per-tenant exception overrides on fees/deposits.
   feeExceptions FacilityFee[]
+  // Phase 4 — account-level access restriction (arrears §18). NOT a billing
+  // column: enforcement hook into existing access control; physical-gate
+  // integration is explicitly out of scope. Portal surfacing is a future
+  // frontend-lane task (customer API unchanged in Phase 4).
+  accessRestricted       Boolean   @default(false)
+  accessRestrictedAt     DateTime?
+  accessRestrictedReason String?
+  creditWallet CreditWallet?
+  refunds      Refund[]
+  arrearsCases ArrearsCase[]
+  lateFeeWaivers LateFeeWaiver[]
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
 }
@@ -759,9 +811,90 @@ model Invoice {
   paymentIntentId String?
   paidAt          DateTime?
   amountPaid      Decimal?      @db.Decimal(10, 2)
+  // Phase 3 lifecycle (FINANCE_MODULE_SPEC §17; all additive/nullable).
+  approvedBy  String?
+  approvedAt  DateTime?
+  issuedAt    DateTime?
+  voidedAt    DateTime?
+  voidReason  String?
+  writtenOffAt DateTime?
+  createdBy   String?
+  // Money detail (Decimal, never float): subtotal = Σ lines; taxAmount comes
+  // from finance.gstRate at ISSUE (0 while GST OFF); balanceDue = total −
+  // paid − credits, stamped on every write (lazy-derived on read when NULL).
+  subtotal      Decimal? @db.Decimal(10, 2)
+  taxAmount     Decimal? @db.Decimal(10, 2)
+  creditApplied Decimal? @db.Decimal(10, 2)
+  balanceDue    Decimal? @db.Decimal(10, 2)
+  // Service period (revenue-recognition hook, Q2 accrual basis).
+  serviceStart DateTime?
+  serviceEnd   DateTime?
+  // Idempotency + optimistic locking (spec §§10.6/21.1).
+  idempotencyKey String? @unique
+  version        Int     @default(0)
+  lines        InvoiceLine[]
+  instructions PaymentInstruction[]
 
   @@index([status])
   @@index([stripeSessionId])
+  @@index([tenantId, unitId])
+}
+
+// Invoice lines (FINANCE_MODULE_SPEC §17). RENT/FEE/ADJUSTMENT in Phase 3;
+// CREDIT/TAX kinds are rejected at create (credits = Phase 4 wallets, tax =
+// computed at issue from finance.gstRate).
+model InvoiceLine {
+  id        String   @id @default(cuid())
+  invoiceId String
+  invoice   Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  kind      String // RENT | FEE | CREDIT | TAX | ADJUSTMENT
+  label     String
+  amount    Decimal  @db.Decimal(10, 2)
+  refId     String?
+  createdAt DateTime @default(now())
+
+  @@index([invoiceId])
+}
+
+// Transactions register (FINANCE_MODULE_SPEC §10): approval-controlled intent
+// to collect an invoice balance via the customer's saved card (off-session,
+// TEST MODE only). APPROVED here means "checked and queued" — the approve
+// step sets QUEUED (spec §10.3 step 9); the submitted charge is a separate
+// retry/submit step. Every charge is approved INDIVIDUALLY: no bulk route,
+// bulk column, or bulk code path exists.
+model PaymentInstruction {
+  id         String                    @id @default(cuid())
+  invoiceId  String
+  invoice    Invoice                   @relation(fields: [invoiceId], references: [id])
+  tenantId   String
+  tenant     Tenant                    @relation(fields: [tenantId], references: [id])
+  amount     Decimal                   @db.Decimal(10, 2)
+  method     String                    @default("SAVED_CARD") // SAVED_CARD only in Phase 3
+  status     PaymentInstructionStatus  @default(PENDING_APPROVAL)
+  idempotencyKey String                 @unique
+  version    Int                       @default(0)
+  attempts   Int                       @default(0)
+  createdBy  String
+  approvedBy String?
+  approvedAt DateTime?
+  stripePaymentIntentId String?
+  failureReason String?
+  lastError  String?
+  createdAt  DateTime                  @default(now())
+  updatedAt  DateTime                  @updatedAt
+
+  @@index([invoiceId])
+  @@index([tenantId])
+  @@index([status])
+}
+
+// Stripe webhook exactly-once guard (spec §10.6/§21.1): every processed
+// processor event id is recorded; a duplicate delivery with the same id is
+// a no-op before any allocation runs. Natural key = the Stripe event id.
+model ProcessedStripeEvent {
+  eventId    String   @id
+  type       String
+  receivedAt DateTime @default(now())
 }
 
 model Lead {
@@ -1749,4 +1882,522 @@ model Verification {
   @@index([bookingRef])
   @@index([customerId])
   @@index([reviewStatus])
+}
+
+// ---------- Site builder (landing pages as JSON documents) ----------
+// docs/SITE_BUILDER_PLAN.md §4. A page keeps one working `draft`; publishing
+// freezes it into an immutable SitePageVersion and points `liveVersionId` at
+// it. The public bundle serves live versions only. Rollback = copy a version
+// into the draft and publish it again. Docs are validated in core with the
+// zod schema in src/core/siteBuilder/schema.ts before they are stored.
+
+enum SitePageStatus {
+  DRAFT // never published
+  PUBLISHED // has a live version
+  ARCHIVED // removed from the site; versions kept
+}
+
+model SitePage {
+  id            String            @id @default(cuid())
+  slug          String            @unique // "/", "about", "guides/packing"
+  title         String // CMS label
+  status        SitePageStatus    @default(DRAFT)
+  system        Boolean           @default(false) // core landing route: slug locked, can't be archived
+  draft         Json
+  draftRev      Int               @default(0) // optimistic lock: a stale save answers 409
+  liveVersionId String?           @unique
+  liveVersion   SitePageVersion?  @relation("SitePageLive", fields: [liveVersionId], references: [id])
+  versions      SitePageVersion[] @relation("SitePageVersions")
+  updatedById   String?
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+}
+
+model SitePageVersion {
+  id          String    @id @default(cuid())
+  pageId      String
+  page        SitePage  @relation("SitePageVersions", fields: [pageId], references: [id])
+  liveFor     SitePage? @relation("SitePageLive")
+  number      Int
+  doc         Json
+  note        String?
+  publishId   String?
+  createdById String?
+  createdAt   DateTime  @default(now())
+
+  @@unique([pageId, number])
+}
+
+enum SitePublishStatus {
+  NOT_CONFIGURED // versions went live; no landing rebuild trigger is set up
+  SKIPPED // trigger deliberately not sent (import script)
+  DISPATCHED // GitHub workflow_dispatch accepted
+  FAILED // trigger rejected or unreachable; versions are still live
+}
+
+model SitePublish {
+  id              String            @id @default(cuid())
+  scope           Json // [{ pageId, slug, versionId, number }]
+  settingsVersion Int? // global settings version published here, if any
+  note            String?
+  status      SitePublishStatus
+  error       String?
+  createdById String?
+  createdAt   DateTime          @default(now())
+}
+
+// Site-builder media library. The browser uploads pre-resized webp variants
+// (≤ 3 widths); the server checks type and real dimensions from the bytes.
+// Stored via src/lib/contentStorage.ts (S3 in prod, local disk in dev).
+model MediaAsset {
+  id          String   @id @default(cuid())
+  filename    String // original upload name (display only)
+  url         String // default variant for pages (~1200 px wide)
+  variants    Json // [{ width, height, bytes, url, key }] ascending by width
+  width       Int // largest variant
+  height      Int
+  alt         String // required, reused as the default alt text when picked
+  tags        String[]
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([createdAt])
+}
+
+// Global site settings (header, footer, announcement bar, contact, CTA band
+// and help-widget defaults): one row, id "global". Same draft → publish model
+// as pages; validated with siteSettingsSchema in src/core/sitePageSchema.ts.
+model SiteSettings {
+  id          String    @id // "global"
+  draft       Json
+  draftRev    Int       @default(0)
+  live        Json?
+  liveVersion Int       @default(0) // 0 = never published
+  publishedAt DateTime?
+  updatedById String?
+  updatedAt   DateTime  @updatedAt
+}
+
+// ---------------------------------------------------------------------------
+// Finance module Phase 1 foundations (FINANCE_MODULE_SPEC §§6/16.5/21).
+// Additive only: brand-new tables, no changes to Invoice/Tenant/Booking.
+// ---------------------------------------------------------------------------
+
+// Append-only audit trail (spec §§6/16.5). There is deliberately NO update or
+// delete code path anywhere in src/ — corrections are new events with their
+// own correlationId. branchId is nullable: portfolio-wide events stay visible
+// to every scoped operator (see src/lib/facilityScope.ts DIRECT_NULLABLE).
+model FinanceAuditEvent {
+  id            String   @id @default(cuid())
+  branchId      String?
+  branch        Branch?  @relation(fields: [branchId], references: [id])
+  actor         String
+  action        String
+  entityType    String
+  entityId      String
+  before        Json?
+  after         Json?
+  reason        String?
+  source        String?
+  correlationId String
+  occurredAt    DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@index([correlationId])
+  @@index([occurredAt])
+}
+
+// Outbox for finance domain events (spec §21). Writes happen in the SAME
+// database transaction as the mutation they describe; consumers are
+// synchronous recalculation or idempotent-on-read — no EventBridge/DLQ in
+// Phase 1 (CMS-triggered endpoints only).
+model FinanceEvent {
+  id            String    @id @default(cuid())
+  type          String
+  payload       Json
+  status        String    @default("PENDING") // PENDING | CONSUMED | FAILED
+  attempts      Int       @default(0)
+  branchId      String?
+  correlationId String
+  causationId   String?
+  createdAt     DateTime  @default(now())
+  consumedAt    DateTime?
+
+  @@index([status])
+  @@index([correlationId])
+  @@index([type])
+}
+
+// ---------------------------------------------------------------------------
+// Finance module Phase 2 — Planning workspace (FINANCE_MODULE_SPEC §§11–16).
+// Additive only: brand-new tables, no changes to any existing table. Money is
+// Decimal; JSON snapshots carry plain numbers (engine is pre-persistence).
+// ---------------------------------------------------------------------------
+
+// Planning workspace model (spec §11): one row per model; `inputs` is the
+// complete committed ProjectionInput snapshot. Four sections are staged
+// independently in the UI and committed per-section with optimistic-lock
+// `version` compare-and-swap (§§11.6–11.7). Statuses: DRAFT (editable),
+// PENDING (submitted, locked for edits), CURRENT (approved baseline),
+// ARCHIVED (hidden, restorable as a new draft).
+model FinancialModel {
+  id            String    @id @default(cuid())
+  branchId      String?
+  branch        Branch?   @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  name          String
+  status        String    @default("DRAFT") // DRAFT | PENDING | CURRENT | ARCHIVED
+  inputs        Json
+  engineVersion String    @default("finance-projection/1")
+  inputHash     String
+  createdBy     String
+  updatedBy     String?
+  version       Int       @default(0)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  versions      FinancialModelVersion[]
+
+  @@index([branchId])
+  @@index([status])
+}
+
+// Immutable version history + governance (spec §16). Restores/duplicates
+// always create NEW rows — history is never overwritten. Statuses: DRAFT |
+// SUBMITTED | APPROVED | REJECTED | ARCHIVED.
+model FinancialModelVersion {
+  id            String    @id @default(cuid())
+  modelId       String
+  model         FinancialModel @relation(fields: [modelId], references: [id], onDelete: Cascade)
+  version       Int
+  snapshot      Json
+  changeSummary String?
+  status        String    @default("DRAFT") // DRAFT | SUBMITTED | APPROVED | REJECTED | ARCHIVED
+  decidedBy     String?
+  decidedAt     DateTime?
+  createdBy     String
+  createdAt     DateTime  @default(now())
+
+  @@unique([modelId, version])
+  @@index([modelId, status])
+}
+
+// Monthly non-lease Opex budgets (spec §13). The landlord lease line is NOT a
+// stored row: GET /budgets derives it read-only from the CURRENT model and it
+// is labelled "Linked from Financial Model → Landlord Lease". Stored rows
+// whose category matches the protected pattern are lease-line protected:
+// updates are denied unless the protected-override path (approver +
+// explicit flag) is used, and every override writes an audit event.
+model Budget {
+  id          String   @id @default(cuid())
+  branchId    String
+  branch      Branch   @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  fiscalMonth String // YYYY-MM
+  category    String
+  amount      Decimal  @db.Decimal(10, 2)
+  protected   Boolean  @default(false)
+  createdBy   String
+  version     Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  expenses    Expense[]
+
+  @@unique([branchId, fiscalMonth, category])
+  @@index([branchId, fiscalMonth])
+}
+
+// Individual expenditure ledger (spec §13.4). Receipts attach via the
+// EXISTING content storage (receiptRef = content-storage key) — no new
+// storage infra. Writes are immediate ledger records; category-budget edits
+// stay staged until Update.
+model Expense {
+  id          String   @id @default(cuid())
+  branchId    String
+  branch      Branch   @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  budgetId    String?
+  budget      Budget?  @relation(fields: [budgetId], references: [id], onDelete: SetNull)
+  incurredAt  DateTime
+  vendor      String?
+  category    String
+  amount      Decimal  @db.Decimal(10, 2)
+  receiptRef  String?
+  description String?
+  status      String   @default("PAID") // DRAFT | COMMITTED | PAID (§13.4)
+  note        String?
+  postedMonth String? // immutability anchor (Phase 4 close); null = open
+  createdBy   String
+  createdAt   DateTime @default(now())
+
+  @@index([branchId, incurredAt])
+  @@index([branchId, category])
+}
+
+// Size Mix & Pricing planning buckets (spec §14). Live `Unit`/`UnitSize`
+// inventory ALWAYS wins for NLA/unit counts — these rows are an ASSUMPTIONS
+// OVERLAY carrying only planning PSF/rate targets (authority MANUAL) plus the
+// sync log. Overrides NEVER write back to live Unit rows (Q9 sub-question
+// still open with the owner — overlay-with-audit is the recorded proposal).
+model SizePriceRule {
+  id            String   @id @default(cuid())
+  branchId      String
+  branch        Branch   @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  sizeId        String
+  size          UnitSize @relation(fields: [sizeId], references: [id], onDelete: Cascade)
+  targetPsf     Decimal? @db.Decimal(10, 4)
+  targetRate    Decimal? @db.Decimal(10, 2)
+  authority     String   @default("SYSTEM") // SYSTEM | MANUAL
+  effectiveFrom DateTime @default(now())
+  createdBy     String?
+  version       Int      @default(0)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([branchId, sizeId])
+}
+
+// ---------------------------------------------------------------------------
+// Finance module Phase 4 — Close and controls (FINANCE_MODULE_SPEC
+// §§12/18/19/20). Additive only: brand-new tables (+ three Tenant access
+// columns + Branch back-refs above), no changes to any existing table shape.
+// Money is Decimal; JSON carries plain numbers. Ledger/adjustment rows are
+// append-only — no update/delete code path exists for them.
+// ---------------------------------------------------------------------------
+
+// Credits wallet (spec §19.1): one row per tenant; `balance` = Σ ledger
+// entries. $1 credit = $1; non-transferable, no cash value by default.
+model CreditWallet {
+  id        String   @id @default(cuid())
+  tenantId  String   @unique
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branchId  String?
+  branch    Branch?  @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  balance   Decimal  @default(0) @db.Decimal(10, 2)
+  version   Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  entries   CreditLedgerEntry[]
+
+  @@index([branchId])
+}
+
+// Append-only credit ledger (spec §19.1/19.4). APPLY writes reference the
+// invoice; REFUND rows link the refund case. No update/delete path.
+model CreditLedgerEntry {
+  id        String   @id @default(cuid())
+  walletId  String
+  wallet    CreditWallet @relation(fields: [walletId], references: [id], onDelete: Cascade)
+  kind      String   // GRANT | APPLY | REFUND | EXPIRE | ADJUST
+  amount    Decimal  @db.Decimal(10, 2)
+  refId     String?
+  actor     String
+  note      String?
+  createdAt DateTime @default(now())
+
+  @@index([walletId])
+  @@index([kind])
+}
+
+// Refund lifecycle (spec §§19.2–19.4): REQUESTED → APPROVED/REJECTED → PAID.
+// Maker-checker: EVERY refund needs a distinct requestor + approver (Q4 v1.2,
+// no threshold). ONLY a Super Admin (Owner) may single-step, and every
+// bypass writes a FinanceAuditEvent with actor + reason. Bank-account
+// verification is REQUIRED before PAID (recorded as an explicit step). A
+// computation that goes negative converts to a CHARGE (never a negative
+// payment) — stored in `computation`, no Refund row reaches PAID.
+model Refund {
+  id             String   @id @default(cuid())
+  tenantId       String
+  tenant         Tenant   @relation(fields: [tenantId], references: [id])
+  branchId       String?
+  branch         Branch?  @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  invoiceId      String?
+  amount         Decimal  @db.Decimal(10, 2)
+  reason         String
+  computation    Json?
+  status         String   @default("REQUESTED") // REQUESTED | APPROVED | REJECTED | PAID
+  requestedBy    String
+  requestedAt    DateTime @default(now())
+  approvedBy     String?
+  decidedAt      DateTime?
+  decisionReason String?
+  bankVerified   Boolean  @default(false)
+  bankRef        String?
+  gatewayRef     String?
+  bypassed       Boolean  @default(false)
+  idempotencyKey String?  @unique
+  version        Int      @default(0)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([tenantId])
+  @@index([status])
+  @@index([branchId])
+}
+
+// Arrears + recovery workflow (spec §18). Policy actions are GATED by Global
+// Settings timings (graceDays/lateFeeAfterDays/accessRestrictAfterDays,
+// all editable); `policyGated` records which settings gated each advance.
+// Termination steps are UNDECIDED — never built; the advance path answers
+// BLOCKED with a message naming the missing decision.
+model ArrearsCase {
+  id          String    @id @default(cuid())
+  tenantId    String
+  tenant      Tenant    @relation(fields: [tenantId], references: [id])
+  invoiceId   String?
+  branchId    String?
+  branch      Branch?   @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  stage       String    @default("OPEN") // OPEN | REMINDER | FORMAL_NOTICE | LATE_FEE_POSTED | RESTRICTED | RESOLVED
+  assignee    String?
+  note        String?
+  policyGated Json?
+  daysOverdue Int       @default(0)
+  openedAt    DateTime  @default(now())
+  closedAt    DateTime?
+  closeReason String?
+  version     Int       @default(0)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([tenantId])
+  @@index([stage])
+  @@index([branchId])
+}
+
+// Waive-late-fee (Q5 v1.2 REQUIRED): operator action + amount/reason + audit,
+// approver-gated. Approval appends a CREDIT line to the invoice (stamped
+// creditApplied/balanceDue) — never edits history.
+model LateFeeWaiver {
+  id             String   @id @default(cuid())
+  tenantId       String
+  tenant         Tenant   @relation(fields: [tenantId], references: [id])
+  invoiceId      String?
+  branchId       String?
+  branch         Branch?  @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  amount         Decimal  @db.Decimal(10, 2)
+  reason         String
+  status         String   @default("REQUESTED") // REQUESTED | APPROVED | REJECTED
+  requestedBy    String
+  approvedBy     String?
+  decidedAt      DateTime?
+  idempotencyKey String?  @unique
+  version        Int      @default(0)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([tenantId])
+  @@index([status])
+  @@index([branchId])
+}
+
+// Reconciliation (spec §20): Stripe settlement import + matching + suspense.
+// CMS-triggered, idempotent per sourceRef (repeat import returns the batch).
+model SettlementImport {
+  id               String    @id @default(cuid())
+  branchId         String?
+  branch           Branch?   @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  sourceRef        String    @unique
+  externalRef      String?
+  amount           Decimal   @db.Decimal(10, 2)
+  currency         String    @default("SGD")
+  receivedAt       DateTime?
+  raw              Json?
+  status           String    @default("UNMATCHED") // UNMATCHED | PARTIAL | MATCHED | SUSPENSE
+  matchedInvoiceId String?
+  matchedAmount    Decimal?  @db.Decimal(10, 2)
+  suspenseReason   String?
+  actor            String
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@index([status])
+  @@index([branchId])
+}
+
+// Reconciliation batch close (spec §20.5): closed batches are immutable;
+// reopening requires elevated (Owner-only) approval.
+model ReconciliationBatch {
+  id          String    @id @default(cuid())
+  branchId    String
+  branch      Branch    @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  fiscalMonth String    // YYYY-MM
+  status      String    @default("OPEN") // OPEN | CLOSED
+  checklist   Json?
+  closedBy    String?
+  closedAt    DateTime?
+  version     Int       @default(0)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@unique([branchId, fiscalMonth])
+  @@index([branchId])
+}
+
+// Month close (spec §12.3): OPEN → CLOSED freezes ActualMetric. Posted months
+// are immutable — corrections arrive as NEW MonthCloseAdjustment events.
+model MonthClose {
+  id          String    @id @default(cuid())
+  branchId    String
+  branch      Branch    @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  fiscalMonth String    // YYYY-MM
+  status      String    @default("OPEN") // OPEN | CLOSED
+  closedBy    String?
+  closedAt    DateTime?
+  calcHash    String?
+  version     Int       @default(0)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  adjustments MonthCloseAdjustment[]
+
+  @@unique([branchId, fiscalMonth])
+}
+
+// Posted actuals (spec §12.1/12.4, accrual basis — Q6 DECIDED: when incurred).
+// Immutable once the month is CLOSED; em dash until posted, never fabricated.
+model ActualMetric {
+  id          String   @id @default(cuid())
+  branchId    String
+  branch      Branch   @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  fiscalMonth String    // YYYY-MM
+  metric      String   // REVENUE | CASH | OPEX | LEASE | NOI | OCCUPIED_SQFT
+  value       Decimal  @db.Decimal(12, 2)
+  source      String?
+  createdAt   DateTime @default(now())
+
+  @@unique([branchId, fiscalMonth, metric])
+  @@index([branchId, fiscalMonth])
+}
+
+// Post-close corrections (spec §12.3 step 11): NEW events only — the posted
+// ActualMetric row is never edited. Folded into the variance view with source
+// 'adjustment'.
+model MonthCloseAdjustment {
+  id           String     @id @default(cuid())
+  monthCloseId String
+  monthClose   MonthClose @relation(fields: [monthCloseId], references: [id], onDelete: Cascade)
+  metric       String
+  amount       Decimal    @db.Decimal(12, 2)
+  reason       String
+  author       String
+  createdAt    DateTime   @default(now())
+
+  @@index([monthCloseId])
+}
+
+// Variance notes (spec §12.5): internal notes with author + timestamp, one
+// row per note (multiple notes per metric allowed).
+model VarianceNote {
+  id          String   @id @default(cuid())
+  branchId    String
+  branch      Branch   @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  fiscalMonth String    // YYYY-MM
+  metric      String
+  note        String
+  author      String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([branchId, fiscalMonth])
 }

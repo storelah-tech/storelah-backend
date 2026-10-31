@@ -19,6 +19,7 @@
     "db:seed-promotions": "tsx scripts/seed-promotions.ts",
     "db:seed-facility-ops": "tsx scripts/seed-facility-ops.ts",
     "db:seed-settings": "tsx scripts/seed-settings.ts",
+    "db:site-import": "tsx scripts/site-import.ts",
     "db:seed-units": "tsx scripts/seed-production-units.ts",
     "db:free-units": "tsx scripts/free-all-units.ts",
     "db:rotate-admin-password": "tsx scripts/rotate-admin-password.ts",

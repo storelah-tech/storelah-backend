@@ -177,6 +177,36 @@ export async function loadOwnedPaymentMethod(
   return { pm, stripeCustomerId: customer.stripeCustomerId };
 }
 
+/**
+ * The wallet's default card PaymentMethod, or null when the customer has no
+ * usable off-session mandate. Used by the Phase 3 queued-charge path
+ * (core/finance/payments.ts): approval checks the wallet LINK (DB-only, no
+ * Stripe call — hermetic and outage-safe), submission resolves the default
+ * card HERE and 409s clearly when there is none to charge.
+ */
+export async function loadDefaultPaymentMethod(
+  stripeCustomerId: string,
+): Promise<{ pm: Stripe.PaymentMethod; stripeCustomerId: string } | null> {
+  const stripe = getStripe();
+  let sc: Stripe.Customer | Stripe.DeletedCustomer;
+  try {
+    sc = await stripe.customers.retrieve(stripeCustomerId);
+  } catch {
+    return null;
+  }
+  const defaultId = defaultIdOf(sc);
+  if (!defaultId) return null;
+  try {
+    const pm = await stripe.paymentMethods.retrieve(defaultId);
+    if (pm.type !== 'card') return null;
+    const owner = typeof pm.customer === 'string' ? pm.customer : (pm.customer?.id ?? null);
+    if (owner !== stripeCustomerId) return null;
+    return { pm, stripeCustomerId };
+  } catch {
+    return null;
+  }
+}
+
 /** POST /payment-methods/:id/default */
 export async function setDefaultCard(caller: CustomerJwtPayload, paymentMethodId: string): Promise<Wallet> {
   const customer = await loadCustomer(caller);

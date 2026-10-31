@@ -36,8 +36,13 @@ import {
   applyInvoicePaymentSucceeded,
   createInvoiceCheckoutSession,
   INVOICE_SESSION_KIND,
+  INSTRUCTION_SESSION_KIND,
   payInvoiceWithSavedCard,
 } from '../core/invoicePayments';
+import {
+  applyInstructionPaymentSucceeded,
+  applyInstructionPaymentFailed,
+} from '../core/finance/payments';
 import {
   createCardSetupIntent,
   listSavedCards,
@@ -466,7 +471,7 @@ router.post('/stripe/webhook', async (req: Request, res: Response) => {
     // Portal invoice sessions carry metadata.kind = 'invoice'; everything
     // else is a booking session (unchanged path).
     if (session.metadata?.kind === INVOICE_SESSION_KIND) {
-      const result = await applyInvoiceCheckoutCompleted(session);
+      const result = await applyInvoiceCheckoutCompleted(session, { eventId: event.id });
       ok(res, { received: true, ...result });
       return;
     }
@@ -476,10 +481,16 @@ router.post('/stripe/webhook', async (req: Request, res: Response) => {
   }
   // Saved-card invoice payments (core/invoicePayments.ts). Checkout-created
   // PIs carry no metadata.kind, so they never reach this branch.
+  // Queued CMS charges (core/finance/payments.ts) carry kind 'instruction'
+  // and are applied idempotently by Stripe event id.
   if (event.type === 'payment_intent.succeeded') {
     const pi = event.data.object as Stripe.PaymentIntent;
     if (pi.metadata?.kind === INVOICE_SESSION_KIND) {
-      ok(res, { received: true, ...(await applyInvoicePaymentSucceeded(pi)) });
+      ok(res, { received: true, ...(await applyInvoicePaymentSucceeded(pi, { eventId: event.id })) });
+      return;
+    }
+    if (pi.metadata?.kind === INSTRUCTION_SESSION_KIND) {
+      ok(res, { received: true, ...(await applyInstructionPaymentSucceeded(pi, { eventId: event.id })) });
       return;
     }
   }
@@ -487,6 +498,10 @@ router.post('/stripe/webhook', async (req: Request, res: Response) => {
     const pi = event.data.object as Stripe.PaymentIntent;
     if (pi.metadata?.kind === INVOICE_SESSION_KIND) {
       console.log(`[invoice-pay] payment failed invoiceNo=${pi.metadata?.invoiceNo ?? '?'}`);
+    }
+    if (pi.metadata?.kind === INSTRUCTION_SESSION_KIND) {
+      ok(res, { received: true, ...(await applyInstructionPaymentFailed(pi, { eventId: event.id })) });
+      return;
     }
   }
   ok(res, { received: true, applied: false });

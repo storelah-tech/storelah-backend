@@ -31,6 +31,11 @@ const UNIT_READERS = v(
 );
 const TENANT_READERS = v('customer-tenants', 'customer-bookings', 'customer-moveins', 'customer-moveouts', 'facility-units', 'settings-fees', 'bill-invoices', 'bill-arrears');
 const LEAD_READERS = v('leads', 'pipeline', 'quotes', 'inbox', 'calendar', 'command', 'analytics');
+// Phase 1 finance audit reads: any finance view permission suffices.
+const FINANCE_VIEWERS = v(
+  'bill-overview', 'bill-invoices', 'bill-arrears', 'bill-transactions', 'bill-models', 'bill-performance',
+  'bill-budgets', 'bill-pricing', 'bill-returns', 'bill-library', 'bill-credits', 'bill-reconciliation',
+);
 
 export const ROUTE_PERMISSIONS: Record<string, PermissionSpec> = {
   // ---- session ----
@@ -112,6 +117,133 @@ export const ROUTE_PERMISSIONS: Record<string, PermissionSpec> = {
 
   // ---- finance ----
   'GET /invoices': v('bill-overview', 'bill-invoices', 'bill-arrears'),
+
+  // ---- finance module Phase 1 (FINANCE_MODULE_SPEC §29: every submodule route
+  // is permissioned; audit reads ride on any bill view — no action grants an
+  // audit mutation because no update/delete path exists) ----
+  'GET /finance/overview': 'bill-overview:view',
+  'GET /finance/overview/export.csv': 'bill-overview:view',
+  'GET /finance/audit': FINANCE_VIEWERS,
+
+  // ---- finance module Phase 2 — Planning workspace (§§11–16) ----
+  // Models: drafts editable; CURRENT/ARCHIVED/PENDING locked in service code.
+  'GET /finance/models': 'bill-models:view',
+  'POST /finance/models': 'bill-models:create',
+  'GET /finance/models/:id': 'bill-models:view',
+  'PUT /finance/models/:id/inputs': 'bill-models:update',
+  'PUT /finance/models/:id/assumptions': 'bill-models:update',
+  'PUT /finance/models/:id/size-mix': ['bill-models:update', 'bill-pricing:update'],
+  'PUT /finance/models/:id/opex': 'bill-models:update',
+  'PUT /finance/models/:id/occupancy': 'bill-models:update',
+  'PUT /finance/models/:id/capital': 'bill-models:update',
+  'PUT /finance/models/:id/pricing': 'bill-models:update',
+  'PUT /finance/models/:id/lease': 'bill-models:update',
+  // Scenario/sensitivity are non-mutating computes over the saved base.
+  'POST /finance/models/:id/scenarios': 'bill-models:view',
+  'POST /finance/models/:id/sensitivity': 'bill-models:view',
+  'GET /finance/models/:id/export.csv': 'bill-models:view',
+  'DELETE /finance/models/:id': 'bill-models:delete',
+  // Library: cards/versions/audit read with any library view; governance
+  // transitions need update (submit/duplicate/restore/archive) or approve.
+  'GET /finance/library': 'bill-library:view',
+  'GET /finance/library/:id/versions': 'bill-library:view',
+  'GET /finance/library/:id/audit': FINANCE_VIEWERS,
+  'POST /finance/library/:id/save-version': 'bill-library:update',
+  'POST /finance/library/:id/duplicate': ['bill-models:create', 'bill-library:update'],
+  'POST /finance/library/:id/submit': 'bill-library:update',
+  'POST /finance/library/:id/approve': 'bill-library:approve',
+  'POST /finance/library/:id/reject': 'bill-library:approve',
+  'POST /finance/library/:id/restore': 'bill-library:update',
+  'POST /finance/library/:id/archive': 'bill-library:update',
+  'POST /finance/library/:id/set-current': 'bill-library:approve',
+  // Budgets: lease line is derived read-only (PUT on it always 403 in code);
+  // the protected-override path additionally requires bill-budgets:approve.
+  'GET /finance/budgets': 'bill-budgets:view',
+  'POST /finance/budgets': 'bill-budgets:create',
+  'PUT /finance/budgets/:id': 'bill-budgets:update',
+  'GET /finance/expenses': 'bill-budgets:view',
+  'POST /finance/expenses': 'bill-budgets:create',
+  'PUT /finance/expenses/:id': 'bill-budgets:update',
+  'GET /finance/expenses/export.csv': 'bill-budgets:view',
+  // Pricing: manual override = update + audit (assumptions overlay, Q9 open).
+  'GET /finance/pricing': 'bill-pricing:view',
+  'PUT /finance/pricing/:sizeId': 'bill-pricing:update',
+  // Returns: read-only over the CURRENT model.
+  'GET /finance/returns': 'bill-returns:view',
+
+  // ---- finance module Phase 5 — Investor Summary (§15.4, masked) ----
+  // Approved-only, PII-free aggregates. The INVESTOR role holds exactly
+  // this permission; finance staff keep their masked-summary view too.
+  'GET /finance/investor/summary': 'bill-investor:view',
+  'GET /finance/investor/summary.csv': 'bill-investor:view',
+
+  // ---- finance module Phase 3 — Billing and payments (§§10/17) ----
+  // Invoices: drafts are created (create), then approved AND issued (approve);
+  // void is terminal and needs a reason (approve). The billing run creates
+  // DRAFTs only (create); approval happens per invoice afterwards (Q2).
+  'GET /finance/invoices': 'bill-invoices:view',
+  'GET /finance/invoices/:id': 'bill-invoices:view',
+  'POST /finance/invoices': 'bill-invoices:create',
+  'POST /finance/invoices/:id/approve': 'bill-invoices:approve',
+  'POST /finance/invoices/:id/issue': 'bill-invoices:approve',
+  'POST /finance/invoices/:id/void': 'bill-invoices:approve',
+  'POST /finance/billing-run': 'bill-invoices:create',
+  // Transactions: instructions are created (create), then approved / charged /
+  // retried INDIVIDUALLY (approve — no bulk path exists, spec §4.1);
+  // cancellation is an update. Reads ride on the transactions view.
+  'GET /finance/transactions': 'bill-transactions:view',
+  'GET /finance/transactions/:id': 'bill-transactions:view',
+  'POST /finance/transactions': 'bill-transactions:create',
+  'POST /finance/transactions/:id/approve': 'bill-transactions:approve',
+  'POST /finance/transactions/:id/retry': 'bill-transactions:approve',
+  'POST /finance/transactions/:id/cancel': 'bill-transactions:update',
+
+  // ---- finance module Phase 4 — Close and controls (§§12/18/19/20) ----
+  // Credits: grant/apply = create; refunds = request (create) then approve /
+  // reject / pay (approve — every refund needs a distinct requestor +
+  // approver, Owner-only single-step with audit); bank verification = update.
+  'GET /finance/credits': 'bill-credits:view',
+  'GET /finance/credits/ledger': 'bill-credits:view',
+  'POST /finance/credits/grant': 'bill-credits:create',
+  'POST /finance/credits/apply': 'bill-credits:create',
+  'POST /finance/refunds/calculate': 'bill-credits:view',
+  'GET /finance/refunds': 'bill-credits:view',
+  'GET /finance/refunds/:id': 'bill-credits:view',
+  'POST /finance/refunds': 'bill-credits:create',
+  'POST /finance/refunds/:id/approve': 'bill-credits:approve',
+  'POST /finance/refunds/:id/reject': 'bill-credits:approve',
+  'POST /finance/refunds/:id/bank-verify': 'bill-credits:update',
+  'POST /finance/refunds/:id/pay': 'bill-credits:approve',
+  // Arrears: open/advance/close/waiver-request = update (operator case work);
+  // waiver decision = approve (approver-gated). Terminate is an UNDECIDED
+  // stub (always 409). Write-off = bill-invoices:approve (terminal, audited).
+  'GET /finance/arrears': 'bill-arrears:view',
+  'GET /finance/arrears/candidates': 'bill-arrears:view',
+  'GET /finance/arrears/:id': 'bill-arrears:view',
+  'POST /finance/arrears': 'bill-arrears:update',
+  'POST /finance/arrears/:id/advance': 'bill-arrears:update',
+  'POST /finance/arrears/:id/close': 'bill-arrears:update',
+  'POST /finance/arrears/:id/terminate': 'bill-arrears:update',
+  'GET /finance/arrears/waivers': 'bill-arrears:view',
+  'POST /finance/arrears/waivers': 'bill-arrears:update',
+  'POST /finance/arrears/waivers/:id/decide': 'bill-arrears:approve',
+  'POST /finance/invoices/:id/write-off': 'bill-invoices:approve',
+  // Reconciliation: import = create, match/suspense = update, close =
+  // approve; reopen needs elevated (Owner-only) approval.
+  'GET /finance/reconciliation': 'bill-reconciliation:view',
+  'POST /finance/reconciliation/import': 'bill-reconciliation:create',
+  'POST /finance/reconciliation/:id/match': 'bill-reconciliation:update',
+  'POST /finance/reconciliation/:id/suspense': 'bill-reconciliation:update',
+  'POST /finance/reconciliation/close': 'bill-reconciliation:approve',
+  'POST /finance/reconciliation/reopen': 'OWNER',
+  // Forecast vs Actuals: read + variance notes (update); month close and
+  // post-close adjustments = approve (the sign-off).
+  'GET /finance/performance': 'bill-performance:view',
+  'GET /finance/performance/series': 'bill-performance:view',
+  'POST /finance/performance/notes': 'bill-performance:update',
+  'GET /finance/month-close': 'bill-performance:view',
+  'POST /finance/month-close': 'bill-performance:approve',
+  'POST /finance/month-close/adjust': 'bill-performance:approve',
 
   // ---- facilities: floors / branches ----
   'POST /floors': 'facility-floors:create',
@@ -265,6 +397,28 @@ export const ROUTE_PERMISSIONS: Record<string, PermissionSpec> = {
   'DELETE /content/:key': 'content-list:delete',
   'POST /content/:key/image': 'content-list:update',
   'DELETE /content/:key/image': 'content-list:update',
+
+  // ---- site builder (approve = publish) ----
+  'GET /site/schema': v('site-builder'),
+  'GET /site/config': v('site-builder'),
+  'GET /site/pages': v('site-builder'),
+  'POST /site/pages': 'site-builder:create',
+  'GET /site/pages/:id': v('site-builder'),
+  'PATCH /site/pages/:id': 'site-builder:update',
+  'PUT /site/pages/:id/draft': 'site-builder:update',
+  'POST /site/pages/:id/duplicate': 'site-builder:create',
+  'DELETE /site/pages/:id': 'site-builder:delete',
+  'GET /site/pages/:id/versions': v('site-builder'),
+  'GET /site/pages/:id/versions/:versionId': v('site-builder'),
+  'POST /site/pages/:id/rollback/:versionId': 'site-builder:approve',
+  'POST /site/publish': 'site-builder:approve',
+  'GET /site/publishes': v('site-builder'),
+  'GET /site/settings': v('site-builder'),
+  'PUT /site/settings/draft': 'site-builder:update',
+  'GET /site/media': v('site-builder'),
+  'POST /site/media': 'site-builder:create',
+  'PATCH /site/media/:id': 'site-builder:update',
+  'DELETE /site/media/:id': 'site-builder:delete',
 
   // ---- global settings ----
   'PUT /settings': ['settings-general:update', 'settings-booking:update'],

@@ -1,0 +1,210 @@
+# =============================================================================
+# storelah-media — CMS media bucket + CloudFront CDN (site builder Phase 0)
+#
+# !! DO NOT DEPLOY AS-IS (2026-10-29): prod already uses the hand-made bucket
+# !! storelah-content-prod. This creates a SECOND bucket. Rework to front the
+# !! existing bucket first. See docs/backend-deploy.md.
+#
+# Stack: storelah-media      Region: ap-southeast-1
+#
+# WHY
+#   src/lib/contentStorage.ts writes CMS images to S3 when CONTENT_S3_BUCKET is
+#   set, else to local disk. On Lambda local disk is ephemeral, so until this
+#   stack exists prod uploads silently disappear. See
+#   docs/SITE_BUILDER_PLAN.md (Phase 0) and docs/CONTENT_MANAGEMENT.md.
+#
+# WHAT
+#   - Private S3 bucket (all public access blocked, SSE-S3, no ACLs).
+#   - CloudFront distribution with Origin Access Control: the ONLY public read
+#     path. No Basic Auth gate here on purpose: images must load on the gated
+#     landing AND inside the CMS preview, and they are public marketing assets.
+#   - Managed policy granting PutObject/DeleteObject on <bucket>/<prefix>/* ,
+#     attached to the EXISTING live Lambda role (default storelah-backend-exec).
+#     Attaching is additive; it does not otherwise touch the role. This stack
+#     never touches the Lambda function or its env (live env has drifted from
+#     backend-stack.yaml — set env with a MERGE-only update, see runbook).
+#
+# OPTIONAL CUSTOM DOMAIN (media.storelah.sg)
+#   Leave MediaDomainName empty for the default *.cloudfront.net domain. To use
+#   a custom domain, pass MediaDomainName + an ACM cert ARN from **us-east-1**,
+#   then add the Route 53 alias in storelah-landing/infra/route53-stack.yaml
+#   (DNS lives there) — a separate landing-lane change.
+#
+# DEPLOY (devops; needs explicit owner go-ahead — creates prod resources)
+#   aws cloudformation deploy --region ap-southeast-1 \
+#     --stack-name storelah-media \
+#     --template-file infra/media-stack.yaml \
+#     --capabilities CAPABILITY_NAMED_IAM \
+#     --parameter-overrides LambdaRoleName=storelah-backend-exec
+#   Then follow docs/backend-deploy.md › "CMS media bucket" for the Lambda env.
+#
+# ROLLBACK
+#   Unset the CONTENT_S3_* env first (uploads fall back to local), then delete
+#   the stack (this also detaches the policy from the role). The bucket has
+#   DeletionPolicy Retain, so uploaded media survives; empty and delete it by
+#   hand only on purpose.
+# =============================================================================
+AWSTemplateFormatVersion: "2010-09-09"
+Description: StoreLah CMS media bucket + CloudFront (OAC) + Lambda upload policy
+
+Parameters:
+  BucketName:
+    Type: String
+    Default: ""
+    Description: "Optional explicit bucket name. Empty = storelah-media-<account-id>."
+  KeyPrefix:
+    Type: String
+    Default: content
+    AllowedPattern: "^[a-z0-9][a-z0-9-]*$"
+    Description: "Must equal CONTENT_S3_PREFIX on the Lambda (default 'content')."
+  LambdaRoleName:
+    Type: String
+    Default: storelah-backend-exec
+    Description: "Name of the LIVE backend Lambda execution role to attach the upload policy to."
+  MediaDomainName:
+    Type: String
+    Default: ""
+    Description: "Optional custom domain, e.g. media.storelah.sg. Empty = cloudfront.net domain."
+  MediaCertificateArn:
+    Type: String
+    Default: ""
+    Description: "ACM certificate ARN in us-east-1 covering MediaDomainName. Required iff MediaDomainName is set."
+
+Conditions:
+  HasBucketName: !Not [!Equals [!Ref BucketName, ""]]
+  HasCustomDomain: !Not [!Equals [!Ref MediaDomainName, ""]]
+
+Resources:
+  MediaBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !If [HasBucketName, !Ref BucketName, !Sub "storelah-media-${AWS::AccountId}"]
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          # Object keys are timestamped (immutable); versions only accrue on
+          # accidental overwrite/delete — keep a 30-day undo window.
+          - Id: expire-noncurrent
+            Status: Enabled
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 30
+          - Id: abort-incomplete-mpu
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+      Tags:
+        - { Key: app, Value: storelah }
+        - { Key: lane, Value: backend }
+
+  MediaOAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "storelah-media-oac-${AWS::StackName}"
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  MediaDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Comment: StoreLah CMS media (site builder)
+        Enabled: true
+        HttpVersion: http2and3
+        IPV6Enabled: true
+        PriceClass: PriceClass_200   # includes Asia edges (SG)
+        Aliases: !If [HasCustomDomain, [!Ref MediaDomainName], !Ref "AWS::NoValue"]
+        ViewerCertificate: !If
+          - HasCustomDomain
+          - AcmCertificateArn: !Ref MediaCertificateArn
+            SslSupportMethod: sni-only
+            MinimumProtocolVersion: TLSv1.2_2021
+          - CloudFrontDefaultCertificate: true
+        Origins:
+          - Id: media-s3
+            DomainName: !GetAtt MediaBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt MediaOAC.Id
+            S3OriginConfig:
+              OriginAccessIdentity: ""
+        DefaultCacheBehavior:
+          TargetOriginId: media-s3
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD, OPTIONS]
+          CachedMethods: [GET, HEAD]
+          Compress: true
+          # AWS managed policies: CachingOptimized + CORS-S3Origin +
+          # SecurityHeadersPolicy (nosniff etc.).
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+          OriginRequestPolicyId: 88a5eaf4-2fd4-4709-b370-b4c650ea3fcf
+          ResponseHeadersPolicyId: 67f7725c-6f97-4210-82d7-5512b31e9d03
+
+  MediaBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref MediaBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: CloudFrontReadOnly
+            Effect: Allow
+            Principal: { Service: cloudfront.amazonaws.com }
+            Action: s3:GetObject
+            Resource: !Sub "${MediaBucket.Arn}/*"
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${MediaDistribution}"
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource: [!GetAtt MediaBucket.Arn, !Sub "${MediaBucket.Arn}/*"]
+            Condition:
+              Bool: { aws:SecureTransport: "false" }
+
+  LambdaMediaWritePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "storelah-media-write-${AWS::Region}"
+      Description: Backend Lambda may write/delete CMS media under the content prefix only
+      Roles: [!Ref LambdaRoleName]
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: [s3:PutObject, s3:DeleteObject]
+            Resource: !Sub "${MediaBucket.Arn}/${KeyPrefix}/*"
+
+Outputs:
+  BucketName:
+    Description: "Set as CONTENT_S3_BUCKET on the Lambda"
+    Value: !Ref MediaBucket
+  PublicBaseUrl:
+    Description: "Set as CONTENT_S3_PUBLIC_BASE_URL on the Lambda"
+    Value: !If
+      - HasCustomDomain
+      - !Sub "https://${MediaDomainName}"
+      - !Sub "https://${MediaDistribution.DomainName}"
+  DistributionId:
+    Value: !Ref MediaDistribution
+  DistributionDomainName:
+    Description: "Alias target for media.storelah.sg (Route 53, hosted zone Z2FDTNDATAQYW2)"
+    Value: !GetAtt MediaDistribution.DomainName
+  KeyPrefix:
+    Description: "Set as CONTENT_S3_PREFIX on the Lambda"
+    Value: !Ref KeyPrefix

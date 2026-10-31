@@ -44,6 +44,9 @@ export interface PricingRow {
   bucket: string | null;
   units: number;
   nlaSqft: number;
+  /** Smallest / largest live unit of this size at the facility (null when none). */
+  minSqft: number | null;
+  maxSqft: number | null;
   liveAvgPsf: number | null;
   liveAvgRate: number | null;
   targetPsf: number | null;
@@ -85,6 +88,8 @@ export async function getPricing(opts: { branchId: string }) {
       bucket: bucketForSize(s.code, s.sqftTo),
       units: mine.length,
       nlaSqft: Math.round(nla * 100) / 100,
+      minSqft: mine.length ? Math.min(...mine.map((u) => u.sqft)) : null,
+      maxSqft: mine.length ? Math.max(...mine.map((u) => u.sqft)) : null,
       liveAvgPsf,
       liveAvgRate,
       targetPsf,

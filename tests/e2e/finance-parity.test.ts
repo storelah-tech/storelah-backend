@@ -9,6 +9,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { api, createOperator, prisma, resetDb, seedMoveInWorld } from './fixtures';
 import { defaultModelInputs, projectModel } from '../../src/core/finance/models';
+import { inventoryMappingProblems } from '../../src/core/finance/library';
 
 const CMS = '/api/v1/cms';
 
@@ -57,6 +58,21 @@ describe('prototype-parity model sections', () => {
     expect(lease.status).toBe(200);
     expect(lease.body.data.projection.months[0].opexLease).toBe(0); // rent-free month
     expect(lease.body.data.projection.months[2].opexLease).toBe(4000);
+  });
+
+  it('a size-mix sync commits live size names with the facility NLA, and the mapping gate accepts them', async () => {
+    const world = await seedMoveInWorld();
+    const op = await createOperator('FINANCE_OPERATOR');
+    const m = await newModel(op.auth, world.branchId);
+    const sizes = await prisma.unitSize.findMany({ orderBy: { sortOrder: 'asc' } });
+    const sizeMix = sizes.map((s) => ({ name: s.name, range: `${s.sqftFrom} sq ft`, nlaSqft: 100, units: 2, psf: 5 }));
+    // The template carries prototype labels (incl. XL) that the live taxonomy may not have.
+    const synced = await api.put(`${CMS}/finance/models/${m.id}/size-mix`).set('Authorization', op.auth)
+      .send({ version: 0, patch: { sizeMix, nlaSqft: 100 * sizes.length } });
+    expect(synced.status).toBe(200);
+    expect(synced.body.data.inputs.nlaSqft).toBe(100 * sizes.length);
+    expect(synced.body.data.projection.checks.sizeMixReconciles.pass).toBe(true);
+    expect(await inventoryMappingProblems(m.id)).toEqual([]);
   });
 
   it('opex categories derive the base; a lease-named category is rejected', async () => {

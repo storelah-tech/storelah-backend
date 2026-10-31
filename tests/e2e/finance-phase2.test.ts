@@ -326,6 +326,10 @@ describe('pricing overlay (live wins)', () => {
     expect(res.status).toBe(200);
     expect(res.body.data.facilityUnits).toBe(2);
     expect(res.body.data.facilityNla).toBe(70);
+    // Size-mix sync labels each live size with its sqft range at this facility.
+    const lockerRow = res.body.data.rows.find((r: { code: string }) => r.code === 'LOCKER');
+    expect(lockerRow).toMatchObject({ name: 'Locker', units: 1, minSqft: 20, maxSqft: 20 });
+    expect(res.body.data.rows.find((r: { code: string }) => r.code === 'MEDIUM')).toMatchObject({ units: 0, minSqft: null, maxSqft: null });
     expect(res.body.data.authorityNote).toMatch(/NEVER write back/);
 
     const over = await api.put(`${CMS}/finance/pricing/${locker.id}`).set('Authorization', op.auth).send({

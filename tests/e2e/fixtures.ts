@@ -65,7 +65,7 @@ export async function createOperator(role = 'OWNER', password = 'e2e-operator-1'
   const email = uniqueEmail();
   const roleId = role.startsWith('role_') || role.length > 20 ? role : await roleIdByKey(role);
   const u = await prisma.adminUser.create({
-    data: { email, name: `E2E ${role}`, passwordHash: await bcrypt.hash(password, 4), roleId },
+    data: { email, name: `E2E ${role}`, passwordHash: await bcrypt.hash(password, 4), roleId, activatedAt: new Date() },
   });
   return { id: u.id, email, password, auth: `Bearer ${signToken(u)}` };
 }

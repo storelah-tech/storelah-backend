@@ -270,11 +270,15 @@ function renderUsers() {
       ? u.facilityAccess.map((a) => escapeHtml(a.branchCode || '?')).join(', ')
       : '<span class="t-type">All facilities</span>';
     const locked = u.lockedUntil ? ' <span class="pill red">Locked</span>' : '';
-    return `<tr><td><b>${escapeHtml(u.name)}</b>${self ? ' <span class="pill green">You</span>' : ''}${locked}<div class="t-type">${escapeHtml(u.email)}</div></td>` +
+    const invited = u.status === 'INVITED' ? ' <span class="pill amber">Invite pending</span>' : '';
+    return `<tr><td><b>${escapeHtml(u.name)}</b>${self ? ' <span class="pill green">You</span>' : ''}${invited}${locked}<div class="t-type">${escapeHtml(u.email)}</div></td>` +
       `<td><select class="tbl-select" data-u-role="${escapeHtml(u.id)}" aria-label="Role for ${escapeHtml(u.email)}" ${self ? 'disabled title="You cannot change your own role"' : ''}>${roleOptions(u.role.id)}</select></td>` +
       `<td>${facilities}</td>` +
       `<td class="unit-actions"><button class="act-btn" type="button" data-u-act="access" data-u-id="${escapeHtml(u.id)}">Facilities</button> ` +
-      `<button class="act-btn" type="button" data-u-act="password" data-u-id="${escapeHtml(u.id)}">Reset password</button> ` +
+      (u.status === 'INVITED'
+        ? `<button class="act-btn" type="button" data-u-act="invite" data-u-id="${escapeHtml(u.id)}">Resend invite</button> `
+        : `<button class="act-btn" type="button" data-u-act="reset" data-u-id="${escapeHtml(u.id)}">Email reset link</button> ` +
+          (self ? '' : `<button class="act-btn" type="button" data-u-act="signout" data-u-id="${escapeHtml(u.id)}">Sign out everywhere</button> `)) +
       (u.lockedUntil ? `<button class="act-btn" type="button" data-u-act="unlock" data-u-id="${escapeHtml(u.id)}">Unlock</button> ` : '') +
       (self ? '' : `<button class="act-btn danger" type="button" data-u-act="delete" data-u-id="${escapeHtml(u.id)}">Remove</button>`) + '</td></tr>' +
       `<tr data-u-editor="${escapeHtml(u.id)}" hidden><td colspan="4"><div class="t-type" data-u-editor-body>…</div></td></tr>`;
@@ -300,17 +304,18 @@ function toggleAccessEditor(id) {
   row.hidden = false;
 }
 
-function togglePasswordEditor(id) {
-  const row = editorRow(id);
-  if (!row) return;
-  if (!row.hidden && row.dataset.mode === 'password') { row.hidden = true; return; }
-  row.dataset.mode = 'password';
-  row.querySelector('[data-u-editor-body]').innerHTML = `<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
-    <input type="password" class="tbl-search" data-u-newpw placeholder="New temporary password (8+ characters)" aria-label="New temporary password" autocomplete="new-password" style="max-width:280px;">
-    <button class="act-btn primary" type="button" data-u-save-password="${escapeHtml(id)}">Set password</button>
-    <span class="t-type">They are signed out everywhere and should change it after signing in.</span></div>`;
-  row.hidden = false;
-  row.querySelector('[data-u-newpw]').focus();
+// Shows a one-time link the Owner can pass on when the email could not be sent.
+function showLink(message, result) {
+  const box = $('#teamLinkNote');
+  if (!box) return;
+  if (!result || result.sent || !result.link) { box.hidden = true; showBanner(message, true); return; }
+  const until = new Date(result.expiresAt).toLocaleString('en-SG', { dateStyle: 'medium', timeStyle: 'short' });
+  box.innerHTML = `<div class="modal-alert">The email could not be sent. Copy this one-time link and send it to them yourself (works once, until ${escapeHtml(until)}):` +
+    `<div class="link-box"><input type="text" id="teamLinkInput" readonly value="${escapeHtml(result.link)}" aria-label="One-time link">` +
+    '<button class="act-btn primary" type="button" id="teamLinkCopy">Copy link</button>' +
+    '<button class="act-btn" type="button" id="teamLinkHide">Done</button></div></div>';
+  box.hidden = false;
+  $('#teamLinkInput').select();
 }
 
 async function saveAccess(id) {
@@ -341,18 +346,17 @@ async function submitUserForm() {
   const body = {
     email: $('#uf-email')?.value.trim() || '',
     name: $('#uf-name')?.value.trim() || '',
-    password: $('#uf-password')?.value || '',
     roleId: $('#uf-role')?.value || '',
   };
-  if (!body.email || !body.name || body.password.length < 8 || !body.roleId) {
-    showBanner('Enter an email, a name, a role and a temporary password of 8+ characters');
+  if (!body.email || !body.name || !body.roleId) {
+    showBanner('Enter an email, a name and a role');
     return;
   }
   try {
-    await post('/users', body);
-    showBanner(`${body.email} added. Share the temporary password with them directly.`, true);
-    ['#uf-email', '#uf-name', '#uf-password'].forEach((sel) => { if ($(sel)) $(sel).value = ''; });
+    const u = await post('/users', body);
+    ['#uf-email', '#uf-name'].forEach((sel) => { if ($(sel)) $(sel).value = ''; });
     await reloadTeam();
+    showLink(`Invite sent to ${body.email}. The link expires in 3 days.`, u.invite);
   } catch (e) {
     showBanner('Operator: ' + describeError(e));
   }
@@ -550,7 +554,26 @@ export function wireSettingsExt() {
       const id = act.dataset.uId;
       const u = usersCache.find((x) => x.id === id);
       if (act.dataset.uAct === 'access') toggleAccessEditor(id);
-      else if (act.dataset.uAct === 'password') togglePasswordEditor(id);
+      else if (act.dataset.uAct === 'invite' || act.dataset.uAct === 'reset') {
+        const invite = act.dataset.uAct === 'invite';
+        try {
+          const r = await post(`/users/${encodeURIComponent(id)}/${invite ? 'invite' : 'reset-password'}`, {});
+          showLink(invite ? `New invite sent to ${u ? u.email : 'them'}. The old link no longer works.` : `Reset link sent to ${u ? u.email : 'them'}. It expires in 1 hour.`, r);
+          if (invite) await reloadTeam();
+        } catch (err) {
+          showBanner('Operator: ' + describeError(err));
+        }
+      }
+      else if (act.dataset.uAct === 'signout') {
+        const okConfirm = await confirmDialog({ title: `Sign ${u ? u.email : 'this operator'} out everywhere?`, message: 'They stay active and can sign straight back in.', confirmLabel: 'Sign out' });
+        if (!okConfirm) return;
+        try {
+          await post(`/users/${encodeURIComponent(id)}/sign-out`, {});
+          showBanner(`${u ? u.email : 'Operator'} is signed out on every device`, true);
+        } catch (err) {
+          showBanner('Operator: ' + describeError(err));
+        }
+      }
       else if (act.dataset.uAct === 'unlock') patchUser(id, { unlock: true }, `${u ? u.email : 'Operator'} unlocked`).catch(() => {});
       else if (act.dataset.uAct === 'delete') {
         const okConfirm = await confirmDialog({ title: `Remove ${u ? u.email : 'this operator'}?`, message: 'They are signed out and can no longer sign in.', confirmLabel: 'Remove', danger: true });
@@ -567,11 +590,17 @@ export function wireSettingsExt() {
     }
     const saveAcc = e.target.closest('button[data-u-save-access]');
     if (saveAcc) { saveAccess(saveAcc.dataset.uSaveAccess).catch(() => {}); return; }
-    const savePw = e.target.closest('button[data-u-save-password]');
-    if (savePw) {
-      const pw = editorRow(savePw.dataset.uSavePassword)?.querySelector('[data-u-newpw]')?.value || '';
-      if (pw.length < 8) { showBanner('Use at least 8 characters'); return; }
-      patchUser(savePw.dataset.uSavePassword, { password: pw }, 'Password set. They have been signed out.').catch(() => {});
+  });
+  $('#teamLinkNote')?.addEventListener('click', async (e) => {
+    if (e.target.closest('#teamLinkHide')) { $('#teamLinkNote').hidden = true; return; }
+    if (!e.target.closest('#teamLinkCopy')) return;
+    const input = $('#teamLinkInput');
+    try {
+      await navigator.clipboard.writeText(input.value);
+      e.target.textContent = 'Copied';
+    } catch (err) {
+      input.select();
+      e.target.textContent = 'Press ⌘C to copy';
     }
   });
   $('#roleTabs')?.addEventListener('click', (e) => {

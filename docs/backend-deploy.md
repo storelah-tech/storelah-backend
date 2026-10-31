@@ -121,6 +121,23 @@ Settings › Team & access. Notes that supersede the `/config` material further 
   everything; records with no facility (e.g. a lead with no preferred site) stay visible.
   Public/customer APIs are never scoped.
 
+## CMS AUTH EMAILS (invites + password resets) — branch `feature/cms-auth-emails`, NOT deployed
+
+Adds operator invites (Owner enters email/name/role → one-time "set your password" link,
+72 h), self-service forgot password (1 h link, same reply for unknown emails, max 3/hour per
+account), Owner "email reset link", "sign out everywhere" (Owner per operator, and self), and
+security emails (password changed, account locked). Links: `<cms>/admin?auth=<token>`; only the
+SHA-256 of a token is stored (`AdminAuthToken`), single use, superseded by newer links.
+
+- **Migration `20261028000000_cms_auth_tokens`** (prod mutation — needs owner authorization):
+  adds `AdminAuthToken`, `AdminUser.invitedAt` / `activatedAt`, backfills `activatedAt` for
+  existing operators (so their sign-in keeps working). Order: migrate → Lambda code update.
+- **Env:** reuses `SES_FROM_EMAIL` (booking emails). Optional `CMS_PUBLIC_URL` overrides the link
+  base (default `https://cms.storelah.sg`). When an email cannot be sent, Owner actions show a
+  copyable one-time link instead.
+- **While the Basic Auth gate is ON**, invite/reset links open the gate's password prompt first —
+  new operators need the gate password too until the owner removes the gate.
+
 ## CMS MEDIA BUCKET + SITE-BUILDER PUBLISH TRIGGER — Phase 0, NOT deployed yet
 
 Plan: `docs/SITE_BUILDER_PLAN.md` (Phase 0). Two prod changes, each needing the
@@ -208,6 +225,8 @@ Each prod step needs the owner's go-ahead (prod migration + prod data).
 4. Check `GET https://api.storelah.sg/api/v1/public/site/bundle` returns the pages.
    Only then set the landing variable `NEXT_PUBLIC_API_URL` (step 2.3 above):
    until then landing builds from its snapshot, which is identical.
+
+## CMS GATE (Basic Auth on cms.storelah.sg) — deployed 2026-08-19
 
 ## CMS GATE (Basic Auth on cms.storelah.sg) — deployed 2026-08-19
 

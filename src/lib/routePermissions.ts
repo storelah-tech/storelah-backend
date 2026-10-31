@@ -42,6 +42,11 @@ export const ROUTE_PERMISSIONS: Record<string, PermissionSpec> = {
   'POST /login': 'PUBLIC',
   'GET /me': 'AUTH',
   'POST /me/password': 'AUTH',
+  'POST /me/sign-out-all': 'AUTH',
+  // Invite / reset links: the one-time token is the credential.
+  'POST /auth/forgot': 'PUBLIC',
+  'GET /auth/token': 'PUBLIC',
+  'POST /auth/token': 'PUBLIC',
 
   // ---- Overview ----
   'GET /summary': v('command', 'analytics'),
@@ -430,6 +435,9 @@ export const ROUTE_PERMISSIONS: Record<string, PermissionSpec> = {
   'POST /users': 'OWNER',
   'PATCH /users/:id': 'OWNER',
   'DELETE /users/:id': 'OWNER',
+  'POST /users/:id/invite': 'OWNER',
+  'POST /users/:id/reset-password': 'OWNER',
+  'POST /users/:id/sign-out': 'OWNER',
   'GET /users/:id/access': 'OWNER',
   'PUT /users/:id/access': 'OWNER',
   'GET /roles': 'OWNER',

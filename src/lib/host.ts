@@ -91,3 +91,18 @@ export function resolveHostKind(req: Request): HostKind {
   }
   return 'api';
 }
+
+/**
+ * Public base URL of the operator CMS, for links in emails (invites, password
+ * resets). CMS_PUBLIC_URL wins when set; otherwise the CMS host serving this
+ * request (https://cms.storelah.sg in prod, http://<host:port> in local dev).
+ * Requests arriving on the api host still link to the CMS host.
+ */
+export function cmsBaseUrl(req: Request): string {
+  const fromEnv = process.env.CMS_PUBLIC_URL?.trim();
+  if (fromEnv) return fromEnv.replace(/\/+$/, '');
+  if (resolveHostKind(req) === 'api') return `https://${CMS_DOMAIN}`;
+  const host = normalizeHost(requestDomain(req));
+  if (host === CMS_DOMAIN) return `https://${CMS_DOMAIN}`;
+  return `http://${req.headers.host ?? host}`;
+}

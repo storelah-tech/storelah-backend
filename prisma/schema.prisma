@@ -142,14 +142,21 @@ model AdminUser {
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
-  // Sign-in lockout (5 failures → 15 min) and session invalidation: a JWT
-  // issued before passwordChangedAt is rejected by requireAuth.
+  // Sign-in lockout (5 failures → 15 min) and session invalidation: JWTs
+  // carry passwordChangedAt as a version (pwv); bumping it (password change,
+  // reset, "sign out everywhere") ends every existing session.
   failedLoginCount  Int       @default(0)
   lockedUntil       DateTime?
   passwordChangedAt DateTime  @default(now())
 
+  // Invites: an invited operator has activatedAt = null and an unusable
+  // password until they set one from the emailed link.
+  invitedAt   DateTime?
+  activatedAt DateTime?
+
   // Facility scope: no rows = every facility (see core/users.ts).
   facilityAccess OperatorFacilityAccess[]
+  authTokens     AdminAuthToken[]
 
   @@index([roleId])
 }
@@ -158,6 +165,23 @@ model AdminUser {
 // `<resource>:<action>` keys from src/lib/permissions.ts. The OWNER role is a
 // locked system row that implicitly holds every permission and is the only
 // role that may manage users and roles.
+// One-time links for operator invites and password resets. Only the SHA-256
+// of the token is stored; the raw token exists only in the emailed link.
+// Single use (usedAt), expiring, and superseded when a newer one is issued.
+model AdminAuthToken {
+  id          String    @id @default(cuid())
+  adminUserId String
+  adminUser   AdminUser @relation(fields: [adminUserId], references: [id], onDelete: Cascade)
+  kind        String // INVITE | RESET
+  tokenHash   String    @unique
+  expiresAt   DateTime
+  usedAt      DateTime?
+  createdById String? // Owner who sent it; null = self-service forgot-password
+  createdAt   DateTime  @default(now())
+
+  @@index([adminUserId, kind])
+}
+
 model AdminRole {
   id          String                @id @default(cuid())
   key         String                @unique // OWNER | MANAGER | VIEWER | custom slug

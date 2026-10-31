@@ -118,7 +118,7 @@ export interface BuiltBookingEmail {
   text: string;
 }
 
-function escapeHtml(v: string): string {
+export function escapeHtml(v: string): string {
   return v
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
@@ -907,6 +907,29 @@ export async function sendQuotationEmail(
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error(`[email] quotation failed quoteNo=${data.quoteNo}: ${message}`);
+    return { sent: false, reason: 'send-failed' };
+  }
+}
+
+/**
+ * Sends a simple HTML + text email with no attachment (CMS auth emails).
+ * NEVER throws — returns `{ sent: false, reason }` on any failure. `tag` is
+ * logged instead of the recipient so logs carry no PII.
+ */
+export async function sendSimpleEmail(to: string, built: BuiltBookingEmail, tag: string): Promise<SendResult> {
+  if (process.env.NODE_ENV === 'test') return { sent: false, reason: 'test-env' };
+  if (!isEmailConfigured()) {
+    console.log(`[email] skip ${tag} (SES not configured)`);
+    return { sent: false, reason: 'not-configured' };
+  }
+  try {
+    const from = fromSender();
+    const raw = buildRawMimeMessage({ fromName: from.name, fromEmail: from.email, to, built, attachment: null });
+    await new SESClient({ region: sesRegion() }).send(new SendRawEmailCommand({ RawMessage: { Data: raw } }));
+    console.log(`[email] ${tag} sent`);
+    return { sent: true };
+  } catch (err) {
+    console.error(`[email] ${tag} failed: ${err instanceof Error ? err.message : String(err)}`);
     return { sent: false, reason: 'send-failed' };
   }
 }

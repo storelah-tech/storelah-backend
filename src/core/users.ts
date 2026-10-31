@@ -10,6 +10,7 @@
 //     principal on every request (so role changes apply immediately) and the
 //     route table in src/lib/routePermissions.ts checks it.
 //   - Every role / user / facility-scope change writes a PermissionAudit row.
+import { randomBytes } from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import { Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma';
@@ -21,6 +22,7 @@ import {
   SYSTEM_ROLES,
   isKnownPermission,
 } from '../lib/permissions';
+import { buildLockedEmail, buildPasswordChangedEmail, sendAuthEmail } from './authEmails';
 
 export const MAX_FAILED_LOGINS = 5;
 export const LOCKOUT_MINUTES = 15;
@@ -86,7 +88,7 @@ export async function scopedBranchIds(adminUserId: string | undefined): Promise<
 
 // ---------- audit ----------
 
-async function audit(
+export async function audit(
   tx: Prisma.TransactionClient | typeof prisma,
   actor: Actor | undefined,
   action: string,
@@ -118,7 +120,7 @@ let dummyHash: string | undefined;
 
 /** Verifies credentials with lockout. Unknown email and wrong password give
  * the same 401; a locked account gets 423 with the remaining minutes. */
-export async function authenticate(emailInput: string, password: string) {
+export async function authenticate(emailInput: string, password: string, opts?: { baseUrl?: string }) {
   const email = emailInput.trim().toLowerCase();
   const user = await prisma.adminUser.findUnique({ where: { email }, include: { role: true } });
   const now = new Date();
@@ -132,7 +134,8 @@ export async function authenticate(emailInput: string, password: string) {
     const mins = Math.ceil((user.lockedUntil.getTime() - now.getTime()) / 60000);
     throw new AppError(423, 'LOCKED', `Too many failed sign-in attempts. Try again in ${mins} minute${mins === 1 ? '' : 's'}.`);
   }
-  if (!(await bcrypt.compare(password, user.passwordHash))) {
+  // An invited operator has no usable password until they accept the invite.
+  if (!user.activatedAt || !(await bcrypt.compare(password, user.passwordHash))) {
     const failures = user.failedLoginCount + 1;
     const lock = failures >= MAX_FAILED_LOGINS;
     await prisma.adminUser.update({
@@ -142,6 +145,10 @@ export async function authenticate(emailInput: string, password: string) {
         : { failedLoginCount: failures },
     });
     if (lock) {
+      if (user.activatedAt && opts?.baseUrl) {
+        const forgotUrl = `${opts.baseUrl.replace(/\/+$/, '')}/admin?forgot=1`;
+        sendAuthEmail(user.email, buildLockedEmail({ name: user.name, minutes: LOCKOUT_MINUTES, forgotUrl }), 'locked').catch(() => {});
+      }
       throw new AppError(423, 'LOCKED', `Too many failed sign-in attempts. Try again in ${LOCKOUT_MINUTES} minutes.`);
     }
     throw new AppError(401, 'UNAUTHORIZED', 'Invalid email or password');
@@ -161,11 +168,14 @@ export async function changeOwnPassword(adminUserId: string, currentPassword: st
   if (currentPassword === newPassword) {
     throw new AppError(400, 'VALIDATION', 'New password must be different from the current one');
   }
-  return prisma.adminUser.update({
+  const now = new Date();
+  const updated = await prisma.adminUser.update({
     where: { id: adminUserId },
     // Older tokens are rejected from now on (see requireAuth).
-    data: { passwordHash: await bcrypt.hash(newPassword, 10), passwordChangedAt: new Date() },
+    data: { passwordHash: await bcrypt.hash(newPassword, 10), passwordChangedAt: now },
   });
+  sendAuthEmail(updated.email, buildPasswordChangedEmail({ name: updated.name, when: now, byOwner: false }), 'password-changed').catch(() => {});
+  return updated;
 }
 
 // ---------- roles ----------
@@ -363,6 +373,9 @@ function serializeUser(u: UserRow) {
     })),
     scoped: u.facilityAccess.length > 0 && !u.facilityAccess.some((a) => a.scope === 'ALL'),
     lockedUntil: u.lockedUntil && u.lockedUntil > new Date() ? u.lockedUntil : null,
+    // INVITED = has not set a password from the invite link yet.
+    status: u.activatedAt ? 'ACTIVE' : 'INVITED',
+    invitedAt: u.invitedAt,
     createdAt: u.createdAt,
     updatedAt: u.updatedAt,
   };
@@ -389,17 +402,27 @@ async function ownerCount(tx: Prisma.TransactionClient | typeof prisma = prisma)
   return tx.adminUser.count({ where: { role: { key: OWNER_ROLE_KEY } } });
 }
 
-export async function createUser(input: { email: string; name: string; password: string; roleId: string }, actor?: Actor) {
+/** No password → invite mode: the operator sets one from the emailed link
+ * (core/cmsAuth.ts sendInvite). With a password the account is active now. */
+export async function createUser(input: { email: string; name: string; password?: string; roleId: string }, actor?: Actor) {
   const email = input.email.trim().toLowerCase();
   const clash = await prisma.adminUser.findUnique({ where: { email } });
   if (clash) throw new AppError(409, 'CONFLICT', `A user with ${email} already exists`);
   await assertRole(input.roleId);
   const row = await prisma.$transaction(async (tx) => {
     const u = await tx.adminUser.create({
-      data: { email, name: input.name.trim(), passwordHash: await bcrypt.hash(input.password, 10), roleId: input.roleId },
+      data: {
+        email,
+        name: input.name.trim(),
+        // Invited operators get a password no one knows until they set theirs.
+        passwordHash: await bcrypt.hash(input.password ?? randomBytes(32).toString('base64url'), 10),
+        roleId: input.roleId,
+        activatedAt: input.password ? new Date() : null,
+        invitedAt: input.password ? null : new Date(),
+      },
       include: USER_INCLUDE,
     });
-    await audit(tx, actor, 'USER_CREATE', 'USER', u.id, null, { email, name: u.name, role: u.role.key });
+    await audit(tx, actor, 'USER_CREATE', 'USER', u.id, null, { email, name: u.name, role: u.role.key, invited: !input.password });
     return u;
   });
   return serializeUser(row);
@@ -428,7 +451,13 @@ export async function updateUser(
         ...(roleChange ? { roleId: input.roleId } : {}),
         // An Owner-set password signs the user out everywhere and clears a lockout.
         ...(input.password !== undefined
-          ? { passwordHash: await bcrypt.hash(input.password, 10), passwordChangedAt: new Date(), failedLoginCount: 0, lockedUntil: null }
+          ? {
+              passwordHash: await bcrypt.hash(input.password, 10),
+              passwordChangedAt: new Date(),
+              failedLoginCount: 0,
+              lockedUntil: null,
+              activatedAt: existing.activatedAt ?? new Date(),
+            }
           : {}),
         ...(input.unlock ? { failedLoginCount: 0, lockedUntil: null } : {}),
       },
@@ -452,6 +481,9 @@ export async function updateUser(
     }
     return u;
   });
+  if (input.password !== undefined) {
+    sendAuthEmail(row.email, buildPasswordChangedEmail({ name: row.name, when: new Date(), byOwner: true }), 'password-changed (owner)').catch(() => {});
+  }
   return serializeUser(row);
 }
 

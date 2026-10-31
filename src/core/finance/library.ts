@@ -104,8 +104,9 @@ export async function inventoryMappingProblems(modelId: string): Promise<string[
   const m = await prisma.financialModel.findUnique({ where: { id: modelId } });
   if (!m || !m.branchId) return [];
   const inputs = toInputs(m.inputs);
-  const sizes = await prisma.unitSize.findMany({ select: { code: true } });
-  const live = new Set(sizes.map((s) => s.code.trim().toUpperCase()));
+  const sizes = await prisma.unitSize.findMany({ select: { code: true, name: true } });
+  // A synced size mix is labelled with the live size names (Units module).
+  const live = new Set(sizes.flatMap((s) => [s.code.trim().toUpperCase(), s.name.trim().toUpperCase()]));
   const missing = inputs.sizeMix
     .map((c) => c.name)
     .filter((name) => {

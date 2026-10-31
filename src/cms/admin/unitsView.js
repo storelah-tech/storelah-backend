@@ -104,8 +104,12 @@ function renderUnitsTable() {
     .join('');
   const sub = $('#unitsSub');
   if (sub) {
-    const start = state.total === 0 ? 0 : (state.page - 1) * state.perPage + 1;
-    const end = Math.min(state.page * state.perPage, state.total);
+    // perPage can be 'all' (whole list on one page) — the server echoes the
+    // total as meta.perPage in that case, so the range math uses the same
+    // effective page size the server paged with.
+    const effPP = state.perPage === 'all' ? state.total : state.perPage;
+    const start = state.total === 0 ? 0 : (state.page - 1) * effPP + 1;
+    const end = Math.min(state.page * effPP, state.total);
     sub.textContent = `${state.total} unit${state.total === 1 ? '' : 's'} · showing ${start}–${end}`;
   }
 }
@@ -137,13 +141,109 @@ export function populateUnitLevelFilter() {
   state.unitLevelFilter = sel.value;
 }
 
+// Size-category filter options come from the live /sizes ref data (same
+// source as the unit form + map size filter), so a newly added size tier
+// appears here with no code change. Selection survives re-renders.
+export function populateUnitSizeFilter() {
+  const sel = $('#unitSizeFilter');
+  if (!sel) return;
+  const current = state.unitSizeFilter || '';
+  sel.innerHTML = '<option value="">All sizes</option>' +
+    state.sizes.map((s) => `<option value="${escapeHtml(s.code)}">${escapeHtml(s.name)}</option>`).join('');
+  sel.value = [...sel.options].some((o) => o.value === current) ? current : '';
+  state.unitSizeFilter = sel.value;
+}
+
+// ---------- page-size + size-filter controls (JS-injected) ----------
+// The units toolbar/pager HTML stays untouched — both selects are created here
+// on first fetch (same precedent as the analytics Volume/Value tabs +
+// #anaExtra in admin.js) and re-synced on every fetch so ref-data races and
+// back-navigation converge without a reload.
+const UNIT_PER_PAGE_KEY = 'storelah.cms.units.perPage';
+const UNIT_PER_PAGE_OPTIONS = [10, 25, 50, 100, 'all'];
+let unitPrefsRestored = false;
+
+function restoreUnitPrefs() {
+  if (unitPrefsRestored) return;
+  unitPrefsRestored = true;
+  try {
+    const v = window.localStorage.getItem(UNIT_PER_PAGE_KEY);
+    if (v === 'all') state.perPage = 'all';
+    else if (v !== null && UNIT_PER_PAGE_OPTIONS.includes(Number(v))) state.perPage = Number(v);
+  } catch (e) { /* private mode — keep the default page size */ }
+}
+
+function perPageLabel(v) {
+  return v === 'all' ? 'All' : String(v);
+}
+
+function ensureUnitToolbarExtras() {
+  restoreUnitPrefs();
+  // Size-category dropdown — sits right after the AC filter in the toolbar.
+  if (!$('#unitSizeFilter')) {
+    const anchor = $('#unitAcFilter');
+    if (anchor) {
+      const sel = document.createElement('select');
+      sel.id = 'unitSizeFilter';
+      sel.className = 'tbl-select';
+      sel.setAttribute('aria-label', 'Filter by size category');
+      anchor.insertAdjacentElement('afterend', sel);
+      sel.addEventListener('change', (e) => {
+        state.unitSizeFilter = e.target.value;
+        state.page = 1;
+        fetchUnitsPage().catch(() => {});
+      });
+    }
+  }
+  // Page-size selector — prepended to the pager buttons ("Show [25 ▾]").
+  if (!$('#unitPerPage')) {
+    const pager = $('#pageInfo')?.closest('.tbl-pager');
+    if (pager) {
+      const wrap = document.createElement('label');
+      wrap.id = 'unitPerPageWrap';
+      wrap.setAttribute('for', 'unitPerPage');
+      wrap.style.cssText = 'display:inline-flex;align-items:center;gap:6px;color:var(--muted);font-size:12px;';
+      wrap.append('Show ');
+      const sel = document.createElement('select');
+      sel.id = 'unitPerPage';
+      sel.className = 'tbl-select';
+      sel.setAttribute('aria-label', 'Units per page');
+      sel.innerHTML = UNIT_PER_PAGE_OPTIONS.map((v) => `<option value="${v}">${perPageLabel(v)}</option>`).join('');
+      sel.addEventListener('change', (e) => {
+        const v = e.target.value;
+        state.perPage = v === 'all' ? 'all' : Number(v);
+        try { window.localStorage.setItem(UNIT_PER_PAGE_KEY, v); } catch (err) { /* private mode — session-only */ }
+        state.page = 1;
+        fetchUnitsPage().catch(() => {});
+      });
+      wrap.append(sel);
+      const btns = pager.querySelector('.tbl-pager-btns');
+      if (btns) btns.insertAdjacentElement('beforebegin', wrap);
+      else pager.append(wrap);
+    }
+  }
+  // Re-sync both controls to state (filter changes elsewhere reset them).
+  const sizeSel = $('#unitSizeFilter');
+  if (sizeSel && sizeSel.value !== (state.unitSizeFilter || '')) {
+    if ([...sizeSel.options].some((o) => o.value === (state.unitSizeFilter || '')) || !state.unitSizeFilter) {
+      sizeSel.value = state.unitSizeFilter || '';
+    }
+  }
+  const ppSel = $('#unitPerPage');
+  if (ppSel) ppSel.value = state.perPage === 'all' ? 'all' : String(state.perPage);
+}
+
 // ---------- server-side pagination ----------
 export async function fetchUnitsPage() {
+  ensureUnitToolbarExtras();
   populateUnitBranchFilter();
   populateUnitLevelFilter();
+  populateUnitSizeFilter();
   // Clamp a stale level (e.g. just deactivated) to the first active level so
   // the table never filters on a hidden floor. ALL mode omits level anyway.
   if (!isAllFacilities()) ensureActiveLevel(state.branchCode);
+  // state.perPage may be 'all' (whole list on one page) — String() passes it
+  // through as ?perPage=all, which the API accepts (see unitListQuerySchema).
   const qs = new URLSearchParams({ page: String(state.page), perPage: String(state.perPage) });
   if (state.statusFilter) qs.set('status', state.statusFilter);
   // Explicit toolbar facility/level overrides win; otherwise the sidebar
@@ -157,11 +257,15 @@ export async function fetchUnitsPage() {
   }
   if (state.unitAcFilter === 'ac') qs.set('hasAC', 'true');
   else if (state.unitAcFilter === 'nonac') qs.set('hasAC', 'false');
+  if (state.unitSizeFilter) qs.set('size', state.unitSizeFilter);
   const body = await request(`/units?${qs}`);
   state.units = (body.data || []).map(normalizeUnit);
   const m = body.meta || {};
   state.total = m.total != null ? m.total : state.units.length;
   state.totalPages = m.totalPages != null ? m.totalPages : 1;
+  // "Show all" is a single page by construction — pin the pager so the range
+  // line and Prev/Next stay consistent even from a stale deep page.
+  if (state.perPage === 'all') state.page = 1;
   // Last row deleted off the final page -> clamp to the real last page.
   if (state.units.length === 0 && state.page > 1 && state.total > 0 && state.page > state.totalPages) {
     state.page = state.totalPages;

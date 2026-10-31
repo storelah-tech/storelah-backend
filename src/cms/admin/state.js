@@ -62,7 +62,7 @@ export const state = {
   // units-section view state
   view: 'dashboard', // 'dashboard' | 'units' | 'tenants'
   page: 1,
-  perPage: 10,
+  perPage: 10, // 10 | 25 | 50 | 100 | 'all' (page-size selector; persisted per operator)
   total: 0,
   totalPages: 1,
   branchCode: 'SW', // drives map + table filter (sidebar branch switcher)
@@ -72,6 +72,7 @@ export const state = {
   unitBranchFilter: '', // branch code or '' = follow sidebar
   unitLevelFilter: '', // level number as string or '' = all/follow sidebar
   unitAcFilter: '', // '' | 'ac' | 'nonac' (unit type filter)
+  unitSizeFilter: '', // UnitSize code or '' = all sizes (server-side ?size=)
   // P1 item 3: unit-map read-path filters (size code + near-lift proximity).
   mapSize: '',
   mapNearLift: false,

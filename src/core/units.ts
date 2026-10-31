@@ -169,8 +169,13 @@ function hasCurrentOccupant(status: UnitStatus): boolean {
 }
 
 export async function listUnits(query: UnitListQuery = {}) {
-  const page = Math.max(1, query.page ?? 1);
-  const perPage = Math.min(200, Math.max(1, query.perPage ?? 25));
+  // ?perPage=all returns the whole list on one page (the Units table "Show
+  // all" option) — page is forced to 1 and meta.perPage echoes the total so
+  // the existing "showing X–Y" pager math keeps working.
+  const showAll = query.perPage === 'all';
+  const page = showAll ? 1 : Math.max(1, query.page ?? 1);
+  // (Inline === 'all' check — not `showAll` — so TS narrows perPage to number.)
+  const perPage = query.perPage === 'all' ? 0 : Math.min(200, Math.max(1, query.perPage ?? 25));
   const createdAt: { gte?: Date; lte?: Date } = {};
   if (query.from) createdAt.gte = query.from;
   if (query.to) createdAt.lte = query.to;
@@ -186,6 +191,10 @@ export async function listUnits(query: UnitListQuery = {}) {
     ...(query.branch ? { branch: { code: query.branch } } : {}),
     ...(query.level != null ? { floor: { level: query.level } } : {}),
     ...(query.hasAC != null ? { hasAC: query.hasAC } : {}),
+    // Size-category filter (?size=SMALL) — UnitSize code, same contract as
+    // GET /units/map?size= (exact code match; the CMS dropdown sends the code
+    // verbatim from GET /sizes).
+    ...(query.size ? { size: { code: query.size } } : {}),
     ...(createdAt.gte || createdAt.lte ? { createdAt } : {}),
   };
   const include = { size: true, branch: true, floor: true, tenant: true };
@@ -201,14 +210,30 @@ export async function listUnits(query: UnitListQuery = {}) {
     // Draft-plan units are not inventory yet (see where clause above).
     const visible = fetched.filter((u) => u.status !== 'DRAFT');
     const total = visible.length;
-    const rows = visible.slice((page - 1) * perPage, page * perPage);
+    const rows = showAll ? visible : visible.slice((page - 1) * perPage, page * perPage);
     return {
       rows: rows.map(serializeUnit),
       meta: {
         count: rows.length,
         page,
-        perPage,
-        totalPages: Math.max(1, Math.ceil(total / perPage)),
+        perPage: showAll ? total : perPage,
+        totalPages: showAll ? 1 : Math.max(1, Math.ceil(total / perPage)),
+        total,
+      },
+    };
+  }
+  if (showAll) {
+    const [units, total] = await Promise.all([
+      prisma.unit.findMany({ where, include, orderBy }),
+      prisma.unit.count({ where }),
+    ]);
+    return {
+      rows: units.map(serializeUnit),
+      meta: {
+        count: units.length,
+        page: 1,
+        perPage: total,
+        totalPages: 1,
         total,
       },
     };
@@ -237,11 +262,14 @@ export async function listUnits(query: UnitListQuery = {}) {
 
 export interface UnitListQuery {
   page?: number;
-  perPage?: number;
+  // 1–200 rows per page, or 'all' for the whole list on one page.
+  perPage?: number | 'all';
   status?: string;
   branch?: string;
   level?: number;
   hasAC?: boolean;
+  // UnitSize code (e.g. SMALL) — exact match, same as GET /units/map?size=.
+  size?: string;
   from?: Date;
   to?: Date;
 }

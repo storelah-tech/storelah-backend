@@ -345,13 +345,23 @@ const yesNoQueryField = z.preprocess((v) => {
 
 const unitListQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
-  perPage: z.coerce.number().int().min(1).max(200).default(25),
+  // Page size: 1–200 rows, or `all` for the whole list on one page (the Units
+  // table "Show all" option). Case-insensitive (`ALL`, `All` also work).
+  perPage: z
+    .preprocess(
+      (v) => (typeof v === 'string' && v.trim().toLowerCase() === 'all' ? 'all' : v),
+      z.union([z.literal('all'), z.coerce.number().int().min(1).max(200)]),
+    )
+    .default(25),
   status: z
     .enum(['OCCUPIED', 'AVAILABLE', 'RESERVED', 'OVERDUE', 'MAINTENANCE', 'INACTIVE', 'BLOCKED'])
     .optional(),
   branch: z.string().trim().min(1).optional(),
   level: z.coerce.number().int().min(1).optional(),
   hasAC: yesNoQueryField,
+  // Size-category filter: UnitSize code (e.g. SMALL) — same contract as
+  // GET /units/map?size=. Combines (AND) with every other filter above.
+  size: z.string().trim().min(1).max(32).optional(),
   ...dateRangeFields,
 });
 
@@ -641,6 +651,7 @@ router.get('/units', requireAuth, async (req: Request, res: Response) => {
     branch: parsed.data.branch,
     level: parsed.data.level,
     hasAC: parsed.data.hasAC,
+    size: parsed.data.size,
     ...range,
   });
   ok(res, rows, meta);

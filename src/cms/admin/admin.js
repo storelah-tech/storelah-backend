@@ -24,6 +24,7 @@ import {
 import { bindPortfolio, wirePortfolio } from './portfolioView.js';
 import { bindQuotes, bindMoveouts, wireOpsQueues } from './opsQueuesView.js';
 import { openLeadForm, openLeadPage, renderAppointments, renderQuotes, leadDisplayName } from './leadsWorkspace.js';
+import './customerWorkspace.js';
 import { bindFeesSection, bindBusinessRulesSection, bindUsersSection, wireSettingsExt } from './settingsExtView.js';
 import { bindExtrasSection, wireExtras } from './extrasView.js';
 import { bindContentSection, wireContent } from './contentView.js';
@@ -62,7 +63,7 @@ const coreMap = {
   portfolio: 'command',
   leads: 'leads', pipeline: 'leads', quotes: 'leads', inbox: 'leads', calendar: 'leads', automation: 'leads', 'lead-profile': 'leads',
   analytics: 'command',
-  customers: 'customers',
+  customers: 'customers', 'customer-profile': 'customers',
   facilities: 'facilities',
   extras: 'extras',
   content: 'content',

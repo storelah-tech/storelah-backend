@@ -754,6 +754,7 @@ model Tenant {
   refunds                Refund[]
   arrearsCases           ArrearsCase[]
   lateFeeWaivers         LateFeeWaiver[]
+  settlements            CustomerSettlement[]
   createdAt              DateTime             @default(now())
   updatedAt              DateTime             @updatedAt
 }
@@ -2463,4 +2464,39 @@ model StaffNotification {
   createdAt   DateTime  @default(now())
 
   @@index([recipientId, readAt])
+}
+
+// ---------------------------------------------------------------------------
+// Customer settlements (prototype 2026-11-04: Transfer unit, Move-out,
+// Refund). The system calculates the settlement; nothing posts to the unit or
+// billing schedule until Finance approves it in Transactions, documents &
+// approvals. amount is signed: negative = owed to the customer (refund /
+// credit), positive = the customer pays.
+// ---------------------------------------------------------------------------
+model CustomerSettlement {
+  id            String    @id @default(cuid())
+  ref           String    @unique // TRF-/RF-/CH- + 7 digits
+  kind          String // TRANSFER | MOVE_OUT | REFUND
+  docType       String // Transfer approval | Refund | Charge
+  tenantId      String
+  tenant        Tenant    @relation(fields: [tenantId], references: [id])
+  unitId        String
+  toUnitId      String?
+  effectiveDate DateTime  @db.Date // transfer date or last day of access
+  channel       String? // Customer portal | WhatsApp | Phone | Email | Onsite
+  reason        String?
+  note          String?
+  lines         Json // [{ label, amount, detail? }]
+  amount        Decimal   @db.Decimal(10, 2)
+  adjustment    Json? // { type: CHARGE|CREDIT, category, amount, reason }
+  status        String    @default("PENDING") // PENDING | APPROVED | REJECTED
+  requestedBy   String
+  decidedBy     String?
+  decidedAt     DateTime?
+  decisionNote  String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([tenantId])
+  @@index([status])
 }

@@ -555,8 +555,8 @@ async function loadQuoteUnits(lead) {
     const qs = new URLSearchParams({ status: 'AVAILABLE', perPage: '200' });
     if (lead.branchCode) qs.set('branch', lead.branchCode);
     const units = await get('/units?' + qs);
-    sel.innerHTML = '<option value="">Size recommendation only</option>' + (units || []).slice(0, 200).map((u) => option(u.unitCode, `${u.unitCode} · ${u.sqft} sq ft${u.monthlyRate ? ' · ' + money(u.monthlyRate) : ''}`, lead.unitCode || '')).join('');
-    sel.onchange = () => { const u = (units || []).find((x) => x.unitCode === sel.value); if (u?.monthlyRate) { document.getElementById('lwQuoteGross').value = u.monthlyRate; document.getElementById('lwQuoteGross').dispatchEvent(new Event('input')); } };
+    sel.innerHTML = '<option value="">Size recommendation only</option>' + (units || []).slice(0, 200).map((u) => option(u.unitCode, `${u.unitCode} · ${u.sqft} sq ft${u.rate ? ' · ' + money(u.rate) : ''}`, lead.unitCode || '')).join('');
+    sel.onchange = () => { const u = (units || []).find((x) => x.unitCode === sel.value); if (u?.rate) { document.getElementById('lwQuoteGross').value = u.rate; document.getElementById('lwQuoteGross').dispatchEvent(new Event('input')); } };
   } catch { /* unit list is optional — a size recommendation can still be quoted */ }
 }
 

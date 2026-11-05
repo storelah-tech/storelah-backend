@@ -276,6 +276,8 @@ import {
   QUOTE_STATUSES, deleteDraftQuotation, duplicateAsDraft, getQuotationPdfById, listQuotationRegister, resendQuotation, voidQuotation,
 } from '../core/quotationRegister';
 import { NOTE_ENTITIES, addNote, listMentionableUsers, listMyNotifications, listNotes, markNotificationsRead } from '../core/recordNotes';
+import { ADJUSTMENT_CATEGORIES, decideSettlement, getCustomerProfile, listSettlements, previewSettlement, submitSettlement } from '../core/customerProfile';
+import { REGISTER_DOC_TYPES, listRegister } from '../core/finance/register';
 
 const LEAD_STAGE_VALUES = PIPELINE_COLUMNS as [LeadStage, ...LeadStage[]];
 const LEAD_SOURCE_VALUES = ['WEBSITE', 'WHATSAPP', 'REFERRAL', 'GOOGLE', 'PHONE', 'WALK_IN', 'PARTNER'] as const;
@@ -1120,6 +1122,111 @@ router.post('/notifications/read', requireAuth, async (req: Request, res: Respon
   }
   ok(res, await markNotificationsRead(adminOf(req)!.id, parsed.data.ids));
 });
+
+// ---- Customer profile + settlements (Customers, prototype 2026-11-04) ----
+router.get('/tenants/:id/profile', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await getCustomerProfile(String(req.params.id)));
+});
+
+const ymdString = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Use YYYY-MM-DD');
+const adjustmentSchema = z.object({
+  type: z.enum(['CHARGE', 'CREDIT']),
+  category: z.enum(ADJUSTMENT_CATEGORIES),
+  amount: z.number().nonnegative(),
+  reason: z.string().trim().max(500),
+}).nullable().optional();
+const settlementSchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('TRANSFER'),
+    date: ymdString,
+    toUnitId: z.string().min(1),
+    destPromoPct: z.number().min(0).max(100).optional(),
+    destProtection: z.number().nonnegative().optional(),
+    destDeposit: z.number().nonnegative().optional(),
+    reason: z.string().trim().max(500).nullable().optional(),
+    adjustment: adjustmentSchema,
+  }),
+  z.object({
+    kind: z.enum(['MOVE_OUT', 'REFUND']),
+    lastDay: ymdString.nullable().optional(),
+    channel: z.enum(['WhatsApp', 'Phone', 'Email', 'Onsite', 'Customer portal']).nullable().optional(),
+    reason: z.string().trim().max(500).nullable().optional(),
+    note: z.string().trim().max(2000).nullable().optional(),
+    adjustment: adjustmentSchema,
+  }),
+]);
+
+router.post('/tenants/:id/settlements/preview', requireAuth, async (req: Request, res: Response) => {
+  const parsed = settlementSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid settlement inputs', parsed.error.flatten());
+    return;
+  }
+  ok(res, await previewSettlement(String(req.params.id), parsed.data));
+});
+
+router.post('/tenants/:id/settlements', requireAuth, async (req: Request, res: Response) => {
+  const parsed = settlementSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid settlement inputs', parsed.error.flatten());
+    return;
+  }
+  created(res, await submitSettlement(String(req.params.id), parsed.data, actorName(req)));
+});
+
+// Service requests (moving, merchandise, Protection Plan change, other) are
+// recorded on the customer timeline as a note.
+router.post('/tenants/:id/service-requests', requireAuth, async (req: Request, res: Response) => {
+  const parsed = z.object({
+    type: z.enum(['Moving service', 'Merchandise', 'Protection Plan change', 'Other service']),
+    preferredDate: ymdString.nullable().optional(),
+    details: z.string().trim().max(2000).optional(),
+  }).safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Choose a request type.', parsed.error.flatten());
+    return;
+  }
+  const d = parsed.data;
+  const body = `Service request · ${d.type}${d.preferredDate ? ` · preferred ${d.preferredDate}` : ''}${d.details ? `\n${d.details}` : ''}`;
+  created(res, await addNote({ entityType: 'tenant', entityId: String(req.params.id), body, mentionIds: [], author: actorName(req) }));
+});
+
+// Transactions, documents & approvals — one read-only register (Finance).
+router.get('/finance/register', requireAuth, async (req: Request, res: Response) => {
+  const parsed = z.object({
+    search: z.string().trim().max(120).optional(),
+    docType: z.enum(REGISTER_DOC_TYPES).optional(),
+    status: z.string().trim().max(40).optional(),
+    facility: z.string().trim().max(10).optional(),
+    from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+    to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  }).safeParse(req.query);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid register filter', parsed.error.flatten());
+    return;
+  }
+  ok(res, await listRegister({ ...parsed.data, branchIds: adminOf(req)?.branchIds ?? null }));
+});
+
+router.get('/finance/settlements', requireAuth, async (req: Request, res: Response) => {
+  const parsed = z.object({ status: z.enum(['PENDING', 'APPROVED', 'REJECTED']).optional() }).safeParse(req.query);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid status', parsed.error.flatten());
+    return;
+  }
+  ok(res, await listSettlements(parsed.data));
+});
+
+for (const [path, decision] of [['approve', 'APPROVED'], ['reject', 'REJECTED']] as const) {
+  router.post(`/finance/settlements/:id/${path}`, requireAuth, async (req: Request, res: Response) => {
+    const parsed = z.object({ note: z.string().trim().max(500).nullable().optional() }).safeParse(req.body ?? {});
+    if (!parsed.success) {
+      fail(res, 400, 'VALIDATION', 'Invalid decision note', parsed.error.flatten());
+      return;
+    }
+    ok(res, await decideSettlement(String(req.params.id), decision, { actor: actorName(req), note: parsed.data.note }));
+  });
+}
 
 // ---- Quotation register (Leads › Quotes, prototype 2026-11-04) ----
 router.get('/quotations', requireAuth, async (req: Request, res: Response) => {

@@ -85,7 +85,7 @@ function renderTenantRow(t) {
   const typeLbl = t.type === 'BUSINESS' ? 'Business' : 'Personal';
   const verif = verificationPills(t.latestVerification);
   return `<tr data-tid="${escapeHtml(t.id)}">
-    <td><div class="t-name">${escapeHtml(t.name)}</div></td>
+    <td><div class="t-name"><button class="v2-name" type="button" data-cust-open="${escapeHtml(t.id)}">${escapeHtml(t.name)}</button></div></td>
     <td><div class="t-type">${typeLbl}${t.segment ? ' · ' + escapeHtml(t.segment) : ''}</div></td>
     <td><strong>${escapeHtml(t.unit || '—')}</strong></td>
     <td>${size}</td>

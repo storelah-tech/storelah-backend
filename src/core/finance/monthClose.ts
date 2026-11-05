@@ -62,7 +62,13 @@ export async function computeActuals(branchId: string, fiscalMonth: string): Pro
   const warnings: string[] = [];
 
   const invoices = await prisma.invoice.findMany({
-    where: { unit: { branchId }, serviceStart: { gte: start, lt: end }, status: { in: [...RECEIVABLE_FOR_REVENUE] } },
+    // Accrual revenue by service period. Booking/checkout invoices carry no
+    // serviceStart, so they count in their billed month instead.
+    where: {
+      unit: { branchId },
+      status: { in: [...RECEIVABLE_FOR_REVENUE] },
+      OR: [{ serviceStart: { gte: start, lt: end } }, { serviceStart: null, billedMonth: { gte: start, lt: end } }],
+    },
     select: { amount: true, subtotal: true, creditApplied: true },
   });
   const revenue = round2(invoices.reduce((s, i) => s + (i.subtotal != null ? toNum(i.subtotal) : toNum(i.amount)) - toNum(i.creditApplied ?? 0), 0));

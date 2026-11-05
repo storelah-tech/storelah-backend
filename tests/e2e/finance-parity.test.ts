@@ -9,6 +9,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { api, createOperator, prisma, resetDb, seedMoveInWorld } from './fixtures';
 import { defaultModelInputs, projectModel } from '../../src/core/finance/models';
+import { computeActuals } from '../../src/core/finance/monthClose';
 import { inventoryMappingProblems } from '../../src/core/finance/library';
 
 const CMS = '/api/v1/cms';
@@ -154,3 +155,20 @@ describe('posted actuals series + credit ledger', () => {
     expect(Array.isArray(res.body.data)).toBe(true);
   });
 });
+
+describe('month-close revenue', () => {
+  beforeEach(resetDb);
+
+  it('counts invoices without a service period in their billed month (booking invoices)', async () => {
+    const world = await seedMoveInWorld();
+    const unit = await prisma.unit.findFirstOrThrow({ where: { branchId: world.branchId } });
+    const tenant = await prisma.tenant.create({ data: { name: 'Booking tenant', unitId: unit.id, monthlyRate: 120, psf: 3, status: 'ACTIVE', branchId: world.branchId } });
+    await prisma.invoice.create({ data: { invoiceNo: 'INV-BK-OCT', tenantId: tenant.id, unitId: unit.id, amount: 120, dueDate: new Date('2026-10-10T00:00:00Z'), billedMonth: new Date('2026-10-05T00:00:00Z'), status: 'PAID', paidAt: new Date('2026-10-05T00:00:00Z'), amountPaid: 120 } });
+    await prisma.invoice.create({ data: { invoiceNo: 'INV-SVC-NOV', tenantId: tenant.id, unitId: unit.id, amount: 80, dueDate: new Date('2026-10-28T00:00:00Z'), billedMonth: new Date('2026-10-28T00:00:00Z'), serviceStart: new Date('2026-11-01T00:00:00Z'), serviceEnd: new Date('2026-11-30T00:00:00Z'), status: 'DUE' } });
+    const oct = await computeActuals(world.branchId, '2026-10');
+    expect(oct.lines.find((l) => l.metric === 'REVENUE')?.value).toBe(120);
+    const nov = await computeActuals(world.branchId, '2026-11');
+    expect(nov.lines.find((l) => l.metric === 'REVENUE')?.value).toBe(80);
+  });
+});
+

@@ -30,23 +30,33 @@ import { state } from './state.js';
 // row; group timelines only append extraBadges (phone-variance /
 // terminal read-only pills).
 const STAGE_LABEL = {
-  NEW_ENQUIRY: 'New', CONTACTED: 'Contacted', VIEWING_BOOKED: 'Qualified',
-  PROPOSAL_SENT: 'Quoted', PENDING_PAYMENT: 'Pending Payment', WON: 'Won', LOST: 'Lost',
+  NEW_ENQUIRY: 'New', CONTACTED: 'Contacted', QUALIFIED: 'Qualified', VIEWING_BOOKED: 'Viewing set',
+  PROPOSAL_SENT: 'Quoted', PENDING_PAYMENT: 'Booking started', PAID_BOOKING: 'Paid booking', WON: 'Converted', LOST: 'Lost', NURTURING: 'Nurturing',
 };
 
+// Prototype status colours: New blue; Qualified/Viewing green; Quoted terracotta; Lost red; others grey.
 const STAGE_TONE = {
-  NEW_ENQUIRY: 'red', CONTACTED: 'amber', VIEWING_BOOKED: 'amber',
-  PROPOSAL_SENT: 'amber', PENDING_PAYMENT: 'amber', WON: 'green', LOST: '',
+  NEW_ENQUIRY: 'blue', QUALIFIED: 'green', VIEWING_BOOKED: 'green', PROPOSAL_SENT: 'terra', LOST: 'red',
 };
+
+const SOURCE_LABEL = { WEBSITE: 'Website', WHATSAPP: 'WhatsApp', PHONE: 'Phone', WALK_IN: 'Walk-in', GOOGLE: 'Google Ads', REFERRAL: 'Referral', PARTNER: 'Partner' };
+const SOURCE_CODE = { WEBSITE: 'W', WHATSAPP: 'WA', PHONE: 'P', WALK_IN: 'WI', GOOGLE: 'G', REFERRAL: 'R', PARTNER: 'PT' };
+const money = (v) => (v == null ? '—' : '$' + Number(v).toLocaleString('en-SG', { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+const tipHtml = (text) => '<span class="v29-inline-tip"><span class="v29-tip-button" tabindex="0" aria-label="Definition">?</span><span class="v29-tooltip">' + escapeHtml(text) + '</span></span>';
+function enquiryDay(v) {
+  if (!v) return '—';
+  const d = /^\d{4}-\d{2}-\d{2}$/.test(String(v)) ? new Date(v + 'T00:00:00Z') : new Date(v);
+  return isNaN(d) ? '—' : d.toLocaleDateString('en-SG', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' });
+}
 
 function fmtDayLead(d) {
   return d ? new Date(d).toLocaleDateString('en-SG', { day: '2-digit', month: 'short' }) : '—';
 }
 
 function leadHeatHtml(stage) {
-  const heat = stage === 'WON' || stage === 'PROPOSAL_SENT' || stage === 'PENDING_PAYMENT' ? 5 :
-    stage === 'VIEWING_BOOKED' ? 4 : stage === 'CONTACTED' ? 3 : stage === 'NEW_ENQUIRY' ? 2 : 1;
-  let html = '<div class="heat">';
+  const heat = ['WON', 'PAID_BOOKING', 'PENDING_PAYMENT', 'PROPOSAL_SENT'].includes(stage) ? 5 :
+    stage === 'VIEWING_BOOKED' ? 4 : stage === 'QUALIFIED' ? 3 : stage === 'CONTACTED' ? 3 : stage === 'NEW_ENQUIRY' ? 2 : 1;
+  let html = '<div class="heat" aria-label="Intent ' + heat + ' of 5">';
   for (let i = 0; i < 5; i++) html += '<i' + (i < heat ? ' class="on"' : '') + '></i>';
   return html + '</div>';
 }
@@ -57,27 +67,30 @@ function nextActionLabel(l) {
   return '<small>' + (l.stage === 'NEW_ENQUIRY' ? 'Needs contact' : 'Follow-up') + '</small>';
 }
 
+// Prototype Lead database row (2026-11-04): Lead / customer type, Date of
+// enquiry, Status, Intent, Product / facility, Source, Owner, Next action,
+// Potential value (+ stage probability), Flags. Clicking the row or the name
+// opens the lead page; Edit/Delete stay as row actions.
 export function leadRowHtml(l, extraBadges) {
-  const initial = (l.name || '?').charAt(0).toUpperCase();
-  const heat = STAGE_LABEL[l.stage] || l.stage;
-  // v2 booking-intent tooltip on the size/facility cell — columns stay
-  // intact (Status/Intent/Source/Next-action/Est-value untouched).
-  const intentTip = [
-    l.unitCode ? 'Unit ' + l.unitCode : null,
-    l.moveInDate ? 'Move-in ' + fmtDayLead(l.moveInDate) : null,
-  ].filter(Boolean).join(' · ');
-  const sameEmail = Array.isArray(l.sameEmailEnquiries) ? l.sameEmailEnquiries : [];
-  const mergeTip = sameEmail.length ? sameEmail.map((g) => (g.name || '') + ' · ' + (STAGE_LABEL[g.stage] || g.stage) + ' · ' + fmtDayLead(g.createdAt)).join('\n') : '';
-  const mergeBadge = sameEmail.length ? ' <span class="pill blue" title="' + escapeHtml(mergeTip) + '">+' + sameEmail.length + ' same email</span>' : '';
+  const business = l.type === 'BUSINESS';
+  const display = business && l.companyName ? l.companyName : l.name;
+  const initial = String(display || '?').split(/\s+/).slice(0, 2).map((x) => x[0] || '').join('').toUpperCase();
+  const label = l.stageLabel || STAGE_LABEL[l.stage] || l.stage;
+  const sub = business ? (l.displayId || '') + ' · Representative: ' + escapeHtml(l.representative || 'Not provided') : (l.displayId || '') + ' · ' + escapeHtml(l.mobile || l.email || '—');
   const extras = extraBadges ? extraBadges : '';
-  return '<tr data-lead-id="' + escapeHtml(l.id) + '" tabindex="0"><td><input class="check" type="checkbox"></td><td><div class="contact"><div class="avatar">' + initial + '</div><div><b>' + escapeHtml(l.name) + '</b>' + mergeBadge + extras + '<small>' + (l.type === 'BUSINESS' ? 'Business' : 'Personal') + (l.segment ? ' · ' + escapeHtml(l.segment) : '') + '</small></div></div></td>' +
-    '<td><span class="pill ' + (l.stage === 'NEW_ENQUIRY' ? 'red' : l.stage === 'WON' ? 'green' : l.stage === 'LOST' ? '' : 'amber') + '">' + heat + '</span></td>' +
-    '<td>' + leadHeatHtml(l.stage, l.monthlyRate) + '</td>' +
-    '<td' + (intentTip ? ' title="' + escapeHtml(intentTip) + '"' : '') + '>' + escapeHtml(l.size || '—') + (l.branchCode ? ' · ' + escapeHtml(l.branchCode) : '') + (l.unitCode ? ' · ' + escapeHtml(l.unitCode) : '') + '</td>' +
-    '<td><span class="channel">' + (l.source ? l.source.charAt(0) : 'W') + '</span></td>' +
+  const flag = l.stage === 'NEW_ENQUIRY' ? ['blue', 'New enquiry'] : l.stage === 'LOST' ? ['red', escapeHtml(l.lossReason || 'Lost')] : l.stage === 'WON' ? ['green', 'Customer'] : l.nextActionAt && new Date(l.nextActionAt) < new Date() ? ['red', 'Follow-up overdue'] : ['grey', 'In progress'];
+  const probTip = 'Stage probability starts at ' + l.probability + '% for ‘' + label + '’. The production score then applies capped signals: complete qualification +10, confirmed viewing +5, quote viewed +5, booking started +15, first-response SLA breach −5 and no activity for 7+ days −10. The result is capped between 0% and 100% and remains explainable in the audit trail.';
+  return '<tr data-lead-id="' + escapeHtml(l.id) + '" tabindex="0"><td><input class="check" type="checkbox" aria-label="Select ' + escapeHtml(display) + '"></td>' +
+    '<td><div class="contact"><div class="avatar">' + escapeHtml(initial) + '</div><div><button class="v2-name" type="button">' + escapeHtml(display) + '</button>' + extras + '<small>' + sub + '</small><span class="pill ' + (business ? 'blue' : 'grey') + '">' + (business ? 'Business' : 'Personal') + '</span></div></div></td>' +
+    '<td><b>' + escapeHtml(enquiryDay(l.enquiryDate)) + '</b><small>Enquiry opened</small></td>' +
+    '<td><span class="pill ' + (STAGE_TONE[l.stage] || 'grey') + '">' + escapeHtml(label) + '</span></td>' +
+    '<td>' + leadHeatHtml(l.stage) + '</td>' +
+    '<td><b>AC Self-Storage</b><br><small>' + escapeHtml(l.branchName ? 'StoreLah ' + l.branchName : 'No preference') + (l.size ? ' · ' + escapeHtml(l.size) : '') + '</small></td>' +
+    '<td><span class="channel">' + escapeHtml(SOURCE_CODE[l.source] || 'W') + '</span> ' + escapeHtml(SOURCE_LABEL[l.source] || l.source || '') + '</td>' +
+    '<td>' + escapeHtml(l.owner || 'Unassigned') + '</td>' +
     '<td>' + nextActionLabel(l) + '</td>' +
-    '<td><b>' + (l.monthlyRate ? '$' + (l.monthlyRate).toLocaleString() : '—') + '</b></td>' +
-    '<td><small>' + fmtDayLead(l.createdAt) + '</small></td>' +
+    '<td><b>' + money(l.potentialValue) + '</b><small>' + l.probability + '% probability ' + tipHtml(probTip) + '</small></td>' +
+    '<td><span class="pill ' + flag[0] + '">' + flag[1] + '</span></td>' +
     '<td class="unit-actions"><button class="act-btn" data-act="edit" data-lead-id="' + escapeHtml(l.id) + '">Edit</button> <button class="act-btn danger" data-act="delete" data-lead-id="' + escapeHtml(l.id) + '">Delete</button></td></tr>';
 }
 
@@ -99,12 +112,12 @@ export function timelineBadges(t) {
 // ---------- group rows ----------
 function groupStagePills(g) {
   return (g.stages || []).map((s) =>
-    '<span class="pill ' + (STAGE_TONE[s] || '') + '">' + escapeHtml(STAGE_LABEL[s] || s) + '</span>',
+    '<span class="pill ' + (STAGE_TONE[s] || 'grey') + '">' + escapeHtml(STAGE_LABEL[s] || s) + '</span>',
   ).join(' ');
 }
 
 export function groupRowHtml(g, expanded) {
-  const initial = String(g.emailDisplay || '?').charAt(0).toUpperCase();
+  const initial = String((g.names || [])[0] || g.emailDisplay || '?').split(/\s+/).slice(0, 2).map((x) => x[0] || '').join('').toUpperCase();
   const countBadge = ' <span class="pill blue" title="Click to expand the enquiry timeline">' +
     escapeHtml(String(g.count)) + ' ' + (g.count === 1 ? 'enquiry' : 'enquiries') + '</span>';
   const variance = g.phoneVariance
@@ -114,14 +127,10 @@ export function groupRowHtml(g, expanded) {
   const phones = (g.phones || []).join(' · ') || '—';
   return '<tr data-group-key="' + escapeHtml(g.groupKey) + '" tabindex="0" title="Click to ' + (expanded ? 'collapse' : 'expand') + ' the enquiry timeline">' +
     '<td><b>' + (expanded ? '▾' : '›') + '</b></td>' +
-    '<td><div class="contact"><div class="avatar">' + escapeHtml(initial) + '</div><div><b>' + escapeHtml(g.emailDisplay) + '</b>' + countBadge + variance + '<small>' + escapeHtml(names || (g.email == null ? 'Phone-only group' : '—')) + '</small></div></div></td>' +
+    '<td><div class="contact"><div class="avatar">' + escapeHtml(initial) + '</div><div><b>' + escapeHtml(names || g.emailDisplay) + '</b>' + countBadge + variance + '<small>' + escapeHtml(g.email == null ? 'Phone-only identity' : g.emailDisplay) + ' · ' + escapeHtml(phones) + '</small></div></div></td>' +
+    '<td><b>' + escapeHtml(fmtDayLead(g.latestAt)) + '</b><small>Latest enquiry</small></td>' +
     '<td>' + (groupStagePills(g) || '—') + '</td>' +
-    '<td>—</td>' +
-    '<td><small>' + escapeHtml(phones) + '</small></td>' +
-    '<td>—</td>' +
-    '<td>—</td>' +
-    '<td>—</td>' +
-    '<td><small>' + escapeHtml(fmtDayLead(g.latestAt)) + '</small></td>' +
+    '<td>—</td><td><b>AC Self-Storage</b></td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td>' +
     '<td class="unit-actions"><button class="act-btn" data-group-act="toggle" data-group-key="' + escapeHtml(g.groupKey) + '">' + (expanded ? 'Collapse' : 'Expand') + '</button></td></tr>';
 }
 
@@ -192,7 +201,7 @@ export async function renderEmailGroups() {
   resetSelectAll('#leadRows');
   renderGroupPager(total);
   if (!groups.length) {
-    tbody.innerHTML = '<tr><td colspan="10"><div class="section-empty">No email groups match — adjust search or filters.<br><small>Contact-less rows (no email/phone) stay in the By-stage view.</small></div></td></tr>';
+    tbody.innerHTML = '<tr><td colspan="12"><div class="section-empty">No email groups match — adjust search or filters.<br><small>Contact-less rows (no email/phone) stay in the By-stage view.</small></div></td></tr>';
     return;
   }
   const html = [];

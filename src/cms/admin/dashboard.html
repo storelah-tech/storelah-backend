@@ -1040,6 +1040,11 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
   *,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}
 }
 </style>
+<!-- Owner reference prototype styles (2026-11-04 handover): load after the base styles, as in the prototype. -->
+<link rel="stylesheet" href="/admin/proto-refresh.css">
+<link rel="stylesheet" href="/admin/proto-ux-v2.css">
+<link rel="stylesheet" href="/admin/proto-v29.css">
+
 </head>
 <body class="auth-pending">
 
@@ -1181,16 +1186,16 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
       <div class="head"><div><h1>All leads</h1><p>One view of every enquiry, owner, next step and outcome.</p></div><div class="actions"><button class="btn" id="leadImportBtn" type="button">Import</button><input type="file" id="leadImportFile" accept=".csv,text/csv" hidden><button class="btn" id="leadExportBtn" type="button">Export</button><button class="primary" id="addLeadBtn2">＋ Add lead</button></div></div>
       <div class="toolbar">
         <select class="filter" id="leadStatusFilter"><option value="">All statuses</option><option value="NEW_ENQUIRY">New</option><option value="CONTACTED">Contacted</option><option value="VIEWING_BOOKED">Qualified</option><option value="PROPOSAL_SENT">Quoted</option><option value="PENDING_PAYMENT">Pending Payment</option><option value="WON">Won</option><option value="LOST">Lost</option></select>
-        <select class="filter" id="leadSourceFilter"><option value="">All sources</option><option value="WEBSITE">Website</option><option value="WHATSAPP">WhatsApp</option><option value="REFERRAL">Referral</option><option value="GOOGLE">Google</option></select>
+        <select class="filter" id="leadSourceFilter"><option value="">All sources</option><option value="WEBSITE">Website</option><option value="WHATSAPP">WhatsApp</option><option value="PHONE">Phone</option><option value="WALK_IN">Walk-in</option><option value="GOOGLE">Google Ads</option><option value="REFERRAL">Referral</option><option value="PARTNER">Partner</option></select>
         <button class="filter">＋ More filters</button><span class="grow"></span>
         <div class="seg"><button class="active" id="listViewBtn">List</button><button data-page-jump="pipeline">Board</button></div>
       </div>
-      <div class="card"><div class="table-wrap"><table class="lead-table"><thead><tr><th><input class="check" type="checkbox" id="leadSelectAll" aria-label="Select all leads"></th><th>Lead</th><th>Status</th><th>Intent</th><th>Product / Facility</th><th>Source</th><th>Next action</th><th>Est. value</th><th>Created</th><th></th></tr></thead><tbody id="leadRows"></tbody></table></div><div class="pagination"><span id="leadCount">0 leads</span><div class="pages"><button id="leadsPagePrev" type="button" aria-label="Previous page">‹</button><button class="active" id="leadsPageNum">1</button><button id="leadsPageNext" type="button" aria-label="Next page">›</button></div></div></div>
+      <div class="card"><div class="table-wrap"><table class="lead-table"><thead><tr><th><input class="check" type="checkbox" id="leadSelectAll" aria-label="Select all leads"></th><th>Lead / customer type</th><th>Date of enquiry</th><th>Status</th><th>Intent</th><th>Product / facility</th><th>Source</th><th>Owner</th><th>Next action</th><th>Potential value <span class="v29-inline-tip"><span class="v29-tip-button" tabindex="0" aria-label="Definition">?</span><span class="v29-tooltip">Potential value = expected net monthly rent × expected billed months. When duration is ‘Not sure’ or ongoing, the planning default is 6 months until staff confirms it. It is an opportunity estimate, not recognised revenue.</span></span></th><th>Flags</th><th></th></tr></thead><tbody id="leadRows"></tbody></table></div><div class="pagination"><span id="leadCount">0 leads</span><div class="pages"><button id="leadsPagePrev" type="button" aria-label="Previous page">‹</button><button class="active" id="leadsPageNum">1</button><button id="leadsPageNext" type="button" aria-label="Next page">›</button></div></div></div>
     </section>
 
     <!-- ============ PIPELINE (kanban) ============ -->
     <section class="page" id="pipeline">
-      <div class="head"><div><h1>Pipeline</h1><p>Drag opportunities through the booking journey.</p></div><div class="actions"><select class="filter" id="pipelineFilter"><option value="">All pipelines</option></select><button class="primary" id="addLeadBtn" type="button">＋ Add lead</button></div></div>
+      <div class="head"><div><h1>Pipeline</h1><p>Drag opportunities through the booking journey.</p></div><div class="actions"><select class="filter" id="pipelineFilter"><option value="">All pipelines</option></select><button class="btn" data-lw="pipeline-settings" type="button">Pipeline settings</button><button class="primary" id="addLeadBtn" type="button">＋ Add lead</button></div></div>
       <div class="toolbar"><b id="pipelineValue" style="margin-left:auto">$0 pipeline value</b></div>
       <div class="kanban" id="kanban"></div>
     </section>
@@ -2261,8 +2266,8 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
       <div class="form-grid">
         <div class="field full"><label for="lf-name">Name</label><input type="text" id="lf-name" name="name" maxlength="120" placeholder="Lead name"><div class="field-err" id="le-name"></div></div>
         <div class="field"><label for="lf-type">Type</label><select id="lf-type" name="type"><option value="PERSONAL">Personal</option><option value="BUSINESS">Business</option></select><div class="field-err" id="le-type"></div></div>
-        <div class="field"><label for="lf-source">Source</label><select id="lf-source" name="source"><option value="WEBSITE">Website</option><option value="WHATSAPP">WhatsApp</option><option value="REFERRAL">Referral</option><option value="GOOGLE">Google</option></select><div class="field-err" id="le-source"></div></div>
-        <div class="field"><label for="lf-stage">Stage</label><select id="lf-stage" name="stage"><option value="NEW_ENQUIRY">New</option><option value="CONTACTED">Contacted</option><option value="VIEWING_BOOKED">Qualified</option><option value="PROPOSAL_SENT">Quoted</option><option value="PENDING_PAYMENT">Pending Payment</option><option value="WON">Won</option><option value="LOST">Lost</option></select><div class="field-err" id="le-stage"></div></div>
+        <div class="field"><label for="lf-source">Source</label><select id="lf-source" name="source"><option value="WEBSITE">Website</option><option value="WHATSAPP">WhatsApp</option><option value="PHONE">Phone</option><option value="WALK_IN">Walk-in</option><option value="GOOGLE">Google Ads</option><option value="REFERRAL">Referral</option><option value="PARTNER">Partner</option></select><div class="field-err" id="le-source"></div></div>
+        <div class="field"><label for="lf-stage">Stage</label><select id="lf-stage" name="stage"><option value="NEW_ENQUIRY">New</option><option value="CONTACTED">Contacted</option><option value="QUALIFIED">Qualified</option><option value="VIEWING_BOOKED">Viewing set</option><option value="PROPOSAL_SENT">Quoted</option><option value="PENDING_PAYMENT">Booking started</option><option value="PAID_BOOKING">Paid booking</option><option value="WON">Converted</option><option value="LOST">Lost</option><option value="NURTURING">Nurturing</option></select><div class="field-err" id="le-stage"></div></div>
         <div class="field"><label for="lf-branch">Facility</label><select id="lf-branch" name="branch"></select><div class="field-err" id="le-branch"></div></div>
         <div class="field"><label for="lf-size">Preferred size</label><input type="text" id="lf-size" name="size" maxlength="40" placeholder="E.g. SMALL"><div class="field-err" id="le-size"></div></div>
         <div class="field"><label for="lf-rate">Est. value ($/mo)</label><input type="number" id="lf-rate" name="monthlyRate" min="0" step="0.01"><div class="field-err" id="le-rate"></div></div>
@@ -2301,7 +2306,7 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
               <div class="field"><label for="qf-type">Account type</label><select id="qf-type" name="type"><option value="">— default —</option><option value="PERSONAL">Personal</option><option value="BUSINESS">Business</option></select><div class="field-err" id="qe-type"></div></div>
               <div class="field"><label for="qf-email">Email</label><input type="email" id="qf-email" name="email" placeholder="name@example.com"><div class="field-err" id="qe-email"></div></div>
               <div class="field"><label for="qf-mobile">Mobile</label><input type="text" id="qf-mobile" name="mobile" maxlength="40" placeholder="+65 9xxx xxxx"><div class="field-err" id="qe-mobile"></div></div>
-              <div class="field"><label for="qf-source">Source</label><select id="qf-source" name="source"><option value="">— default —</option><option value="WEBSITE">Website</option><option value="WHATSAPP">WhatsApp</option><option value="REFERRAL">Referral</option><option value="GOOGLE">Google</option></select><div class="field-err" id="qe-source"></div></div>
+              <div class="field"><label for="qf-source">Source</label><select id="qf-source" name="source"><option value="">— default —</option><option value="WEBSITE">Website</option><option value="WHATSAPP">WhatsApp</option><option value="PHONE">Phone</option><option value="WALK_IN">Walk-in</option><option value="GOOGLE">Google Ads</option><option value="REFERRAL">Referral</option><option value="PARTNER">Partner</option></select><div class="field-err" id="qe-source"></div></div>
               <div class="field qm-span3"><label for="qf-segment">Segment</label><input type="text" id="qf-segment" name="segment" maxlength="80" placeholder="E.g. Reno, Home, SME, Expat"><div class="field-err" id="qe-segment"></div></div>
             </div>
           </section>

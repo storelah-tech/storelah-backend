@@ -88,21 +88,30 @@ enum PaymentInstructionStatus {
   EXPIRED
 }
 
+// Stored names predate the 2026-11-04 prototype stage list; the CMS labels
+// them New / Contacted / Qualified / Viewing set / Quoted / Booking started /
+// Paid booking / Converted / Lost / Nurturing (src/core/leadPipeline.ts).
 enum LeadStage {
   NEW_ENQUIRY
   CONTACTED
+  QUALIFIED
   VIEWING_BOOKED
   PROPOSAL_SENT
   PENDING_PAYMENT
+  PAID_BOOKING
   WON
   LOST
+  NURTURING
 }
 
 enum LeadSource {
   WEBSITE
   WHATSAPP
   REFERRAL
-  GOOGLE
+  GOOGLE // shown as "Google Ads"
+  PHONE
+  WALK_IN
+  PARTNER
 }
 
 enum AppointmentType {
@@ -113,9 +122,11 @@ enum AppointmentType {
 }
 
 enum AppointmentStatus {
-  PENDING
+  PENDING // shown as "Proposed"
   CONFIRMED
-  DONE
+  AWAITING_REPLY
+  READY
+  DONE // shown as "Completed"
   CANCELLED
 }
 
@@ -157,6 +168,7 @@ model AdminUser {
   // Facility scope: no rows = every facility (see core/users.ts).
   facilityAccess OperatorFacilityAccess[]
   authTokens     AdminAuthToken[]
+  notifications  StaffNotification[]
 
   @@index([roleId])
 }
@@ -222,69 +234,69 @@ model PermissionAudit {
 }
 
 model Customer {
-  id               String      @id @default(cuid())
-  email            String      @unique
+  id               String         @id @default(cuid())
+  email            String         @unique
   name             String
   mobile           String?
   passwordHash     String
-  type             AccountType @default(PERSONAL)
+  type             AccountType    @default(PERSONAL)
   companyName      String?
   uen              String?
-  resetToken       String?     @unique
+  resetToken       String?        @unique
   resetTokenExpiry DateTime?
   // Stripe Customer (cus_…) that owns this portal customer's saved cards
   // (core/savedCards.ts). Created lazily on the first SetupIntent; NULL until
   // then. No card data is stored here — the Stripe Customer is the wallet.
-  stripeCustomerId String?     @unique
-  createdAt        DateTime    @default(now())
-  updatedAt        DateTime    @updatedAt
+  stripeCustomerId String?        @unique
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
   // Back-relation for Verification.customer (additive, Prisma-level only —
   // no column on Customer; Verification.customerId holds the FK).
   verifications    Verification[]
 }
 
 model Branch {
-  id              String       @id @default(cuid())
-  code            String       @unique // SW / WD / UB
-  name            String
-  address         String
-  description     String?
-  operatingHours  String
-  status          BranchStatus @default(ACTIVE)
-  floors          Floor[]
-  units           Unit[]
-  tenants         Tenant[]
-  leads           Lead[]
-  appointments    Appointment[]
-  safeguardRules  SafeguardRule[]
-  workOrders      WorkOrder[]
-  preventiveTasks PreventiveTask[]
-  assets          Asset[]
-  incidents       Incident[]
-  accessDoors     AccessDoor[]
-  accessCredentials AccessCredential[]
-  accessEvents    AccessEvent[]
-  checklists      InspectionChecklist[]
-  certificates    ComplianceCertificate[]
-  facilityFees    FacilityFee[]
-  operatorAccess  OperatorFacilityAccess[]
-  metricsSnapshots FloorplanMetricsSnapshot[]
-  financeAuditEvents FinanceAuditEvent[]
-  financialModels FinancialModel[]
-  budgets Budget[]
-  expenses Expense[]
-  sizePriceRules SizePriceRule[]
-  creditWallets CreditWallet[]
-  refunds Refund[]
-  arrearsCases ArrearsCase[]
-  lateFeeWaivers LateFeeWaiver[]
-  settlementImports SettlementImport[]
+  id                    String                     @id @default(cuid())
+  code                  String                     @unique // SW / WD / UB
+  name                  String
+  address               String
+  description           String?
+  operatingHours        String
+  status                BranchStatus               @default(ACTIVE)
+  floors                Floor[]
+  units                 Unit[]
+  tenants               Tenant[]
+  leads                 Lead[]
+  appointments          Appointment[]
+  safeguardRules        SafeguardRule[]
+  workOrders            WorkOrder[]
+  preventiveTasks       PreventiveTask[]
+  assets                Asset[]
+  incidents             Incident[]
+  accessDoors           AccessDoor[]
+  accessCredentials     AccessCredential[]
+  accessEvents          AccessEvent[]
+  checklists            InspectionChecklist[]
+  certificates          ComplianceCertificate[]
+  facilityFees          FacilityFee[]
+  operatorAccess        OperatorFacilityAccess[]
+  metricsSnapshots      FloorplanMetricsSnapshot[]
+  financeAuditEvents    FinanceAuditEvent[]
+  financialModels       FinancialModel[]
+  budgets               Budget[]
+  expenses              Expense[]
+  sizePriceRules        SizePriceRule[]
+  creditWallets         CreditWallet[]
+  refunds               Refund[]
+  arrearsCases          ArrearsCase[]
+  lateFeeWaivers        LateFeeWaiver[]
+  settlementImports     SettlementImport[]
   reconciliationBatches ReconciliationBatch[]
-  monthCloses MonthClose[]
-  actualMetrics ActualMetric[]
-  varianceNotes VarianceNote[]
-  createdAt       DateTime     @default(now())
-  updatedAt       DateTime     @updatedAt
+  monthCloses           MonthClose[]
+  actualMetrics         ActualMetric[]
+  varianceNotes         VarianceNote[]
+  createdAt             DateTime                   @default(now())
+  updatedAt             DateTime                   @updatedAt
 }
 
 model Floor {
@@ -303,9 +315,9 @@ model Floor {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  units      Unit[]
-  floorPlan  FloorPlan? // one-to-one: a floor has exactly one plan (see FloorPlan)
-  drafts     FloorPlanDraft[] // versioned design snapshots of the plan canvas (see FloorPlanDraft)
+  units            Unit[]
+  floorPlan        FloorPlan? // one-to-one: a floor has exactly one plan (see FloorPlan)
+  drafts           FloorPlanDraft[] // versioned design snapshots of the plan canvas (see FloorPlanDraft)
   metricsSnapshots FloorplanMetricsSnapshot[]
 
   @@unique([branchId, level])
@@ -343,32 +355,32 @@ model Floor {
 // Deleting a plan cascades to its placements (UnitPlacement) — see that model —
 // and never touches Unit rows.
 model FloorPlan {
-  id        String   @id @default(cuid())
-  floorId   String   @unique
-  floor     Floor    @relation(fields: [floorId], references: [id], onDelete: Cascade)
+  id                String     @id @default(cuid())
+  floorId           String     @unique
+  floor             Floor      @relation(fields: [floorId], references: [id], onDelete: Cascade)
   // Draft/publish lifecycle: DRAFT = CMS-only working copy (every CMS write
   // lands here, never auto-promotes); ACTIVE = published, the only state the
   // public booking renderer resolves. VALIDATED/SCHEDULED are unused for floor
   // plans (reserved vocabulary only — publish walks DRAFT → ACTIVE directly,
   // publishing an ACTIVE plan is idempotent). Pre-workflow rows backfilled to
   // ACTIVE so live plans stay visible (see migration `floor_plan_status`).
-  status    PlanStatus @default(DRAFT)
+  status            PlanStatus @default(DRAFT)
   // Operator-given plan label (CMS-only working-copy name, e.g. "Level 2 —
   // Option B"). Optional, CMS-editable while DRAFT; public reads never expose
   // it (see serializePlan publicView). Additive, nullable, no backfill.
-  name      String?
-  width     Float    @default(0) // canvas width in decimal FEET (0.001 ft precision)
-  height    Float    @default(0) // canvas height in decimal FEET (0.001 ft precision)
-  structure Json? // LEGACY free-form decorations (walls / corridors / entrance /
-                  // lift / stairs / fire exit) from before FloorPlanBlock existed.
-                  // Kept readable/writable for old clients; the editor authors new
-                  // decorations as FloorPlanBlock rows instead (see FloorPlanBlock).
+  name              String?
+  width             Float      @default(0) // canvas width in decimal FEET (0.001 ft precision)
+  height            Float      @default(0) // canvas height in decimal FEET (0.001 ft precision)
+  structure         Json? // LEGACY free-form decorations (walls / corridors / entrance /
+  // lift / stairs / fire exit) from before FloorPlanBlock existed.
+  // Kept readable/writable for old clients; the editor authors new
+  // decorations as FloorPlanBlock rows instead (see FloorPlanBlock).
   // Operator-entered gross floor area in SQFT (nullable Float, no backfill:
   // NULL = unset). When set, the area-metrics report uses it as GFA
   // (gfaSource 'USER'); when NULL the report falls back to the
   // canvas-derived rect (width x height, gfaSource 'CANVAS'). Additive,
   // nullable, never fabricated — see docs/FLOOR_PLAN_MODEL.md.
-  gfaSqft   Float?
+  gfaSqft           Float?
   // Last-published public view (serializePlan publicView JSON), written by
   // every publish. While the plan is back in DRAFT for edits, the public read
   // keeps serving this snapshot (unit status/visibility refreshed live) so
@@ -376,8 +388,8 @@ model FloorPlan {
   // published since this column existed (lazily captured from ACTIVE reads).
   publishedSnapshot Json?
   publishedAt       DateTime?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
 
   placements UnitPlacement[]
   blocks     FloorPlanBlock[]
@@ -446,8 +458,8 @@ model FloorPlanBoundary {
   kind        String    @default("BOUNDARY") // line-kind tag (BOUNDARY today; additive for future kinds)
   points      Json // polyline vertices [[x,y],...] in decimal feet (0.001 ft precision)
   closed      Boolean   @default(false) // true once the loop is closed — closed loops AND open >= 3-vertex
-                                        // polylines (chord-closed) feed boundaryMetrics; open 2-vertex segments
-                                        // contribute 0 until extended/closed (see docs/FLOOR_PLAN_MODEL.md)
+  // polylines (chord-closed) feed boundaryMetrics; open 2-vertex segments
+  // contribute 0 until extended/closed (see docs/FLOOR_PLAN_MODEL.md)
   sortOrder   Int       @default(0) // stable editor ordering (lowest first)
   // Wall thickness in decimal FEET (precision Phase 3). Set for kind WALL
   // (rendered as a band of this width); NULL for every other kind. Additive,
@@ -494,10 +506,10 @@ model FloorPlanMarker {
   floorPlanId String
   floorPlan   FloorPlan @relation(fields: [floorPlanId], references: [id], onDelete: Cascade)
   kind        String // safety/facility marker kind, validated against FP_MARKER_KINDS
-                     // in src/core/floorPlans.ts (e.g. FIRE_EXTINGUISHER, DO_NOT_ENTER,
-                     // EXIT_SIGN, FIRE_HOSE, FIRST_AID, KEEP_CLEAR). Plain String (not
-                     // an enum) so new marker kinds stay additive without a migration —
-                     // same rationale as FloorPlanBoundary.kind.
+  // in src/core/floorPlans.ts (e.g. FIRE_EXTINGUISHER, DO_NOT_ENTER,
+  // EXIT_SIGN, FIRE_HOSE, FIRST_AID, KEEP_CLEAR). Plain String (not
+  // an enum) so new marker kinds stay additive without a migration —
+  // same rationale as FloorPlanBoundary.kind.
   label       String? // optional operator label (<= 80 chars); renderers fall back to the kind's display label
   x           Float // decimal-ft POINT on the plan canvas (0.001 ft precision)
   y           Float // edge-inclusive (0..width / 0..height), same contract as boundary vertices
@@ -531,21 +543,21 @@ model FloorPlanMarker {
 // Delete semantics: deleting a Floor cascades its drafts (design history is
 // subordinate to the floor); drafts never reference business rows.
 model FloorPlanDraft {
-  id        String   @id @default(cuid())
-  floorId   String
-  floor     Floor    @relation(fields: [floorId], references: [id], onDelete: Cascade)
+  id         String     @id @default(cuid())
+  floorId    String
+  floor      Floor      @relation(fields: [floorId], references: [id], onDelete: Cascade)
   // Per-floor version number (1, 2, ...), assigned max+1 at save time.
-  version   Int
+  version    Int
   // Draft lifecycle: DRAFT = saved design snapshot; ACTIVE = this version was
   // published to the live plan (informational marker — the live FloorPlan
   // carries the real DRAFT/ACTIVE state). VALIDATED/SCHEDULED/ENDED are
   // reserved vocabulary only and are never assigned here.
-  status    PlanStatus @default(DRAFT)
-  width     Float    @default(0) // canvas width in decimal FEET (0.001 ft precision)
-  height    Float    @default(0) // canvas height in decimal FEET (0.001 ft precision)
-  structure Json? // legacy free-form decorations snapshot (same shape as FloorPlan.structure)
+  status     PlanStatus @default(DRAFT)
+  width      Float      @default(0) // canvas width in decimal FEET (0.001 ft precision)
+  height     Float      @default(0) // canvas height in decimal FEET (0.001 ft precision)
+  structure  Json? // legacy free-form decorations snapshot (same shape as FloorPlan.structure)
   // Operator-entered GFA snapshot in SQFT (null = unset at save time).
-  gfaSqft   Float?
+  gfaSqft    Float?
   // Canvas element snapshots (same shapes the editor normalises to — see
   // fpNormalizePlacements/fpNormalizeBlocks/fpNormalizeBoundaries/
   // fpNormalizeMarkers in src/cms/admin/floorplanView.js):
@@ -561,11 +573,11 @@ model FloorPlanDraft {
   markers    Json
   // Optional operator label for this version (Library Rename; CMS-only,
   // never exposed to booking). null = show the bare "vN".
-  name      String?
+  name       String?
   // Operator who saved the draft (admin email/name from the Bearer JWT).
-  createdBy String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdBy  String?
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
 
   @@unique([floorId, version])
   @@index([floorId])
@@ -586,10 +598,10 @@ model UnitSize {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  units      Unit[]
-  promotions Promotion[]
+  units          Unit[]
+  promotions     Promotion[]
   safeguardRules SafeguardRule[]
-  facilityFees FacilityFee[]
+  facilityFees   FacilityFee[]
   sizePriceRules SizePriceRule[]
 
   @@map("UnitSize")
@@ -616,25 +628,25 @@ model Unit {
   monthlyRate    Decimal    @default(0) @db.Decimal(10, 2)
   status         UnitStatus @default(AVAILABLE)
   climateControl String? // LEGACY free-text climate note (e.g. "Ambient climate"). Kept readable/writable for
-                         // backwards compat; the source of truth for AC is now hasAC below. New writes should
-                         // use hasAC/hasPillar; a supplied climateControl string is mapped onto hasAC (see
-                         // src/core/units.ts) but never required.
+  // backwards compat; the source of truth for AC is now hasAC below. New writes should
+  // use hasAC/hasPillar; a supplied climateControl string is mapped onto hasAC (see
+  // src/core/units.ts) but never required.
   hasAC          Boolean    @default(false) // true = air-conditioned unit (unit type filter + import column)
   hasPillar      Boolean    @default(false) // true = unit contains a structural pillar
   deletedAt      DateTime? // soft-delete lifecycle marker: null = active; set = hidden from all reads
   createdAt      DateTime   @default(now())
   updatedAt      DateTime   @updatedAt
 
-  tenant         Tenant?       @relation("CurrentTenant")
-  rateHistory    RateChange[]
-  areaHistory    UnitAreaChange[]
-  images         UnitImage[]
-  bookings       Booking[]
-  invoices       Invoice[]
-  notices        Notice[]
-  placement      UnitPlacement? // one-to-one: a unit appears on its floor's plan at most once
-  workOrders     WorkOrder[]
-  incidents      Incident[]
+  tenant      Tenant?          @relation("CurrentTenant")
+  rateHistory RateChange[]
+  areaHistory UnitAreaChange[]
+  images      UnitImage[]
+  bookings    Booking[]
+  invoices    Invoice[]
+  notices     Notice[]
+  placement   UnitPlacement? // one-to-one: a unit appears on its floor's plan at most once
+  workOrders  WorkOrder[]
+  incidents   Incident[]
 
   @@unique([branchId, unitCode])
   @@index([branchId, floorId])
@@ -703,47 +715,47 @@ model UnitPlacement {
 }
 
 model Tenant {
-  id             String      @id @default(cuid())
+  id             String       @id @default(cuid())
   name           String
-  type           AccountType @default(PERSONAL)
+  type           AccountType  @default(PERSONAL)
   segment        String? // E-commerce / Renovation / Downsizing / ...
   email          String?
   mobile         String?
-  unitId         String?     @unique
-  unit           Unit?       @relation("CurrentTenant", fields: [unitId], references: [id])
+  unitId         String?      @unique
+  unit           Unit?        @relation("CurrentTenant", fields: [unitId], references: [id])
   moveInDate     DateTime?
-  monthlyRate    Decimal     @db.Decimal(10, 2)
-  psf            Decimal     @db.Decimal(10, 2)
+  monthlyRate    Decimal      @db.Decimal(10, 2)
+  psf            Decimal      @db.Decimal(10, 2)
   nextPayment    DateTime?
   status         TenantStatus
   lastAccessAt   DateTime?
   accessMethod   String?
-  autoDebit      Boolean     @default(false)
-  missedPayments Int         @default(0)
-  paymentCount   Int         @default(0)
-  lifetimeValue  Decimal     @default(0) @db.Decimal(12, 2)
+  autoDebit      Boolean      @default(false)
+  missedPayments Int          @default(0)
+  paymentCount   Int          @default(0)
+  lifetimeValue  Decimal      @default(0) @db.Decimal(12, 2)
   branchId       String?
-  branch         Branch?     @relation(fields: [branchId], references: [id])
+  branch         Branch?      @relation(fields: [branchId], references: [id])
 
-  bookings  Booking[]
-  invoices  Invoice[]
-  instructions PaymentInstruction[]
-  notices   Notice[]
+  bookings               Booking[]
+  invoices               Invoice[]
+  instructions           PaymentInstruction[]
+  notices                Notice[]
   // P1 item 5: per-tenant exception overrides on fees/deposits.
-  feeExceptions FacilityFee[]
+  feeExceptions          FacilityFee[]
   // Phase 4 — account-level access restriction (arrears §18). NOT a billing
   // column: enforcement hook into existing access control; physical-gate
   // integration is explicitly out of scope. Portal surfacing is a future
   // frontend-lane task (customer API unchanged in Phase 4).
-  accessRestricted       Boolean   @default(false)
+  accessRestricted       Boolean              @default(false)
   accessRestrictedAt     DateTime?
   accessRestrictedReason String?
-  creditWallet CreditWallet?
-  refunds      Refund[]
-  arrearsCases ArrearsCase[]
-  lateFeeWaivers LateFeeWaiver[]
-  createdAt DateTime  @default(now())
-  updatedAt DateTime  @updatedAt
+  creditWallet           CreditWallet?
+  refunds                Refund[]
+  arrearsCases           ArrearsCase[]
+  lateFeeWaivers         LateFeeWaiver[]
+  createdAt              DateTime             @default(now())
+  updatedAt              DateTime             @updatedAt
 }
 
 // Customer-submitted move-out notice (POST /api/v1/customer/notice). One row
@@ -765,18 +777,18 @@ model Notice {
 }
 
 model Booking {
-  id             String        @id @default(cuid())
-  bookingRef     String        @unique // e.g. SL-2026-0912
-  tenantId       String
-  tenant         Tenant        @relation(fields: [tenantId], references: [id])
-  unitId         String
-  unit           Unit          @relation(fields: [unitId], references: [id])
-  moveInDate     DateTime
-  duration       String // "Monthly" | "3 months" | ...
-  amount         Decimal       @db.Decimal(10, 2)
-  status         BookingStatus @default(PENDING_PAYMENT)
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
+  id              String        @id @default(cuid())
+  bookingRef      String        @unique // e.g. SL-2026-0912
+  tenantId        String
+  tenant          Tenant        @relation(fields: [tenantId], references: [id])
+  unitId          String
+  unit            Unit          @relation(fields: [unitId], references: [id])
+  moveInDate      DateTime
+  duration        String // "Monthly" | "3 months" | ...
+  amount          Decimal       @db.Decimal(10, 2)
+  status          BookingStatus @default(PENDING_PAYMENT)
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
   // Stripe payment linkage (additive, all nullable — pre-Stripe rows stay NULL).
   // stripeSessionId = latest Checkout Session id (cs_test_…) for idempotent
   // session reuse; paymentIntentId/paidAt/amountPaid are stamped by the
@@ -791,49 +803,49 @@ model Booking {
 }
 
 model Invoice {
-  id         String        @id @default(cuid())
-  invoiceNo  String        @unique // e.g. INV-2026-0847
-  tenantId   String
-  tenant     Tenant        @relation(fields: [tenantId], references: [id])
-  unitId     String
-  unit       Unit          @relation(fields: [unitId], references: [id])
-  amount     Decimal       @db.Decimal(10, 2)
-  dueDate    DateTime
-  status     InvoiceStatus @default(DUE)
-  method     String? // Auto-debit / Card / Manual
-  billedMonth DateTime @default(now())
-  createdAt  DateTime  @default(now())
-  updatedAt  DateTime  @updatedAt
+  id              String               @id @default(cuid())
+  invoiceNo       String               @unique // e.g. INV-2026-0847
+  tenantId        String
+  tenant          Tenant               @relation(fields: [tenantId], references: [id])
+  unitId          String
+  unit            Unit                 @relation(fields: [unitId], references: [id])
+  amount          Decimal              @db.Decimal(10, 2)
+  dueDate         DateTime
+  status          InvoiceStatus        @default(DUE)
+  method          String? // Auto-debit / Card / Manual
+  billedMonth     DateTime             @default(now())
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
   // Stripe payment linkage (additive, all nullable). Stamped per-invoice by the
   // checkout.session.completed webhook so PAID can stay scoped to the invoiced
   // session when a tenant later holds several DUE invoices (recurring billing).
   stripeSessionId String?
   paymentIntentId String?
   paidAt          DateTime?
-  amountPaid      Decimal?      @db.Decimal(10, 2)
+  amountPaid      Decimal?             @db.Decimal(10, 2)
   // Phase 3 lifecycle (FINANCE_MODULE_SPEC §17; all additive/nullable).
-  approvedBy  String?
-  approvedAt  DateTime?
-  issuedAt    DateTime?
-  voidedAt    DateTime?
-  voidReason  String?
-  writtenOffAt DateTime?
-  createdBy   String?
+  approvedBy      String?
+  approvedAt      DateTime?
+  issuedAt        DateTime?
+  voidedAt        DateTime?
+  voidReason      String?
+  writtenOffAt    DateTime?
+  createdBy       String?
   // Money detail (Decimal, never float): subtotal = Σ lines; taxAmount comes
   // from finance.gstRate at ISSUE (0 while GST OFF); balanceDue = total −
   // paid − credits, stamped on every write (lazy-derived on read when NULL).
-  subtotal      Decimal? @db.Decimal(10, 2)
-  taxAmount     Decimal? @db.Decimal(10, 2)
-  creditApplied Decimal? @db.Decimal(10, 2)
-  balanceDue    Decimal? @db.Decimal(10, 2)
+  subtotal        Decimal?             @db.Decimal(10, 2)
+  taxAmount       Decimal?             @db.Decimal(10, 2)
+  creditApplied   Decimal?             @db.Decimal(10, 2)
+  balanceDue      Decimal?             @db.Decimal(10, 2)
   // Service period (revenue-recognition hook, Q2 accrual basis).
-  serviceStart DateTime?
-  serviceEnd   DateTime?
+  serviceStart    DateTime?
+  serviceEnd      DateTime?
   // Idempotency + optimistic locking (spec §§10.6/21.1).
-  idempotencyKey String? @unique
-  version        Int     @default(0)
-  lines        InvoiceLine[]
-  instructions PaymentInstruction[]
+  idempotencyKey  String?              @unique
+  version         Int                  @default(0)
+  lines           InvoiceLine[]
+  instructions    PaymentInstruction[]
 
   @@index([status])
   @@index([stripeSessionId])
@@ -863,25 +875,25 @@ model InvoiceLine {
 // retry/submit step. Every charge is approved INDIVIDUALLY: no bulk route,
 // bulk column, or bulk code path exists.
 model PaymentInstruction {
-  id         String                    @id @default(cuid())
-  invoiceId  String
-  invoice    Invoice                   @relation(fields: [invoiceId], references: [id])
-  tenantId   String
-  tenant     Tenant                    @relation(fields: [tenantId], references: [id])
-  amount     Decimal                   @db.Decimal(10, 2)
-  method     String                    @default("SAVED_CARD") // SAVED_CARD only in Phase 3
-  status     PaymentInstructionStatus  @default(PENDING_APPROVAL)
-  idempotencyKey String                 @unique
-  version    Int                       @default(0)
-  attempts   Int                       @default(0)
-  createdBy  String
-  approvedBy String?
-  approvedAt DateTime?
+  id                    String                   @id @default(cuid())
+  invoiceId             String
+  invoice               Invoice                  @relation(fields: [invoiceId], references: [id])
+  tenantId              String
+  tenant                Tenant                   @relation(fields: [tenantId], references: [id])
+  amount                Decimal                  @db.Decimal(10, 2)
+  method                String                   @default("SAVED_CARD") // SAVED_CARD only in Phase 3
+  status                PaymentInstructionStatus @default(PENDING_APPROVAL)
+  idempotencyKey        String                   @unique
+  version               Int                      @default(0)
+  attempts              Int                      @default(0)
+  createdBy             String
+  approvedBy            String?
+  approvedAt            DateTime?
   stripePaymentIntentId String?
-  failureReason String?
-  lastError  String?
-  createdAt  DateTime                  @default(now())
-  updatedAt  DateTime                  @updatedAt
+  failureReason         String?
+  lastError             String?
+  createdAt             DateTime                 @default(now())
+  updatedAt             DateTime                 @updatedAt
 
   @@index([invoiceId])
   @@index([tenantId])
@@ -898,48 +910,53 @@ model ProcessedStripeEvent {
 }
 
 model Lead {
-  id            String     @id @default(cuid())
-  name          String
-  type          AccountType @default(PERSONAL)
-  segment       String? // Reno / Home / SME / Expat
-  stage         LeadStage  @default(NEW_ENQUIRY)
-  source        LeadSource @default(WEBSITE)
-  preferredSize String?
+  id                String      @id @default(cuid())
+  // Display number SL-<leadNo> (prototype lead id). Sequence starts at 1001.
+  leadNo            Int         @unique @default(autoincrement())
+  name              String
+  type              AccountType @default(PERSONAL)
+  segment           String? // Reno / Home / SME / Expat
+  stage             LeadStage   @default(NEW_ENQUIRY)
+  source            LeadSource  @default(WEBSITE)
+  preferredSize     String?
   preferredBranchId String?
-  branch        Branch?    @relation(fields: [preferredBranchId], references: [id])
-  monthlyRate   Decimal?   @db.Decimal(10, 2)
-  note          String?
-  email         String?
-  mobile        String?
-  owner         String? // operator handling this lead (shown as "owner" in the lead database)
-  nextActionAt  DateTime? // next follow-up ("next step" column in the lead database)
+  branch            Branch?     @relation(fields: [preferredBranchId], references: [id])
+  monthlyRate       Decimal?    @db.Decimal(10, 2)
+  note              String?
+  email             String?
+  mobile            String?
+  owner             String? // operator handling this lead (shown as "owner" in the lead database)
+  nextActionAt      DateTime? // next follow-up ("next step" column in the lead database)
   // Loss attribution for the analytics page: set when a lead moves to LOST.
   // lossReason defaults to "Unspecified" so pre-existing flows keep working;
   // lossValue defaults to the lead's monthlyRate at loss time (revenue proxy).
-  lossReason    String?
-  lossValue     Decimal?  @db.Decimal(10, 2)
+  lossReason        String?
+  lossValue         Decimal?    @db.Decimal(10, 2)
   // v2 booking-intent fields (additive, all nullable — pre-v2 rows stay NULL
   // and legacy note-packed `key: value` lines are parsed as fallback in
   // serializeLead; see src/core/leads.ts). Captured by POST /public/leads
   // ("Your details" step) and written as first-class columns for new rows.
-  unitCode         String?   // loose unit reference (never an FK)
-  moveInDate       DateTime?
-  durationMonths   Int?
-  companyName      String?
-  uen              String?
-  consentPdpa      Boolean?
-  consentMarketing Boolean?
-  protectionTier   String?   // protection plan id or name
-  protectionCost   Decimal?  @db.Decimal(10, 2)
-  addons           Json?     // [{ id?, name, qty, price }, ...] (cap 20)
-  promoCode        String?
-  promoDiscountAmt Decimal?  @db.Decimal(10, 2)
-  movingService    Boolean?
-  totalDueToday    Decimal?  @db.Decimal(10, 2)
+  unitCode          String? // loose unit reference (never an FK)
+  moveInDate        DateTime?
+  durationMonths    Int?
+  companyName       String?
+  uen               String?
+  representative    String? // Business leads: the person acting for the company
+  enquiryDate       DateTime?   @db.Date // date of enquiry (defaults to today, Asia/Singapore; editable)
+  accessFrequency   String? // see ACCESS_FREQUENCIES in src/core/leadPipeline.ts
+  consentPdpa       Boolean?
+  consentMarketing  Boolean?
+  protectionTier    String? // protection plan id or name
+  protectionCost    Decimal?    @db.Decimal(10, 2)
+  addons            Json? // [{ id?, name, qty, price }, ...] (cap 20)
+  promoCode         String?
+  promoDiscountAmt  Decimal?    @db.Decimal(10, 2)
+  movingService     Boolean?
+  totalDueToday     Decimal?    @db.Decimal(10, 2)
   // 24h idempotency key for public-lead dedupe. Stored as a column (not
   // packed into note) so new rows keep the double-submit guard; legacy rows
   // are still matched via their packed `idempotencyKey: <key>` note line.
-  idempotencyKey   String?
+  idempotencyKey    String?
   // Lead identity (email-primary / phone-secondary — see normalizeLeadIdentity
   // in src/core/leads.ts). emailNorm = trim().toLowerCase() or null;
   // mobileNorm = digits-only with the SG rule (8 digits starting 3/6/8/9 get
@@ -947,21 +964,21 @@ model Lead {
   // emailNorm ?? ('phone:' + mobileNorm) ?? null. Stamped on every write,
   // backfilled for legacy rows (see migration lead_identity_norms). No UNIQUE:
   // many-rows-per-email history is preserved by design — rows link, never merge.
-  emailNorm        String?
-  mobileNorm       String?
-  leadGroupKey     String?
-  createdAt     DateTime   @default(now())
-  updatedAt     DateTime   @updatedAt
+  emailNorm         String?
+  mobileNorm        String?
+  leadGroupKey      String?
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
 
-  appointments Appointment[]
+  appointments  Appointment[]
   conversations Conversation[]
+  // Quotation PDFs issued for this lead (PROPOSAL_SENT flow — see Quotation).
+  quotations    Quotation[]
 
   @@index([idempotencyKey])
   @@index([emailNorm])
   @@index([mobileNorm])
   @@index([leadGroupKey])
-  // Quotation PDFs issued for this lead (PROPOSAL_SENT flow — see Quotation).
-  quotations Quotation[]
 }
 
 // Operator-issued quotation PDF (Customers → Quotes → New quotation).
@@ -979,20 +996,32 @@ model Lead {
 // for the post-create email attempt (SENT | SKIPPED | FAILED) with the reason
 // in emailReason (e.g. no-recipient, not-configured, test-env, send-failed).
 model Quotation {
-  id          String   @id @default(cuid())
-  quoteNo     String   @unique // e.g. Q-CM1234-20261007-01 (see deriveQuoteNo)
-  leadId      String
-  lead        Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
-  unitCode    String? // unit snapshot at issue time (loose reference, never an FK)
-  monthlyRate Decimal? @db.Decimal(10, 2) // rate snapshot at issue time
-  totalDueToday Decimal? @db.Decimal(10, 2) // total snapshot at issue time
-  pdf         Bytes // exact PDF bytes served on download
-  pdfFilename String? // attachment filename, e.g. StoreLah-quotation-Q-....pdf
-  createdBy   String? // operator name/email from the Bearer JWT (nullable)
-  emailStatus String   @default("PENDING") // SENT | SKIPPED | FAILED
-  emailReason String? // skip/failure reason (no-recipient, not-configured, test-env, send-failed)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id                String    @id @default(cuid())
+  quoteNo           String    @unique // e.g. Q-CM1234-20261007-01 (see deriveQuoteNo)
+  leadId            String
+  lead              Lead      @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  unitCode          String? // unit snapshot at issue time (loose reference, never an FK)
+  monthlyRate       Decimal?  @db.Decimal(10, 2) // rate snapshot at issue time
+  totalDueToday     Decimal?  @db.Decimal(10, 2) // total snapshot at issue time
+  pdf               Bytes? // exact PDF bytes served on download (null for an unsent DRAFT)
+  pdfFilename       String? // attachment filename, e.g. StoreLah-quotation-Q-....pdf
+  createdBy         String? // operator name/email from the Bearer JWT (nullable)
+  emailStatus       String    @default("PENDING") // SENT | SKIPPED | FAILED
+  emailReason       String? // skip/failure reason (no-recipient, not-configured, test-env, send-failed)
+  // Quotation register (prototype 2026-11-04). New numbers are QT-YYYY-#####;
+  // older Q-CM… numbers are kept as issued.
+  status            String    @default("SENT") // DRAFT | SENT | VIEWED | ACCEPTED | EXPIRED | VOIDED
+  grossRate         Decimal?  @db.Decimal(10, 2)
+  promoPct          Decimal?  @db.Decimal(5, 2)
+  protectionMonthly Decimal?  @db.Decimal(10, 2)
+  commitmentMonths  Int?
+  expiresAt         DateTime?
+  delivery          String? // e.g. "Email + WhatsApp · queued"
+  voidedAt          DateTime?
+  voidedBy          String?
+  voidReason        String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
 
   @@index([leadId])
 }
@@ -1009,6 +1038,7 @@ model Appointment {
   startAt    DateTime
   endAt      DateTime?
   status     AppointmentStatus @default(PENDING)
+  staff      String? // assigned salesperson / staff member
   note       String?
   createdAt  DateTime          @default(now())
   updatedAt  DateTime          @updatedAt
@@ -1105,17 +1135,17 @@ model UnitAreaChange {
 }
 
 model RateChange {
-  id         String   @id @default(cuid())
-  unitId     String
-  unit       Unit     @relation(fields: [unitId], references: [id])
-  date       DateTime
-  previous   Decimal  @db.Decimal(10, 2)
-  current    Decimal  @db.Decimal(10, 2)
-  changePct  Decimal  @db.Decimal(6, 2)
-  reason     String
-  appliedBy  String // name or "System"
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  id        String   @id @default(cuid())
+  unitId    String
+  unit      Unit     @relation(fields: [unitId], references: [id])
+  date      DateTime
+  previous  Decimal  @db.Decimal(10, 2)
+  current   Decimal  @db.Decimal(10, 2)
+  changePct Decimal  @db.Decimal(6, 2)
+  reason    String
+  appliedBy String // name or "System"
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([unitId])
 }
@@ -1156,74 +1186,74 @@ enum PromoStatus {
 }
 
 model Promotion {
-  id             String                 @id @default(cuid())
-  code           String                 @unique // e.g. STORELAH10
-  name           String
-  description    String?
-  discountType   PromotionDiscountType  @default(PERCENTAGE)
-  discountValue  Decimal                @db.Decimal(10, 2)
-  minMonths      Int?
+  id               String                @id @default(cuid())
+  code             String                @unique // e.g. STORELAH10
+  name             String
+  description      String?
+  discountType     PromotionDiscountType @default(PERCENTAGE)
+  discountValue    Decimal               @db.Decimal(10, 2)
+  minMonths        Int?
   applicableSizeId String?
-  applicableSize UnitSize?              @relation(fields: [applicableSizeId], references: [id])
-  startDate      DateTime?
-  endDate        DateTime?
-  active         Boolean                @default(true)
+  applicableSize   UnitSize?             @relation(fields: [applicableSizeId], references: [id])
+  startDate        DateTime?
+  endDate          DateTime?
+  active           Boolean               @default(true)
 
   // Enhanced fields (additive — backward compatible)
-  planId         String?                // FK → PromotionPlan (nullable for backward compat)
-  plan           PromotionPlan?         @relation(fields: [planId], references: [id])
-  status         PromoStatus?           @default(DRAFT)
-  benefitType    PromotionBenefitType?
-  applyTo        String?                // "First invoice only" / "First 3 invoices" / "Every invoice" / "Selected months"
-  usagePerCustomer Int?
-  redemptionCap  Int?
+  planId             String? // FK → PromotionPlan (nullable for backward compat)
+  plan               PromotionPlan?        @relation(fields: [planId], references: [id])
+  status             PromoStatus?          @default(DRAFT)
+  benefitType        PromotionBenefitType?
+  applyTo            String? // "First invoice only" / "First 3 invoices" / "Every invoice" / "Selected months"
+  usagePerCustomer   Int?
+  redemptionCap      Int?
   perUnitApplication Boolean?
-  stackingRule   String?                // "Cannot combine" / "Can combine selected" / "Can combine with credits"
-  budgetCap      Decimal?               @db.Decimal(12, 2)
+  stackingRule       String? // "Cannot combine" / "Can combine selected" / "Can combine with credits"
+  budgetCap          Decimal?              @db.Decimal(12, 2)
 
-  createdAt      DateTime               @default(now())
-  updatedAt      DateTime               @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([active])
   @@index([planId])
 }
 
 model PromotionPlan {
-  id              String       @id @default(cuid())
-  kind            PlanKind
-  name            String
-  code            String?      @unique // customer-facing code (only for PROMO_CODE kind)
-  status          PlanStatus   @default(DRAFT)
-  description     String?
-  effectiveFrom   DateTime
-  effectiveTo     DateTime?
-  facilityScope   Json         @default("[\"ALL\"]") // list of branch IDs or "ALL"
-  storageType     String?      // "Self Storage" / "Business Storage" / "Wine Storage"
-  sizeScope       Json         @default("[\"ALL\"]") // list of UnitSize IDs or "ALL"
+  id            String     @id @default(cuid())
+  kind          PlanKind
+  name          String
+  code          String?    @unique // customer-facing code (only for PROMO_CODE kind)
+  status        PlanStatus @default(DRAFT)
+  description   String?
+  effectiveFrom DateTime
+  effectiveTo   DateTime?
+  facilityScope Json       @default("[\"ALL\"]") // list of branch IDs or "ALL"
+  storageType   String? // "Self Storage" / "Business Storage" / "Wine Storage"
+  sizeScope     Json       @default("[\"ALL\"]") // list of UnitSize IDs or "ALL"
 
   // Promo-code-specific fields
-  appliesTo           String?   // "First invoice only" / "First 3 invoices" / "Every invoice" / "Selected months"
-  usagePerCustomer    Int?
-  redemptionCap       Int?
-  perUnitApplication  Boolean?
-  stackingRule        String?   // "Exclusive" / "Can combine selected" / "Can combine with credits"
-  budgetCap           Decimal?  @db.Decimal(12, 2)
-  freeMonthCount      Int?      // for FREE_MONTHS kind
-  commitmentMonths    Int?      // for FREE_MONTHS kind
-  earlyExitTreatment  String?   // "Prorate" / "Clawback" / "Keep"
-  minStayPct          Int?      // minimum stay as % of commitment to keep free months
+  appliesTo          String? // "First invoice only" / "First 3 invoices" / "Every invoice" / "Selected months"
+  usagePerCustomer   Int?
+  redemptionCap      Int?
+  perUnitApplication Boolean?
+  stackingRule       String? // "Exclusive" / "Can combine selected" / "Can combine with credits"
+  budgetCap          Decimal? @db.Decimal(12, 2)
+  freeMonthCount     Int? // for FREE_MONTHS kind
+  commitmentMonths   Int? // for FREE_MONTHS kind
+  earlyExitTreatment String? // "Prorate" / "Clawback" / "Keep"
+  minStayPct         Int? // minimum stay as % of commitment to keep free months
 
-  version         Int        @default(1)
-  createdAt       DateTime   @default(now())
-  updatedAt       DateTime   @updatedAt
+  version   Int      @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   // Relations
-  matrixCells     DiscountMatrixCell[]
-  freeMonths      FreeMonthAllocation[]
-  rules           PromotionRule[]
-  versions        PromotionVersion[]
-  promotions      Promotion[]
-  redemptions     PromotionRedemption[]
+  matrixCells DiscountMatrixCell[]
+  freeMonths  FreeMonthAllocation[]
+  rules       PromotionRule[]
+  versions    PromotionVersion[]
+  promotions  Promotion[]
+  redemptions PromotionRedemption[]
 
   @@index([kind])
   @@index([status])
@@ -1231,51 +1261,51 @@ model PromotionPlan {
 }
 
 model DiscountMatrixCell {
-  id              String   @id @default(cuid())
-  planId          String
-  plan            PromotionPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
-  sizeCategory    String   // LOCKER / SMALL / MEDIUM / LARGE / XL / XXL (canonical; legacy XS reads as LOCKER)
-  accessType      String   // "Ground floor" / "Standard"
-  commitmentMonths Int     // 1 / 3 / 6 / 12
-  discountPct     Decimal  @db.Decimal(5, 2)
+  id               String        @id @default(cuid())
+  planId           String
+  plan             PromotionPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+  sizeCategory     String // LOCKER / SMALL / MEDIUM / LARGE / XL / XXL (canonical; legacy XS reads as LOCKER)
+  accessType       String // "Ground floor" / "Standard"
+  commitmentMonths Int // 1 / 3 / 6 / 12
+  discountPct      Decimal       @db.Decimal(5, 2)
 
   @@unique([planId, sizeCategory, accessType, commitmentMonths])
   @@index([planId])
 }
 
 model FreeMonthAllocation {
-  id              String   @id @default(cuid())
-  planId          String
-  plan            PromotionPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
-  monthIndex      Int      // 0-based
-  free            Boolean  @default(true)
-  discountPct     Decimal? @db.Decimal(5, 2)
+  id          String        @id @default(cuid())
+  planId      String
+  plan        PromotionPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+  monthIndex  Int // 0-based
+  free        Boolean       @default(true)
+  discountPct Decimal?      @db.Decimal(5, 2)
 
   @@unique([planId, monthIndex])
   @@index([planId])
 }
 
 model PromotionRule {
-  id              String   @id @default(cuid())
-  planId          String
-  plan            PromotionPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
-  groupId         Int      // groups rules into AND/OR clauses
-  field           String   // "Facility" / "Size category" / "Customer type" / etc.
-  operator        String   // "equals" / "is any of" / "at least" / "is between" / "is not"
-  value           String
+  id       String        @id @default(cuid())
+  planId   String
+  plan     PromotionPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+  groupId  Int // groups rules into AND/OR clauses
+  field    String // "Facility" / "Size category" / "Customer type" / etc.
+  operator String // "equals" / "is any of" / "at least" / "is between" / "is not"
+  value    String
 
   @@index([planId])
 }
 
 model PromotionVersion {
-  id              String   @id @default(cuid())
-  planId          String
-  plan            PromotionPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
-  version         Int
-  snapshot        Json     // full plan state at version time
-  changedBy       String
-  changeSummary   String
-  createdAt       DateTime @default(now())
+  id            String        @id @default(cuid())
+  planId        String
+  plan          PromotionPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+  version       Int
+  snapshot      Json // full plan state at version time
+  changedBy     String
+  changeSummary String
+  createdAt     DateTime      @default(now())
 
   @@unique([planId, version])
   @@index([planId])
@@ -1302,14 +1332,14 @@ model PromotionRedemption {
 }
 
 model SafeguardRule {
-  id                    String   @id @default(cuid())
-  facilityId            String?  // FK → Branch (null = global)
-  branch                Branch?  @relation(fields: [facilityId], references: [id])
-  sizeId                String?  // FK → UnitSize (null = all sizes)
+  id                    String    @id @default(cuid())
+  facilityId            String? // FK → Branch (null = global)
+  branch                Branch?   @relation(fields: [facilityId], references: [id])
+  sizeId                String? // FK → UnitSize (null = all sizes)
   unitSize              UnitSize? @relation(fields: [sizeId], references: [id])
-  minEffectiveRate      Decimal  @db.Decimal(10, 2)
-  requiresApprovalAbove Decimal? @db.Decimal(5, 2) // discount % threshold
-  approverRole          String?  // who approves
+  minEffectiveRate      Decimal   @db.Decimal(10, 2)
+  requiresApprovalAbove Decimal?  @db.Decimal(5, 2) // discount % threshold
+  approverRole          String? // who approves
 
   @@index([facilityId])
   @@index([sizeId])
@@ -1646,22 +1676,22 @@ enum FeeKind {
 // (SGD), PCT (% of monthly rate) or MONTHS (multiples of monthly rate,
 // deposits only).
 model FacilityFee {
-  id         String   @id @default(cuid())
-  kind       FeeKind  @default(FEE)
+  id         String    @id @default(cuid())
+  kind       FeeKind   @default(FEE)
   key        String // e.g. "lateFee" / "adminFee" / "deposit" / "insurance"
-  scope      FeeScope @default(GLOBAL)
+  scope      FeeScope  @default(GLOBAL)
   branchId   String?
-  branch     Branch?  @relation(fields: [branchId], references: [id])
+  branch     Branch?   @relation(fields: [branchId], references: [id])
   sizeId     String?
   unitSize   UnitSize? @relation(fields: [sizeId], references: [id])
   tenantId   String?
-  tenant     Tenant?  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  amount     Decimal  @db.Decimal(10, 2)
-  amountKind String   @default("FLAT") // FLAT | PCT | MONTHS
-  active     Boolean  @default(true)
+  tenant     Tenant?   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  amount     Decimal   @db.Decimal(10, 2)
+  amountKind String    @default("FLAT") // FLAT | PCT | MONTHS
+  active     Boolean   @default(true)
   note       String?
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
 
   @@index([kind, key, active])
   @@index([branchId])
@@ -1691,13 +1721,13 @@ model BusinessRule {
 // scope "ALL" with branchId NULL grants every facility. An operator with NO
 // rows is unscoped (every facility). Combined with the role's permissions.
 model OperatorFacilityAccess {
-  id          String   @id @default(cuid())
+  id          String    @id @default(cuid())
   adminUserId String
   adminUser   AdminUser @relation(fields: [adminUserId], references: [id], onDelete: Cascade)
   branchId    String?
-  branch      Branch?  @relation(fields: [branchId], references: [id], onDelete: Cascade)
-  scope       String   @default("FACILITY") // FACILITY | ALL
-  createdAt   DateTime @default(now())
+  branch      Branch?   @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  scope       String    @default("FACILITY") // FACILITY | ALL
+  createdAt   DateTime  @default(now())
 
   @@unique([adminUserId, branchId])
   @@index([adminUserId])
@@ -1776,24 +1806,24 @@ model ProtectionPlan {
 }
 
 model Addon {
-  id        String   @id // stable slug, e.g. "medium-box" / "disc-padlock"
-  name      String // display name, e.g. "Medium Box"
-  price     Decimal  @db.Decimal(10, 2) // one-off SGD
-  unit      String? // sale unit shown at checkout, e.g. "box" / "each"
+  id          String   @id // stable slug, e.g. "medium-box" / "disc-padlock"
+  name        String // display name, e.g. "Medium Box"
+  price       Decimal  @db.Decimal(10, 2) // one-off SGD
+  unit        String? // sale unit shown at checkout, e.g. "box" / "each"
   // Optional checkout artwork (validated HTTPS URL string, never binary —
   // the repo has no upload/S3 pattern; CMS sets/updates it as text).
   // NULL = no image; public reads always emit the key (string | null).
-  imageUrl  String?
+  imageUrl    String?
   // Per-addon blurb shown at checkout (NULL = no description). ProtectionPlan
   // keeps its `coverage` field; Addon uses this `description` instead.
   description String?
   // Slashed-price display: nullable original price shown struck-through next
   // to `price` (NULL = no strike-through). Display only — checkout charges `price`.
-  wasPrice  Decimal? @db.Decimal(10, 2)
-  sortOrder Int      @default(0) // ascending display order (1..n)
-  active    Boolean  @default(true) // false = hidden from public reads, kept for history
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  wasPrice    Decimal? @db.Decimal(10, 2)
+  sortOrder   Int      @default(0) // ascending display order (1..n)
+  active      Boolean  @default(true) // false = hidden from public reads, kept for history
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
   @@index([active, sortOrder])
 }
@@ -1861,19 +1891,19 @@ model ContentItem {
 // CMS operator's verdict on that mock row (see src/core/verifications.ts).
 // booking.requireIDVerification stays display-only: nothing gates on status.
 model Verification {
-  id         String    @id @default(cuid())
-  customerId String?
-  customer   Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
-  tenantId   String?
-  bookingRef String
-  method     String    @default("mock-camera")
-  idType     String
-  result     String
-  status     String
-  capturedAt DateTime?
-  verifiedAt DateTime  @default(now())
-  payload    Json?
-  createdAt  DateTime  @default(now())
+  id           String    @id @default(cuid())
+  customerId   String?
+  customer     Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  tenantId     String?
+  bookingRef   String
+  method       String    @default("mock-camera")
+  idType       String
+  result       String
+  status       String
+  capturedAt   DateTime?
+  verifiedAt   DateTime  @default(now())
+  payload      Json?
+  createdAt    DateTime  @default(now())
   // CMS staff-validation layer (additive — provider status untouched).
   reviewStatus String    @default("PENDING_VALIDATION")
   reviewedAt   DateTime?
@@ -1940,10 +1970,10 @@ model SitePublish {
   scope           Json // [{ pageId, slug, versionId, number }]
   settingsVersion Int? // global settings version published here, if any
   note            String?
-  status      SitePublishStatus
-  error       String?
-  createdById String?
-  createdAt   DateTime          @default(now())
+  status          SitePublishStatus
+  error           String?
+  createdById     String?
+  createdAt       DateTime          @default(now())
 }
 
 // Site-builder media library. The browser uploads pre-resized webp variants
@@ -2042,21 +2072,21 @@ model FinanceEvent {
 // PENDING (submitted, locked for edits), CURRENT (approved baseline),
 // ARCHIVED (hidden, restorable as a new draft).
 model FinancialModel {
-  id            String    @id @default(cuid())
+  id            String   @id @default(cuid())
   branchId      String?
-  branch        Branch?   @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  branch        Branch?  @relation(fields: [branchId], references: [id], onDelete: SetNull)
   name          String
-  status        String    @default("DRAFT") // DRAFT | PENDING | CURRENT | ARCHIVED
+  status        String   @default("DRAFT") // DRAFT | PENDING | CURRENT | ARCHIVED
   inputs        Json
-  engineVersion String    @default("finance-projection/1")
+  engineVersion String   @default("finance-projection/1")
   inputHash     String
   createdBy     String
   updatedBy     String?
-  version       Int       @default(0)
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  version       Int      @default(0)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 
-  versions      FinancialModelVersion[]
+  versions FinancialModelVersion[]
 
   @@index([branchId])
   @@index([status])
@@ -2066,17 +2096,17 @@ model FinancialModel {
 // always create NEW rows — history is never overwritten. Statuses: DRAFT |
 // SUBMITTED | APPROVED | REJECTED | ARCHIVED.
 model FinancialModelVersion {
-  id            String    @id @default(cuid())
+  id            String         @id @default(cuid())
   modelId       String
   model         FinancialModel @relation(fields: [modelId], references: [id], onDelete: Cascade)
   version       Int
   snapshot      Json
   changeSummary String?
-  status        String    @default("DRAFT") // DRAFT | SUBMITTED | APPROVED | REJECTED | ARCHIVED
+  status        String         @default("DRAFT") // DRAFT | SUBMITTED | APPROVED | REJECTED | ARCHIVED
   decidedBy     String?
   decidedAt     DateTime?
   createdBy     String
-  createdAt     DateTime  @default(now())
+  createdAt     DateTime       @default(now())
 
   @@unique([modelId, version])
   @@index([modelId, status])
@@ -2101,7 +2131,7 @@ model Budget {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  expenses    Expense[]
+  expenses Expense[]
 
   @@unique([branchId, fiscalMonth, category])
   @@index([branchId, fiscalMonth])
@@ -2177,7 +2207,7 @@ model CreditWallet {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  entries   CreditLedgerEntry[]
+  entries CreditLedgerEntry[]
 
   @@index([branchId])
 }
@@ -2185,15 +2215,15 @@ model CreditWallet {
 // Append-only credit ledger (spec §19.1/19.4). APPLY writes reference the
 // invoice; REFUND rows link the refund case. No update/delete path.
 model CreditLedgerEntry {
-  id        String   @id @default(cuid())
+  id        String       @id @default(cuid())
   walletId  String
   wallet    CreditWallet @relation(fields: [walletId], references: [id], onDelete: Cascade)
-  kind      String   // GRANT | APPLY | REFUND | EXPIRE | ADJUST
-  amount    Decimal  @db.Decimal(10, 2)
+  kind      String // GRANT | APPLY | REFUND | EXPIRE | ADJUST
+  amount    Decimal      @db.Decimal(10, 2)
   refId     String?
   actor     String
   note      String?
-  createdAt DateTime @default(now())
+  createdAt DateTime     @default(now())
 
   @@index([walletId])
   @@index([kind])
@@ -2207,29 +2237,29 @@ model CreditLedgerEntry {
 // computation that goes negative converts to a CHARGE (never a negative
 // payment) — stored in `computation`, no Refund row reaches PAID.
 model Refund {
-  id             String   @id @default(cuid())
+  id             String    @id @default(cuid())
   tenantId       String
-  tenant         Tenant   @relation(fields: [tenantId], references: [id])
+  tenant         Tenant    @relation(fields: [tenantId], references: [id])
   branchId       String?
-  branch         Branch?  @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  branch         Branch?   @relation(fields: [branchId], references: [id], onDelete: SetNull)
   invoiceId      String?
-  amount         Decimal  @db.Decimal(10, 2)
+  amount         Decimal   @db.Decimal(10, 2)
   reason         String
   computation    Json?
-  status         String   @default("REQUESTED") // REQUESTED | APPROVED | REJECTED | PAID
+  status         String    @default("REQUESTED") // REQUESTED | APPROVED | REJECTED | PAID
   requestedBy    String
-  requestedAt    DateTime @default(now())
+  requestedAt    DateTime  @default(now())
   approvedBy     String?
   decidedAt      DateTime?
   decisionReason String?
-  bankVerified   Boolean  @default(false)
+  bankVerified   Boolean   @default(false)
   bankRef        String?
   gatewayRef     String?
-  bypassed       Boolean  @default(false)
-  idempotencyKey String?  @unique
-  version        Int      @default(0)
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  bypassed       Boolean   @default(false)
+  idempotencyKey String?   @unique
+  version        Int       @default(0)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 
   @@index([tenantId])
   @@index([status])
@@ -2269,22 +2299,22 @@ model ArrearsCase {
 // approver-gated. Approval appends a CREDIT line to the invoice (stamped
 // creditApplied/balanceDue) — never edits history.
 model LateFeeWaiver {
-  id             String   @id @default(cuid())
+  id             String    @id @default(cuid())
   tenantId       String
-  tenant         Tenant   @relation(fields: [tenantId], references: [id])
+  tenant         Tenant    @relation(fields: [tenantId], references: [id])
   invoiceId      String?
   branchId       String?
-  branch         Branch?  @relation(fields: [branchId], references: [id], onDelete: SetNull)
-  amount         Decimal  @db.Decimal(10, 2)
+  branch         Branch?   @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  amount         Decimal   @db.Decimal(10, 2)
   reason         String
-  status         String   @default("REQUESTED") // REQUESTED | APPROVED | REJECTED
+  status         String    @default("REQUESTED") // REQUESTED | APPROVED | REJECTED
   requestedBy    String
   approvedBy     String?
   decidedAt      DateTime?
-  idempotencyKey String?  @unique
-  version        Int      @default(0)
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  idempotencyKey String?   @unique
+  version        Int       @default(0)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 
   @@index([tenantId])
   @@index([status])
@@ -2321,7 +2351,7 @@ model ReconciliationBatch {
   id          String    @id @default(cuid())
   branchId    String
   branch      Branch    @relation(fields: [branchId], references: [id], onDelete: Cascade)
-  fiscalMonth String    // YYYY-MM
+  fiscalMonth String // YYYY-MM
   status      String    @default("OPEN") // OPEN | CLOSED
   checklist   Json?
   closedBy    String?
@@ -2340,7 +2370,7 @@ model MonthClose {
   id          String    @id @default(cuid())
   branchId    String
   branch      Branch    @relation(fields: [branchId], references: [id], onDelete: Cascade)
-  fiscalMonth String    // YYYY-MM
+  fiscalMonth String // YYYY-MM
   status      String    @default("OPEN") // OPEN | CLOSED
   closedBy    String?
   closedAt    DateTime?
@@ -2360,8 +2390,8 @@ model ActualMetric {
   id          String   @id @default(cuid())
   branchId    String
   branch      Branch   @relation(fields: [branchId], references: [id], onDelete: Cascade)
-  fiscalMonth String    // YYYY-MM
-  metric      String   // REVENUE | CASH | OPEX | LEASE | NOI | OCCUPIED_SQFT
+  fiscalMonth String // YYYY-MM
+  metric      String // REVENUE | CASH | OPEX | LEASE | NOI | OCCUPIED_SQFT
   value       Decimal  @db.Decimal(12, 2)
   source      String?
   createdAt   DateTime @default(now())
@@ -2392,7 +2422,7 @@ model VarianceNote {
   id          String   @id @default(cuid())
   branchId    String
   branch      Branch   @relation(fields: [branchId], references: [id], onDelete: Cascade)
-  fiscalMonth String    // YYYY-MM
+  fiscalMonth String // YYYY-MM
   metric      String
   note        String
   author      String
@@ -2400,4 +2430,37 @@ model VarianceNote {
   updatedAt   DateTime @updatedAt
 
   @@index([branchId, fiscalMonth])
+}
+
+// ---------------------------------------------------------------------------
+// Notes with @mentions + staff notifications (prototype 2026-11-04). A note
+// belongs to one record (entityType lead | tenant); each @mention of an
+// operator creates one StaffNotification for that operator.
+// ---------------------------------------------------------------------------
+model RecordNote {
+  id         String   @id @default(cuid())
+  entityType String // lead | tenant
+  entityId   String
+  body       String
+  author     String // operator name/email
+  mentions   Json? // [{ userId, name }]
+  createdAt  DateTime @default(now())
+
+  @@index([entityType, entityId])
+}
+
+model StaffNotification {
+  id          String    @id @default(cuid())
+  recipientId String
+  recipient   AdminUser @relation(fields: [recipientId], references: [id], onDelete: Cascade)
+  kind        String // MENTION
+  title       String
+  body        String?
+  entityType  String?
+  entityId    String?
+  actor       String?
+  readAt      DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@index([recipientId, readAt])
 }

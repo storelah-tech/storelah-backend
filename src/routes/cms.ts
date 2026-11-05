@@ -33,7 +33,7 @@ import {
 } from '../core/floors';
 import { listTenants, createTenant, updateTenant, deactivateTenant, listMoveOuts, transitionMoveOut } from '../core/tenants';
 import { listVerificationsForCms, setVerificationReview } from '../core/verifications';
-import { listLeads, getLeadById, getLeadStats, getWeeklyAnalytics, listLeadGroups, getLeadGroupTimeline, createLead, updateLead, deleteLead } from '../core/leads';
+import { listLeads, getLeadById, getLeadStats, getWeeklyAnalytics, listLeadGroups, getLeadGroupTimeline, createLead, updateLead, deleteLead, createEnquiryForLead, listEnquiriesForLead } from '../core/leads';
 import type { LeadStage, LeadSource } from '@prisma/client';
 import {
   listConversations,
@@ -74,7 +74,7 @@ import { listBranches, getMoveIns, getPortfolio, createBranch, updateBranch, del
 import { getSettings, upsertSettings } from '../core/settings';
 import { listSiteContent, getSiteContentByKey, upsertSiteContent } from '../core/siteContent';
 import { adjustRate, getNetPsf } from '../core/rates';
-import { listQuotes, getQuote, createQuotation, listQuotableLeads, getQuotationPdf } from '../core/quotes';
+import { listQuotes, getQuote, createQuotation, listQuotableLeads, getQuotationPdf, finalizeQuotation } from '../core/quotes';
 import { listFees, createFee, updateFee, deleteFee, resolveFee } from '../core/fees';
 import { listBusinessRules, upsertBusinessRules } from '../core/businessRules';
 import {
@@ -269,6 +269,16 @@ import {
   saveSiteSettingsDraft,
 } from '../core/sitePages';
 import { listMedia, listMediaQuery, uploadMedia, uploadMediaInput, updateMedia, updateMediaInput, deleteMedia } from '../core/siteMedia';
+import {
+  ACCESS_FREQUENCIES, PIPELINE_COLUMNS, SLA_CHANNEL_OPTIONS, getPipelineSettings, getSlaSettings, savePipelineSettings, saveSlaSettings,
+} from '../core/leadPipeline';
+import {
+  QUOTE_STATUSES, deleteDraftQuotation, duplicateAsDraft, getQuotationPdfById, listQuotationRegister, resendQuotation, voidQuotation,
+} from '../core/quotationRegister';
+import { NOTE_ENTITIES, addNote, listMentionableUsers, listMyNotifications, listNotes, markNotificationsRead } from '../core/recordNotes';
+
+const LEAD_STAGE_VALUES = PIPELINE_COLUMNS as [LeadStage, ...LeadStage[]];
+const LEAD_SOURCE_VALUES = ['WEBSITE', 'WHATSAPP', 'REFERRAL', 'GOOGLE', 'PHONE', 'WALK_IN', 'PARTNER'] as const;
 
 const router = Router();
 
@@ -861,9 +871,9 @@ router.get('/leads/stats', requireAuth, async (_req: Request, res: Response) => 
 const leadGroupListQuerySchema = z.object({
   search: z.string().trim().max(120).optional(),
   stage: z
-    .enum(['NEW_ENQUIRY', 'CONTACTED', 'VIEWING_BOOKED', 'PROPOSAL_SENT', 'PENDING_PAYMENT', 'WON', 'LOST'])
+    .enum(LEAD_STAGE_VALUES)
     .optional(),
-  source: z.enum(['WEBSITE', 'WHATSAPP', 'REFERRAL', 'GOOGLE']).optional(),
+  source: z.enum(LEAD_SOURCE_VALUES).optional(),
   page: z.coerce.number().int().min(1).default(1),
   perPage: z.coerce.number().int().min(1).max(100).default(10),
 });
@@ -911,8 +921,8 @@ const leadPayloadSchema = z.object({
   name: z.string().trim().min(1).max(120),
   type: z.enum(['PERSONAL', 'BUSINESS']).optional(),
   segment: z.string().trim().max(80).nullable().optional(),
-  stage: z.enum(['NEW_ENQUIRY', 'CONTACTED', 'VIEWING_BOOKED', 'PROPOSAL_SENT', 'PENDING_PAYMENT', 'WON', 'LOST']).optional(),
-  source: z.enum(['WEBSITE', 'WHATSAPP', 'REFERRAL', 'GOOGLE']).optional(),
+  stage: z.enum(LEAD_STAGE_VALUES).optional(),
+  source: z.enum(LEAD_SOURCE_VALUES).optional(),
   preferredSize: z.string().trim().max(40).nullable().optional(),
   preferredBranchId: z.string().min(1).nullable().optional(),
   monthlyRate: z.number().nonnegative().nullable().optional(),
@@ -936,6 +946,9 @@ const leadPayloadSchema = z.object({
   durationMonths: z.number().int().positive().nullable().optional(),
   companyName: z.string().trim().max(120).nullable().optional(),
   uen: z.string().trim().max(40).nullable().optional(),
+  representative: z.string().trim().max(120).nullable().optional(),
+  enquiryDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'enquiryDate must be YYYY-MM-DD').nullable().optional(),
+  accessFrequency: z.enum(ACCESS_FREQUENCIES).nullable().optional(),
   consentPdpa: z
     .boolean()
     .nullable()
@@ -969,8 +982,263 @@ function toLeadInput(parsed: z.infer<typeof leadPayloadSchema>) {
     ...parsed,
     nextActionAt: parsed.nextActionAt === undefined ? undefined : parsed.nextActionAt ? new Date(parsed.nextActionAt) : null,
     moveInDate: parsed.moveInDate === undefined ? undefined : parsed.moveInDate ? new Date(parsed.moveInDate) : null,
+    enquiryDate: parsed.enquiryDate === undefined ? undefined : parsed.enquiryDate ? new Date(`${parsed.enquiryDate}T00:00:00.000Z`) : null,
   };
 }
+
+// Prototype Add lead rule: a Business lead names the company, its UEN and the
+// representative acting for it.
+function businessIdentityProblem(p: { type?: string; companyName?: string | null; name?: string; uen?: string | null; representative?: string | null }): string | null {
+  if (p.type !== 'BUSINESS') return null;
+  const missing = [
+    !(p.companyName?.trim() || p.name?.trim()) && 'company name',
+    !p.uen?.trim() && 'UEN',
+    !p.representative?.trim() && 'representative',
+  ].filter(Boolean);
+  return missing.length ? `A Business lead needs ${missing.join(', ')}.` : null;
+}
+
+// ---- Leads prototype delta (2026-11-04): pipeline + SLA settings, enquiries,
+// notes with @mentions, staff notifications. Registered before /leads/:id so
+// the fixed paths win.
+const actorName = (req: Request) => {
+  const me = adminOf(req);
+  return me?.name || me?.email || 'Operator';
+};
+
+router.get('/leads/pipeline-settings', requireAuth, async (_req: Request, res: Response) => {
+  ok(res, await getPipelineSettings());
+});
+
+const pipelineSettingsSchema = z.object({
+  version: z.number().int().nonnegative().optional(),
+  stages: z.array(z.object({
+    stage: z.enum(LEAD_STAGE_VALUES),
+    probability: z.number().int().min(0).max(100),
+    maxAgeMinutes: z.number().int().positive().nullable(),
+    requiredBeforeEntry: z.string().trim().max(200),
+    automation: z.string().trim().max(200),
+  })),
+  assignmentRule: z.string().trim().min(1).max(200),
+  lostReasons: z.array(z.string().trim().min(1).max(80)).max(20),
+  requireNextAction: z.boolean(),
+});
+
+router.put('/leads/pipeline-settings', requireAuth, async (req: Request, res: Response) => {
+  const parsed = pipelineSettingsSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid pipeline settings', parsed.error.flatten());
+    return;
+  }
+  ok(res, await savePipelineSettings(parsed.data, actorName(req)));
+});
+
+router.get('/settings/lead-sla', requireAuth, async (_req: Request, res: Response) => {
+  ok(res, { ...(await getSlaSettings()), options: SLA_CHANNEL_OPTIONS });
+});
+
+const slaSettingsSchema = z.object({
+  version: z.number().int().nonnegative().optional(),
+  targets: z.object({ website: z.number().int(), whatsapp: z.number().int(), phone: z.number().int(), email: z.number().int() }),
+  businessHoursOnly: z.boolean(),
+  pauseOnPublicHolidays: z.boolean(),
+  whatsapp247: z.boolean(),
+  warningPct: z.number().int(),
+  escalateTo: z.array(z.string().trim().min(1).max(80)).max(10),
+});
+
+router.put('/settings/lead-sla', requireAuth, async (req: Request, res: Response) => {
+  const parsed = slaSettingsSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid SLA settings', parsed.error.flatten());
+    return;
+  }
+  ok(res, await saveSlaSettings(parsed.data, actorName(req)));
+});
+
+const enquirySchema = z.object({
+  enquiryDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
+  source: z.enum(LEAD_SOURCE_VALUES).optional(),
+  preferredBranchId: z.string().min(1).nullable().optional(),
+  preferredSize: z.string().trim().max(40).nullable().optional(),
+  accessFrequency: z.enum(ACCESS_FREQUENCIES).nullable().optional(),
+  durationMonths: z.number().int().positive().nullable().optional(),
+  moveInDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
+  monthlyRate: z.number().nonnegative().nullable().optional(),
+  note: z.string().max(2000).nullable().optional(),
+  owner: z.string().trim().max(80).nullable().optional(),
+});
+
+router.get('/leads/:id/enquiries', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await listEnquiriesForLead(String(req.params.id)));
+});
+
+router.post('/leads/:id/enquiries', requireAuth, async (req: Request, res: Response) => {
+  const parsed = enquirySchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid enquiry', parsed.error.flatten());
+    return;
+  }
+  const d = parsed.data;
+  const day = (v: string | null | undefined) => (v ? new Date(`${v}T00:00:00.000Z`) : v === null ? null : undefined);
+  created(res, await createEnquiryForLead(String(req.params.id), { ...d, enquiryDate: day(d.enquiryDate), moveInDate: day(d.moveInDate) }));
+});
+
+const recordNoteSchema = z.object({
+  body: z.string().trim().min(1).max(4000),
+  mentions: z.array(z.string().min(1)).max(20).optional(),
+});
+
+for (const entity of NOTE_ENTITIES) {
+  const base = entity === 'lead' ? '/leads' : '/tenants';
+  router.get(`${base}/:id/notes`, requireAuth, async (req: Request, res: Response) => {
+    ok(res, await listNotes(entity, String(req.params.id)));
+  });
+  router.post(`${base}/:id/notes`, requireAuth, async (req: Request, res: Response) => {
+    const parsed = recordNoteSchema.safeParse(req.body);
+    if (!parsed.success) {
+      fail(res, 400, 'VALIDATION', 'Invalid note', parsed.error.flatten());
+      return;
+    }
+    created(res, await addNote({ entityType: entity, entityId: String(req.params.id), body: parsed.data.body, mentionIds: parsed.data.mentions ?? [], author: actorName(req) }));
+  });
+}
+
+router.get('/mentionable-users', requireAuth, async (_req: Request, res: Response) => {
+  ok(res, await listMentionableUsers());
+});
+
+router.get('/notifications', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await listMyNotifications(adminOf(req)!.id));
+});
+
+router.post('/notifications/read', requireAuth, async (req: Request, res: Response) => {
+  const parsed = z.object({ ids: z.array(z.string().min(1)).max(100).optional() }).safeParse(req.body ?? {});
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid notification ids', parsed.error.flatten());
+    return;
+  }
+  ok(res, await markNotificationsRead(adminOf(req)!.id, parsed.data.ids));
+});
+
+// ---- Quotation register (Leads › Quotes, prototype 2026-11-04) ----
+router.get('/quotations', requireAuth, async (req: Request, res: Response) => {
+  const parsed = z.object({
+    search: z.string().trim().max(120).optional(),
+    status: z.enum(QUOTE_STATUSES).optional(),
+    facility: z.string().trim().max(10).optional(),
+  }).safeParse(req.query);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid quotation filter', parsed.error.flatten());
+    return;
+  }
+  ok(res, await listQuotationRegister(parsed.data));
+});
+
+// Issue another numbered quotation for a lead (register builder). Unlike
+// POST /quotes this allows re-quoting a lead that is already Quoted; the
+// quoted terms are written to the lead first so the PDF and snapshot agree.
+const issueQuoteSchema = z.object({
+  leadId: z.string().min(1),
+  unitCode: z.string().trim().max(40).nullable().optional(),
+  grossRate: z.number().nonnegative(),
+  promoPct: z.number().min(0).max(100).nullable().optional(),
+  protectionMonthly: z.number().nonnegative().nullable().optional(),
+  commitmentMonths: z.number().int().positive().nullable().optional(),
+  expiresAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
+});
+
+router.post('/quotations', requireAuth, async (req: Request, res: Response) => {
+  const parsed = issueQuoteSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Select a lead and enter the quoted rent.', parsed.error.flatten());
+    return;
+  }
+  const d = parsed.data;
+  const lead = await prisma.lead.findUnique({ where: { id: d.leadId } });
+  if (!lead) {
+    fail(res, 404, 'NOT_FOUND', 'Select a lead.');
+    return;
+  }
+  if (lead.stage === 'WON' || lead.stage === 'LOST') {
+    fail(res, 409, 'CONFLICT', 'Converted or lost leads cannot be quoted. Add a new enquiry first.');
+    return;
+  }
+  const quotedStages = ['PROPOSAL_SENT', 'PENDING_PAYMENT', 'PAID_BOOKING'];
+  await prisma.lead.update({
+    where: { id: lead.id },
+    data: {
+      monthlyRate: d.grossRate,
+      ...(d.unitCode !== undefined ? { unitCode: d.unitCode } : {}),
+      ...(d.protectionMonthly !== undefined ? { protectionCost: d.protectionMonthly } : {}),
+      ...(d.commitmentMonths !== undefined ? { durationMonths: d.commitmentMonths } : {}),
+      ...(quotedStages.includes(lead.stage) ? {} : { stage: 'PROPOSAL_SENT' as const }),
+    },
+  });
+  const issued = await finalizeQuotation(lead.id, {
+    createdBy: actorName(req),
+    promoPct: d.promoPct ?? null,
+    expiresAt: d.expiresAt ? new Date(`${d.expiresAt}T15:59:59.000Z`) : null, // end of that day in Singapore
+  });
+  if (!issued) {
+    fail(res, 500, 'QUOTE_FAILED', 'The quotation could not be issued. Try again.');
+    return;
+  }
+  created(res, issued);
+});
+
+router.get('/quotations/:id/pdf', requireAuth, async (req: Request, res: Response) => {
+  const pdf = await getQuotationPdfById(String(req.params.id));
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `inline; filename="${pdf.filename}"`);
+  res.send(pdf.bytes);
+});
+
+router.post('/quotations/:id/void', requireAuth, async (req: Request, res: Response) => {
+  const parsed = z.object({ reason: z.string().trim().min(1).max(500) }).safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'A reason is required to void a quotation.', parsed.error.flatten());
+    return;
+  }
+  ok(res, await voidQuotation(String(req.params.id), { reason: parsed.data.reason, actor: actorName(req) }));
+});
+
+router.post('/quotations/:id/resend', requireAuth, async (req: Request, res: Response) => {
+  const parsed = z.object({ channels: z.array(z.enum(['Email', 'WhatsApp'])).min(1).max(2) }).safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Choose email and/or WhatsApp.', parsed.error.flatten());
+    return;
+  }
+  ok(res, await resendQuotation(String(req.params.id), parsed.data.channels));
+});
+
+router.post('/quotations/:id/duplicate', requireAuth, async (req: Request, res: Response) => {
+  created(res, await duplicateAsDraft(String(req.params.id), actorName(req)));
+});
+
+// Sending a draft issues a numbered quotation for its lead and removes the draft.
+router.post('/quotations/:id/send', requireAuth, async (req: Request, res: Response) => {
+  const draft = await prisma.quotation.findUnique({ where: { id: String(req.params.id) } });
+  if (!draft) {
+    fail(res, 404, 'NOT_FOUND', 'Quotation not found');
+    return;
+  }
+  if (draft.status !== 'DRAFT') {
+    fail(res, 409, 'CONFLICT', `${draft.quoteNo} has already been issued.`);
+    return;
+  }
+  const issued = await finalizeQuotation(draft.leadId, { createdBy: actorName(req), promoPct: draft.promoPct ? Number(draft.promoPct) : null });
+  if (!issued) {
+    fail(res, 500, 'QUOTE_FAILED', 'The quotation could not be issued. Try again.');
+    return;
+  }
+  await prisma.quotation.delete({ where: { id: draft.id } });
+  ok(res, issued);
+});
+
+router.delete('/quotations/:id', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await deleteDraftQuotation(String(req.params.id)));
+});
 
 // Single lead read (drawer refresh + deep links). Additive — serializeLead
 // includes the v2 booking-intent columns with the legacy note fallback.
@@ -982,6 +1250,11 @@ router.post('/leads', requireAuth, async (req: Request, res: Response) => {
   const parsed = leadPayloadSchema.safeParse(req.body);
   if (!parsed.success) {
     fail(res, 400, 'VALIDATION', 'Invalid lead payload', parsed.error.flatten());
+    return;
+  }
+  const business = businessIdentityProblem(parsed.data);
+  if (business) {
+    fail(res, 400, 'VALIDATION', business);
     return;
   }
   created(res, await createLead(toLeadInput(parsed.data)));
@@ -2527,7 +2800,7 @@ const createQuoteSchema = z
     name: z.string().trim().min(1).max(120).optional(),
     type: z.enum(['PERSONAL', 'BUSINESS']).optional(),
     segment: z.string().trim().max(80).nullable().optional(),
-    source: z.enum(['WEBSITE', 'WHATSAPP', 'REFERRAL', 'GOOGLE']).optional(),
+    source: z.enum(LEAD_SOURCE_VALUES).optional(),
     preferredSize: z.string().trim().max(40).nullable().optional(),
     preferredBranchId: z.string().min(1).nullable().optional(),
     monthlyRate: z.number().nonnegative().nullable().optional(),
@@ -2801,15 +3074,19 @@ const appointmentPayloadSchema = z.object({
   leadId: z.string().min(1).nullable().optional(),
   startAt: z.string().datetime(),
   endAt: z.string().datetime().nullable().optional(),
+  staff: z.string().trim().max(80).nullable().optional(),
   note: z.string().max(2000).nullable().optional(),
 });
 
 const appointmentUpdateSchema = appointmentPayloadSchema
   .partial()
-  .extend({ status: z.enum(['PENDING', 'CONFIRMED', 'DONE', 'CANCELLED']).optional() });
+  .extend({ status: z.enum(['PENDING', 'CONFIRMED', 'AWAITING_REPLY', 'READY', 'DONE', 'CANCELLED']).optional() });
+
+// Create accepts an initial status (prototype: Proposed / Confirmed / Awaiting reply).
+const appointmentCreateSchema = appointmentPayloadSchema.extend({ status: z.enum(['PENDING', 'CONFIRMED', 'AWAITING_REPLY']).optional() });
 
 router.post('/appointments', requireAuth, async (req: Request, res: Response) => {
-  const parsed = appointmentPayloadSchema.safeParse(req.body);
+  const parsed = appointmentCreateSchema.safeParse(req.body);
   if (!parsed.success) {
     fail(res, 400, 'VALIDATION', 'Invalid appointment payload', parsed.error.flatten());
     return;

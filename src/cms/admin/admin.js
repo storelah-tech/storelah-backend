@@ -23,6 +23,7 @@ import {
 } from './unitsView.js';
 import { bindPortfolio, wirePortfolio } from './portfolioView.js';
 import { bindQuotes, bindMoveouts, wireOpsQueues } from './opsQueuesView.js';
+import { openLeadForm, openLeadPage, renderAppointments, renderQuotes, leadDisplayName } from './leadsWorkspace.js';
 import { bindFeesSection, bindBusinessRulesSection, bindUsersSection, wireSettingsExt } from './settingsExtView.js';
 import { bindExtrasSection, wireExtras } from './extrasView.js';
 import { bindContentSection, wireContent } from './contentView.js';
@@ -59,7 +60,7 @@ function toast(msg) {
 const coreMap = {
   command: 'command',
   portfolio: 'command',
-  leads: 'leads', pipeline: 'leads', quotes: 'leads', inbox: 'leads', calendar: 'leads', automation: 'leads',
+  leads: 'leads', pipeline: 'leads', quotes: 'leads', inbox: 'leads', calendar: 'leads', automation: 'leads', 'lead-profile': 'leads',
   analytics: 'command',
   customers: 'customers',
   facilities: 'facilities',
@@ -173,9 +174,9 @@ function openPage(id) {
   }
   else if (id === 'leads') bindLeadTable();
   else if (id === 'pipeline') bindPipeline();
-  else if (id === 'quotes') bindQuotes().catch((err) => showBanner('Quotes: ' + describeError(err)));
+  else if (id === 'quotes') renderQuotes().catch((err) => showBanner('Quotes: ' + describeError(err)));
   else if (id === 'inbox') bindInbox();
-  else if (id === 'calendar') bindCalendar();
+  else if (id === 'calendar') renderAppointments().catch((err) => showBanner('Appointments: ' + describeError(err)));
   else if (id === 'analytics') bindAnalytics();
   else if (id === 'automation') bindAutomation();
   else if (id === 'customers') {
@@ -243,9 +244,10 @@ const stageLabel = {
   NEW_ENQUIRY: 'New', CONTACTED: 'Contacted', VIEWING_BOOKED: 'Qualified',
   PROPOSAL_SENT: 'Quoted', PENDING_PAYMENT: 'Pending Payment', WON: 'Won', LOST: 'Lost',
 };
+// Prototype 2026-11-04 stage names over the stored LeadStage values.
 const stageKanbanLabel = {
-  NEW_ENQUIRY: 'New Enquiry', CONTACTED: 'Contacted', VIEWING_BOOKED: 'Viewing Booked',
-  PROPOSAL_SENT: 'Proposal Sent', PENDING_PAYMENT: 'Pending Payment', WON: 'Won', LOST: 'Lost',
+  NEW_ENQUIRY: 'New', CONTACTED: 'Contacted', QUALIFIED: 'Qualified', VIEWING_BOOKED: 'Viewing set',
+  PROPOSAL_SENT: 'Quoted', PENDING_PAYMENT: 'Booking started', PAID_BOOKING: 'Paid booking', WON: 'Converted', LOST: 'Lost', NURTURING: 'Nurturing',
 };
 
 function leadHeatHtml(stage, rate) {
@@ -530,7 +532,7 @@ async function bindLeadTable() {
     if (count) count.textContent = filtered.length + ' lead' + (filtered.length === 1 ? '' : 's') + (filtered.length !== flat.length ? ' · ' + flat.length + ' total' : '') + (isRangeActive(state.leadDate) ? ' · ' + rangeLabel(state.leadDate) : '');
     resetSelectAll('#leadRows');
     renderLeadPager(filtered.length);
-    if (!filtered.length) { tbody.innerHTML = '<tr><td colspan="10"><div class="section-empty">' + escapeHtml(rangeEmptyText('leads', state.leadDate, 'No leads match — adjust your filters.')) + '</div></td></tr>'; return; }
+    if (!filtered.length) { tbody.innerHTML = '<tr><td colspan="12"><div class="section-empty">' + escapeHtml(rangeEmptyText('leads', state.leadDate, 'No leads match — adjust your filters.')) + '</div></td></tr>'; return; }
     const start = (state.leadPage - 1) * state.leadPerPage;
     const rows = filtered.slice(start, start + state.leadPerPage);
     // Row template lives in leadsGroups.js (shared with expanded group
@@ -748,13 +750,14 @@ async function bindPipeline() {
       const cards = (col.leads || [])
         .filter((l) => !branchFilter || l.branchCode === branchFilter)
         .map((l) => {
-          totalValue += l.monthlyRate || 0;
-          return '<div class="deal" draggable="true" tabindex="0" role="button" aria-label="Open lead ' + escapeHtml(l.name) + '" data-lead-id="' + escapeHtml(l.id) + '" data-stage="' + col.stage + '"><div class="deal-top"><div><h4>' + escapeHtml(l.name) + '</h4><p>' + escapeHtml(l.size || '—') + (l.branchCode ? ' · ' + escapeHtml(l.branchCode) : '') + '</p></div><span class="pill ' + (l.type === 'PERSONAL' ? 'green' : 'amber') + '">' + (l.type === 'PERSONAL' ? 'Personal' : 'Business') + '</span></div><div class="deal-value">' + (l.monthlyRate ? '$' + (l.monthlyRate).toLocaleString() : '—') + '</div><div class="deal-meta"><span>' + (l.source || '') + '</span><span>' + fmtDay(l.createdAt) + '</span></div></div>';
+          totalValue += l.potentialValue || 0;
+          // Prototype pipeline card: product, facility, potential value, stage probability, owner, enquiry date.
+          return '<div class="deal" draggable="true" tabindex="0" role="button" aria-label="Open lead ' + escapeHtml(leadDisplayName(l)) + '" data-lead-id="' + escapeHtml(l.id) + '" data-stage="' + col.stage + '"><div class="deal-top"><div><h4>' + escapeHtml(leadDisplayName(l)) + '</h4><p>AC Self-Storage · ' + escapeHtml(l.branchName || 'No preference') + '</p></div><span class="pill ' + (l.type === 'BUSINESS' ? 'blue' : 'grey') + '">' + (l.type === 'BUSINESS' ? 'Business' : 'Personal') + '</span></div><div class="deal-value">' + (l.potentialValue != null ? '$' + Number(l.potentialValue).toLocaleString('en-SG', { maximumFractionDigits: 2 }) : '—') + ' <small>' + l.probability + '%</small></div><div class="deal-meta"><span>' + escapeHtml(l.owner || 'Unassigned') + '</span><span>' + escapeHtml(l.displayId) + ' · ' + fmtDay(l.enquiryDate) + '</span></div></div>';
         }).join('');
       return '<div class="column" data-stage="' + col.stage + '"><div class="col-head"><span>' + (stageKanbanLabel[col.stage] || col.stage) + ' <small>' + col.count + '</small></span></div>' + (cards || '<div class="deal"><p style="color:var(--muted)">No leads</p></div>') + '</div>';
     }).join('');
     const valEl = $('#pipelineValue');
-    if (valEl) valEl.textContent = '$' + totalValue.toLocaleString() + ' pipeline value';
+    if (valEl) valEl.textContent = '$' + totalValue.toLocaleString('en-SG', { maximumFractionDigits: 0 }) + ' potential value';
     wirePipelineDragDrop();
   } catch (e) { showBanner('Pipeline: ' + describeError(e)); }
 }
@@ -774,14 +777,14 @@ function wirePipelineDragDrop() {
     if (justDragged) return;
     const card = e.target.closest('.deal[data-lead-id]');
     if (!card) return;
-    openLeadDrawer(card.dataset.leadId, card);
+    openLeadPage(card.dataset.leadId);
   });
   kanban.addEventListener('keydown', (e) => {
     if (e.key !== 'Enter' && e.key !== ' ') return;
     const card = e.target.closest && e.target.closest('.deal[data-lead-id]');
     if (!card) return;
     e.preventDefault();
-    openLeadDrawer(card.dataset.leadId, card);
+    openLeadPage(card.dataset.leadId);
   });
   kanban.addEventListener('dragstart', (e) => {
     const card = e.target.closest('.deal[data-lead-id]');
@@ -4412,9 +4415,9 @@ function wireEvents() {
       else if (act === 'delete') deleteLeadRow(id);
       return;
     }
-    // Row-click (any cell) → right detail drawer (Lead Database only).
+    // Row-click (any cell) → the lead page (prototype 2026-11-04).
     const tr = e.target.closest('tr[data-lead-id]');
-    if (tr) openLeadDrawer(tr.dataset.leadId, tr);
+    if (tr) openLeadPage(tr.dataset.leadId);
   });
   // Keyboard parity: Enter/Space on a focused row opens the same drawer.
   $('#leadRows')?.addEventListener('keydown', (e) => {
@@ -4422,7 +4425,7 @@ function wireEvents() {
     const tr = e.target.closest && e.target.closest('tr[data-lead-id]');
     if (!tr || e.target.closest('button[data-act],input[type="checkbox"]')) return;
     e.preventDefault();
-    openLeadDrawer(tr.dataset.leadId, tr);
+    openLeadPage(tr.dataset.leadId);
   });
   // Leads: import / export
   $('#leadExportBtn')?.addEventListener('click', exportLeadsCsv);
@@ -4434,7 +4437,7 @@ function wireEvents() {
   });
   // Lead modal (topbar #addLeadBtn removed — only pipeline + leads-page remain;
   // bind every match so duplicate IDs / missing nodes never null-throw on boot)
-  $$('#addLeadBtn, #addLeadBtn2').forEach((el) => el?.addEventListener('click', openCreateLead));
+  $$('#addLeadBtn, #addLeadBtn2').forEach((el) => el?.addEventListener('click', () => openLeadForm().catch((err) => showBanner('Leads: ' + describeError(err)))));
   $('#leadModalClose')?.addEventListener('click', closeLeadModal);
   $('#leadFormCancel')?.addEventListener('click', closeLeadModal);
   $('#leadForm')?.addEventListener('submit', submitLeadForm);
@@ -4785,4 +4788,4 @@ wireEvents();
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
 else boot();
 
-window.StoreLahAdmin = { showUnitDetail };
+window.StoreLahAdmin = { showUnitDetail, openPage };

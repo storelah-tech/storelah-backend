@@ -152,6 +152,7 @@ export const ROUTE_PERMISSIONS: Record<string, PermissionSpec> = {
   // audit mutation because no update/delete path exists) ----
   'GET /finance/overview': 'bill-overview:view',
   'GET /finance/overview/export.csv': 'bill-overview:view',
+  'GET /finance/reports/financial.pdf': 'bill-overview:view',
   'GET /finance/audit': FINANCE_VIEWERS,
 
   // ---- finance module Phase 2 — Planning workspace (§§11–16) ----

@@ -276,6 +276,8 @@ import {
   QUOTE_STATUSES, deleteDraftQuotation, duplicateAsDraft, getQuotationPdfById, listQuotationRegister, resendQuotation, voidQuotation,
 } from '../core/quotationRegister';
 import { NOTE_ENTITIES, addNote, listMentionableUsers, listMyNotifications, listNotes, markNotificationsRead } from '../core/recordNotes';
+import { REPORT_SECTIONS, buildFinanceReport, type ReportSection } from '../core/finance/report';
+import { buildFinanceReportPdf, financeReportFileName } from '../core/finance/reportPdf';
 import { ADJUSTMENT_CATEGORIES, decideSettlement, getCustomerProfile, listSettlements, previewSettlement, submitSettlement } from '../core/customerProfile';
 import { REGISTER_DOC_TYPES, listRegister } from '../core/finance/register';
 
@@ -1533,6 +1535,79 @@ router.get('/finance/overview/export.csv', requireAuth, async (req: Request, res
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', 'attachment; filename="finance-overview-summary.csv"');
   res.send(overviewExportCsv(overview));
+});
+
+// Financial report (PDF): one management report for a period, facility and
+// basis, composed from the Finance read models. Rides on bill-overview:view
+// like the CSV export; each section is included only when the operator can
+// view that finance area. Audited like every export.
+const SECTION_PERMISSION: Record<ReportSection, string> = {
+  summary: 'bill-overview:view',
+  performance: 'bill-performance:view',
+  budgets: 'bill-budgets:view',
+  arrears: 'bill-arrears:view',
+  transactions: 'bill-transactions:view',
+  reconciliation: 'bill-reconciliation:view',
+  returns: 'bill-returns:view',
+};
+const financeReportQuerySchema = z.object({
+  ...dateRangeFields,
+  branchId: z.string().trim().min(1).optional(),
+  basis: z.enum(['accrual', 'cash']).optional(),
+  sections: z.string().trim().max(200).optional(),
+});
+
+router.get('/finance/reports/financial.pdf', requireAuth, async (req: Request, res: Response) => {
+  const parsed = financeReportQuerySchema.safeParse(req.query);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid report filters', parsed.error.flatten());
+    return;
+  }
+  const admin = adminOf(req);
+  const allowed = (s: ReportSection) => !!admin && (admin.isOwner || admin.permissions.includes(SECTION_PERMISSION[s]));
+  const requested = parsed.data.sections
+    ? parsed.data.sections.split(',').map((x) => x.trim()).filter(Boolean)
+    : null;
+  if (requested && requested.some((x) => !(REPORT_SECTIONS as readonly string[]).includes(x))) {
+    fail(res, 400, 'VALIDATION', 'Unknown report section');
+    return;
+  }
+  const sections = (requested as ReportSection[] | null ?? ['summary', 'performance', 'budgets', 'arrears', 'transactions', 'reconciliation']).filter(allowed);
+  if (!sections.length) {
+    fail(res, 403, 'FORBIDDEN', 'You do not have access to any of the selected report sections.');
+    return;
+  }
+  const range = resolveDateRange(parsed.data);
+  const report = await buildFinanceReport({
+    ...range,
+    branchId: parsed.data.branchId,
+    basis: parsed.data.basis,
+    sections,
+    branchIds: admin?.branchIds ?? null,
+    generatedBy: admin?.name || admin?.email || 'unknown',
+  });
+  const pdf = await buildFinanceReportPdf(report);
+  const correlationId = newCorrelationId();
+  await writeAuditEvent(prisma, {
+    branchId: parsed.data.branchId ?? null,
+    actor: admin?.email ?? 'unknown',
+    action: 'EXPORT_GENERATED',
+    entityType: 'finance-report',
+    entityId: parsed.data.branchId ?? 'portfolio',
+    after: { filters: { ...parsed.data, sections }, generatedAt: report.meta.generatedAt, bytes: pdf.length },
+    reason: 'Financial report (PDF)',
+    source: 'cms',
+    correlationId,
+  });
+  await publishFinanceEvent(prisma, {
+    type: 'export.generated',
+    payload: { kind: 'financial-report-pdf', filters: { ...parsed.data, sections }, generatedAt: report.meta.generatedAt },
+    branchId: parsed.data.branchId ?? null,
+    correlationId,
+  });
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `attachment; filename="${financeReportFileName(report)}"`);
+  res.send(pdf);
 });
 
 const financeAuditQuerySchema = z.object({

@@ -29,6 +29,7 @@ export async function listAppointments(from?: Date, to?: Date) {
     startAt: a.startAt,
     endAt: a.endAt,
     status: a.status,
+    staff: a.staff,
     note: a.note,
     leadId: a.leadId,
   }));
@@ -50,6 +51,8 @@ export interface CreateAppointmentInput {
   startAt: Date;
   endAt?: Date | null;
   note?: string | null;
+  staff?: string | null;
+  status?: AppointmentStatus;
 }
 
 export interface UpdateAppointmentInput {
@@ -62,6 +65,7 @@ export interface UpdateAppointmentInput {
   startAt?: Date;
   endAt?: Date | null;
   note?: string | null;
+  staff?: string | null;
 }
 
 type AppointmentRow = Prisma.AppointmentGetPayload<{
@@ -80,6 +84,7 @@ function serializeAppointment(a: AppointmentRow) {
     startAt: a.startAt,
     endAt: a.endAt,
     status: a.status,
+    staff: a.staff,
     note: a.note,
     leadId: a.leadId,
   };
@@ -110,7 +115,9 @@ export async function createAppointment(input: CreateAppointmentInput) {
       leadId: input.leadId ?? null,
       startAt: input.startAt,
       endAt: input.endAt ?? null,
+      staff: input.staff ?? null,
       note: input.note ?? null,
+      ...(input.status ? { status: input.status } : {}),
     },
     include: { branch: { select: { code: true, name: true } } },
   });
@@ -140,6 +147,7 @@ export async function updateAppointment(id: string, input: UpdateAppointmentInpu
       ...(input.leadId !== undefined ? { leadId: input.leadId } : {}),
       ...(input.startAt !== undefined ? { startAt: input.startAt } : {}),
       ...(input.endAt !== undefined ? { endAt: input.endAt } : {}),
+      ...(input.staff !== undefined ? { staff: input.staff } : {}),
       ...(input.note !== undefined ? { note: input.note } : {}),
     },
     include: { branch: { select: { code: true, name: true } } },

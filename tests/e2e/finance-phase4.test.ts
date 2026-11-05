@@ -353,6 +353,10 @@ describe('finance phase 4 — arrears', () => {
     expect(tenant?.accessRestricted).toBe(true);
     const detail = (await api.get(`${CMS}/finance/arrears/${id}`).set('Authorization', w.operator.auth)).body.data;
     expect(detail).toMatchObject({ stage: 'RESTRICTED', accessRestricted: true });
+    // Staff cannot resolve by hand: unpaid → blocked, 'other' → rejected.
+    expect((await api.post(`${CMS}/finance/arrears/${id}/close`).set('Authorization', w.operator.auth).send({ version: v, reason: 'payment' })).status).toBe(409);
+    expect((await api.post(`${CMS}/finance/arrears/${id}/close`).set('Authorization', w.operator.auth).send({ version: v, reason: 'other' })).status).toBe(400);
+    await prisma.invoice.update({ where: { id: inv.id }, data: { status: 'PAID', paidAt: new Date(), amountPaid: inv.amount } });
     const closed = await api.post(`${CMS}/finance/arrears/${id}/close`).set('Authorization', w.operator.auth).send({ version: v, reason: 'payment' });
     expect(closed.status).toBe(200);
     expect(closed.body.data).toMatchObject({ stage: 'RESOLVED' });

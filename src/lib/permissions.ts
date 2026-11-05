@@ -27,7 +27,6 @@ export interface ResourceDef {
 
 const R: readonly Action[] = ['view'];
 const RU: readonly Action[] = ['view', 'update'];
-const RC: readonly Action[] = ['view', 'create'];
 const RCU: readonly Action[] = ['view', 'create', 'update'];
 const RUA: readonly Action[] = ['view', 'update', 'approve'];
 const RCUA: readonly Action[] = ['view', 'create', 'update', 'approve'];
@@ -41,7 +40,7 @@ export const RESOURCES: readonly ResourceDef[] = [
 
   { group: 'Leads', key: 'leads', label: 'Lead database', actions: CRUD },
   { group: 'Leads', key: 'pipeline', label: 'Pipeline', actions: RU },
-  { group: 'Leads', key: 'quotes', label: 'Quotations', actions: RC },
+  { group: 'Leads', key: 'quotes', label: 'Quotations', actions: CRUD },
   { group: 'Leads', key: 'inbox', label: 'Conversations', actions: RCU },
   { group: 'Leads', key: 'calendar', label: 'Appointments', actions: CRUD },
   { group: 'Leads', key: 'automation', label: 'Automation', actions: R },
@@ -80,7 +79,7 @@ export const RESOURCES: readonly ResourceDef[] = [
   { group: 'Finance', key: 'bill-invoices', label: 'Invoices', actions: RCUA },
   { group: 'Finance', key: 'bill-arrears', label: 'Arrears', actions: RUA },
   // Transactions: approve = per-charge approval; bulk approval NEVER (spec §4.1).
-  { group: 'Finance', key: 'bill-transactions', label: 'Transactions & Approvals', actions: ['view', 'create', 'update', 'approve'] },
+  { group: 'Finance', key: 'bill-transactions', label: 'Transactions, documents & approvals', actions: ['view', 'create', 'update', 'approve'] },
   // Models: drafts deletable; CURRENT/ARCHIVED not deletable (service code).
   { group: 'Finance', key: 'bill-models', label: 'Financial Models', actions: CRUDA },
   // Performance: update = variance notes, approve = month close.
@@ -93,7 +92,7 @@ export const RESOURCES: readonly ResourceDef[] = [
   // Library: no delete — versions are immutable history (archive instead).
   { group: 'Finance', key: 'bill-library', label: 'Model Library', actions: RUA },
   // Credits: second approval = approve + threshold in code (Phase 4).
-  { group: 'Finance', key: 'bill-credits', label: 'Credits & Refunds', actions: RCUA },
+  { group: 'Finance', key: 'bill-credits', label: 'Credits ledger (WIP)', actions: RCUA },
   // Reconciliation: import/match = create/update; close = approve.
   { group: 'Finance', key: 'bill-reconciliation', label: 'Reconciliation', actions: RCUA },
   // Investor: masked approved-only summary (Phase 5, spec §15.4). View only —
@@ -106,6 +105,7 @@ export const RESOURCES: readonly ResourceDef[] = [
 
   { group: 'Global Settings', key: 'settings-general', label: 'General', actions: RU },
   { group: 'Global Settings', key: 'settings-booking', label: 'Booking & billing', actions: RU },
+  { group: 'Global Settings', key: 'settings-lead-sla', label: 'Lead & response SLA', actions: RU },
   { group: 'Global Settings', key: 'settings-fees', label: 'Fees & deposits', actions: CRUD },
   { group: 'Global Settings', key: 'settings-facilities', label: 'Facilities', actions: CRUD },
 ];
@@ -147,6 +147,9 @@ const MANAGER_DENY: Record<string, readonly Action[]> = {
   'site-builder': ['approve'],
   'customer-tenants': ['delete'],
   leads: ['delete'],
+  // Prototype 2026-11-04: deleting a draft quote is Administrator-only.
+  quotes: ['delete'],
+  'settings-lead-sla': ['update'],
   // Finance: Manager keeps read-only access to Overview / Invoices / Arrears
   // (pre-existing billing keys). The 9 Phase-1 finance resources are never
   // auto-granted — every action is denied here so the derived matrix stays put.

@@ -3,18 +3,11 @@ import { toNum } from '../lib/format';
 import { AppError } from '../lib/http';
 import { AccountType, LeadSource, LeadStage, Prisma } from '@prisma/client';
 import { normalizeEmail } from './customers';
+import {
+  LEAD_PRODUCT, PIPELINE_COLUMNS, STAGE_LABEL, displayLeadNo, potentialValue, sgToday, stageProbability, warmPipelineCache, ymd,
+} from './leadPipeline';
 
-const COLUMNS: LeadStage[] = ['NEW_ENQUIRY', 'CONTACTED', 'VIEWING_BOOKED', 'PROPOSAL_SENT', 'PENDING_PAYMENT', 'WON', 'LOST'];
-
-const STAGE_LABEL: Record<string, string> = {
-  NEW_ENQUIRY: 'New',
-  CONTACTED: 'Contacted',
-  VIEWING_BOOKED: 'Qualified',
-  PROPOSAL_SENT: 'Quoted',
-  PENDING_PAYMENT: 'Pending Payment',
-  WON: 'Booked',
-  LOST: 'Lost',
-};
+const COLUMNS: LeadStage[] = PIPELINE_COLUMNS;
 
 // Loss reasons offered by the pipeline drop-to-LOST picker (admin.js) and the
 // lead modal. "Unspecified" is the default so existing PATCH flows that only
@@ -135,6 +128,9 @@ export interface LeadBookingIntent {
   durationMonths?: number | null;
   companyName?: string | null;
   uen?: string | null;
+  representative?: string | null;
+  enquiryDate?: Date | null;
+  accessFrequency?: string | null;
   consentPdpa?: boolean | null;
   consentMarketing?: boolean | null;
   protectionTier?: string | null;
@@ -174,6 +170,9 @@ export interface CreateLeadInput {
   durationMonths?: number | null;
   companyName?: string | null;
   uen?: string | null;
+  representative?: string | null;
+  enquiryDate?: Date | null;
+  accessFrequency?: string | null;
   consentPdpa?: boolean | null;
   consentMarketing?: boolean | null;
   protectionTier?: string | null;
@@ -206,6 +205,9 @@ export interface UpdateLeadInput {
   durationMonths?: number | null;
   companyName?: string | null;
   uen?: string | null;
+  representative?: string | null;
+  enquiryDate?: Date | null;
+  accessFrequency?: string | null;
   consentPdpa?: boolean | null;
   consentMarketing?: boolean | null;
   protectionTier?: string | null;
@@ -344,8 +346,12 @@ export function serializeLead(l: LeadWithBranch) {
   // pre-v2 rows keep rendering without a data migration.
   const legacy = parseLegacyLeadNote(l.note);
   const addons = (l.addons as unknown) ?? legacy.addons ?? null;
+  const rate = l.monthlyRate ? toNum(l.monthlyRate) : null;
+  const duration = legacyOr(l.durationMonths, legacy.durationMonths);
   return {
     id: l.id,
+    leadNo: l.leadNo,
+    displayId: displayLeadNo(l.leadNo),
     name: l.name,
     type: l.type,
     segment: l.segment ?? l.type.toLowerCase(),
@@ -373,6 +379,14 @@ export function serializeLead(l: LeadWithBranch) {
     durationMonths: legacyOr(l.durationMonths, legacy.durationMonths),
     companyName: legacyOr(l.companyName, legacy.companyName),
     uen: legacyOr(l.uen, legacy.uen),
+    representative: l.representative ?? null,
+    // Date of enquiry: the stored date, else the Singapore date it was created.
+    enquiryDate: ymd(l.enquiryDate ?? sgToday(l.createdAt)),
+    accessFrequency: l.accessFrequency ?? null,
+    product: LEAD_PRODUCT,
+    potentialValue: potentialValue(rate, duration),
+    probability: stageProbability(l.stage),
+    stageLabel: STAGE_LABEL[l.stage] ?? l.stage,
     consentPdpa: legacyOr(l.consentPdpa, legacy.consentPdpa),
     consentMarketing: legacyOr(l.consentMarketing, legacy.consentMarketing),
     protectionTier: legacyOr(l.protectionTier, legacy.protectionTier),
@@ -462,6 +476,9 @@ export async function createLead(input: CreateLeadInput) {
       durationMonths: input.durationMonths ?? null,
       companyName: input.companyName ?? null,
       uen: input.uen ?? null,
+      representative: input.representative ?? null,
+      enquiryDate: input.enquiryDate ?? sgToday(),
+      accessFrequency: input.accessFrequency ?? null,
       consentPdpa: input.consentPdpa ?? null,
       consentMarketing: input.consentMarketing ?? null,
       protectionTier: input.protectionTier ?? null,
@@ -704,6 +721,7 @@ export async function createPublicLead(input: PublicLeadInput): Promise<PublicLe
 }
 
 export async function getLeadById(id: string) {
+  await warmPipelineCache();
   const lead = await prisma.lead.findUnique({ where: { id }, include: { branch: true } });
   if (!lead) throw new AppError(404, 'NOT_FOUND', 'Lead not found');
   return { ...serializeLead(lead), preferredBranchId: lead.preferredBranchId ?? null };
@@ -782,6 +800,9 @@ export async function updateLead(id: string, input: UpdateLeadInput) {
       ...(input.durationMonths !== undefined ? { durationMonths: input.durationMonths } : {}),
       ...(input.companyName !== undefined ? { companyName: input.companyName } : {}),
       ...(input.uen !== undefined ? { uen: input.uen } : {}),
+      ...(input.representative !== undefined ? { representative: input.representative } : {}),
+      ...(input.enquiryDate !== undefined ? { enquiryDate: input.enquiryDate } : {}),
+      ...(input.accessFrequency !== undefined ? { accessFrequency: input.accessFrequency } : {}),
       ...(input.consentPdpa !== undefined ? { consentPdpa: input.consentPdpa } : {}),
       ...(input.consentMarketing !== undefined ? { consentMarketing: input.consentMarketing } : {}),
       ...(input.protectionTier !== undefined ? { protectionTier: input.protectionTier } : {}),
@@ -811,6 +832,7 @@ export async function deleteLead(id: string) {
 }
 
 export async function listLeads(opts?: { from?: Date; to?: Date }) {
+  await warmPipelineCache();
   const createdAt: { gte?: Date; lte?: Date } = {};
   if (opts?.from) createdAt.gte = opts.from;
   if (opts?.to) createdAt.lte = opts.to;
@@ -1347,4 +1369,63 @@ export async function markLeadWonForBooking(
     data: { stage: 'WON' },
   });
   return updated.count;
+}
+
+// ---------------------------------------------------------------------------
+// Enquiries under one master identity (prototype 2026-11-04 "Add enquiry").
+// Each enquiry is its own Lead row in the identity group; the identity fields
+// (name, contact, company/UEN/representative) are copied from the lead the
+// enquiry is added to and cannot be substituted.
+// ---------------------------------------------------------------------------
+
+export interface EnquiryInput {
+  enquiryDate?: Date | null;
+  source?: LeadSource;
+  preferredBranchId?: string | null;
+  preferredSize?: string | null;
+  accessFrequency?: string | null;
+  durationMonths?: number | null;
+  moveInDate?: Date | null;
+  monthlyRate?: number | null;
+  note?: string | null;
+  owner?: string | null;
+}
+
+export async function createEnquiryForLead(leadId: string, input: EnquiryInput) {
+  const base = await prisma.lead.findUnique({ where: { id: leadId } });
+  if (!base) throw new AppError(404, 'NOT_FOUND', 'Open a lead first.');
+  return createLead({
+    name: base.name,
+    type: base.type === 'GUEST' ? 'PERSONAL' : base.type,
+    email: base.email,
+    mobile: base.mobile,
+    companyName: base.companyName,
+    uen: base.uen,
+    representative: base.representative,
+    owner: input.owner ?? base.owner,
+    stage: 'NEW_ENQUIRY',
+    source: input.source ?? base.source,
+    enquiryDate: input.enquiryDate ?? null,
+    preferredBranchId: input.preferredBranchId ?? null,
+    preferredSize: input.preferredSize ?? null,
+    accessFrequency: input.accessFrequency ?? null,
+    durationMonths: input.durationMonths ?? null,
+    moveInDate: input.moveInDate ?? null,
+    monthlyRate: input.monthlyRate ?? null,
+    note: input.note ?? null,
+  });
+}
+
+/** Every enquiry sharing this lead's identity group, newest enquiry first. */
+export async function listEnquiriesForLead(leadId: string) {
+  await warmPipelineCache();
+  const base = await prisma.lead.findUnique({ where: { id: leadId }, include: { branch: true } });
+  if (!base) throw new AppError(404, 'NOT_FOUND', `Lead ${leadId} not found`);
+  const key = base.leadGroupKey ?? normalizeLeadIdentity(base.email, base.mobile).leadGroupKey;
+  const rows = key
+    ? await prisma.lead.findMany({ where: { leadGroupKey: key }, include: { branch: true } })
+    : [base];
+  return rows
+    .map((r) => serializeLead(r))
+    .sort((a, b) => String(b.enquiryDate).localeCompare(String(a.enquiryDate)) || b.leadNo - a.leadNo);
 }

@@ -9,13 +9,14 @@
 // Conversion is already modelled: PROPOSAL_SENT → WON (+ Booking), loss via
 // LOST + lossReason/lossValue. Stage transitions reuse PATCH /leads/:id, so
 // this module is a read-model over existing rows.
-import { Prisma } from '@prisma/client';
+import { LeadSource, Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { toNum } from '../lib/format';
 import { AppError } from '../lib/http';
 import { createLead, leadIdentityColumns, normalizeLeadIdentity } from './leads';
 import { getSetting } from './settings';
-import { buildQuotationPdfBytes, deriveQuoteNo, quotationFilename, type QuotationPdfData } from './quotationPdf';
+import { buildQuotationPdfBytes, quotationFilename, type QuotationPdfData } from './quotationPdf';
+import { nextRegisterQuoteNo, QUOTE_VALID_DAYS } from './quotationRegister';
 import { sendQuotationEmail } from './emails';
 
 const QUOTE_STAGE = 'PROPOSAL_SENT' as const;
@@ -245,7 +246,7 @@ export interface CreateQuotationInput {
   // Create path: required when leadId is omitted (a new PROPOSAL_SENT lead).
   name?: string;  type?: 'PERSONAL' | 'BUSINESS';
   segment?: string | null;
-  source?: 'WEBSITE' | 'WHATSAPP' | 'REFERRAL' | 'GOOGLE';
+  source?: LeadSource;
   preferredSize?: string | null;
   preferredBranchId?: string | null;
   monthlyRate?: number | null;
@@ -474,16 +475,6 @@ function toNumOrNull(v: unknown): number | null {
 
 type FinalizedLead = Prisma.LeadGetPayload<{ include: { branch: true } }>;
 
-/**
- * Next quotation seq for a lead: 1-based count of Quotation rows already on
- * file for that lead + 1. The quoteNo UNIQUE constraint is the backstop: on a
- * same-day double-submit race the second insert 409s at the DB layer and we
- * retry once with a fresh seq (see below).
- */
-async function nextQuoteSeq(leadId: string): Promise<number> {
-  return (await prisma.quotation.count({ where: { leadId } })) + 1;
-}
-
 function quotationPdfData(
   lead: FinalizedLead,
   unit: { name: string | null; sqft: number | null } | null,
@@ -539,7 +530,7 @@ function quotationPdfData(
  */
 export async function finalizeQuotation(
   leadId: string,
-  opts?: { createdBy?: string | null },
+  opts?: { createdBy?: string | null; promoPct?: number | null; expiresAt?: Date | null },
 ): Promise<QuotationMeta | null> {
   try {
     const lead = (await prisma.lead.findUnique({
@@ -561,8 +552,7 @@ export async function finalizeQuotation(
       quotationPdfData(lead, unit, quoteNo, issuedAt, supportContact);
 
     // PDF first (no row without bytes worth storing).
-    const seq = await nextQuoteSeq(lead.id);
-    const quoteNo = deriveQuoteNo(lead.id, issuedAt, seq);
+    const quoteNo = await nextRegisterQuoteNo(issuedAt);
     let pdf: Buffer;
     try {
       pdf = await buildQuotationPdfBytes(dataFor(quoteNo));
@@ -573,6 +563,17 @@ export async function finalizeQuotation(
     }
 
     const filename = quotationFilename(quoteNo);
+    // Quotation register snapshot (prototype 2026-11-04): gross, promotion,
+    // Protection Plan, commitment and expiry as issued.
+    const registerFields = {
+      status: 'SENT',
+      grossRate: lead.monthlyRate ?? undefined,
+      promoPct: opts?.promoPct ?? undefined,
+      protectionMonthly: lead.protectionCost ?? undefined,
+      commitmentMonths: lead.durationMonths ?? undefined,
+      expiresAt: opts?.expiresAt ?? new Date(issuedAt.getTime() + QUOTE_VALID_DAYS * 86_400_000),
+      delivery: 'Email · queued',
+    };
     let row: { quoteNo: string; emailStatus: string; emailReason: string | null; createdAt: Date; leadId: string };
     try {
       row = await prisma.quotation.create({
@@ -588,6 +589,7 @@ export async function finalizeQuotation(
           pdfFilename: filename,
           createdBy: opts?.createdBy?.trim() ? opts.createdBy.trim().slice(0, 120) : null,
           emailStatus: 'PENDING',
+          ...registerFields,
         },
         select: { quoteNo: true, emailStatus: true, emailReason: true, createdAt: true, leadId: true },
       });
@@ -597,8 +599,7 @@ export async function finalizeQuotation(
       // the document.
       if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
         try {
-          const retrySeq = await nextQuoteSeq(lead.id);
-          const retryNo = deriveQuoteNo(lead.id, new Date(), retrySeq);
+          const retryNo = await nextRegisterQuoteNo(new Date());
           const retryPdf = await buildQuotationPdfBytes(dataFor(retryNo));
           row = await prisma.quotation.create({
             data: {
@@ -611,6 +612,7 @@ export async function finalizeQuotation(
               pdfFilename: quotationFilename(retryNo),
               createdBy: opts?.createdBy?.trim() ? opts.createdBy.trim().slice(0, 120) : null,
               emailStatus: 'PENDING',
+              ...registerFields,
             },
             select: { quoteNo: true, emailStatus: true, emailReason: true, createdAt: true, leadId: true },
           });
@@ -630,7 +632,7 @@ export async function finalizeQuotation(
     const toEmail = (lead.email ?? '').trim();
     if (!toEmail) {
       await prisma.quotation
-        .update({ where: { quoteNo: row!.quoteNo }, data: { emailStatus: 'SKIPPED', emailReason: 'no-recipient' } })
+        .update({ where: { quoteNo: row!.quoteNo }, data: { emailStatus: 'SKIPPED', emailReason: 'no-recipient', delivery: 'Manual · no email on file' } })
         .catch(() => undefined);
       console.log(`[quotation] email skipped quoteNo=${row!.quoteNo} (no recipient email)`);
       return toQuotationMeta({ ...row!, emailStatus: 'SKIPPED', emailReason: 'no-recipient' });
@@ -654,7 +656,11 @@ export async function finalizeQuotation(
       await prisma.quotation
         .update({
           where: { quoteNo: row!.quoteNo },
-          data: { emailStatus: status, emailReason: result.sent ? null : (result.reason ?? 'send-failed') },
+          data: {
+            emailStatus: status,
+            emailReason: result.sent ? null : (result.reason ?? 'send-failed'),
+            delivery: result.sent ? 'Email · sent' : `Email · ${status.toLowerCase()}`,
+          },
         })
         .catch(() => undefined);
       return toQuotationMeta({ ...row!, emailStatus: status, emailReason: result.sent ? null : (result.reason ?? 'send-failed') });
@@ -680,13 +686,13 @@ export async function finalizeQuotation(
  */
 export async function getQuotationPdf(leadId: string): Promise<{ bytes: Buffer; filename: string; quoteNo: string }> {
   const row = await prisma.quotation.findFirst({
-    where: { leadId },
+    where: { leadId, pdf: { not: null } },
     orderBy: { createdAt: 'desc' },
     select: { pdf: true, pdfFilename: true, quoteNo: true },
   });
   if (!row) throw new AppError(404, 'NOT_FOUND', `No issued quotation for lead ${leadId}`);
   return {
-    bytes: Buffer.from(row.pdf),
+    bytes: Buffer.from(row.pdf!),
     filename: row.pdfFilename?.trim() ? row.pdfFilename : quotationFilename(row.quoteNo),
     quoteNo: row.quoteNo,
   };

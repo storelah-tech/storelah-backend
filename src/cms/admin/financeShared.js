@@ -31,7 +31,7 @@ export const FINANCE_PHASE = {  'bill-overview': 1,
 
 export const FINANCE_LABEL = {
   'bill-overview': 'Finance Overview',
-  'bill-transactions': 'Transactions & Approvals',
+  'bill-transactions': 'Transactions, Documents & Approvals',
   'bill-models': 'Financial Models',
   'bill-performance': 'Forecast vs Actuals',
   'bill-budgets': 'Budgets & Expenses',
@@ -40,7 +40,7 @@ export const FINANCE_LABEL = {
   'bill-library': 'Model Library',
   'bill-invoices': 'Invoices',
   'bill-arrears': 'Arrears',
-  'bill-credits': 'Credits & Refunds',
+  'bill-credits': 'Credits Ledger (WIP)',
   'bill-reconciliation': 'Reconciliation',
   'bill-investor': 'Investor Summary',
 };

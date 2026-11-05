@@ -79,7 +79,7 @@ export const RESOURCES: readonly ResourceDef[] = [
   { group: 'Finance', key: 'bill-invoices', label: 'Invoices', actions: RCUA },
   { group: 'Finance', key: 'bill-arrears', label: 'Arrears', actions: RUA },
   // Transactions: approve = per-charge approval; bulk approval NEVER (spec §4.1).
-  { group: 'Finance', key: 'bill-transactions', label: 'Transactions & Approvals', actions: ['view', 'create', 'update', 'approve'] },
+  { group: 'Finance', key: 'bill-transactions', label: 'Transactions, documents & approvals', actions: ['view', 'create', 'update', 'approve'] },
   // Models: drafts deletable; CURRENT/ARCHIVED not deletable (service code).
   { group: 'Finance', key: 'bill-models', label: 'Financial Models', actions: CRUDA },
   // Performance: update = variance notes, approve = month close.
@@ -92,7 +92,7 @@ export const RESOURCES: readonly ResourceDef[] = [
   // Library: no delete — versions are immutable history (archive instead).
   { group: 'Finance', key: 'bill-library', label: 'Model Library', actions: RUA },
   // Credits: second approval = approve + threshold in code (Phase 4).
-  { group: 'Finance', key: 'bill-credits', label: 'Credits & Refunds', actions: RCUA },
+  { group: 'Finance', key: 'bill-credits', label: 'Credits ledger (WIP)', actions: RCUA },
   // Reconciliation: import/match = create/update; close = approve.
   { group: 'Finance', key: 'bill-reconciliation', label: 'Reconciliation', actions: RCUA },
   // Investor: masked approved-only summary (Phase 5, spec §15.4). View only —

@@ -409,8 +409,17 @@ export async function closeArrearsCase(id: string, opts: { expectedVersion?: num
   const policies = await getFinancePolicies();
   const row = await loadCase(id);
   if (row.stage === 'RESOLVED') throw new AppError(409, 'CONFLICT', 'This case is already RESOLVED.');
-  if (!['payment', 'write-off', 'other'].includes(opts.reason)) {
-    throw new AppError(400, 'VALIDATION', 'Close reason must be payment, write-off or other.');
+  // Prototype 2026-11-04: staff cannot resolve a case by hand. Only a fully
+  // allocated payment or an approved write-off of the case invoice resolves it.
+  if (!['payment', 'write-off'].includes(opts.reason)) {
+    throw new AppError(400, 'VALIDATION', 'Arrears cases resolve only through a fully allocated payment or an approved write-off.');
+  }
+  const caseInvoice = row.invoiceId ? await prisma.invoice.findUnique({ where: { id: row.invoiceId } }) : null;
+  if (opts.reason === 'payment' && caseInvoice?.status !== 'PAID') {
+    throw new AppError(409, 'CONFLICT', 'The case invoice is not fully paid yet. A partial payment keeps the case open.');
+  }
+  if (opts.reason === 'write-off' && !caseInvoice?.writtenOffAt) {
+    throw new AppError(409, 'CONFLICT', 'Approve the write-off on the invoice first; the case then resolves.');
   }
   assertFreshVersion(row.version, opts.expectedVersion, 'arrears-case');
   const correlationId = newCorrelationId();

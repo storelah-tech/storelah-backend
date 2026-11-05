@@ -151,7 +151,9 @@ function renderArrears(host) {
     } catch (e) { window.alert(describeError(e)); reload(host).catch(() => {}); }
   }));
   host.querySelectorAll('[data-fin-close]').forEach((b) => b.addEventListener('click', async () => {
-    const reason = window.prompt('Close reason: payment, write-off or other?', 'payment');
+    // Staff never resolve by hand: this checks the case invoice for a full
+    // payment or an approved write-off and resolves only when one exists.
+    const reason = window.prompt('Resolve from which financial event: payment or write-off?', 'payment');
     if (!reason) return;
     try {
       await post(`/finance/arrears/${encodeURIComponent(b.dataset.finClose)}/close`, { version: Number(b.dataset.finVer), reason });
@@ -196,7 +198,7 @@ function caseActions(c) {
   const terminal = c.stage === 'RESOLVED';
   if (!terminal && can('bill-arrears:update')) {
     if (c.stage !== 'RESTRICTED') out.push(`<button class="tb-btn" data-fin-advance="${escapeHtml(c.id)}" data-fin-ver="${c.version}">Advance</button>`);
-    out.push(`<button class="tb-btn" data-fin-close="${escapeHtml(c.id)}" data-fin-ver="${c.version}">Resolve</button>`);
+    out.push(`<button class="tb-btn" data-fin-close="${escapeHtml(c.id)}" data-fin-ver="${c.version}" title="Resolves only after a full payment or approved write-off">Check resolution</button>`);
     out.push(`<button class="tb-btn" data-fin-term="${escapeHtml(c.id)}">Terminate</button>`);
   }
   return out.join(' ') || '<span class="sec-sub">—</span>';

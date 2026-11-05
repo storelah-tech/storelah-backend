@@ -87,8 +87,14 @@ describe('customer profile and settlements', () => {
     const checker = await createOperator('FINANCE_APPROVER');
     const queue = await api.get(`${CMS}/finance/settlements?status=PENDING`).set('Authorization', checker.auth);
     expect(queue.body.data).toHaveLength(1);
+    const reg = await api.get(`${CMS}/finance/register?docType=Transfer%20approval`).set('Authorization', checker.auth);
+    expect(reg.status).toBe(200);
+    expect(reg.body.data.rows[0]).toMatchObject({ recordId: sub.body.data.ref, source: 'settlement', pending: true, amount: 37.11, status: 'Pending approval' });
+    expect(reg.body.data.summary.pending).toBeGreaterThanOrEqual(1);
     const ok = await api.post(`${CMS}/finance/settlements/${sub.body.data.id}/approve`).set('Authorization', checker.auth).send({});
     expect(ok.body.data.status).toBe('APPROVED');
+    const invReg = await api.get(`${CMS}/finance/register?docType=Invoice`).set('Authorization', checker.auth);
+    expect(invReg.body.data.rows.map((r: { recordId: string }) => r.recordId)).toContain('INV-CUS-1');
   });
 
   it('move-out uses and locks a portal notice date, else requires a staff-entered date', async () => {

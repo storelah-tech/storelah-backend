@@ -87,13 +87,14 @@ const sideNav = {
   extras: [['Protection plans', 'extras', 'extras-plans'], ['Addons', 'extras', 'extras-addons']],
   content: [['All content', 'content', 'content-list'], ['Site builder', 'content', 'site-builder']],
   promotions: [['Dashboard', 'promotions', 'promo-overview'], ['Discount plan builder', 'promotions', 'promo-discount-matrix'], ['Free months', 'promotions', 'promo-free-months'], ['Promo code builder', 'promotions', 'promo-code-builder'], ['Promotions library', 'promotions', 'promo-library'], ['History', 'promotions', 'promo-history'], ['Safeguards', 'promotions', 'promo-safeguards'], ['Performance', 'promotions', 'promo-performance']],
-  // Prototype labels; the investor view opens from "Investor access" (no sidebar item).
-  billing: [['Finance overview', 'billing', 'bill-overview'], ['Transactions & approvals', 'billing', 'bill-transactions'],
+  // Prototype labels (2026-11-04): Invoices folded into the unified register,
+  // Credits shown as WIP, Investor access removed.
+  billing: [['Finance overview', 'billing', 'bill-overview'], ['Transactions, documents & approvals', 'billing', 'bill-transactions'],
     ['Financial models', 'billing', 'bill-models'], ['Forecast vs actuals', 'billing', 'bill-performance'],
     ['Budgets & expenses', 'billing', 'bill-budgets'], ['Size mix & pricing', 'billing', 'bill-pricing'],
     ['Investment returns', 'billing', 'bill-returns'], ['Model library', 'billing', 'bill-library'],
-    ['Invoices', 'billing', 'bill-invoices'], ['Arrears', 'billing', 'bill-arrears'],
-    ['Credits & refunds', 'billing', 'bill-credits'], ['Reconciliation', 'billing', 'bill-reconciliation']],
+    ['Arrears', 'billing', 'bill-arrears'],
+    ['Credits ledger (WIP)', 'billing', 'bill-credits'], ['Reconciliation', 'billing', 'bill-reconciliation']],
   settings: [['Global Settings', 'settings']],
 };
 

@@ -41,16 +41,12 @@ const STAGE_TONE = {
 
 const SOURCE_LABEL = { WEBSITE: 'Website', WHATSAPP: 'WhatsApp', PHONE: 'Phone', WALK_IN: 'Walk-in', GOOGLE: 'Google Ads', REFERRAL: 'Referral', PARTNER: 'Partner' };
 const SOURCE_CODE = { WEBSITE: 'W', WHATSAPP: 'WA', PHONE: 'P', WALK_IN: 'WI', GOOGLE: 'G', REFERRAL: 'R', PARTNER: 'PT' };
-const money = (v) => (v == null ? '—' : '$' + Number(v).toLocaleString('en-SG', { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+const money0 = (v) => (v == null ? '—' : '$' + Math.round(Number(v)).toLocaleString('en-SG'));
 const tipHtml = (text) => '<span class="v29-inline-tip"><span class="v29-tip-button" tabindex="0" aria-label="Definition">?</span><span class="v29-tooltip">' + escapeHtml(text) + '</span></span>';
 function enquiryDay(v) {
   if (!v) return '—';
   const d = /^\d{4}-\d{2}-\d{2}$/.test(String(v)) ? new Date(v + 'T00:00:00Z') : new Date(v);
   return isNaN(d) ? '—' : d.toLocaleDateString('en-SG', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' });
-}
-
-function fmtDayLead(d) {
-  return d ? new Date(d).toLocaleDateString('en-SG', { day: '2-digit', month: 'short' }) : '—';
 }
 
 function leadHeatHtml(stage) {
@@ -61,10 +57,57 @@ function leadHeatHtml(stage) {
   return html + '</div>';
 }
 
-function nextActionLabel(l) {
-  if (l.nextActionAt) return 'Due ' + fmtDayLead(l.nextActionAt);
-  if (l.owner) return escapeHtml(l.owner);
-  return '<small>' + (l.stage === 'NEW_ENQUIRY' ? 'Needs contact' : 'Follow-up') + '</small>';
+// First-response SLA (Global Settings › Lead SLA, per source channel) — a New
+// enquiry with no scheduled action is due this long after it was created.
+let slaTargets = { website: 15, whatsapp: 15, phone: 10, email: 30 };
+const slaMinutes = (source) => slaTargets[{ WHATSAPP: 'whatsapp', PHONE: 'phone' }[source] || 'website'] || 15;
+const TERMINAL = ['WON', 'LOST'];
+
+function overdueText(ms) {
+  const m = Math.max(1, Math.floor(ms / 60000));
+  const d = Math.floor(m / 1440);
+  const h = Math.floor((m % 1440) / 60);
+  if (d) return 'Overdue by ' + d + 'd' + (h ? ' ' + h + 'h' : '');
+  return 'Overdue by ' + (h ? h + 'h ' : '') + (m % 60) + 'm';
+}
+
+function whenText(d) {
+  const sg = (x) => x.toLocaleDateString('en-CA', { timeZone: 'Asia/Singapore' });
+  const now = new Date();
+  const tmr = new Date(now.getTime() + 86400000);
+  const time = d.toLocaleTimeString('en-SG', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'Asia/Singapore' }).replace(/\s?([ap])m$/i, (_, x) => ' ' + x.toUpperCase() + 'M');
+  const day = sg(d) === sg(now) ? 'Today' : sg(d) === sg(tmr) ? 'Tomorrow' : d.toLocaleDateString('en-SG', { day: 'numeric', month: 'short', timeZone: 'Asia/Singapore' });
+  return day + ', ' + time;
+}
+
+// Next action cell: the scheduled action, else the first-response SLA for New
+// enquiries. Returns [html, late].
+function nextAction(l) {
+  if (TERMINAL.includes(l.stage)) return ['—', false];
+  const due = l.nextActionAt ? new Date(l.nextActionAt)
+    : l.stage === 'NEW_ENQUIRY' && l.createdAt ? new Date(new Date(l.createdAt).getTime() + slaMinutes(l.source) * 60000) : null;
+  if (!due || isNaN(due)) return ['<small>Not scheduled</small>', false];
+  const late = due.getTime() < Date.now();
+  return [escapeHtml(late ? overdueText(Date.now() - due.getTime()) : whenText(due)), late];
+}
+
+function leadFlag(l, late) {
+  if (l.stage === 'LOST') return ['red', l.lossReason || 'Lost'];
+  if (l.stage === 'WON') return ['green', 'Customer'];
+  if (!l.owner) return ['red', 'Unassigned'];
+  if (l.stage === 'NEW_ENQUIRY' && late) return ['red', 'SLA breached'];
+  if (late) return ['red', 'Follow-up overdue'];
+  if (l.stage === 'QUALIFIED') return ['amber', 'Needs quote'];
+  if (l.stage === 'VIEWING_BOOKED') return ['green', 'Confirmed'];
+  if (l.stage === 'PROPOSAL_SENT') return ['blue', 'Quote sent'];
+  if (l.stage === 'PENDING_PAYMENT') return ['amber', 'Awaiting payment'];
+  if (l.stage === 'PAID_BOOKING') return ['green', 'Move-in pending'];
+  if (l.stage === 'NURTURING') {
+    const mv = l.moveInDate ? new Date(l.moveInDate) : null;
+    return ['grey', mv && mv.getTime() - Date.now() > 30 * 86400000 ? 'Move-in >30d' : 'Nurturing'];
+  }
+  if (l.stage === 'NEW_ENQUIRY') return ['blue', 'New enquiry'];
+  return ['grey', 'In progress'];
 }
 
 // Prototype Lead database row (2026-11-04): Lead / customer type, Date of
@@ -78,20 +121,20 @@ export function leadRowHtml(l, extraBadges) {
   const label = l.stageLabel || STAGE_LABEL[l.stage] || l.stage;
   const sub = business ? (l.displayId || '') + ' · Representative: ' + escapeHtml(l.representative || 'Not provided') : (l.displayId || '') + ' · ' + escapeHtml(l.mobile || l.email || '—');
   const extras = extraBadges ? extraBadges : '';
-  const flag = l.stage === 'NEW_ENQUIRY' ? ['blue', 'New enquiry'] : l.stage === 'LOST' ? ['red', escapeHtml(l.lossReason || 'Lost')] : l.stage === 'WON' ? ['green', 'Customer'] : l.nextActionAt && new Date(l.nextActionAt) < new Date() ? ['red', 'Follow-up overdue'] : ['grey', 'In progress'];
-  const probTip = 'Stage probability starts at ' + l.probability + '% for ‘' + label + '’. The production score then applies capped signals: complete qualification +10, confirmed viewing +5, quote viewed +5, booking started +15, first-response SLA breach −5 and no activity for 7+ days −10. The result is capped between 0% and 100% and remains explainable in the audit trail.';
+  const [next, late] = nextAction(l);
+  const flag = leadFlag(l, late);
+  const probTip = 'Stage probability starts at ' + l.probability + '% for “' + label + '”. The production score then applies capped signals: complete qualification +10, confirmed viewing +5, quote viewed +5, booking started +15, first-response SLA breach −5 and no activity for 7+ days −10. The result is capped between 0% and 100% and remains explainable in the audit trail.';
   return '<tr data-lead-id="' + escapeHtml(l.id) + '" tabindex="0"><td><input class="check" type="checkbox" aria-label="Select ' + escapeHtml(display) + '"></td>' +
-    '<td><div class="contact"><div class="avatar">' + escapeHtml(initial) + '</div><div><button class="v2-name" type="button">' + escapeHtml(display) + '</button>' + extras + '<small>' + sub + '</small><span class="pill ' + (business ? 'blue' : 'grey') + '">' + (business ? 'Business' : 'Personal') + '</span></div></div></td>' +
+    '<td><div class="contact"><div class="avatar">' + escapeHtml(initial) + '</div><div><button class="v2-name" type="button">' + escapeHtml(display) + '</button><small>' + sub + '</small><span class="pill ' + (business ? 'blue' : 'grey') + '">' + (business ? 'Business' : 'Personal') + '</span>' + extras + '</div></div></td>' +
     '<td><b>' + escapeHtml(enquiryDay(l.enquiryDate)) + '</b><small>Enquiry opened</small></td>' +
     '<td><span class="pill ' + (STAGE_TONE[l.stage] || 'grey') + '">' + escapeHtml(label) + '</span></td>' +
     '<td>' + leadHeatHtml(l.stage) + '</td>' +
-    '<td><b>AC Self-Storage</b><br><small>' + escapeHtml(l.branchName ? 'StoreLah ' + l.branchName : 'No preference') + (l.size ? ' · ' + escapeHtml(l.size) : '') + '</small></td>' +
+    '<td><b>AC Self-Storage</b><br><small>' + escapeHtml(l.branchName || 'No preference') + '</small></td>' +
     '<td><span class="channel">' + escapeHtml(SOURCE_CODE[l.source] || 'W') + '</span> ' + escapeHtml(SOURCE_LABEL[l.source] || l.source || '') + '</td>' +
     '<td>' + escapeHtml(l.owner || 'Unassigned') + '</td>' +
-    '<td>' + nextActionLabel(l) + '</td>' +
-    '<td><b>' + money(l.potentialValue) + '</b><small>' + l.probability + '% probability ' + tipHtml(probTip) + '</small></td>' +
-    '<td><span class="pill ' + flag[0] + '">' + flag[1] + '</span></td>' +
-    '<td class="unit-actions"><button class="act-btn" data-act="edit" data-lead-id="' + escapeHtml(l.id) + '">Edit</button> <button class="act-btn danger" data-act="delete" data-lead-id="' + escapeHtml(l.id) + '">Delete</button></td></tr>';
+    '<td class="' + (late ? 'late' : '') + '">' + next + '</td>' +
+    '<td><b>' + money0(l.potentialValue) + '</b><small>' + l.probability + '% probability ' + tipHtml(probTip) + '</small></td>' +
+    '<td><span class="pill ' + flag[0] + '">' + escapeHtml(flag[1]) + '</span></td></tr>';
 }
 
 // Timeline-row badges: phone-variance where the row's phone differs from a
@@ -116,28 +159,33 @@ function groupStagePills(g) {
   ).join(' ');
 }
 
-export function groupRowHtml(g, expanded) {
-  const initial = String((g.names || [])[0] || g.emailDisplay || '?').split(/\s+/).slice(0, 2).map((x) => x[0] || '').join('').toUpperCase();
-  const countBadge = ' <span class="pill blue" title="Click to expand the enquiry timeline">' +
-    escapeHtml(String(g.count)) + ' ' + (g.count === 1 ? 'enquiry' : 'enquiries') + '</span>';
-  const variance = g.phoneVariance
-    ? ' <span class="pill amber" title="Enquiries in this group used different phones — linked automatically, never blocked. Expand to see which rows differ.">⚠ phones differ</span>'
-    : '';
-  const names = (g.names || []).slice(0, 3).join(', ') + ((g.names || []).length > 3 ? ' +' + ((g.names || []).length - 3) + ' more' : '');
-  const phones = (g.phones || []).join(' · ') || '—';
-  return '<tr data-group-key="' + escapeHtml(g.groupKey) + '" tabindex="0" title="Click to ' + (expanded ? 'collapse' : 'expand') + ' the enquiry timeline">' +
-    '<td><b>' + (expanded ? '▾' : '›') + '</b></td>' +
-    '<td><div class="contact"><div class="avatar">' + escapeHtml(initial) + '</div><div><b>' + escapeHtml(names || g.emailDisplay) + '</b>' + countBadge + variance + '<small>' + escapeHtml(g.email == null ? 'Phone-only identity' : g.emailDisplay) + ' · ' + escapeHtml(phones) + '</small></div></div></td>' +
-    '<td><b>' + escapeHtml(fmtDayLead(g.latestAt)) + '</b><small>Latest enquiry</small></td>' +
-    '<td>' + (groupStagePills(g) || '—') + '</td>' +
-    '<td>—</td><td><b>AC Self-Storage</b></td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td>' +
-    '<td class="unit-actions"><button class="act-btn" data-group-act="toggle" data-group-key="' + escapeHtml(g.groupKey) + '">' + (expanded ? 'Collapse' : 'Expand') + '</button></td></tr>';
+// One row per identity (prototype: one master lead, many enquiries). The row
+// shows the group's most relevant current enquiry; the lead page lists every
+// enquiry. A small count pill marks identities with more than one.
+export function groupRowHtml(g) {
+  if (!g.primary) return '';
+  const more = g.count > 1 ? ' <span class="pill grey" title="Enquiries under this lead — open the lead to see each one">' + escapeHtml(String(g.count)) + ' enquiries</span>' : '';
+  return leadRowHtml(g.primary, more);
 }
 
 // ---------- toolbar controls (toggle + debounced email search) ----------
 let controlsWired = false;
+let reloadLeads = () => {};
+const VIEW_KEY = 'storelah.leads.savedView';
+
+function readSavedView() {
+  try { return JSON.parse(localStorage.getItem(VIEW_KEY) || 'null'); } catch { return null; }
+}
+
+function fillFacilities() {
+  const sel = $('#leadFacilityFilter');
+  if (!sel || sel.options.length > 1 || !(state.branches || []).length) return;
+  sel.insertAdjacentHTML('beforeend', state.branches.map((b) => '<option value="' + escapeHtml(b.id) + '">' + escapeHtml(b.name) + '</option>').join(''));
+  if (state.leadFacilityFilter) sel.value = state.leadFacilityFilter;
+}
 
 export function ensureLeadGroupControls(onReload) {
+  reloadLeads = onReload;
   if (controlsWired) return;
   const src = $('#leadSourceFilter');
   if (!src || src.dataset.groupMounted) return;
@@ -146,74 +194,100 @@ export function ensureLeadGroupControls(onReload) {
   const input = document.createElement('input');
   input.id = 'leadGroupSearch';
   input.className = 'tbl-search';
-  input.placeholder = 'Search email / name…';
-  input.setAttribute('aria-label', 'Search lead email groups');
-  input.title = 'Searches email, normalized email and name across all time';
-  input.style.maxWidth = '220px';
+  input.placeholder = 'Search name, email, phone or SL number…';
+  input.setAttribute('aria-label', 'Search leads');
+  input.style.minWidth = '260px';
   src.after(input);
+  const reset = () => { state.leadGroupPage = 1; state.leadGroupExpanded = null; reloadLeads(); };
   let t = null;
   input.addEventListener('input', () => {
     if (t) clearTimeout(t);
-    t = setTimeout(() => {
-      state.leadGroupSearch = input.value;
-      state.leadGroupPage = 1;
-      state.leadGroupExpanded = null;
-      onReload();
-    }, 300);
+    t = setTimeout(() => { state.leadGroupSearch = input.value; reset(); }, 300);
   });
+  $('#leadFacilityFilter')?.addEventListener('change', (e) => { state.leadFacilityFilter = e.target.value; reset(); });
+  $('#leadMoreFiltersBtn')?.addEventListener('click', () => {
+    const row = $('#leadMoreFilters');
+    if (row) row.style.display = row.style.display === 'none' ? 'flex' : 'none';
+  });
+  $('#leadSaveViewBtn')?.addEventListener('click', () => {
+    const view = { status: state.leadStatusFilter || '', source: state.leadSourceFilter || '', facility: state.leadFacilityFilter || '', search: state.leadGroupSearch || '' };
+    try { localStorage.setItem(VIEW_KEY, JSON.stringify(view)); showBanner('View saved — these filters open by default next time.', true); } catch { showBanner('This browser blocked saving the view.'); }
+  });
+  $('#leadPages')?.addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-page]');
+    if (!b) return;
+    state.leadGroupPage = Number(b.dataset.page);
+    reloadLeads();
+  });
+  // Restore the saved view once.
+  const v = readSavedView();
+  if (v) {
+    state.leadStatusFilter = v.status || '';
+    state.leadSourceFilter = v.source || '';
+    state.leadFacilityFilter = v.facility || '';
+    state.leadGroupSearch = v.search || '';
+    const st = $('#leadStatusFilter'); if (st) st.value = state.leadStatusFilter;
+    src.value = state.leadSourceFilter;
+    input.value = state.leadGroupSearch;
+    if ((v.source || v.search) && $('#leadMoreFilters')) $('#leadMoreFilters').style.display = 'flex';
+  }
 }
 
 // ---------- email-mode render (fetch + rows + pager) ----------
 function renderGroupPager(total) {
-  const pages = Math.max(1, Math.ceil(total / state.leadGroupPerPage));
+  const per = state.leadGroupPerPage;
+  const pages = Math.max(1, Math.ceil(total / per));
   if (state.leadGroupPage > pages) state.leadGroupPage = pages;
-  const num = $('#leadsPageNum');
-  if (num) num.textContent = state.leadGroupPage + ' / ' + pages;
+  const cur = state.leadGroupPage;
+  const count = $('#leadCount');
+  if (count) count.textContent = total ? 'Showing ' + ((cur - 1) * per + 1) + '–' + Math.min(total, cur * per) + ' of ' + total + ' lead' + (total === 1 ? '' : 's') : 'No leads';
+  const box = $('#leadPageNums');
+  if (box) {
+    const lo = Math.max(1, Math.min(cur - 2, pages - 4));
+    const hi = Math.min(pages, lo + 4);
+    let html = '';
+    for (let p = lo; p <= hi; p++) html += '<button type="button" data-page="' + p + '"' + (p === cur ? ' class="active" aria-current="page"' : '') + '>' + p + '</button>';
+    box.innerHTML = html;
+  }
   const prev = $('#leadsPagePrev');
   const next = $('#leadsPageNext');
-  if (prev) prev.disabled = state.leadGroupPage <= 1;
-  if (next) next.disabled = state.leadGroupPage >= pages;
+  if (prev) prev.disabled = cur <= 1;
+  if (next) next.disabled = cur >= pages;
 }
 
 export async function renderEmailGroups() {
+  fillFacilities();
   const params = new URLSearchParams();
   const q = (state.leadGroupSearch || '').trim();
   if (q) params.set('search', q);
-  // The existing status/source selects compose server-side: groups having
-  // >= 1 matching row list with their FULL content (see listLeadGroups).
+  // Filters compose server-side: identities with >= 1 matching enquiry.
   if (state.leadStatusFilter) params.set('stage', state.leadStatusFilter);
   if (state.leadSourceFilter) params.set('source', state.leadSourceFilter);
+  if (state.leadFacilityFilter) params.set('branchId', state.leadFacilityFilter);
   params.set('page', String(state.leadGroupPage));
   params.set('perPage', String(state.leadGroupPerPage));
-  const body = await request('/leads/groups?' + params.toString());
+  const [body, sla] = await Promise.all([
+    request('/leads/groups?' + params.toString()),
+    request('/settings/lead-sla').catch(() => null),
+  ]);
+  if (sla && sla.data && sla.data.targets) slaTargets = sla.data.targets;
   const groups = (body && body.data) || [];
   const total = (body && body.meta && body.meta.total) || 0;
   state.leadGroups = groups;
   state.leadGroupTotal = total;
   const tbody = $('#leadRows');
   if (!tbody) return;
-  const count = $('#leadCount');
-  if (count) {
-    count.textContent = total + ' group' + (total === 1 ? '' : 's') +
-      (q ? ' · “' + q + '”' : '') +
-      ((state.leadStatusFilter || state.leadSourceFilter) ? ' · filtered' : '');
-  }
   resetSelectAll('#leadRows');
   renderGroupPager(total);
+  // Primary rows feed the lead page / drawer lookup.
+  if (!state.leadsCache) state.leadsCache = [];
+  const ids = new Set((state.leadsCache || []).map((l) => l.id));
+  for (const g of groups) if (g.primary && !ids.has(g.primary.id)) { state.leadsCache.push(g.primary); ids.add(g.primary.id); }
   if (!groups.length) {
-    tbody.innerHTML = '<tr><td colspan="12"><div class="section-empty">No email groups match — adjust search or filters.<br><small>Contact-less rows (no email/phone) stay in the By-stage view.</small></div></td></tr>';
+    tbody.innerHTML = '<tr><td colspan="11"><div class="section-empty">No leads match these filters.</div></td></tr>';
     return;
   }
-  const html = [];
-  for (const g of groups) {
-    const expanded = state.leadGroupExpanded === g.groupKey;
-    html.push(groupRowHtml(g, expanded));
-    if (expanded) {
-      const timeline = state.leadGroupTimelines[g.groupKey] || [];
-      for (const t of timeline) html.push(leadRowHtml(t, timelineBadges(t)));
-    }
-  }
-  tbody.innerHTML = html.join('');
+  tbody.innerHTML = groups.map((g) => groupRowHtml(g)).join('');
 }
 
 // Expand/collapse one group: fetch the timeline once (cached per group),

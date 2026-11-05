@@ -158,3 +158,31 @@ describe('appointments', () => {
     expect(await prisma.appointment.count()).toBe(1);
   });
 });
+
+describe('lead database rows (one master lead per identity)', () => {
+  beforeEach(resetDb);
+
+  it('returns the most relevant enquiry as the row, honouring facility filters and SL-number search', async () => {
+    const op = await createOperator('OWNER');
+    const branch = await prisma.branch.create({ data: { code: 'LG', name: 'Lead Grid', address: '1 Grid Rd', operatingHours: '9-9' } });
+    const first = await api.post(`${CMS}/leads`).set('Authorization', op.auth)
+      .send({ name: 'Grace Lim', email: 'grace@grid.test', mobile: '91112222', source: 'PHONE', preferredBranchId: branch.id });
+    expect(first.status).toBe(201);
+    const second = await api.post(`${CMS}/leads/${first.body.data.id}/enquiries`).set('Authorization', op.auth)
+      .send({ enquiryDate: sgToday(), source: 'WEBSITE' });
+    expect(second.status).toBe(201);
+
+    const all = await api.get(`${CMS}/leads/groups`).set('Authorization', op.auth);
+    expect(all.status).toBe(200);
+    const g = all.body.data.find((x: { email: string }) => x.email === 'grace@grid.test');
+    expect(g.count).toBe(2);
+    expect(g.primary).toMatchObject({ id: second.body.data.id, source: 'WEBSITE' });
+
+    const byFacility = await api.get(`${CMS}/leads/groups?branchId=${branch.id}`).set('Authorization', op.auth);
+    expect(byFacility.body.data).toHaveLength(1);
+    expect(byFacility.body.data[0].primary).toMatchObject({ id: first.body.data.id, branchName: 'Lead Grid' });
+
+    const bySl = await api.get(`${CMS}/leads/groups?search=${encodeURIComponent(first.body.data.displayId)}`).set('Authorization', op.auth);
+    expect(bySl.body.data.map((x: { email: string }) => x.email)).toEqual(['grace@grid.test']);
+  });
+});

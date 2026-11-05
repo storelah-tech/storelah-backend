@@ -876,6 +876,7 @@ const leadGroupListQuerySchema = z.object({
     .enum(LEAD_STAGE_VALUES)
     .optional(),
   source: z.enum(LEAD_SOURCE_VALUES).optional(),
+  branchId: z.string().trim().min(1).max(64).optional(),
   page: z.coerce.number().int().min(1).default(1),
   perPage: z.coerce.number().int().min(1).max(100).default(10),
 });
@@ -890,6 +891,7 @@ router.get('/leads/groups', requireAuth, async (req: Request, res: Response) => 
     search: parsed.data.search,
     stage: parsed.data.stage as LeadStage | undefined,
     source: parsed.data.source as LeadSource | undefined,
+    branchId: parsed.data.branchId,
     page: parsed.data.page,
     perPage: parsed.data.perPage,
   });

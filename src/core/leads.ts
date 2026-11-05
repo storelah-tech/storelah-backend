@@ -1080,6 +1080,8 @@ export interface LeadGroupQuery {
   search?: string;
   stage?: LeadStage;
   source?: LeadSource;
+  /** Preferred facility of at least one enquiry in the group. */
+  branchId?: string;
   page?: number;
   perPage?: number;
 }
@@ -1103,10 +1105,16 @@ export interface LeadGroupSummary {
   leadIds: string[];
   /** True when group rows carry >1 distinct normalized phone (auto-linked, never blocked). */
   phoneVariance: boolean;
+  /**
+   * The master lead row for the Lead database table (prototype 2026-11-04:
+   * "the master lead header shows the most relevant current opportunity"):
+   * the newest open enquiry, else the newest enquiry.
+   */
+  primary: ReturnType<typeof serializeLead> | null;
 }
 
 /** Summarize one group's rows (must arrive newest-first). */
-function summarizeGroup(groupKey: string, rowsDesc: LeadWithBranch[]): LeadGroupSummary {
+function summarizeGroup(groupKey: string, rowsDesc: LeadWithBranch[], matches?: (r: LeadWithBranch) => boolean): LeadGroupSummary {
   const email = rowsDesc.map((r) => r.email?.trim() || null).find((e) => e != null) ?? null;
   const topMobile = rowsDesc.map((r) => r.mobile?.trim() || null).find((m) => m != null) ?? null;
   const stages: LeadStage[] = [];
@@ -1132,6 +1140,13 @@ function summarizeGroup(groupKey: string, rowsDesc: LeadWithBranch[]): LeadGroup
     names,
     leadIds: rowsDesc.map((r) => r.id),
     phoneVariance: normPhones.size > 1,
+    primary: (() => {
+      // With list filters active, prefer an enquiry that matches them.
+      const pool = matches ? rowsDesc.filter(matches) : [];
+      const from = pool.length ? pool : rowsDesc;
+      const pick = from.find((r) => r.stage !== 'WON' && r.stage !== 'LOST') ?? from[0];
+      return pick ? serializeLead(pick) : null;
+    })(),
   };
 }
 
@@ -1149,10 +1164,15 @@ export async function listLeadGroups(q: LeadGroupQuery): Promise<{
       { email: { contains: search, mode: 'insensitive' } },
       { emailNorm: { contains: search.toLowerCase(), mode: 'insensitive' } },
       { name: { contains: search, mode: 'insensitive' } },
+      { companyName: { contains: search, mode: 'insensitive' } },
+      { mobile: { contains: search } },
     ];
+    const no = /^(?:SL-?)?(\d{3,})$/i.exec(search);
+    if (no) rowWhere.OR.push({ leadNo: Number(no[1]) });
   }
   if (q.stage) rowWhere.stage = q.stage;
   if (q.source) rowWhere.source = q.source;
+  if (q.branchId) rowWhere.preferredBranchId = q.branchId;
   const matched = await prisma.lead.findMany({
     where: rowWhere,
     select: { leadGroupKey: true },
@@ -1173,7 +1193,10 @@ export async function listLeadGroups(q: LeadGroupQuery): Promise<{
     if (list) list.push(r);
     else byKey.set(k, [r]);
   }
-  const summaries = [...byKey.entries()].map(([groupKey, rs]) => summarizeGroup(groupKey, rs));
+  const filtered = !!(q.stage || q.source || q.branchId);
+  const matches = (r: LeadWithBranch) =>
+    (!q.stage || r.stage === q.stage) && (!q.source || r.source === q.source) && (!q.branchId || r.preferredBranchId === q.branchId);
+  const summaries = [...byKey.entries()].map(([groupKey, rs]) => summarizeGroup(groupKey, rs, filtered ? matches : undefined));
   summaries.sort((a, b) => b.latestAt.getTime() - a.latestAt.getTime());
   const total = summaries.length;
   return { rows: summaries.slice((page - 1) * perPage, page * perPage), meta: { total, page, perPage } };

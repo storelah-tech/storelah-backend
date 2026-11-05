@@ -26,6 +26,7 @@ export const state = {
   // leads-view state (lead database table: filters + client-side pager)
   leadStatusFilter: '',
   leadSourceFilter: '',
+  leadFacilityFilter: '',
   leadPage: 1,
   leadPerPage: 10,
   leadsCache: [], // flat leads from the last GET /leads (filters/pager/export read this)

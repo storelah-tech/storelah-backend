@@ -276,7 +276,7 @@ import {
   QUOTE_STATUSES, deleteDraftQuotation, duplicateAsDraft, getQuotationPdfById, listQuotationRegister, resendQuotation, voidQuotation,
 } from '../core/quotationRegister';
 import { NOTE_ENTITIES, addNote, listMentionableUsers, listMyNotifications, listNotes, markNotificationsRead } from '../core/recordNotes';
-import { REPORT_SECTIONS, buildFinanceReport, type ReportSection } from '../core/finance/report';
+import { REPORT_SECTIONS, DEFAULT_REPORT_SECTIONS, buildFinanceReport, type ReportSection } from '../core/finance/report';
 import { buildFinanceReportPdf, financeReportFileName } from '../core/finance/reportPdf';
 import { ADJUSTMENT_CATEGORIES, decideSettlement, getCustomerProfile, listSettlements, previewSettlement, submitSettlement } from '../core/customerProfile';
 import { REGISTER_DOC_TYPES, listRegister } from '../core/finance/register';
@@ -1548,6 +1548,7 @@ const SECTION_PERMISSION: Record<ReportSection, string> = {
   arrears: 'bill-arrears:view',
   transactions: 'bill-transactions:view',
   reconciliation: 'bill-reconciliation:view',
+  model: 'bill-models:view',
   returns: 'bill-returns:view',
 };
 const financeReportQuerySchema = z.object({
@@ -1572,7 +1573,7 @@ router.get('/finance/reports/financial.pdf', requireAuth, async (req: Request, r
     fail(res, 400, 'VALIDATION', 'Unknown report section');
     return;
   }
-  const sections = (requested as ReportSection[] | null ?? ['summary', 'performance', 'budgets', 'arrears', 'transactions', 'reconciliation']).filter(allowed);
+  const sections = (requested as ReportSection[] | null ?? DEFAULT_REPORT_SECTIONS).filter(allowed);
   if (!sections.length) {
     fail(res, 403, 'FORBIDDEN', 'You do not have access to any of the selected report sections.');
     return;

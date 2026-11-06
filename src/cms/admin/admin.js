@@ -4640,7 +4640,7 @@ function showSignIn(note) {
       try {
         await signIn(email, password);
         $('#signinPassword').value = '';
-        screen.hidden = true;
+        $('#signin').hidden = true;
         document.body.classList.remove('auth-pending');
         resolve();
       } catch (ex) {

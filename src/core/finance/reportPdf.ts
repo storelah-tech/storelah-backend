@@ -40,6 +40,14 @@ const num = (n: number | null | undefined) => (n == null ? '-' : n.toLocaleStrin
 const pct = (n: number | null | undefined) => (n == null ? '-' : `${n.toFixed(1)}%`);
 const day = (s: string) => new Date(`${s.slice(0, 10)}T00:00:00Z`).toLocaleDateString('en-SG', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' });
 const monthLabel = (fm: string) => new Date(`${fm}-01T00:00:00Z`).toLocaleDateString('en-SG', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+/** Model month t (1-based) -> "Month 18 (Apr 2027)" from the model start date. */
+const modelMonth = (start: string, t: number | null) => {
+  if (t == null) return 'Not in horizon';
+  const y = Number(start.slice(0, 4));
+  const m = Number(start.slice(5, 7)) - 1 + (t - 1);
+  const d = new Date(Date.UTC(y + Math.floor(m / 12), m % 12, 1));
+  return `Month ${t} (${d.toLocaleDateString('en-SG', { month: 'short', year: 'numeric', timeZone: 'UTC' })})`;
+};
 const STAGE_LABEL: Record<string, string> = { OPEN: 'Open', REMINDER: 'Reminder', FORMAL_NOTICE: 'Formal notice', LATE_FEE_POSTED: 'Late fee posted', RESTRICTED: 'Access restricted', RESOLVED: 'Resolved' };
 
 interface Col {
@@ -334,12 +342,83 @@ export async function buildFinanceReportPdf(r: FinanceReport): Promise<Buffer> {
     );
   }
 
-  // ---- 7. Investment returns ----
+  // ---- 7. Financial model ----
+  if (r.model) {
+    w.section('Financial model', 'Each facility\u2019s current approved financial model (Finance > Financial models): the assumptions it is built on and the projection they produce. Projections, not results; the forecast columns in Forecast vs actuals come from the same model.');
+    for (const fm of r.model) {
+      if (!fm.model) {
+        w.sub(fm.branch);
+        w.para('No current approved model for this facility.', 8.5, MUTED);
+        w.y -= 6;
+        continue;
+      }
+      const { inputs: i, kpis: k } = fm.model;
+      w.sub(fm.branch, `${fm.model.name}  |  v${fm.model.version}  |  approved, updated ${day(fm.model.updatedAt)} by ${fm.model.updatedBy}`);
+      w.kpiGrid([
+        { label: 'Weighted start PSF', value: `S$${k.weightedStartPsf.toFixed(2)}`, note: 'per sq ft per month' },
+        { label: 'Capital investment', value: sgd(i.capitalTotal, 0) },
+        { label: 'NOI positive', value: modelMonth(i.startDate, k.noiPositiveMonth) },
+        { label: 'Stabilised occupancy', value: modelMonth(i.startDate, k.stabilisedMonth), note: `Target ${pct(i.occupancy.targetPct)}` },
+        { label: 'Payback', value: modelMonth(i.startDate, k.paybackMonth), note: 'Cumulative cash back to zero' },
+        { label: 'IRR (annualised)', value: k.irrAnnualised == null ? 'Not available' : pct(k.irrAnnualised * 100), note: 'Operating cash flows, no sale value' },
+      ]);
+      // Runs of equal years collapse: "S$5,000/month (years 1-5), S$5,500/month (years 6-10)".
+      const leaseRuns: Array<{ v: number; a: number; b: number }> = [];
+      i.lease.monthlyByYear.forEach((v, n) => {
+        const last = leaseRuns[leaseRuns.length - 1];
+        if (last && last.v === v) last.b = n + 1;
+        else leaseRuns.push({ v, a: n + 1, b: n + 1 });
+      });
+      const leaseYears = leaseRuns.map((x) => `${sgd(x.v, 0)}/month (${x.a === x.b ? `year ${x.a}` : `years ${x.a}-${x.b}`})`).join(', ');
+      w.sub('Key assumptions');
+      w.table(
+        [{ label: 'Assumption', width: 0.36 }, { label: 'Value', width: 0.64 }],
+        [
+          ['Opening date / horizon', `${day(i.startDate)}  |  ${i.horizonMonths} months`],
+          ['Net lettable area (NLA)', `${num(i.nlaSqft)} sq ft`],
+          ['Move-in ramp (gross)', `${num(i.occupancy.rampFirst6)} sq ft/month (months 1-6), ${num(i.occupancy.rampFrom7)} sq ft/month (month 7+)`],
+          ['Move-out rate', `${pct(i.occupancy.moveOutRatePct)} per month from month ${i.occupancy.churnStartMonth}`],
+          ['Target occupancy', pct(i.occupancy.targetPct)],
+          ['Annual rent increase', pct(i.pricing.annualIncreasePct)],
+          ['Lease (monthly, by model year)', leaseYears || '-'],
+          ['Rent-free months', num(i.lease.rentFreeMonths)],
+          ['Non-lease operating costs', `${sgd(i.opex.baseMonthly, 0)}/month, growing ${pct(i.opex.annualGrowthPct)} a year`],
+        ],
+      );
+      if (i.sizeMix.length) {
+        w.sub('Size mix');
+        const units = i.sizeMix.reduce((t, x) => t + x.units, 0);
+        const nla = i.sizeMix.reduce((t, x) => t + x.nlaSqft, 0);
+        w.table(
+          [{ label: 'Size', width: 0.3 }, { label: 'Range', width: 0.22 }, { label: 'Units', width: 0.14, align: 'right' }, { label: 'NLA (sq ft)', width: 0.17, align: 'right' }, { label: 'PSF / month', width: 0.17, align: 'right' }],
+          i.sizeMix.map((x) => [x.name, x.range ?? '-', num(x.units), num(x.nlaSqft), `S$${x.psf.toFixed(2)}`]),
+          { totals: ['Total', '', num(units), num(nla), `S$${k.weightedStartPsf.toFixed(2)}`] },
+        );
+      }
+      if (i.capitalItems?.length) {
+        w.sub('Capital investment');
+        w.table(
+          [{ label: 'Item', width: 0.7 }, { label: 'Amount', width: 0.3, align: 'right' }],
+          i.capitalItems.map((x) => [x.name, sgd(x.amount, 0)]),
+          { totals: ['Total', sgd(i.capitalTotal, 0)] },
+        );
+      }
+      w.sub('Projection by model year');
+      w.table(
+        [{ label: 'Year', width: 0.1 }, { label: 'Revenue', width: 0.16, align: 'right' }, { label: 'Operating cost', width: 0.16, align: 'right' }, { label: 'NOI', width: 0.15, align: 'right' }, { label: 'NOI margin', width: 0.12, align: 'right' }, { label: 'Cash at year end', width: 0.17, align: 'right' }, { label: 'Occupied sq ft', width: 0.14, align: 'right' }],
+        k.years.map((y) => [`Year ${y.year}`, sgd(y.revenue, 0), sgd(y.operatingCost, 0), sgd(y.noi, 0), pct(y.noiMarginPct), sgd(y.cashAtYearEnd, 0), num(Math.round(y.closingSqft))]),
+        { empty: 'No projection years.' },
+      );
+      if (fm.model.failedChecks.length) w.para(`Model checks not passing: ${fm.model.failedChecks.join('; ')}`, 8, RED);
+    }
+  }
+
+  // ---- 8. Investment returns ----
   if (r.returns) {
     w.section('Investment returns', 'Five-year view from each facility’s current approved financial model. Projections, not results.');
     w.table(
       [{ label: 'Facility', width: 0.18 }, { label: 'Model', width: 0.22 }, { label: 'Investment', width: 0.16, align: 'right' }, { label: 'Payback', width: 0.12, align: 'right' }, { label: 'IRR', width: 0.1, align: 'right' }, { label: 'NPV', width: 0.12, align: 'right' }, { label: 'NOI margin', width: 0.1, align: 'right' }],
-      r.returns.map((x) => [x.branch, x.model, sgd(x.initialInvestment, 0), x.paybackMonth == null ? 'Beyond 5y' : `Month ${x.paybackMonth}`, pct(x.irr), sgd(x.npv, 0), pct(x.noiMarginPct)]),
+      r.returns.map((x) => [x.branch, x.model, sgd(x.initialInvestment, 0), x.paybackMonth == null ? 'Beyond 5y' : `Month ${x.paybackMonth}`, x.irr == null ? 'Not available' : pct(x.irr * 100), sgd(x.npv, 0), pct(x.noiMarginPct)]),
       { empty: 'No facility has a current approved model.' },
     );
   }

@@ -19,10 +19,12 @@ import { listArrearsCases } from './arrears';
 import { listRegister } from './register';
 import { getReconciliation } from './reconciliation';
 import { getReturns } from './returns';
+import { getModel } from './models';
+import type { ProjectionInput, ProjectionKpis } from './projection';
 
-export const REPORT_SECTIONS = ['summary', 'performance', 'budgets', 'arrears', 'transactions', 'reconciliation', 'returns'] as const;
+export const REPORT_SECTIONS = ['summary', 'performance', 'budgets', 'arrears', 'transactions', 'reconciliation', 'model', 'returns'] as const;
 export type ReportSection = (typeof REPORT_SECTIONS)[number];
-export const DEFAULT_REPORT_SECTIONS: ReportSection[] = ['summary', 'performance', 'budgets', 'arrears', 'transactions', 'reconciliation'];
+export const DEFAULT_REPORT_SECTIONS: ReportSection[] = ['summary', 'performance', 'budgets', 'arrears', 'transactions', 'reconciliation', 'model'];
 
 /** Per-month sections cover at most this many months (the latest ones). */
 export const MAX_REPORT_MONTHS = 12;
@@ -90,6 +92,7 @@ export async function buildFinanceReport(opts: FinanceReportOpts) {
     arrears?: { openCount: number; openBalance: number; byStage: Array<{ stage: string; count: number; balance: number }>; cases: Array<{ tenant: string; branch: string | null; invoiceNo: string | null; balance: number | null; daysOverdue: number | null; stage: string }> };
     transactions?: { total: number; pending: number; failed: number; byType: Array<{ docType: string; count: number; amount: number }>; pendingRows: Array<{ date: string; recordId: string; customer: string; docType: string; amount: number; status: string }> };
     reconciliation?: Array<{ branch: string; fiscalMonth: string; settled: number; allocated: number; variance: number; unmatched: number; suspense: number; status: string }>;
+    model?: Array<ReportModel>;
     returns?: Array<{ branch: string; model: string; initialInvestment: number; paybackMonth: number | null; irr: number | null; npv: number | null; noiMarginPct: number | null }>;
   } = {
     meta: {
@@ -217,6 +220,30 @@ export async function buildFinanceReport(opts: FinanceReportOpts) {
     }
   }
 
+  if (sections.has('model')) {
+    report.model = [];
+    for (const b of branches) {
+      const m = await prisma.financialModel.findFirst({ where: { branchId: b.id, status: 'CURRENT' }, orderBy: { updatedAt: 'desc' } });
+      if (!m) {
+        report.model.push({ branch: b.name, model: null });
+        continue;
+      }
+      const { inputs, projection } = await getModel(m.id);
+      report.model.push({
+        branch: b.name,
+        model: {
+          name: m.name,
+          version: m.version,
+          updatedAt: m.updatedAt.toISOString(),
+          updatedBy: m.updatedBy ?? m.createdBy,
+          inputs,
+          kpis: projection.kpis,
+          failedChecks: Object.entries(projection.checks).filter(([, c]) => !c.pass).map(([k, c]) => `${k}: ${c.detail}`),
+        },
+      });
+    }
+  }
+
   if (sections.has('returns')) {
     report.returns = [];
     for (const b of branches) {
@@ -239,3 +266,17 @@ export async function buildFinanceReport(opts: FinanceReportOpts) {
 }
 
 export type FinanceReport = Awaited<ReturnType<typeof buildFinanceReport>>;
+
+/** A facility's current approved financial model (null = none approved). */
+export interface ReportModel {
+  branch: string;
+  model: {
+    name: string;
+    version: number;
+    updatedAt: string;
+    updatedBy: string;
+    inputs: ProjectionInput;
+    kpis: ProjectionKpis;
+    failedChecks: string[];
+  } | null;
+}

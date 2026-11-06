@@ -5,6 +5,8 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { api, createOperator, prisma, resetDb, uniqueEmail } from './fixtures';
 import { buildFinanceReport, monthsBetween } from '../../src/core/finance/report';
+import { buildFinanceReportPdf } from '../../src/core/finance/reportPdf';
+import { createModel } from '../../src/core/finance/models';
 
 const CMS = '/api/v1/cms';
 const day = (v: string) => new Date(`${v}T00:00:00.000Z`);
@@ -41,6 +43,36 @@ describe('financial report (PDF)', () => {
     expect(r.performance![0]).toMatchObject({ branch: 'Report Park', fiscalMonth: '2026-10', closed: false });
     expect(r.performance![0].rows.find((x) => x.metric === 'REVENUE')!.actual).toBe(320);
     expect(r.transactions!.byType).toEqual(expect.arrayContaining([expect.objectContaining({ docType: 'Invoice', count: 1, amount: 320 })]));
+  });
+
+  it('includes each facility\'s current approved financial model (assumptions + projection)', async () => {
+    const { branch } = await seed();
+    const other = await prisma.branch.create({ data: { code: 'RQ', name: 'Quiet Park', address: '2 Report Rd', operatingHours: '9-9' } });
+    const draft = await createModel({ name: 'Draft only', branchId: other.id, actor: 'test' });
+    const m = await createModel({ name: 'Report Park base case', branchId: branch.id, actor: 'test' });
+    await prisma.financialModel.update({ where: { id: m.id }, data: { status: 'CURRENT' } });
+
+    const r = await buildFinanceReport({ from: day('2026-10-01'), to: day('2026-10-31'), generatedBy: 'Test' });
+    expect(r.meta.sections).toContain('model');
+    const park = r.model!.find((x) => x.branch === 'Report Park')!;
+    expect(park.model).toMatchObject({ name: 'Report Park base case', version: expect.any(Number) });
+    expect(park.model!.inputs.nlaSqft).toBeGreaterThan(0);
+    expect(park.model!.kpis.years.length).toBeGreaterThan(0);
+    // Drafts are never reported — only the CURRENT (approved) model.
+    expect(r.model!.find((x) => x.branch === 'Quiet Park')!.model).toBeNull();
+    expect(draft.id).toBeTruthy();
+
+    const pdf = await buildFinanceReportPdf(r);
+    expect(pdf.subarray(0, 5).toString()).toBe('%PDF-');
+  });
+
+  it('omits the model section for roles without Financial Models access', async () => {
+    await seed();
+    const manager = await createOperator('MANAGER');
+    expect((await api.get(`${CMS}/finance/reports/financial.pdf?sections=model`).set('Authorization', manager.auth)).status).toBe(403);
+    const op = await createOperator('FINANCE_OPERATOR');
+    const res = await api.get(`${CMS}/finance/reports/financial.pdf?sections=model`).set('Authorization', op.auth).buffer(true).parse(binary);
+    expect(res.status).toBe(200);
   });
 
   it('downloads an audited PDF and limits sections to what the operator may view', async () => {

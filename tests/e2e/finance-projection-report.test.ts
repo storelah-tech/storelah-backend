@@ -7,6 +7,8 @@ import { api, createOperator, prisma, resetDb } from './fixtures';
 import { createModel } from '../../src/core/finance/models';
 import { buildProjectionReport, yearRows } from '../../src/core/finance/projectionReport';
 import { buildProjectionReportPdf, projectionReportFileName } from '../../src/core/finance/projectionReportPdf';
+import { applyScenario, project } from '../../src/core/finance/projection';
+import { defaultModelInputs } from '../../src/core/finance/models';
 
 const CMS = '/api/v1/cms';
 const binary = (res: NodeJS.ReadableStream, cb: (err: Error | null, body: Buffer) => void) => {
@@ -52,6 +54,33 @@ describe('model projection report (PDF)', () => {
     const pdf = await buildProjectionReportPdf(r);
     expect(pdf.subarray(0, 5).toString()).toBe('%PDF-');
     expect(projectionReportFileName(r)).toBe(`StoreLah_Financial_Projection_Projection-Park_Projection-Park-base-case_v${r.meta.version}.pdf`);
+  });
+
+  it('keeps scenario overlays inside the valid range (high / low saved targets)', async () => {
+    for (const t of [98, 99, 100, 4, 1]) {
+      const i = defaultModelInputs();
+      i.occupancy.targetPct = t;
+      const up = applyScenario(i, 'upside');
+      const down = applyScenario(i, 'downside');
+      expect(up.occupancy.targetPct).toBeLessThanOrEqual(100);
+      expect(down.occupancy.targetPct).toBeGreaterThan(0);
+      expect(() => project({ ...i, occupancy: up.occupancy })).not.toThrow();
+      expect(() => project({ ...i, occupancy: down.occupancy })).not.toThrow();
+    }
+    // Typical targets are unchanged by the caps.
+    expect(applyScenario(defaultModelInputs(), 'upside').occupancy.targetPct).toBe(95);
+    expect(applyScenario(defaultModelInputs(), 'downside').occupancy.targetPct).toBe(87);
+
+    // A saved 99% target exports (regression: "targetPct must be between 0 and 100").
+    const { model } = await seedModel('CURRENT');
+    const row = await prisma.financialModel.findUniqueOrThrow({ where: { id: model.id } });
+    const inputs = row.inputs as { occupancy: { targetPct: number } };
+    inputs.occupancy.targetPct = 99;
+    await prisma.financialModel.update({ where: { id: model.id }, data: { inputs: inputs as never } });
+    const r = await buildProjectionReport({ modelId: model.id, generatedBy: 'Test' });
+    expect(r.scenarios.find((s) => s.scenario === 'upside')!.occupancy.targetPct).toBe(100);
+    expect(r.scenarios.find((s) => s.scenario === 'upside')!.note).toContain('capped at 100%');
+    expect((await buildProjectionReportPdf(r)).subarray(0, 5).toString()).toBe('%PDF-');
   });
 
   it('caps the windows to a short model horizon', () => {

@@ -8,20 +8,20 @@
 import { PDFDocument, StandardFonts, rgb, type PDFFont, type PDFPage } from 'pdf-lib';
 import type { FinanceReport } from './report';
 
-const INK = rgb(0.157, 0.169, 0.153);
-const MUTED = rgb(0.455, 0.435, 0.4);
-const TERRA = rgb(0.741, 0.42, 0.314);
-const OLIVE = rgb(0.2, 0.27, 0.2);
-const LINE = rgb(0.882, 0.847, 0.796);
-const SHADE = rgb(0.965, 0.953, 0.937);
-const RED = rgb(0.65, 0.2, 0.17);
+export const INK = rgb(0.157, 0.169, 0.153);
+export const MUTED = rgb(0.455, 0.435, 0.4);
+export const TERRA = rgb(0.741, 0.42, 0.314);
+export const OLIVE = rgb(0.2, 0.27, 0.2);
+export const LINE = rgb(0.882, 0.847, 0.796);
+export const SHADE = rgb(0.965, 0.953, 0.937);
+export const RED = rgb(0.65, 0.2, 0.17);
 
-const W = 595;
-const H = 842;
-const M = 40;
+export const W = 595;
+export const H = 842;
+export const M = 40;
 const BOTTOM = 56;
 
-function ascii(s: string): string {
+export function ascii(s: string): string {
   return String(s)
     .replace(/[—–−]/g, '-')
     .replace(/[‘’]/g, "'")
@@ -34,14 +34,14 @@ function ascii(s: string): string {
     .replace(/[^\x20-\x7E\n]/g, '?');
 }
 
-const sgd = (n: number | null | undefined, dp = 2) =>
+export const sgd = (n: number | null | undefined, dp = 2) =>
   n == null ? '-' : (n < 0 ? '-' : '') + 'S$' + Math.abs(n).toLocaleString('en-SG', { minimumFractionDigits: dp, maximumFractionDigits: dp });
-const num = (n: number | null | undefined) => (n == null ? '-' : n.toLocaleString('en-SG'));
-const pct = (n: number | null | undefined) => (n == null ? '-' : `${n.toFixed(1)}%`);
-const day = (s: string) => new Date(`${s.slice(0, 10)}T00:00:00Z`).toLocaleDateString('en-SG', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' });
-const monthLabel = (fm: string) => new Date(`${fm}-01T00:00:00Z`).toLocaleDateString('en-SG', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+export const num = (n: number | null | undefined) => (n == null ? '-' : n.toLocaleString('en-SG'));
+export const pct = (n: number | null | undefined) => (n == null ? '-' : `${n.toFixed(1)}%`);
+export const day = (s: string) => new Date(`${s.slice(0, 10)}T00:00:00Z`).toLocaleDateString('en-SG', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' });
+export const monthLabel = (fm: string) => new Date(`${fm}-01T00:00:00Z`).toLocaleDateString('en-SG', { month: 'long', year: 'numeric', timeZone: 'UTC' });
 /** Model month t (1-based) -> "Month 18 (Apr 2027)" from the model start date. */
-const modelMonth = (start: string, t: number | null) => {
+export const modelMonth = (start: string, t: number | null) => {
   if (t == null) return 'Not in horizon';
   const y = Number(start.slice(0, 4));
   const m = Number(start.slice(5, 7)) - 1 + (t - 1);
@@ -50,13 +50,13 @@ const modelMonth = (start: string, t: number | null) => {
 };
 const STAGE_LABEL: Record<string, string> = { OPEN: 'Open', REMINDER: 'Reminder', FORMAL_NOTICE: 'Formal notice', LATE_FEE_POSTED: 'Late fee posted', RESTRICTED: 'Access restricted', RESOLVED: 'Resolved' };
 
-interface Col {
+export interface Col {
   label: string;
   width: number; // fraction of the content width
   align?: 'left' | 'right';
 }
 
-class Writer {
+export class Writer {
   page!: PDFPage;
   y = 0;
   pages: PDFPage[] = [];

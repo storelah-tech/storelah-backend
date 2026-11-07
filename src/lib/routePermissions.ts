@@ -172,6 +172,7 @@ export const ROUTE_PERMISSIONS: Record<string, PermissionSpec> = {
   'POST /finance/models/:id/scenarios': 'bill-models:view',
   'POST /finance/models/:id/sensitivity': 'bill-models:view',
   'GET /finance/models/:id/export.csv': 'bill-models:view',
+  'GET /finance/models/:id/report.pdf': 'bill-models:view',
   'DELETE /finance/models/:id': 'bill-models:delete',
   // Library: cards/versions/audit read with any library view; governance
   // transitions need update (submit/duplicate/restore/archive) or approve.

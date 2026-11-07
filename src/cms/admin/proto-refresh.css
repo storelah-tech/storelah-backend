@@ -6,7 +6,16 @@
 #billing>.head p,#customer-profile>.head p{font-size:14px;line-height:1.55;max-width:760px}
 #billing .card-head h3,#customer-profile .card-head h3{font-size:16px}
 #billing .btn,#billing .primary,#billing .filter,#billing input,#billing select,#billing textarea{font-size:13px;min-height:38px}
-#billing .fm-toolbar{gap:10px;padding:12px 14px}
+#billing .fm-toolbar{gap:10px;padding:12px 0;align-items:flex-end}
+/* Toolbar alignment (2026-11-07): controls line up on the field row — the
+   labelled selects/date are taller than buttons and the scenario switch, so
+   centring left buttons floating mid-label; no side padding so the toolbar
+   starts on the page-title edge; every control is the field height (40px). */
+#billing .fm-toolbar>.btn,#billing .fm-toolbar>.primary,#billing .fm-toolbar>.filter{min-height:40px}
+#billing .fm-toolbar>.fm-scenario{height:40px;align-items:stretch}
+#billing .fm-toolbar>.fm-scenario>button{display:flex;align-items:center}
+#billing .fm-toolbar>.pill,#billing .fm-toolbar>[data-fm-publish-slot]>.pill{align-self:flex-end;margin-bottom:5px}
+#billing .fm-toolbar>.fm-scenario-note{align-self:stretch}
 #billing .fm-select-wrap small,#billing .fm-assumption small,#billing .fm-kpi small,#billing .fm-table-sub{font-size:11px;line-height:1.4}
 #billing .fm-kpi{padding:17px;min-height:116px}
 #billing .fm-kpi strong{font-size:25px;line-height:1.15}

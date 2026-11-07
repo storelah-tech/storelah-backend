@@ -415,6 +415,15 @@ export function chainBoundarySegments(
  * polygon to the rect (Sutherland–Hodgman, 4 half-planes) then shoelaces.
  * Handles rects partially outside the loop or canvas — only the overlap counts.
  */
+/** Overlap of two axis-aligned rects, or null when they only touch / miss. */
+export function rectIntersection(a: FootRect, b: FootRect): FootRect | null {
+  const x = Math.max(a.x, b.x);
+  const y = Math.max(a.y, b.y);
+  const w = Math.min(a.x + a.width, b.x + b.width) - x;
+  const h = Math.min(a.y + a.height, b.y + b.height) - y;
+  return w > 0 && h > 0 ? { x, y, width: w, height: h } : null;
+}
+
 export function rectPolygonArea(rect: FootRect, polygon: ReadonlyArray<readonly [number, number]>): number {
   let pts: Array<[number, number]> = polygon.map(([x, y]) => [x, y] as [number, number]);
   if (pts.length < 3) return 0;
@@ -521,9 +530,11 @@ export function pillarRectsOf(
  * separate 2-vertex sides counts); a lone open 2-vertex segment contributes 0
  * (a line encloses no area — never fabricated). Per loop: UFA adds
  * max(0, gross − blocked) where blocked is the loop-clipped obstacles total
- * (blocks + solid structure); NLA adds max(0, placementsInLoop − blocked −
- * pillarBlocked) with the same blocked total (subtracted once per loop, not
- * per placement row); blockAreaSqft sums the loop-clipped BLOCK rects only.
+ * (blocks + solid structure); NLA adds max(0, placementsInLoop − onUnits −
+ * pillarBlocked) where onUnits is only the part of those obstacles that
+ * actually overlaps a placement footprint (loop-clipped, per placement row —
+ * a corridor or entrance beside the units never reduces NLA; owner
+ * 2026-11-07); blockAreaSqft sums the loop-clipped BLOCK rects only.
  * Final NLA clamps to ≤ UFA as a safety net.
  *
  * PILLARS (additive): `pillarRects` are extra NLA-only blocked rects — the
@@ -568,14 +579,25 @@ export function computeBoundaryMetrics(input: {
     gla += gross;
     const blocked = obstacles.reduce((sum, r) => sum + rectPolygonArea(r, loop), 0);
     ufa += Math.max(0, gross - blocked);
-    // NLA subtracts the FULL loop-clipped blocked area (blocks + solid
-    // structure — the same `blocked` total as UFA), once per loop rather than
-    // per placement row, so stacked locker tiers don't subtract twice.
-    // Pillars subtract additionally (NLA only): loop-clipped hasPillar-unit
-    // footprints + Pillar-named block rects passed via `pillarRects`.
+    // NLA subtracts only the obstacle area (blocks + solid structure) that
+    // sits ON a placement footprint, loop-clipped, per placement row (each
+    // stack tier counts its own footprint, so it subtracts its own overlap).
+    // Corridors / entrances drawn as blocks between units are already outside
+    // the unit footprints — subtracting them again under-reported NLA (SW L1:
+    // 1,096 instead of ~2,190 sq ft). Pillars subtract additionally (NLA
+    // only): loop-clipped hasPillar-unit footprints via `pillarRects`.
     const placementsInLoop = input.placements.reduce((sum, r) => sum + rectPolygonArea(r, loop), 0);
+    const onUnits = input.placements.reduce(
+      (sum, p) =>
+        sum +
+        obstacles.reduce((s, o) => {
+          const hit = rectIntersection(p, o);
+          return hit ? s + rectPolygonArea(hit, loop) : s;
+        }, 0),
+      0,
+    );
     const pillarBlocked = pillarRects.reduce((sum, r) => sum + rectPolygonArea(r, loop), 0);
-    nla += Math.max(0, placementsInLoop - blocked - pillarBlocked);
+    nla += Math.max(0, placementsInLoop - onUnits - pillarBlocked);
     // Loop-clipped BLOCK area only (solid structure excluded) — the exposed
     // blockAreaSqft total. SUM double-counts overlapping blocks (same
     // non-overlapping assumption as the marked-area rule); no dedupe.

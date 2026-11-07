@@ -586,7 +586,7 @@ export async function getFloorMetrics(floorId: string): Promise<FloorMetricsRepo
   // LINE-ONLY (marked-area) UFA/NLA — the authoritative facility figures (see
   // computeBoundaryMetrics in floorPlans.ts): marked gross minus blocks/solid
   // structure rects (UFA), placements clipped to the marked loops minus the
-  // loop-clipped blocked area capped ≤ UFA (NLA), loop-clipped blocks only
+  // block/structure area overlapping the units, capped ≤ UFA (NLA), loop-clipped blocks only
   // (blockArea). All-zero with boundaryClosed false when no marked line
   // area — never the whole-canvas rect. `sqft` echoes the 1dp boundaryMetrics
   // numbers exactly; `q` is derived from them (BigInt would throw via JSON).
@@ -722,7 +722,7 @@ export async function getFloorMetrics(floorId: string): Promise<FloorMetricsRepo
           : []),
         ...(boundaryMetrics.boundaryClosed
           ? [
-              `UFA/NLA are line-only (marked-area, authoritative = boundaryMetrics): geometry.ufa ${boundaryMetrics.ufa} sqft (marked gross ${boundaryMetrics.facilityAreaSqft} minus blocks/structure), geometry.nlaEnclosed/nlaTotal ${boundaryMetrics.nla} sqft (placements clipped to loops minus loop-clipped blocked area, capped at UFA; loop-clipped block area ${boundaryMetrics.blockAreaSqft} sqft in geometry.blockArea); outdoor split is 0 under the marked-area model. Canvas-tessellated whole-canvas figures were UFA ${m.ufa.sqft} / NLA ${m.nlaTotal.sqft} sqft (diagnostic only, never facility UFA/NLA).`,
+              `UFA/NLA are line-only (marked-area, authoritative = boundaryMetrics): geometry.ufa ${boundaryMetrics.ufa} sqft (marked gross ${boundaryMetrics.facilityAreaSqft} minus blocks/structure), geometry.nlaEnclosed/nlaTotal ${boundaryMetrics.nla} sqft (placements clipped to loops minus block/structure area overlapping them, capped at UFA; loop-clipped block area ${boundaryMetrics.blockAreaSqft} sqft in geometry.blockArea); outdoor split is 0 under the marked-area model. Canvas-tessellated whole-canvas figures were UFA ${m.ufa.sqft} / NLA ${m.nlaTotal.sqft} sqft (diagnostic only, never facility UFA/NLA).`,
             ]
           : [
               `No marked area on this plan (boundaryClosed false) — geometry.ufa/nla* are 0; canvas-tessellated whole-canvas figures were UFA ${m.ufa.sqft} / NLA ${m.nlaTotal.sqft} sqft (diagnostic only, never facility UFA/NLA). Draw a line (3+ vertices, then close the loop) to measure UFA/NLA.`,

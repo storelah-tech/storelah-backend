@@ -614,9 +614,9 @@ function fpNormalizeBoundaries(plan) {
 // separate 2-vertex sides counts); a lone open 2-vertex segment encloses no
 // area and contributes 0 — never fabricated. UFA = marked
 // gross minus block + solid-structure rects; NLA = placement footprints
-// clipped to the marked loops minus the loop-clipped blocked area (same
-// blocked total as UFA, once per loop so stacked tiers don't subtract twice),
-// floored at 0 per loop; blockAreaSqft = loop-clipped BLOCK rects only
+// clipped to the marked loops minus only the block/structure area that
+// overlaps a placement footprint (per placement row; corridors beside units
+// never reduce NLA), floored at 0 per loop; blockAreaSqft = loop-clipped BLOCK rects only
 // (solid structure excluded); clamps ≥ 0,
 // NLA ≤ UFA, 1dp. No contributing line → all-zero + boundaryClosed: false.
 function fpPolygonArea(points) {
@@ -664,6 +664,16 @@ function fpRectPolygonArea(rect, polygon) {
 }
 
 const fpRound1 = (v) => Math.round(v * 10) / 10;
+
+// Overlap of two axis-aligned rects, or null. Mirrors rectIntersection() in
+// src/core/floorPlans.ts.
+function fpRectIntersection(a, b) {
+  const x = Math.max(a.x, b.x);
+  const y = Math.max(a.y, b.y);
+  const w = Math.min(a.x + a.width, b.x + b.width) - x;
+  const h = Math.min(a.y + a.height, b.y + b.height) - y;
+  return w > 0 && h > 0 ? { x, y, width: w, height: h } : null;
+}
 
 // Stitch endpoint-connected boundary polylines into longer chains. Mirrors
 // chainBoundarySegments() in src/core/floorPlans.ts — keep the two in sync
@@ -729,17 +739,21 @@ function fpBoundaryMetricsLocal() {
     gla += gross;
     const blocked = obstacles.reduce((sum, r) => sum + fpRectPolygonArea(r, loop), 0);
     ufa += Math.max(0, gross - blocked);
-    // NLA subtracts the FULL loop-clipped blocked total once per loop (same
-    // `blocked` as UFA — blocks + solid structure), so stacked locker tiers
-    // don't subtract twice. Pillars subtract additionally (NLA only):
+    // NLA subtracts only block/structure area that sits ON a placement
+    // footprint (loop-clipped, per placement row) — mirrors computeBoundaryMetrics
+    // in src/core/floorPlans.ts. Pillars subtract additionally (NLA only):
     // loop-clipped hasPillar-unit footprints (Pillar blocks already ride in
     // `blocked` via state.fp.blocks) — mirrors the `pillarRects` input to
     // computeBoundaryMetrics in src/core/floorPlans.ts.
     const placementsInLoop = (state.fp.placements || []).reduce((sum, r) => sum + fpRectPolygonArea(r, loop), 0);
+    const onUnits = (state.fp.placements || []).reduce((sum, p) => sum + obstacles.reduce((s, o) => {
+      const hit = fpRectIntersection(p, o);
+      return hit ? s + fpRectPolygonArea(hit, loop) : s;
+    }, 0), 0);
     const pillarBlocked = (state.fp.placements || [])
       .filter((r) => r.hasPillar === true)
       .reduce((sum, r) => sum + fpRectPolygonArea(r, loop), 0);
-    nla += Math.max(0, placementsInLoop - blocked - pillarBlocked);
+    nla += Math.max(0, placementsInLoop - onUnits - pillarBlocked);
     // Loop-clipped BLOCK rects only (solid structure excluded); SUM may
     // double-count overlapping blocks (non-overlapping assumption, no dedupe).
     blockArea += (state.fp.blocks || []).reduce((sum, r) => sum + fpRectPolygonArea(r, loop), 0);

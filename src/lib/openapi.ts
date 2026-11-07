@@ -956,7 +956,7 @@ export const openapiSpec = {
           '',
           'UFA/NLA are LINE-ONLY (marked-area, never the whole canvas): `geometry.ufa` is the marked ',
           'gross minus blocks/solid-structure rects, `geometry.nlaEnclosed`/`nlaTotal` are placement ',
-          'footprints clipped to the marked loops minus the loop-clipped blocked area (capped at UFA), ',
+          'footprints clipped to the marked loops minus the block/structure area overlapping them (capped at UFA), ',
           '`geometry.blockArea` is the loop-clipped block total, `nlaOutdoor` is 0 and `common` is ',
           'UFA − NLA — all-zero with `boundaryClosed: false` when no marked line contributes area. The ',
           'authoritative marked figures are also exposed as top-level `boundaryMetrics` (byte-identical ',
@@ -1327,7 +1327,7 @@ export const openapiSpec = {
             '`boundaryMetrics { gla, ufa, nla, unit, boundaryClosed, facilityAreaSqft, blockAreaSqft, gfaSqft, gfaSource }` ' +
             '(marked-area rule: 3+-vertex polylines feed UFA/NLA; lone 2-vertex segments contribute 0, ' +
             'but endpoint-connected segments that join into a ring feed UFA/NLA as one loop; NLA subtracts ' +
-            'the loop-clipped blocked area once per loop).',
+            'only block/structure area that overlaps a unit).',
           '',
           'Operator CMS endpoints are documented here for reference only; they are served on the CMS host under ',
           '`/api/v1/cms` and require a Bearer JWT issued by `/api/v1/cms/login` (operator sign-in; each route also requires a role permission).',
@@ -6458,11 +6458,11 @@ export const openapiSpec = {
         type: 'object',
         required: ['gla', 'ufa', 'nla', 'unit', 'boundaryClosed'],
         description:
-          'Line-area UFA/NLA from the marked facility layout. Marked-area rule: every polyline with 3+ vertices and nonzero shoelace area contributes its chord-closed area (closed loops and open 3+-vertex polylines alike); open 2-vertex segments contribute 0 — never fabricated. facilityAreaSqft = marked gross (same value as gla); UFA = marked gross minus block + solid-structure footprints (thin wall lines excluded); NLA = placed-unit footprints inside the marked loops (both stack tiers count) minus the loop-clipped blocked area (blocks + solid structure, once per loop), clamped to UFA; blockAreaSqft = loop-clipped block rects only (solid structure excluded, 1dp). All-zero with boundaryClosed: false when no marked line contributes area. Rounded to 1 decimal. gfaSqft mirrors the plan operator-entered GFA (null when unset); gfaSource tags it USER vs CANVAS.',
+          'Line-area UFA/NLA from the marked facility layout. Marked-area rule: every polyline with 3+ vertices and nonzero shoelace area contributes its chord-closed area (closed loops and open 3+-vertex polylines alike); open 2-vertex segments contribute 0 — never fabricated. facilityAreaSqft = marked gross (same value as gla); UFA = marked gross minus block + solid-structure footprints (thin wall lines excluded); NLA = placed-unit footprints inside the marked loops (both stack tiers count) minus only the block + solid-structure area that overlaps them (corridors/entrances beside units do not reduce NLA), clamped to UFA; blockAreaSqft = loop-clipped block rects only (solid structure excluded, 1dp). All-zero with boundaryClosed: false when no marked line contributes area. Rounded to 1 decimal. gfaSqft mirrors the plan operator-entered GFA (null when unset); gfaSource tags it USER vs CANVAS.',
         properties: {
           gla: { type: 'number', description: 'Marked gross area (sqft) — same value as facilityAreaSqft, kept for compatibility.' },
           ufa: { type: 'number', description: 'Usable floor area (sqft).' },
-          nla: { type: 'number', description: 'Net lettable area (sqft) — placements minus loop-clipped blocked area, capped by UFA.' },
+          nla: { type: 'number', description: 'Net lettable area (sqft) — placements minus block/structure area overlapping them, capped by UFA.' },
           unit: { type: 'string', enum: ['sqft'] },
           boundaryClosed: { type: 'boolean', description: 'True when at least one area-contributing marked line exists (closed loop OR open 3+-vertex polyline).' },
           facilityAreaSqft: { type: 'number', description: 'Marked gross facility area (sqft) — same value as gla.' },

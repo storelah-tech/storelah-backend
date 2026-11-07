@@ -58,7 +58,7 @@ describe('finance models CRUD + staged sections', () => {
     expect(m.projection.months).toHaveLength(60);
     expect(m.checks.netMoveIn.pass).toBe(true);
     expect(m.checks.leaseCountedOnce.pass).toBe(true);
-    expect(m.checks.sizeMixReconciles.pass).toBe(true);
+    expect(m.checks.sizeMixReconciles).toBeUndefined(); // reconcile check removed (owner 2026-11-07)
     expect(m.version).toBe(0);
 
     const fetched = await api.get(`${CMS}/finance/models/${m.id}`).set('Authorization', op.auth);

@@ -278,6 +278,8 @@ import {
 import { NOTE_ENTITIES, addNote, listMentionableUsers, listMyNotifications, listNotes, markNotificationsRead } from '../core/recordNotes';
 import { REPORT_SECTIONS, DEFAULT_REPORT_SECTIONS, buildFinanceReport, type ReportSection } from '../core/finance/report';
 import { buildFinanceReportPdf, financeReportFileName } from '../core/finance/reportPdf';
+import { buildProjectionReport } from '../core/finance/projectionReport';
+import { buildProjectionReportPdf, projectionReportFileName } from '../core/finance/projectionReportPdf';
 import { ADJUSTMENT_CATEGORIES, decideSettlement, getCustomerProfile, listSettlements, previewSettlement, submitSettlement } from '../core/customerProfile';
 import { REGISTER_DOC_TYPES, listRegister } from '../core/finance/register';
 
@@ -1741,6 +1743,38 @@ router.get('/finance/models/:id/export.csv', requireAuth, async (req: Request, r
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', `attachment; filename="financial-model-${detail.id}.csv"`);
   res.send(modelExportCsv(detail));
+});
+
+// Model projection report (PDF): investor-facing "if we follow this model"
+// report for one model — calculations only (base case, scenarios, returns,
+// assumptions), no actuals. Non-approved models are stamped DRAFT in the PDF.
+// Audited like every export.
+router.get('/finance/models/:id/report.pdf', requireAuth, async (req: Request, res: Response) => {
+  const admin = adminOf(req);
+  const report = await buildProjectionReport({ modelId: String(req.params.id), generatedBy: admin?.name || admin?.email || 'unknown' });
+  const pdf = await buildProjectionReportPdf(report);
+  const correlationId = newCorrelationId();
+  const branchId = (await prisma.financialModel.findUnique({ where: { id: report.meta.modelId }, select: { branchId: true } }))?.branchId ?? null;
+  await writeAuditEvent(prisma, {
+    branchId,
+    actor: admin?.email ?? 'unknown',
+    action: 'EXPORT_GENERATED',
+    entityType: 'financial-model',
+    entityId: report.meta.modelId,
+    after: { kind: 'projection-report-pdf', status: report.meta.status, version: report.meta.version, inputHash: report.meta.inputHash, bytes: pdf.length },
+    reason: 'Model projection report (PDF)',
+    source: 'cms',
+    correlationId,
+  });
+  await publishFinanceEvent(prisma, {
+    type: 'export.generated',
+    payload: { kind: 'projection-report-pdf', modelId: report.meta.modelId, inputHash: report.meta.inputHash },
+    branchId,
+    correlationId,
+  });
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `attachment; filename="${projectionReportFileName(report)}"`);
+  res.send(pdf);
 });
 
 router.delete('/finance/models/:id', requireAuth, async (req: Request, res: Response) => {

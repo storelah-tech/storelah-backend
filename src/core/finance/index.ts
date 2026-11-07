@@ -19,7 +19,7 @@ export {
 export type { ModelSummary, ModelDetail, ModelSection, ModelStatus } from './models';
 export {
   listLibrary, saveVersion, duplicateModel, submitModel, approveModel, rejectModel,
-  restoreVersion, archiveModel, setCurrentModel, listVersions, modelAuditHistory,
+  restoreVersion, archiveModel, setCurrentModel, publishModel, listVersions, modelAuditHistory,
   validateSubmittable, inventoryMappingProblems, VERSION_STATUSES,
 } from './library';
 export {

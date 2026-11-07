@@ -187,6 +187,7 @@ export const ROUTE_PERMISSIONS: Record<string, PermissionSpec> = {
   'POST /finance/library/:id/restore': 'bill-library:update',
   'POST /finance/library/:id/archive': 'bill-library:update',
   'POST /finance/library/:id/set-current': 'bill-library:approve',
+  'POST /finance/library/:id/publish': 'bill-library:approve',
   // Budgets: lease line is derived read-only (PUT on it always 403 in code);
   // the protected-override path additionally requires bill-budgets:approve.
   'GET /finance/budgets': 'bill-budgets:view',

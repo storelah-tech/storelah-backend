@@ -53,7 +53,7 @@ import { newCorrelationId, getIdempotencyKey } from '../core/finance/idempotency
 import {
   listModels, getModel, createModel, updateModelSection, deleteModel, modelExportCsv,
   listLibrary, saveVersion, duplicateModel, submitModel, approveModel, rejectModel,
-  restoreVersion as restoreModelVersion, archiveModel, setCurrentModel,
+  restoreVersion as restoreModelVersion, archiveModel, setCurrentModel, publishModel,
   listVersions as listModelVersions, modelAuditHistory,
   listBudgets, createBudget, updateBudget, listExpenses, recordExpense, expensesExportCsv, updateExpense, EXPENSE_STATUSES,
   getPricing, overridePricing, getReturns,
@@ -1913,6 +1913,18 @@ router.post('/finance/library/:id/archive', requireAuth, async (req: Request, re
   ok(res, await archiveModel({
     modelId: String(req.params.id), expectedVersion: parsed.data.version,
     actor: admin?.email ?? 'unknown', reason: parsed.data.reason,
+  }));
+});
+
+router.post('/finance/library/:id/publish', requireAuth, async (req: Request, res: Response) => {
+  const parsed = financeVersionRequiredSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid publish payload', parsed.error.flatten());
+    return;
+  }
+  const admin = adminOf(req);
+  ok(res, await publishModel({
+    modelId: String(req.params.id), expectedVersion: parsed.data.version, actor: admin?.email ?? 'unknown',
   }));
 });
 

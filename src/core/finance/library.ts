@@ -423,6 +423,63 @@ export async function setCurrentModel(opts: { modelId: string; expectedVersion?:
   return { id: updated.id, status: updated.status, version: updated.version };
 }
 
+/**
+ * Publish (simplified library flow, owner 2026-11-07): one approver click
+ * takes a DRAFT — or a PENDING "publish request" — straight to CURRENT. Runs
+ * the same gates as submit + approve (size-mix/lease reconciliation and the
+ * live inventory mapping), supersedes the previous CURRENT model on the
+ * facility (ARCHIVED) and records an APPROVED version row + audit event.
+ */
+export async function publishModel(opts: { modelId: string; expectedVersion?: number; actor: string }) {
+  const m = await prisma.financialModel.findUnique({ where: { id: opts.modelId } });
+  if (!m) throw new AppError(404, 'NOT_FOUND', `Financial model ${opts.modelId} not found.`);
+  if (m.status !== 'DRAFT' && m.status !== 'PENDING') {
+    throw new AppError(403, 'LOCKED', `Model "${m.name}" is ${m.status === 'CURRENT' ? 'already published' : m.status} — only drafts can be published.`);
+  }
+  assertFreshVersion(m.version, opts.expectedVersion, 'FinancialModel');
+  const problems = validateSubmittable(toInputs(m.inputs));
+  if (problems.length) throw new AppError(409, 'BLOCKED', `Model "${m.name}" cannot be published: ${problems.join(' ')}`, { problems });
+  const gate = await inventoryMappingProblems(m.id);
+  if (gate.length) throw new AppError(409, 'BLOCKED', `Publishing blocked — missing inventory mapping: ${gate.join(' ')}`, { problems: gate });
+  const correlationId = newCorrelationId();
+  const updated = await prisma.$transaction(async (tx) => {
+    const others = await tx.financialModel.findMany({
+      where: { status: 'CURRENT', id: { not: m.id }, ...(m.branchId ? { branchId: m.branchId } : { branchId: null }) },
+    });
+    for (const o of others) {
+      await tx.financialModel.update({ where: { id: o.id }, data: { status: 'ARCHIVED', updatedBy: opts.actor } });
+      await writeAuditEvent(tx, {
+        branchId: o.branchId, actor: opts.actor, action: 'MODEL_SUPERSEDED',
+        entityType: 'financial-model', entityId: o.id,
+        before: { status: 'CURRENT' }, after: { status: 'ARCHIVED', supersededBy: m.id },
+        reason: `Superseded by publishing "${m.name}"`, source: 'cms', correlationId,
+      });
+    }
+    const u = await tx.financialModel.update({
+      where: { id: m.id }, data: { status: 'CURRENT', updatedBy: opts.actor, version: nextVersion(m.version) },
+    });
+    await tx.financialModelVersion.create({
+      data: {
+        modelId: m.id, version: ((await latestVersionRowTx(tx, m.id))?.version ?? -1) + 1,
+        snapshot: m.inputs as unknown as Prisma.InputJsonValue, changeSummary: 'Published',
+        status: 'APPROVED', decidedBy: opts.actor, decidedAt: new Date(), createdBy: opts.actor,
+      },
+    });
+    await writeAuditEvent(tx, {
+      branchId: m.branchId, actor: opts.actor, action: 'MODEL_PUBLISHED',
+      entityType: 'financial-model', entityId: m.id,
+      before: { status: m.status, version: m.version }, after: { status: 'CURRENT', version: u.version },
+      reason: `"${m.name}" published`, source: 'cms', correlationId,
+    });
+    await publishFinanceEvent(tx, {
+      type: 'model.approved', payload: { modelId: m.id, decidedBy: opts.actor, decision: 'published' },
+      branchId: m.branchId, correlationId,
+    });
+    return u;
+  });
+  return { id: updated.id, status: updated.status, version: updated.version };
+}
+
 /** Version list for a model (newest first). */
 export async function listVersions(modelId: string) {
   const m = await prisma.financialModel.findUnique({ where: { id: modelId } });

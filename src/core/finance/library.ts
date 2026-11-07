@@ -85,10 +85,8 @@ export async function listLibrary(opts: { branchId?: string; status?: string; se
 /** Validates a version snapshot for the submit gate (§11.8). */
 export function validateSubmittable(inputs: ProjectionInput): string[] {
   const problems: string[] = [];
-  const mixTotal = inputs.sizeMix.reduce((s, c) => s + c.nlaSqft, 0);
-  if (Math.abs(mixTotal - inputs.nlaSqft) > 0.01) {
-    problems.push(`Size-mix NLA ${mixTotal} does not reconcile to facility NLA ${inputs.nlaSqft}.`);
-  }
+  // No size-mix vs facility NLA reconcile gate (owner 2026-11-07): models are
+  // planning tools and every number is editable; Sync pulls real inventory.
   const needYears = Math.ceil(inputs.horizonMonths / 12);
   if (inputs.lease.monthlyByYear.length < needYears) {
     problems.push(`Lease schedule covers ${inputs.lease.monthlyByYear.length} year(s) but the horizon needs ${needYears} — extend it or select an explicit carry-forward.`);

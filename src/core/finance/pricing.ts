@@ -64,8 +64,11 @@ export async function getPricing(opts: { branchId: string }) {
   const branch = await prisma.branch.findUnique({ where: { id: opts.branchId } });
   if (!branch) throw new AppError(404, 'NOT_FOUND', `Branch ${opts.branchId} not found.`);
   const sizes = await prisma.unitSize.findMany({ orderBy: { sortOrder: 'asc' } });
+  // Real lettable inventory only: retired (INACTIVE) units and unpublished
+  // floor-plan drafts (DRAFT) are not part of the facility (owner 2026-11-07:
+  // "pull the correct data when sync from unit").
   const units = await prisma.unit.findMany({
-    where: { branchId: opts.branchId, deletedAt: null },
+    where: { branchId: opts.branchId, deletedAt: null, status: { notIn: ['INACTIVE', 'DRAFT'] } },
     select: { sizeId: true, sqft: true, monthlyRate: true, status: true },
   });
   const rules = await prisma.sizePriceRule.findMany({ where: { branchId: opts.branchId } });

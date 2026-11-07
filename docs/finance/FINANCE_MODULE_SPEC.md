@@ -664,7 +664,7 @@ Show pass/warn/fail for:
 - net move-in equals move-in minus move-out;
 - churn uses opening occupied NLA;
 - revenue uses occupied NLA and customer PSF;
-- size mix reconciles to NLA;
+- ~~size mix reconciles to NLA~~ — removed 2026-11-07 (owner): models are planning tools, every number is editable, Sync pulls real inventory; no check or publish gate;
 - lease schedule is explicit and counted once;
 - opening month is date-prorated;
 - cash begins with capital investment;

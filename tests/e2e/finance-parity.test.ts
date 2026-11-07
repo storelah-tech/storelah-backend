@@ -72,7 +72,6 @@ describe('prototype-parity model sections', () => {
       .send({ version: 0, patch: { sizeMix, nlaSqft: 100 * sizes.length } });
     expect(synced.status).toBe(200);
     expect(synced.body.data.inputs.nlaSqft).toBe(100 * sizes.length);
-    expect(synced.body.data.projection.checks.sizeMixReconciles.pass).toBe(true);
     expect(await inventoryMappingProblems(m.id)).toEqual([]);
   });
 

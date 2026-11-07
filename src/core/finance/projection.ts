@@ -425,8 +425,6 @@ function buildChecks(
     m.t < input.occupancy.churnStartMonth ? m.moveOutSqft === 0 : true,
   );
   const revenueOk = months.every((m) => Math.abs(m.revenue - round2(m.closingSqft * m.psf * m.periodFactor)) < eps);
-  const mixTotal = input.sizeMix.reduce((s, c) => s + c.nlaSqft, 0);
-  const mixOk = Math.abs(mixTotal - input.nlaSqft) < 0.01;
   const leaseOnce = months.every((m) => Math.abs(m.operatingCost - (m.opexLease + m.opexNonLease)) < eps);
   const capOk = months.every((m) => m.closingSqft <= cap + eps);
   const cashStart = months.length ? Math.abs(months[0].cash - round2(-input.capitalTotal + months[0].noi)) < eps : true;
@@ -434,7 +432,6 @@ function buildChecks(
     netMoveIn: { pass: netOk, detail: 'net move-in equals move-in minus move-out every month' },
     churnStart: { pass: churnOk, detail: `no move-out before model month ${input.occupancy.churnStartMonth}` },
     revenueUsesOccupiedPsf: { pass: revenueOk, detail: 'revenue equals closing occupied sqft × month PSF × period factor' },
-    sizeMixReconciles: { pass: mixOk, detail: `size-mix NLA ${mixTotal} vs facility NLA ${input.nlaSqft}` },
     leaseCountedOnce: { pass: leaseOnce, detail: 'operating cost equals paid lease + non-lease opex, single lease line' },
     stabilisationCap: { pass: capOk, detail: `occupied never exceeds target cap ${round2(cap)} sqft` },
     openingProrated: {

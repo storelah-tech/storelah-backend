@@ -58,16 +58,16 @@ describe('model library — publish', () => {
     expect(pub.body.data.status).toBe('CURRENT');
   });
 
-  it('blocks publishing a model whose size mix does not reconcile', async () => {
+  it('publishes a model whose size-mix total differs from its NLA (planning edits allowed)', async () => {
     const { branch } = await seedWorld();
     const owner = await createOperator('OWNER');
-    const draft = await createModel({ name: 'Broken', branchId: branch.id, actor: 'test' });
+    const draft = await createModel({ name: 'Planning edit', branchId: branch.id, actor: 'test' });
     const row = await prisma.financialModel.findUniqueOrThrow({ where: { id: draft.id } });
     const inputs = row.inputs as { nlaSqft: number };
     inputs.nlaSqft = 9999;
     await prisma.financialModel.update({ where: { id: draft.id }, data: { inputs: inputs as never } });
     const res = await api.post(`${CMS}/finance/library/${draft.id}/publish`).set('Authorization', owner.auth).send({ version: draft.version });
-    expect(res.status).toBe(409);
-    expect(res.body.error.message).toContain('cannot be published');
+    expect(res.status).toBe(200);
+    expect(res.body.data.status).toBe('CURRENT');
   });
 });

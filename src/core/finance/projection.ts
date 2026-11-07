@@ -466,19 +466,28 @@ export function applyScenario(input: ProjectionInput, scenario: ScenarioName): S
   if (scenario === 'base') {
     return { scenario, occupancy: { ...o }, note: 'Saved plan, unchanged.' };
   }
+  // Overlays stay inside the engine's valid ranges (validateInput): target
+  // occupancy in (0, 100], move-out rate in [0, 100]. Without the caps a saved
+  // target of 98%+ made Upside (+3pp) throw "targetPct must be between 0 and
+  // 100" — breaking the projection report and the Upside scenario button.
   if (scenario === 'downside') {
+    const target = round4(Math.max(Math.min(o.targetPct, 1), o.targetPct - 5));
+    const churn = round4(Math.min(100, o.moveOutRatePct * 1.25));
+    const capped = target !== round4(o.targetPct - 5) || churn !== round4(o.moveOutRatePct * 1.25);
     return {
       scenario,
       occupancy: {
         ...o,
         rampFirst6: round2(o.rampFirst6 * 0.8),
         rampFrom7: round2(o.rampFrom7 * 0.8),
-        moveOutRatePct: round4(o.moveOutRatePct * 1.25),
-        targetPct: round4(Math.max(0, o.targetPct - 5)),
+        moveOutRatePct: churn,
+        targetPct: target,
       },
-      note: 'Gross move-in −20%, churn +25%, stabilisation target −5pp. Pricing, capital, lease and opex unchanged.',
+      note: `Gross move-in −20%, churn +25%, stabilisation target −5pp${capped ? ' (limited to the valid range)' : ''}. Pricing, capital, lease and opex unchanged.`,
     };
   }
+  const target = round4(Math.min(100, o.targetPct + 3));
+  const capped = target !== round4(o.targetPct + 3);
   return {
     scenario,
     occupancy: {
@@ -486,9 +495,9 @@ export function applyScenario(input: ProjectionInput, scenario: ScenarioName): S
       rampFirst6: round2(o.rampFirst6 * 1.2),
       rampFrom7: round2(o.rampFrom7 * 1.2),
       moveOutRatePct: round4(o.moveOutRatePct * 0.8),
-      targetPct: round4(o.targetPct + 3),
+      targetPct: target,
     },
-    note: 'Gross move-in +20%, churn −20%, stabilisation target +3pp. Pricing, capital, lease and opex unchanged.',
+    note: `Gross move-in +20%, churn −20%, stabilisation target +3pp${capped ? ' (capped at 100%)' : ''}. Pricing, capital, lease and opex unchanged.`,
   };
 }
 

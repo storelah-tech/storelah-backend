@@ -29,6 +29,7 @@ import { publishFinanceEvent } from './events';
 import { isProtectedCategory } from './budgets';
 import { assertFreshVersion, nextVersion, newCorrelationId } from './idempotency';
 import {
+  effectiveNla,
   project,
   hashInput,
   ENGINE_VERSION,
@@ -110,6 +111,7 @@ export function defaultModelInputs(overrides: Partial<ProjectionInput> = {}): Pr
  */
 export function normaliseInputs(inputs: ProjectionInput): ProjectionInput {
   const out = { ...inputs };
+  if (Array.isArray(out.sizeMix)) out.nlaSqft = effectiveNla(out);
   if (Array.isArray(out.capitalItems)) {
     out.capitalTotal = Math.round(out.capitalItems.reduce((s, c) => s + (Number(c.amount) || 0), 0) * 100) / 100;
   }

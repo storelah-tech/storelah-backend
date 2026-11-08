@@ -7,6 +7,7 @@
 
 import { PDFDocument, StandardFonts, rgb, type PDFFont, type PDFPage } from 'pdf-lib';
 import type { FinanceReport } from './report';
+import { effectiveNla } from './projection';
 
 export const INK = rgb(0.157, 0.169, 0.153);
 export const MUTED = rgb(0.455, 0.435, 0.4);
@@ -375,7 +376,7 @@ export async function buildFinanceReportPdf(r: FinanceReport): Promise<Buffer> {
         [{ label: 'Assumption', width: 0.36 }, { label: 'Value', width: 0.64 }],
         [
           ['Opening date / horizon', `${day(i.startDate)}  |  ${i.horizonMonths} months`],
-          ['Net lettable area (NLA)', `${num(i.nlaSqft)} sq ft`],
+          ['Net lettable area (NLA)', `${num(effectiveNla(i))} sq ft`],
           ['Move-in ramp (gross)', `${num(i.occupancy.rampFirst6)} sq ft/month (months 1-6), ${num(i.occupancy.rampFrom7)} sq ft/month (month 7+)`],
           ['Move-out rate', `${pct(i.occupancy.moveOutRatePct)} per month from month ${i.occupancy.churnStartMonth}`],
           ['Target occupancy', pct(i.occupancy.targetPct)],

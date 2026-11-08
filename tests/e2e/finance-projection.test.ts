@@ -9,6 +9,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
+  effectiveNla,
   annualisedIrr,
   applyScenario,
   hashInput,
@@ -136,8 +137,16 @@ describe('projection.invariants', () => {
     }
   });
 
+  it('model capacity uses the size-mix total NLA, not the stored nlaSqft', () => {
+    const mixTotal = baseInput().sizeMix.reduce((t, c) => t + c.nlaSqft, 0);
+    const a = project({ ...baseInput(), nlaSqft: mixTotal - 100 });
+    const b = project({ ...baseInput(), nlaSqft: mixTotal });
+    expect(effectiveNla({ ...baseInput(), nlaSqft: mixTotal - 100 })).toBeCloseTo(mixTotal, 2);
+    expect(a.months.at(-1)!.closingSqft).toBeCloseTo(b.months.at(-1)!.closingSqft, 6);
+  });
+
   it('rejects invalid inputs instead of projecting garbage', () => {
-    expect(() => project({ ...baseInput(), nlaSqft: 0 })).toThrow(/greater than zero/);
+    expect(() => project({ ...baseInput(), nlaSqft: 0, sizeMix: baseInput().sizeMix.map((c) => ({ ...c, nlaSqft: 0 })) })).toThrow(/greater than zero/);
     expect(() => project({ ...baseInput(), occupancy: { ...baseInput().occupancy, targetPct: 120 } })).toThrow(/0 and 100/);
     expect(() => project({ ...baseInput(), capitalTotal: -1 })).toThrow(/cannot be negative/);
     expect(() => project({ ...baseInput(), horizonMonths: 0 })).toThrow(/1–120/);

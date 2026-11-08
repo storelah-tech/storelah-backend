@@ -8,6 +8,7 @@
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 import type { ProjectionReport } from './projectionReport';
 import { Writer, W, H, M, OLIVE, LINE, MUTED, RED, ascii, sgd, num, pct, day, modelMonth } from './reportPdf';
+import { effectiveNla } from './projection';
 
 const STATUS_LABEL: Record<string, string> = {
   CURRENT: 'Approved (current baseline)',
@@ -66,7 +67,7 @@ export async function buildProjectionReportPdf(r: ProjectionReport): Promise<Buf
   w.kpiGrid([
     { label: 'Capital investment', value: sgd(i.capitalTotal, 0) },
     { label: 'Weighted start rent', value: `S$${k.weightedStartPsf.toFixed(2)}`, note: 'per sq ft per month' },
-    { label: 'Target occupancy', value: pct(i.occupancy.targetPct), note: `${num(i.nlaSqft)} sq ft lettable` },
+    { label: 'Target occupancy', value: pct(i.occupancy.targetPct), note: `${num(effectiveNla(i))} sq ft lettable` },
     { label: 'NOI positive', value: modelMonth(i.startDate, k.noiPositiveMonth) },
     { label: 'Stabilised occupancy', value: modelMonth(i.startDate, k.stabilisedMonth) },
     { label: 'Payback', value: modelMonth(i.startDate, k.paybackMonth), note: 'Cumulative cash back to zero' },
@@ -137,7 +138,7 @@ export async function buildProjectionReportPdf(r: ProjectionReport): Promise<Buf
     [{ label: 'Assumption', width: 0.36 }, { label: 'Value', width: 0.64 }],
     [
       ['Opening date / horizon', `${day(i.startDate)}  |  ${i.horizonMonths} months`],
-      ['Net lettable area (NLA)', `${num(i.nlaSqft)} sq ft${i.lease.ufaSqft ? `  (lease area ${num(i.lease.ufaSqft)} sq ft)` : ''}`],
+      ['Net lettable area (NLA)', `${num(effectiveNla(i))} sq ft${i.lease.ufaSqft ? `  (lease area ${num(i.lease.ufaSqft)} sq ft)` : ''}`],
       ['Move-in pace (gross)', `${num(i.occupancy.rampFirst6)} sq ft/month (months 1-6), ${num(i.occupancy.rampFrom7)} sq ft/month (month 7+)`],
       ['Move-out rate', `${pct(i.occupancy.moveOutRatePct)} of occupied area per month, from month ${i.occupancy.churnStartMonth}`],
       ['Stabilisation target', `${pct(i.occupancy.targetPct)} occupancy`],

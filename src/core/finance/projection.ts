@@ -219,6 +219,15 @@ function validateInput(input: ProjectionInput): void {
   }
 }
 
+/**
+ * Model capacity NLA = Σ size-mix NLA (owner 2026-11-08: Total NLA is the sum of
+ * the size mix). Falls back to the stored nlaSqft only when the mix is empty.
+ */
+export function effectiveNla(input: Pick<ProjectionInput, 'nlaSqft' | 'sizeMix'>): number {
+  const total = (input.sizeMix ?? []).reduce((s, c) => s + (Number(c.nlaSqft) || 0), 0);
+  return total > 0 ? Math.round(total * 100) / 100 : input.nlaSqft;
+}
+
 /** §8.1 — weighted monthly PSF from the size mix. */
 export function weightedPsf(sizeMix: SizeCategoryInput[]): number {
   const total = sizeMix.reduce((s, c) => s + c.nlaSqft, 0);
@@ -273,7 +282,8 @@ export function annualisedIrr(cashflows: number[]): number | null {
 
 // ---------- main projection (§§8.2–8.7) ----------
 
-export function project(input: ProjectionInput): ProjectionResult {
+export function project(rawInput: ProjectionInput): ProjectionResult {
+  const input: ProjectionInput = { ...rawInput, nlaSqft: effectiveNla(rawInput) };
   validateInput(input);
   const H = input.horizonMonths;
   const cap = input.nlaSqft * (input.occupancy.targetPct / 100);

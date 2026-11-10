@@ -7,7 +7,7 @@
 
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 import type { ProjectionReport } from './projectionReport';
-import { Writer, W, H, M, OLIVE, LINE, MUTED, RED, ascii, sgd, num, pct, day, modelMonth } from './reportPdf';
+import { Writer, drawWordmark, W, H, M, OLIVE, LINE, MUTED, RED, ascii, sgd, num, pct, day, modelMonth } from './reportPdf';
 import { effectiveNla } from './projection';
 
 const STATUS_LABEL: Record<string, string> = {
@@ -47,8 +47,8 @@ export async function buildProjectionReportPdf(r: ProjectionReport): Promise<Buf
   w.page = doc.addPage([W, H]);
   w.pages.push(w.page);
   w.page.drawRectangle({ x: 0, y: H - 150, width: W, height: 150, color: OLIVE });
-  w.text('StoreLah', M, H - 58, 24, bold, rgb(1, 1, 1));
-  w.text('FINANCIAL PROJECTION', M, H - 82, 11, bold, rgb(0.93, 0.85, 0.78));
+  drawWordmark(w.page, bold, M, H - 50);
+  w.text('FINANCIAL PROJECTION', M, H - 86, 11, bold, rgb(0.93, 0.85, 0.78));
   w.text(w.fit(r.meta.modelName, W - 2 * M, 14, regular), M, H - 106, 14, regular, rgb(1, 1, 1));
   w.text(`${r.meta.facility}  |  Opening ${day(i.startDate)}  |  ${i.horizonMonths}-month model`, M, H - 126, 10, regular, rgb(0.9, 0.9, 0.88));
   w.y = H - 178;
@@ -63,7 +63,6 @@ export async function buildProjectionReportPdf(r: ProjectionReport): Promise<Buf
   metaRow('Status', STATUS_LABEL[r.meta.status] ?? r.meta.status);
   metaRow('Last updated', `${day(r.meta.updatedAt)} by ${r.meta.updatedBy}`);
   metaRow('Generated', new Date(r.meta.generatedAt).toLocaleString('en-SG', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Singapore' }) + ` SGT by ${r.meta.generatedBy}`);
-  metaRow('Calculation', `${r.meta.engineVersion}  |  input ${r.meta.inputHash.slice(0, 12)}`);
   w.y -= 6;
   w.para('Projection only. Every figure in this report is calculated from the model assumptions listed below - it is not a record of actual results and is not an audited statement. If the assumptions change, the projection changes.', 8.5, MUTED);
   w.y -= 6;

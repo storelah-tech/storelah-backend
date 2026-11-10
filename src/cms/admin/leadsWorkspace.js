@@ -13,6 +13,7 @@ import { escapeHtml as esc, showBanner } from './dom.js';
 import { get, post, put, patch, del, can, describeError, downloadFile } from './api.js';
 import { confirmDialog } from './confirmDialog.js';
 import { state } from './state.js';
+import { normalizeWaDigits, buildQuoteWaMessage } from './opsQueuesView.js';
 
 const PRODUCT = 'AC Self-Storage';
 const SOURCES = [['WEBSITE', 'Website'], ['WHATSAPP', 'WhatsApp'], ['PHONE', 'Phone'], ['WALK_IN', 'Walk-in'], ['GOOGLE', 'Google Ads'], ['REFERRAL', 'Referral'], ['PARTNER', 'Partner']];
@@ -501,6 +502,31 @@ function appointmentDetail(id) {
 // ---------------------------------------------------------------------------
 const quoteState = { search: '', status: '', facility: '', data: null };
 
+// Share-via-WhatsApp state for the live Create builder: the customer mobile
+// is only known after GET /leads/:id, so the footer button stays disabled
+// with a tooltip until a lead with a mobile is picked (or locked via context).
+const quoteBuilderWa = { leadId: '', mobile: '', checked: false };
+
+function paintQuoteBuilderWa() {
+  const btn = document.getElementById('lwQuoteWa');
+  if (!btn) return;
+  const leadId = val('lwQuoteLead');
+  if (!leadId) {
+    quoteBuilderWa.leadId = '';
+    btn.disabled = true;
+    btn.title = 'Select a lead first';
+    return;
+  }
+  if (!quoteBuilderWa.checked || quoteBuilderWa.leadId !== leadId) {
+    btn.disabled = true;
+    btn.title = 'Checking customer mobile…';
+    return;
+  }
+  const digits = normalizeWaDigits(quoteBuilderWa.mobile);
+  btn.disabled = !digits;
+  btn.title = digits ? 'Share this quotation via WhatsApp' : 'Add customer mobile to share via WhatsApp';
+}
+
 export async function renderQuotes() {
   const page = document.getElementById('quotes');
   if (!page) return;
@@ -530,12 +556,16 @@ async function openQuoteBuilder(leadId) {
   openModal({
     title: 'Create quotation', kicker: 'SERIALISED + LEAD-LINKED', wide: true,
     body: `<div class="v29-callout"><i>i</i><div><b>Lead and enquiry are mandatory</b>${context ? 'This quotation started from a lead profile, so the lead is locked.' : 'Search by lead ID, company/person name, email, mobile or UEN.'} The quotation number is assigned sequentially only when saved.</div></div><div class="v29-grid three"><label class="v29-field full"><span>Lead *</span>${context ? `<input value="${esc(context.displayId)} · ${esc(leadDisplayName(context))}" readonly><input id="lwQuoteLead" type="hidden" value="${esc(context.id)}">` : `<input id="lwQuoteLeadSearch" autocomplete="off" placeholder="Search lead ID, name, email, mobile or UEN…"><input id="lwQuoteLead" type="hidden" value=""><div id="lwQuoteLeadResults" class="v29-lead-results" role="listbox"></div>`}</label><label class="v29-field"><span>Enquiry *</span><input id="lwQuoteEnquiry" value="${esc(context?.displayId || 'Select a lead first')}" readonly></label><label class="v29-field"><span>Product</span><input value="${PRODUCT}" readonly></label><label class="v29-field"><span>Facility</span><input id="lwQbFacility" value="${esc(context?.branchName ? 'StoreLah ' + context.branchName : '—')}" readonly></label><label class="v29-field"><span>Unit / size *</span><select id="lwQuoteUnit"><option value="">Size recommendation only</option></select></label><label class="v29-field"><span>Gross monthly rent</span><input id="lwQuoteGross" type="number" min="0" step="0.01" value="${esc(context?.monthlyRate ?? '')}"></label><label class="v29-field"><span>Promotion %</span><input id="lwQuotePromo" type="number" min="0" max="100" step="0.5" value="0"></label><label class="v29-field"><span>Net monthly rent</span><input id="lwQuoteNet" readonly></label><label class="v29-field"><span>Protection Plan (monthly)</span><input id="lwQuoteProtection" type="number" min="0" step="0.5" value="${esc(context?.protectionCost ?? 12.5)}"></label><label class="v29-field"><span>Commitment</span><select id="lwQuoteCommitment">${[3, 6, 12].map((m) => option(m, m + ' months', context?.durationMonths || 6)).join('')}</select></label><label class="v29-field"><span>Valid until</span><input id="lwQuoteExpiry" type="date" value="${addDays(sgYmd(), 14)}"></label></div>`,
-    footer: '<span class="hint">Preview does not consume a quotation number.</span><button class="btn" data-lw="close">Cancel</button><button class="btn" data-lw="quote-builder-preview">Preview quotation</button><button class="primary" data-lw="quote-create">Create &amp; send</button>',
+    footer: '<span class="hint">Preview does not consume a quotation number.</span><button class="btn" data-lw="quote-builder-preview">Preview quotation</button><button class="btn" data-lw="quote-builder-wa" id="lwQuoteWa" disabled title="Select a lead first">Share via WhatsApp</button><button class="btn" data-lw="close">Cancel</button><button class="primary" data-lw="quote-create">Create &amp; send</button>',
   });
-  const calc = () => { const g = Number(val('lwQuoteGross')) || 0; const p = Number(val('lwQuotePromo')) || 0; document.getElementById('lwQuoteNet').value = money(g * (1 - p / 100)); };
+  quoteBuilderWa.leadId = context?.id || '';
+  quoteBuilderWa.mobile = context?.mobile || '';
+  quoteBuilderWa.checked = !!context;
+  const calc = () => { const g = Number(val('lwQuoteGross')) || 0; const p = Number(val('lwQuotePromo')) || 0; document.getElementById('lwQuoteNet').value = money(g * (1 - p / 100)); paintQuoteBuilderWa(); };
   document.getElementById('lwQuoteGross').addEventListener('input', calc);
   document.getElementById('lwQuotePromo').addEventListener('input', calc);
   calc();
+  paintQuoteBuilderWa();
   if (context) loadQuoteUnits(context);
   else {
     const search = document.getElementById('lwQuoteLeadSearch');
@@ -559,6 +589,7 @@ async function loadQuoteUnits(lead) {
     sel.innerHTML = '<option value="">Size recommendation only</option>' + (units || []).slice(0, 200).map((u) => option(u.unitCode, `${u.unitCode} · ${u.sqft} sq ft${u.rate ? ' · ' + money(u.rate) : ''}`, lead.unitCode || '')).join('');
     sel.onchange = () => { const u = (units || []).find((x) => x.unitCode === sel.value); if (u?.rate) { document.getElementById('lwQuoteGross').value = u.rate; document.getElementById('lwQuoteGross').dispatchEvent(new Event('input')); } };
   } catch { /* unit list is optional — a size recommendation can still be quoted */ }
+  paintQuoteBuilderWa();
 }
 
 async function selectQuoteLead(id) {
@@ -570,6 +601,10 @@ async function selectQuoteLead(id) {
   if (l.monthlyRate != null && !val('lwQuoteGross')) { document.getElementById('lwQuoteGross').value = l.monthlyRate; document.getElementById('lwQuoteGross').dispatchEvent(new Event('input')); }
   document.getElementById('lwQuoteLeadResults').classList.remove('open');
   document.getElementById('lwQuoteLeadResults').dataset.name = leadDisplayName(l);
+  quoteBuilderWa.leadId = id;
+  quoteBuilderWa.mobile = l.mobile || '';
+  quoteBuilderWa.checked = true;
+  paintQuoteBuilderWa();
   loadQuoteUnits(l);
 }
 
@@ -582,6 +617,46 @@ function quoteDraft() {
     gross, promo, net: Math.round(gross * (1 - promo / 100) * 100) / 100, protection: Number(val('lwQuoteProtection')) || 0,
     commitment: Number(val('lwQuoteCommitment')), expiry: val('lwQuoteExpiry'),
   };
+}
+
+// Share-via-WhatsApp for the live Create builder: reads the unsaved draft via
+// quoteDraft(), enriches it with the freshest lead row (GET /leads/:id carries
+// the mobile — the builder form has no mobile field), and opens wa.me with the
+// shared message builder. Pre-issue there is no quoteNo, so shareQuoteViaWhatsApp
+// (which guards on quoteNo) is not used — this mirrors shareQuoteForm in
+// opsQueuesView.js and passes quoteNo: null, which buildQuoteWaMessage renders
+// as "Your quotation … is ready".
+async function shareQuoteBuilderForm(btn) {
+  const d = quoteDraft();
+  if (!d.leadId) { notify('Search and select a lead before sharing.'); return; }
+  await busy(btn, async () => {
+    let lead = null;
+    try { lead = await get('/leads/' + encodeURIComponent(d.leadId)); } catch { lead = null; }
+    if (lead) {
+      quoteBuilderWa.leadId = d.leadId;
+      quoteBuilderWa.mobile = lead.mobile || '';
+      quoteBuilderWa.checked = true;
+    }
+    paintQuoteBuilderWa();
+    const mobile = (lead && lead.mobile) || quoteBuilderWa.mobile || '';
+    if (!normalizeWaDigits(mobile)) { notify('Add customer mobile to share via WhatsApp.'); return; }
+    const name = (d.leadName || (lead && leadDisplayName(lead)) || '').trim() || 'there';
+    // buildQuoteWaMessage speaks monthlyRate/totalDueToday; the builder carries
+    // gross/net/promoPct/protection — map net → monthlyRate and net + protection
+    // (the paper's estimated monthly payment) → totalDueToday.
+    const monthlyRate = d.net;
+    const totalDueToday = Math.round((d.net + d.protection) * 100) / 100;
+    const branch = (d.facility || '').replace(/^StoreLah\s+/, '');
+    window.open(`https://wa.me/${normalizeWaDigits(mobile)}?text=${encodeURIComponent(buildQuoteWaMessage({
+      quoteNo: null, name, mobile,
+      unitCode: d.unit || null,
+      branch: branch === '—' ? '' : branch,
+      monthlyRate, totalDueToday,
+      moveInDate: (lead && lead.moveInDate) || null,
+    }))}`, '_blank', 'noopener');
+  });
+  // busy() re-enables the button in its finally — restore the painted state.
+  paintQuoteBuilderWa();
 }
 
 function quotePaper(d, number) {
@@ -741,6 +816,7 @@ document.addEventListener('click', (e) => {
     'quote-new': () => openQuoteBuilder(el.dataset.lead),
     'quote-lead-select': () => selectQuoteLead(id),
     'quote-builder-preview': previewDraft,
+    'quote-builder-wa': () => shareQuoteBuilderForm(el),
     'quote-create': () => createQuote(el),
     'quote-preview-confirm': () => createQuote(el, JSON.parse(ensureOverlay().dataset.quoteDraft || '{}')),
     'quote-preview': () => previewIssued(id),

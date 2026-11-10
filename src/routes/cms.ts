@@ -281,6 +281,7 @@ import { REPORT_SECTIONS, DEFAULT_REPORT_SECTIONS, buildFinanceReport, type Repo
 import { buildFinanceReportPdf, financeReportFileName } from '../core/finance/reportPdf';
 import { buildProjectionReport } from '../core/finance/projectionReport';
 import { buildProjectionReportPdf, projectionReportFileName } from '../core/finance/projectionReportPdf';
+import { buildReturnsReport, buildReturnsReportPdf, returnsReportFileName } from '../core/finance/returnsReportPdf';
 import { ADJUSTMENT_CATEGORIES, decideSettlement, getCustomerProfile, listSettlements, previewSettlement, submitSettlement } from '../core/customerProfile';
 import { REGISTER_DOC_TYPES, listRegister } from '../core/finance/register';
 
@@ -2266,6 +2267,44 @@ router.get('/finance/returns', requireAuth, async (req: Request, res: Response) 
     return;
   }
   ok(res, await getReturns(parsed.data));
+});
+
+// Investment returns report (PDF): the committed project valuation shown on
+// Finance › Investment returns (NPV, IRR, paybacks, sensitivity, scenarios,
+// renewal, monthly DCF). Calculations only; drafts stamped DRAFT. Blocked
+// (409) when the model has no committed valuation or figures are stale.
+router.get('/finance/returns/report.pdf', requireAuth, async (req: Request, res: Response) => {
+  const parsed = z.object({ modelId: z.string().trim().min(1) }).safeParse(req.query);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'modelId is required', parsed.error.flatten());
+    return;
+  }
+  const admin = adminOf(req);
+  await requireCurrentCalculation(parsed.data.modelId);
+  const report = await buildReturnsReport({ modelId: parsed.data.modelId, generatedBy: admin?.name || admin?.email || 'unknown' });
+  const pdf = await buildReturnsReportPdf(report);
+  const correlationId = newCorrelationId();
+  const branchId = (await prisma.financialModel.findUnique({ where: { id: report.meta.modelId }, select: { branchId: true } }))?.branchId ?? null;
+  await writeAuditEvent(prisma, {
+    branchId,
+    actor: admin?.email ?? 'unknown',
+    action: 'EXPORT_GENERATED',
+    entityType: 'financial-model',
+    entityId: report.meta.modelId,
+    after: { kind: 'returns-report-pdf', status: report.meta.status, version: report.meta.version, inputHash: report.meta.inputHash, annualRate: report.committed.annualRate, bytes: pdf.length },
+    reason: 'Investment returns report (PDF)',
+    source: 'cms',
+    correlationId,
+  });
+  await publishFinanceEvent(prisma, {
+    type: 'export.generated',
+    payload: { kind: 'returns-report-pdf', modelId: report.meta.modelId, inputHash: report.meta.inputHash },
+    branchId,
+    correlationId,
+  });
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `attachment; filename="${returnsReportFileName(report)}"`);
+  res.send(pdf);
 });
 
 // ---- Finance module Phase 5 — Investor Summary (§15.4, masked) ----

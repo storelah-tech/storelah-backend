@@ -212,6 +212,7 @@ export const ROUTE_PERMISSIONS: Record<string, PermissionSpec> = {
   'PUT /finance/pricing/:sizeId': 'bill-pricing:update',
   // Returns: read-only over the CURRENT model.
   'GET /finance/returns': 'bill-returns:view',
+  'GET /finance/returns/report.pdf': 'bill-returns:view',
 
   // ---- finance module Phase 5 — Investor Summary (§15.4, masked) ----
   // Approved-only, PII-free aggregates. The INVESTOR role holds exactly

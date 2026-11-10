@@ -26,10 +26,10 @@ Any change to these shapes needs cross-app coordination — do not silently alte
 
 ## Fixtures (`tests/e2e/fixtures.ts`)
 
-Pinned world per test (after full truncate): branch `SW`, floor L1 (authored
+Pinned world per test (after full truncate): branch `SS`, floor L1 (authored
 70×80 ft plan, 5×10 ft placements for every non-deleted unit) + plan-less floor
-L2, units `SW-01-01` (rentable) / `SW-01-02` (guest) / `SW-01-03` OCCUPIED /
-`SW-01-04` BLOCKED / `SW-01-05` soft-deleted / `SW-01-06` MAINTENANCE.
+L2, units `SS-01-01` (rentable) / `SS-01-02` (guest) / `SS-01-03` OCCUPIED /
+`SS-01-04` BLOCKED / `SS-01-05` soft-deleted / `SS-01-06` MAINTENANCE.
 Emails are `e2e+<uuid>@test.local`.
 
 ## Suites

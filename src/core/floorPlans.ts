@@ -35,6 +35,7 @@ import {
 } from './unitSizing';
 import { applySizeSync, keepPsfRate, listSizeMismatches, type SizeSyncChoice, type SizeSyncResult } from './unitSizeSync';
 import { nextFourDigitCode } from './units';
+import { canonicalBranchCode } from './branches';
 import { toNum } from '../lib/format';
 import { Prisma } from '@prisma/client';
 
@@ -967,7 +968,7 @@ export async function upsertFloorPlan(floorId: string, input: UpsertFloorPlanInp
 }
 
 export interface ListFloorPlansQuery {
-  branch?: string; // branch code, e.g. 'SW'
+  branch?: string; // branch code, e.g. 'SS' (deprecated SW alias resolves to SS)
   level?: number; // floor level 1..4
 }
 
@@ -976,7 +977,7 @@ export interface ListFloorPlansQuery {
  * only the PUBLIC read (getPublicFloorPlan) gates on ACTIVE. */
 export async function listFloorPlans(query: ListFloorPlansQuery = {}) {
   const floorFilter: Prisma.FloorWhereInput = {};
-  if (query.branch) floorFilter.branch = { code: query.branch };
+  if (query.branch) floorFilter.branch = { code: canonicalBranchCode(query.branch) };
   if (query.level != null) floorFilter.level = query.level;
 
   const plans = await prisma.floorPlan.findMany({
@@ -2165,17 +2166,19 @@ export async function deleteFloorPlan(floorId: string) {
  * and floor/branch names only.
  */
 export async function getPublicFloorPlan(branchCode: string, level: number) {
+  // Canonical rename SW → SS: the deprecated SW alias resolves to SS here.
+  const canonicalCode = canonicalBranchCode(branchCode);
   const floor = await prisma.floor.findFirst({
-    where: { branch: { code: branchCode }, level },
+    where: { branch: { code: canonicalCode }, level },
     include: { branch: true },
   });
-  if (!floor) throw new AppError(404, 'NOT_FOUND', `Floor ${level} not found at branch ${branchCode}`);
+  if (!floor) throw new AppError(404, 'NOT_FOUND', `Floor ${level} not found at branch ${canonicalCode}`);
   // An inactive floor has no public presence — the booking renderer must not
   // draw it (same 404 as a missing floor; admin reads are unaffected). An
   // INACTIVE branch hides the same way (branch CRUD lives in Global Settings;
   // only ACTIVE branches serve the frontend).
   if (!floor.isActive || floor.branch.status !== 'ACTIVE') {
-    throw new AppError(404, 'NOT_FOUND', `Floor ${level} not found at branch ${branchCode}`);
+    throw new AppError(404, 'NOT_FOUND', `Floor ${level} not found at branch ${canonicalCode}`);
   }
 
   // ACTIVE → the live plan. DRAFT with a published snapshot → the last

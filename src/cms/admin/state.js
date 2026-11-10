@@ -52,6 +52,12 @@ export const state = {
   unitDate: { from: null, to: null },
   promoLibDate: { from: null, to: null },
   promoHistDate: { from: null, to: null },
+  // Overview + performance date presets ({ from, to } as YYYY-MM-DD or null;
+  // 'all' default = unfiltered, so the default view's requests are unchanged).
+  commandDate: { from: null, to: null },
+  commandPeriod: 'all',
+  analyticsDate: { from: null, to: null },
+  analyticsPeriod: 'all',
   // pipeline-view state
   pipelineFilter: '', // '' = all pipelines, otherwise a branch code
   // inbox-view state (real conversation threads from GET /conversations)

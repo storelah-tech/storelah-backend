@@ -1072,6 +1072,8 @@ body.auth-pending .app{visibility:hidden}
       <div class="stats" id="commandStats">
         <div class="stat"><div class="label">New leads today</div><div class="val" id="cmdNewLeads">—</div><div class="trend" id="cmdNewLeadsTrend"></div></div>
         <div class="stat"><div class="label">Awaiting first response</div><div class="val" id="cmdAwaiting">—</div><div class="trend bad" id="cmdAwaitingTrend"></div></div>
+        <div class="stat"><div class="label">Sign-ups today</div><div class="val" id="cmdSignups">—</div><div class="trend" id="cmdSignupsTrend"></div></div>
+        <div class="stat"><div class="label">Move-ins today</div><div class="val" id="cmdMoveins">—</div><div class="trend" id="cmdMoveinsTrend"></div></div>
         <div class="stat"><div class="label">Occupancy</div><div class="val" id="cmdOccupancy">—</div><div class="trend" id="cmdOccupancyTrend"></div></div>
         <div class="stat"><div class="label">Monthly revenue</div><div class="val" id="cmdMrr">—</div><div class="trend" id="cmdMrrTrend"></div></div>
         <div class="stat"><div class="label">Action items</div><div class="val" id="cmdActions">—</div><div class="trend bad" id="cmdActionsTrend"></div></div>
@@ -2271,6 +2273,11 @@ body.auth-pending .app{visibility:hidden}
       <button type="button" class="modal-x" id="quoteViewClose" aria-label="Close preview">✕</button>
     </div>
     <div class="qv-scroll"><article class="qv-paper" id="quoteViewPaper"></article></div>
+    <div class="modal-foot" id="quoteViewActions" style="margin-top:0;border-top:1px solid var(--line);background:var(--paper);padding:12px 14px;">
+      <span class="t-type" id="quoteViewActionHint" style="margin-right:auto"></span>
+      <button type="button" class="act-btn" id="quoteViewDownload">Download PDF</button>
+      <button type="button" class="act-btn primary" id="quoteViewWhatsApp">Share via WhatsApp</button>
+    </div>
   </div>
 </div>
 

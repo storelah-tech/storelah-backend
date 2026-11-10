@@ -47,9 +47,14 @@
     var stats = $('#cmdStats');
     if (!stats) return;
     var k = s && s.kpis;
+    // Live "today" counts from GET /summary `today` (UTC day); '—' when the
+    // payload predates the field, 0 is a real zero.
+    var t = (s && s.today) || null;
     stats.innerHTML =
       '<div class="stat"><div class="label">New leads today</div><div class="val">' + newToday + '</div></div>' +
       '<div class="stat"><div class="label">Awaiting response</div><div class="val">' + awaiting + '</div></div>' +
+      '<div class="stat"><div class="label">Sign-ups today</div><div class="val">' + (t ? t.signups : '—') + '</div></div>' +
+      '<div class="stat"><div class="label">Move-ins today</div><div class="val">' + (t ? t.moveIns : '—') + '</div></div>' +
       '<div class="stat"><div class="label">Occupancy</div><div class="val">' + (k ? k.occupancyPct : '—') + '%</div></div>' +
       '<div class="stat"><div class="label">MRR</div><div class="val">' + (k ? '$' + (k.mrr || 0).toLocaleString() : '—') + '</div></div>' +
       '<div class="stat"><div class="label">Actions</div><div class="val">' + (actions ? actions.length : 0) + '</div></div>';

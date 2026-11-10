@@ -723,8 +723,15 @@ router.get('/leads', requireAuth, async (req: Request, res: Response) => {
 // Lead funnel / source stats for the command centre and pipeline header.
 // Additive Phase-3 fields: uniqueEmails, repeatEnquiryRate,
 // avgEnquiriesPerEmail (see src/core/leads.ts for definitions).
-router.get('/leads/stats', requireAuth, async (_req: Request, res: Response) => {
-  ok(res, await getLeadStats());
+// Optional ?from=&to= (YYYY-MM-DD, inclusive UTC bounds) scopes the set by
+// Lead.createdAt; omitted = all time (default views unchanged).
+router.get('/leads/stats', requireAuth, async (req: Request, res: Response) => {
+  const parsed = dateRangeQuerySchema.safeParse(req.query);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid date range', parsed.error.flatten());
+    return;
+  }
+  ok(res, await getLeadStats(resolveDateRange(parsed.data)));
 });
 
 // --- Per-email lead groups (Phase 3, additive reads) ---
@@ -783,13 +790,21 @@ router.get('/leads/groups/:key', requireAuth, async (req: Request, res: Response
 });
 
 // Weekly enquiry/booking series for the analytics chart (?weeks=N, 1..26).
+// Optional ?from=&to= (YYYY-MM-DD, inclusive UTC bounds — never ISO
+// timestamps, F-7) narrows the counted rows; buckets stay the last N weeks.
+// Omitted = current behaviour (default analytics view unchanged).
 router.get('/analytics/weekly', requireAuth, async (req: Request, res: Response) => {
   const weeks = Number(req.query.weeks ?? 8);
   if (req.query.weeks !== undefined && (!Number.isFinite(weeks) || weeks < 1 || weeks > 26)) {
     fail(res, 400, 'VALIDATION', 'weeks must be an integer 1..26');
     return;
   }
-  ok(res, await getWeeklyAnalytics(weeks || 8));
+  const parsed = dateRangeQuerySchema.safeParse(req.query);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid date range', parsed.error.flatten());
+    return;
+  }
+  ok(res, await getWeeklyAnalytics(weeks || 8, resolveDateRange(parsed.data)));
 });
 
 const leadPayloadSchema = z.object({

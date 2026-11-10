@@ -12,6 +12,108 @@ import { confirmDialog } from './confirmDialog.js';
 const fmtMoney = (n) => n == null ? '—' : '$' + Number(n).toLocaleString('en-SG', { maximumFractionDigits: 2 });
 const fmtDay = (d) => d ? new Date(d).toLocaleDateString('en-SG', { day: '2-digit', month: 'short', year: 'numeric' }) : '—';
 
+// ---------- quotes: Export + Share via WhatsApp (Option A MVP) ----------
+
+// Latest listQuotes rows by lead id — backs the per-row WhatsApp share so no
+// new endpoint is needed (extras come from the existing GET /leads/:id).
+const quoteRowCache = new Map();
+
+// Context for the quotation-preview modal footer (#quoteViewActions): set on
+// 201 (POST /quotes) so Download/WhatsApp act on the issued quotation; null
+// while previewing the unsaved form (buttons stay disabled until then).
+let issuedQuoteCtx = null;
+
+/**
+ * Normalize a customer mobile to wa.me digits: strip +, spaces, dashes and
+ * any other non-digits; an 8-digit SG number starting 6/8/9 gets the 65
+ * prefix; an already-prefixed 65 + 8 digits is kept; anything else is used
+ * digits-as-is. Returns '' when no digits remain.
+ */
+export function normalizeWaDigits(mobile) {
+  if (mobile == null) return '';
+  const digits = String(mobile).replace(/\D/g, '');
+  if (!digits) return '';
+  if (digits.length === 8 && /^[689]/.test(digits)) return `65${digits}`;
+  if (digits.length === 10 && digits.startsWith('65')) return digits;
+  return digits;
+}
+
+/**
+ * Concise prefilled WhatsApp summary for an issued quotation (<500 chars,
+ * English, StoreLah-branded). Only customer-facing fields — never internal
+ * ones (emailStatus, reasons, owner internals).
+ */
+export function buildQuoteWaMessage(q) {
+  const name = ((q && q.name) || 'there').trim() || 'there';
+  const what = q && q.quoteNo ? `Your quotation ${q.quoteNo}` : 'Your quotation';
+  const where = [q && q.unitCode ? `unit ${q.unitCode}` : '', q && q.branch ? `at ${q.branch}` : '']
+    .filter(Boolean).join(' ');
+  let line = what + (where ? ` for ${where}` : '') + ' is ready';
+  const amounts = [];
+  if (q && q.monthlyRate != null && Number.isFinite(Number(q.monthlyRate))) {
+    amounts.push(`$${Number(q.monthlyRate).toFixed(2)}/mo`);
+  }
+  if (q && q.totalDueToday != null && Number.isFinite(Number(q.totalDueToday))) {
+    amounts.push(`total due today $${Number(q.totalDueToday).toFixed(2)}`);
+  }
+  if (amounts.length) line += `: ${amounts.join(', ')}`;
+  line += '.';
+  const parts = [`Hello ${name}, this is StoreLah.`, line];
+  const moveIn = q ? q.moveInDate : null;
+  const d = moveIn instanceof Date ? moveIn : (moveIn ? new Date(moveIn) : null);
+  if (d && !Number.isNaN(d.getTime())) parts.push(`Planned move-in ${fmtDay(d)}.`);
+  parts.push('Reply here to proceed — StoreLah.');
+  return parts.join(' ').slice(0, 480);
+}
+
+/**
+ * Operator-initiated share: opens wa.me in a new tab with the prefilled
+ * quotation summary. Graceful when there is nothing to share yet.
+ */
+export function shareQuoteViaWhatsApp(quote) {
+  if (!quote || !quote.quoteNo) {
+    showBanner('Quotation not issued yet — create it first to share.');
+    return;
+  }
+  const digits = normalizeWaDigits(quote.mobile);
+  if (!digits) {
+    showBanner('Add customer mobile to share via WhatsApp.');
+    return;
+  }
+  window.open(`https://wa.me/${digits}?text=${encodeURIComponent(buildQuoteWaMessage(quote))}`, '_blank', 'noopener');
+}
+
+// Row-level share: enriches the cached list row (mobile, rate, branch,
+// quoteNo) with unitCode / totalDueToday / moveInDate from the existing
+// GET /leads/:id — falls back to row-only fields when that read fails.
+async function shareQuoteRow(id) {
+  const row = quoteRowCache.get(id);
+  if (!row || !row.quotation) {
+    showBanner('Quotation not issued yet — create it first to share.');
+    return;
+  }
+  if (!normalizeWaDigits(row.mobile)) {
+    showBanner('Add customer mobile to share via WhatsApp.');
+    return;
+  }
+  let lead = null;
+  try {
+    lead = await get(`/leads/${encodeURIComponent(id)}`);
+  } catch {
+    lead = null;
+  }
+  shareQuoteViaWhatsApp({
+    quoteNo: row.quotation.quoteNo,
+    name: row.name,
+    mobile: row.mobile,
+    unitCode: (lead && lead.unitCode) || null,
+    branch: row.branchCode || row.branchName || '',
+    monthlyRate: row.monthlyRate,
+    totalDueToday: (lead && lead.totalDueToday) ?? null,
+    moveInDate: (lead && lead.moveInDate) ?? null,
+  });
+}
+
 // ---------- quotes ----------
 
 export async function bindQuotes() {
@@ -47,6 +149,11 @@ function renderQuotes(rows) {
     const pdfCell = qn
       ? `<button class="act-btn" data-q-act="pdf" data-q-id="${escapeHtml(q.id)}" title="Download ${escapeHtml(qn.quoteNo)}">PDF</button>`
       : '<span class="t-type">—</span>';
+    const waBtn = !qn
+      ? '<button class="act-btn" disabled title="Quotation not issued yet">WhatsApp</button>'
+      : (!normalizeWaDigits(q.mobile)
+        ? '<button class="act-btn" disabled title="Add customer mobile to share via WhatsApp">WhatsApp</button>'
+        : `<button class="act-btn" data-q-act="wa" data-q-id="${escapeHtml(q.id)}" title="Share ${escapeHtml(qn.quoteNo)} via WhatsApp">WhatsApp</button>`);
     return `<tr><td><b>${escapeHtml(q.name)}</b><div class="t-type">${escapeHtml(q.type || '')}${q.segment ? ' · ' + escapeHtml(q.segment) : ''}</div></td>` +
     `<td><span class="pill amber">Quoted</span></td>` +
     `<td>${escapeHtml(q.branchCode || '—')}${q.preferredSize ? ' · ' + escapeHtml(q.preferredSize) : ''}</td>` +
@@ -56,18 +163,38 @@ function renderQuotes(rows) {
     `<td>${qn ? `<b>${escapeHtml(qn.quoteNo)}</b>` : '<span class="t-type">—</span>'}</td>` +
     `<td>${pdfCell}</td>` +
     `<td>${quoteEmailPill(q)}</td>` +
-    `<td class="unit-actions"><button class="act-btn" data-q-act="view" data-q-id="${escapeHtml(q.id)}">Units</button></td></tr>`;
+    `<td class="unit-actions"><button class="act-btn" data-q-act="view" data-q-id="${escapeHtml(q.id)}">Units</button> ${waBtn}</td></tr>`;
   }).join('');
+  quoteRowCache.clear();
+  for (const q of rows) quoteRowCache.set(q.id, q);
 }
 
 async function showQuoteUnits(id) {
   const detail = $('#quoteDetail');
   try {
-    const q = await get(`/quotes/${encodeURIComponent(id)}`);
+    const [q, lead] = await Promise.all([
+      get(`/quotes/${encodeURIComponent(id)}`),
+      get(`/leads/${encodeURIComponent(id)}`).catch(() => null),
+    ]);
     const opts = q.options || [];
+    const qn = q.quote?.quotation || null;
+    const digits = qn ? normalizeWaDigits(q.quote?.mobile) : '';
+    const pdfBtn = qn
+      ? `<button class="act-btn primary" data-qd-act="pdf" data-qd-id="${escapeHtml(id)}" title="Download ${escapeHtml(qn.quoteNo)}">Download PDF</button>`
+      : '<button class="act-btn" disabled title="Quotation not issued yet">Download PDF</button>';
+    const waBtn = !qn
+      ? '<button class="act-btn" disabled title="Quotation not issued yet">Share via WhatsApp</button>'
+      : (!digits
+        ? '<button class="act-btn" disabled title="Add customer mobile to share via WhatsApp">Share via WhatsApp</button>'
+        : `<button class="act-btn" data-qd-act="wa" data-qd-id="${escapeHtml(id)}" title="Share ${escapeHtml(qn.quoteNo)} via WhatsApp">Share via WhatsApp</button>`);
     if (detail) {
       detail.innerHTML = `<div class="t-type" style="margin:8px 2px;">Live options for <b>${escapeHtml(q.quote?.name || '')}</b> — ${opts.length} unit(s): ` +
-        (opts.length ? opts.map((u) => `${escapeHtml(u.code)} (${escapeHtml(u.sizeCode)} · ${u.sqft} sqft · $${u.rate}/mo)`).join(' · ') : 'none match right now') + `</div>`;
+        (opts.length ? opts.map((u) => `${escapeHtml(u.code)} (${escapeHtml(u.sizeCode)} · ${u.sqft} sqft · $${u.rate}/mo)`).join(' · ') : 'none match right now') + `</div>` +
+        `<div style="display:flex;gap:8px;margin:2px 2px 8px;flex-wrap:wrap;">${pdfBtn}${waBtn}</div>`;
+    }
+    // Keep the row-share path warm even for rows rendered before this load.
+    if (q.quote && q.quote.id && !quoteRowCache.has(q.quote.id) && lead) {
+      quoteRowCache.set(q.quote.id, { ...q.quote, quotation: qn });
     }
   } catch (e) {
     showBanner('Quote: ' + describeError(e));
@@ -129,6 +256,13 @@ export function wireOpsQueues() {
     if (!btn) return;
     if (btn.dataset.qAct === 'view') showQuoteUnits(btn.dataset.qId).catch(() => {});
     if (btn.dataset.qAct === 'pdf') downloadQuotePdf(btn.dataset.qId).catch((err) => showBanner('Quotation PDF: ' + describeError(err)));
+    if (btn.dataset.qAct === 'wa') shareQuoteRow(btn.dataset.qId).catch((err) => showBanner('WhatsApp share: ' + describeError(err)));
+  });
+  $('#quoteDetail')?.addEventListener('click', (e) => {
+    const btn = e.target.closest('button[data-qd-act]');
+    if (!btn || btn.disabled) return;
+    if (btn.dataset.qdAct === 'pdf') downloadQuotePdf(btn.dataset.qdId).catch((err) => showBanner('Quotation PDF: ' + describeError(err)));
+    if (btn.dataset.qdAct === 'wa') shareQuoteRow(btn.dataset.qdId).catch((err) => showBanner('WhatsApp share: ' + describeError(err)));
   });
   $('#moveoutsBody')?.addEventListener('click', (e) => {
     const btn = e.target.closest('button[data-mo-act]');
@@ -172,6 +306,18 @@ export function wireOpsQueues() {
   }));
   $('#quoteViewBack')?.addEventListener('click', closeQuoteView);
   $('#quoteViewClose')?.addEventListener('click', closeQuoteView);
+  // Issued-quotation footer: Download exports the exact saved server PDF
+  // bytes (GET /quotes/:id/pdf); WhatsApp opens the wa.me share link.
+  // Both stay disabled while previewing the unsaved form (issuedQuoteCtx
+  // is only set on 201) and when the customer has no mobile.
+  $('#quoteViewDownload')?.addEventListener('click', () => {
+    if (!issuedQuoteCtx) return;
+    downloadQuotePdf(issuedQuoteCtx.id).catch((err) => showBanner('Quotation PDF: ' + describeError(err)));
+  });
+  $('#quoteViewWhatsApp')?.addEventListener('click', () => {
+    if (!issuedQuoteCtx) return;
+    shareQuoteViaWhatsApp(issuedQuoteCtx);
+  });
   $('#quoteViewModal')?.addEventListener('click', (e) => { if (e.target.id === 'quoteViewModal') closeQuoteView(); });
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && $('#quoteViewModal') && !$('#quoteViewModal').hidden) { e.stopPropagation(); closeQuoteView(); }
@@ -591,12 +737,12 @@ function quoteViewData() {
   };
 }
 
-function quoteViewHtml(d, supportContact) {
+function quoteViewHtml(d, supportContact, quoteNoOverride) {
   const e = escapeHtml;
   const row = (k, val, tbc) => `<div class="qv-row"><span class="k">${e(k)}</span><span class="v${tbc ? ' tbc' : ''}">${e(val)}</span></div>`;
   const moneyRow = (k, n) => row(k, pdfMoney(n), n == null);
   const sec = (t, body) => `<section class="qv-sec"><div class="qv-sec-t">${e(t)}</div>${body}</section>`;
-  const quoteNo = 'Assigned on create';
+  const quoteNo = quoteNoOverride || 'Assigned on create';
   let unitVal;
   if (d.unitCode) {
     const bit = d.unitDisplayName && d.unitDisplayName !== d.unitCode ? `${d.unitCode} (${d.unitDisplayName})` : d.unitCode;
@@ -616,7 +762,7 @@ function quoteViewHtml(d, supportContact) {
     '<header class="qv-band"><div class="qv-brand">StoreLah</div><div class="qv-tag">Self-storage, sorted.</div><div class="qv-kind">STORAGE QUOTATION</div></header>' +
     '<div class="qv-body">' +
     '<div class="qv-h1">Quotation</div>' +
-    row('Quotation no.', quoteNo, true) +
+    row('Quotation no.', quoteNo, !quoteNoOverride) +
     row('Issued', pdfDateTime(new Date())) +
     (d.owner ? row('Prepared by', d.owner) : '') +
     sec('Lead information',
@@ -650,16 +796,99 @@ export async function openQuoteView() {
   if (!paper || !modal) return;
   syncAddonsJson();
   const contact = await loadSupportContact();
+  issuedQuoteCtx = null;
+  paintQuoteViewTitle({ title: 'Quotation preview', sub: "How the customer's quotation will look · the number is assigned when you create it" });
   paper.innerHTML = quoteViewHtml(quoteViewData(), contact);
+  paintQuoteViewActions({ downloadableId: null, shareCtx: null, hint: 'Preview only — the quotation number is assigned on create.' });
   modal.hidden = false;
   const scroller = modal.querySelector('.qv-scroll');
   if (scroller) scroller.scrollTop = 0;
   try { $('#quoteViewBack').focus({ preventScroll: true }); } catch { /* noop */ }
 }
 
+// Preview-modal footer state: Download exports the exact saved server PDF
+// bytes; WhatsApp opens the wa.me share link. Both stay disabled while
+// previewing the unsaved form and when the customer has no mobile.
+function paintQuoteViewActions({ downloadableId, shareCtx, hint }) {
+  const dl = $('#quoteViewDownload');
+  if (dl) {
+    dl.disabled = !downloadableId;
+    dl.title = downloadableId
+      ? (shareCtx?.quoteNo ? `Download ${shareCtx.quoteNo} PDF` : 'Download quotation PDF')
+      : 'Create the quotation to download its PDF';
+  }
+  const wa = $('#quoteViewWhatsApp');
+  if (wa) {
+    const digits = shareCtx ? normalizeWaDigits(shareCtx.mobile) : '';
+    wa.disabled = !shareCtx || !digits;
+    wa.title = !shareCtx
+      ? 'Create the quotation first — sharing unlocks after issue'
+      : (!digits ? 'Add customer mobile to share via WhatsApp' : `Share ${shareCtx.quoteNo} via WhatsApp`);
+  }
+  const hintEl = $('#quoteViewActionHint');
+  if (hintEl) hintEl.textContent = hint || '';
+}
+
+function paintQuoteViewTitle({ title, sub }) {
+  const t = $('#quoteViewTitle');
+  if (t && title) t.textContent = title;
+  const s = $('#quoteViewModal .qv-bar-txt small');
+  if (s && sub) s.textContent = sub;
+}
+
+// Post-201 issued view: same paper layout with the real quotation number,
+// plus working Download (saved server bytes) and WhatsApp share. Built from
+// the 201 payload + the just-submitted form values (the quote read-model
+// does not echo unitCode / totalDueToday / moveInDate).
+export async function openIssuedQuoteView(ctx) {
+  const paper = $('#quoteViewPaper');
+  const modal = $('#quoteViewModal');
+  if (!paper || !modal || !ctx) return;
+  issuedQuoteCtx = ctx;
+  const contact = await loadSupportContact();
+  const moveRaw = ctx.moveInDate;
+  const moveDate = moveRaw instanceof Date ? moveRaw : (moveRaw ? new Date(moveRaw) : null);
+  const d = {
+    leadName: ctx.name || 'Customer',
+    leadEmail: null,
+    leadMobile: ctx.mobile || null,
+    leadType: null,
+    unitCode: ctx.unitCode || null,
+    unitDisplayName: ctx.unitCode || null,
+    unitSqft: null,
+    branchName: ctx.branch || null,
+    branchAddress: null,
+    preferredSize: null,
+    monthlyRate: ctx.monthlyRate ?? null,
+    durationMonths: null,
+    moveInDate: moveDate && !Number.isNaN(moveDate.getTime()) ? moveDate : null,
+    protectionTier: null,
+    protectionCost: null,
+    addons: [],
+    promoCode: null,
+    promoDiscountAmt: null,
+    movingService: null,
+    totalDueToday: ctx.totalDueToday ?? null,
+    note: null,
+    owner: null,
+  };
+  paintQuoteViewTitle({ title: `Quotation ${ctx.quoteNo}`, sub: 'Issued — download the PDF or share it via WhatsApp' });
+  paper.innerHTML = quoteViewHtml(d, contact, ctx.quoteNo);
+  paintQuoteViewActions({
+    downloadableId: ctx.id,
+    shareCtx: ctx,
+    hint: `Quotation ${ctx.quoteNo} issued — PDF saved.`,
+  });
+  modal.hidden = false;
+  const scroller = modal.querySelector('.qv-scroll');
+  if (scroller) scroller.scrollTop = 0;
+  try { $('#quoteViewDownload').focus({ preventScroll: true }); } catch { /* noop */ }
+}
+
 export function closeQuoteView() {
   const modal = $('#quoteViewModal');
   if (modal) modal.hidden = true;
+  issuedQuoteCtx = null;
   try { $('#qfViewQuote')?.focus({ preventScroll: true }); } catch { /* noop */ }
 }
 
@@ -810,9 +1039,31 @@ export async function submitQuoteForm(e) {
   if (note) body.note = note;
   try {
     const created = await post('/quotes', body);
+    // The form still holds the submitted values (it resets on the next
+    // openQuoteModal) — reuse them for the amounts the quote read-model
+    // does not echo (unitCode, totalDueToday, moveInDate).
+    const formData = quoteViewData();
+    const q = (created && created.quote) || {};
+    const qn = created && created.quotation;
     closeQuoteModal();
     showBanner(quotationBanner(created), true);
     await bindQuotes();
+    // Issued view (201 + pdfUrl present): real quoteNo paper + working
+    // Download (saved server bytes) and WhatsApp share. When quotation is
+    // null (PDF persistence failed) there is nothing to export/share yet.
+    if (qn && qn.quoteNo && q.id) {
+      openIssuedQuoteView({
+        id: q.id,
+        quoteNo: qn.quoteNo,
+        name: q.name || formData.leadName,
+        mobile: q.mobile || formData.leadMobile,
+        unitCode: formData.unitCode,
+        branch: formData.branchName || q.branchCode || '',
+        monthlyRate: q.monthlyRate ?? formData.monthlyRate,
+        totalDueToday: formData.totalDueToday,
+        moveInDate: formData.moveInDate,
+      }).catch(() => {});
+    }
   } catch (err) {
     // Surface server errors honestly: 400 VALIDATION (incl. per-field map),
     // 404 unknown lead/branch/unit, 409 CONFLICT|DUPLICATE, 401 auth.

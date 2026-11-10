@@ -220,7 +220,7 @@
         get('/action-items').catch(function () { return []; }),
         get('/tenants').catch(function () { return []; }),
         get('/branches').catch(function () { return []; }),
-        get('/units/map?branch=SW&level=1').catch(function () { return null; }),
+        get('/units/map?branch=SS&level=1').catch(function () { return null; }),
       ]);
       bindCommandStats(summary, leadsData, actions);
       bindFunnel(leadsData);

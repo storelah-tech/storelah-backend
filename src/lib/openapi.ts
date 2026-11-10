@@ -429,7 +429,7 @@ export const openapiSpec = {
             name: 'branch',
             in: 'query',
             required: false,
-            description: 'Branch code to filter on (e.g. SW, WD, UB).',
+            description: 'Branch code to filter on (e.g. SS, WD, UB).',
             schema: { type: 'string', minLength: 1 },
           },
           {
@@ -495,7 +495,7 @@ export const openapiSpec = {
         summary: 'Get floor unit map',
         description: [
           'Visual-map view of a branch/floor: legend counts plus one entry per unit with a short code and price. ',
-          'Tenant/PII is never included on this public surface. `branch` defaults to `SW` and `level` to `1` when ',
+          'Tenant/PII is never included on this public surface. `branch` defaults to `SS` and `level` to `1` when ',
           'omitted; invalid `level` values fall back to `1` (no validation error).',
         ].join('\n'),
         operationId: 'getUnitMap',
@@ -505,7 +505,7 @@ export const openapiSpec = {
             name: 'branch',
             in: 'query',
             required: false,
-            description: 'Branch code (default `SW`).',
+            description: 'Branch code (default `SS`).',
             schema: { type: 'string', minLength: 1 },
           },
           {
@@ -709,7 +709,7 @@ export const openapiSpec = {
         description: [
           'Unauthenticated lead capture for the booking frontend: creates a Lead with stage ',
           '`NEW_ENQUIRY` (source as given, default `WEBSITE`). `name` plus at least one of ',
-          '`email`/`mobile` is required; `branchCode` (SW/WD/UB, case-insensitive) resolves ',
+          '`email`/`mobile` is required; `branchCode` (SS/WD/UB, case-insensitive) resolves ',
           'server-side to the branch (`preferredBranchId` cuid accepted as an alternative; ',
           'unknown codes are `400 VALIDATION`). `purpose` (`personal`|`business`, default ',
           'personal) maps to `PERSONAL`|`BUSINESS` (`BUSINESS` wins when `companyName`/`uen` ',
@@ -769,7 +769,7 @@ export const openapiSpec = {
             name: 'branchCode',
             in: 'path',
             required: true,
-            description: 'Branch code, case-insensitive (e.g. SW, WD, UB).',
+            description: 'Branch code, case-insensitive (e.g. SS, WD, UB).',
             schema: { type: 'string' },
           },
           {
@@ -1000,7 +1000,7 @@ export const openapiSpec = {
             name: 'branchRef',
             in: 'path',
             required: true,
-            description: 'Branch row id or branch code (e.g. SW).',
+            description: 'Branch row id or branch code (e.g. SS).',
             schema: { type: 'string' },
           },
         ],
@@ -2844,7 +2844,8 @@ export const openapiSpec = {
     // --- Operator CMS: branch (facility) CRUD for Global Settings (v1.10.2, additive) ---
     // Branch.code is immutable after create (embedded in unit/door/asset
     // codes): POST validates + uppercases it (409 on dup), PUT never accepts
-    // it. Retirement path is status INACTIVE (hides the branch from every
+    // it — one-time 2026-11 exception: the SW → SS Sembawang rename ran as a
+    // data migration. Retirement path is status INACTIVE (hides the branch from every
     // public read — branches, units, map, floor-plan); DELETE hard-deletes and
     // is guarded 409 while any Floor/Unit/Tenant/Lead/Appointment rows
     // reference the branch (?deactivate=true converts to a reversible
@@ -2865,7 +2866,7 @@ export const openapiSpec = {
       post: {
         tags: ['Operator CMS'],
         summary: 'Create a branch (facility)',
-        description: 'Creates a facility. `code` (2..8 uppercase letters/digits, e.g. SW) is immutable after create and 409s on dup; `name`, `address`, `operatingHours` required, `description` optional, `status` defaults ACTIVE.',
+        description: 'Creates a facility. `code` (2..8 uppercase letters/digits, e.g. SS) is immutable after create and 409s on dup (one-time 2026-11 exception: the SW → SS Sembawang rename ran as a data migration; `code` stays closed on PUT); `name`, `address`, `operatingHours` required, `description` optional, `status` defaults ACTIVE.',
         operationId: 'createBranch',
         security: [{ bearerAuth: [] }],
         requestBody: {
@@ -4562,7 +4563,7 @@ export const openapiSpec = {
           id: { type: 'string' },
           code: {
             type: 'string',
-            description: 'Branch code (e.g. SW, WD, UB).',
+            description: 'Branch code (e.g. SS, WD, UB).',
           },
           name: { type: 'string' },
           address: { type: 'string' },
@@ -4589,7 +4590,7 @@ export const openapiSpec = {
           id: { type: 'string', description: 'Branch row id.' },
           code: {
             type: 'string',
-            description: 'Immutable facility code (2..8 uppercase letters/digits, e.g. SW) — embedded in unit/door/asset codes, never renamed.',
+            description: 'Immutable facility code (2..8 uppercase letters/digits, e.g. SS) — embedded in unit/door/asset codes, never renamed (one-time 2026-11 exception: the SW → SS Sembawang rename ran as a data migration).',
           },
           name: { type: 'string' },
           address: { type: 'string' },
@@ -4998,7 +4999,7 @@ export const openapiSpec = {
           },
           companyName: { type: ['string', 'null'], maxLength: 120 },
           uen: { type: ['string', 'null'], maxLength: 40 },
-          branchCode: { type: ['string', 'null'], description: 'Branch code (SW/WD/UB, case-insensitive); resolved server-side. Unknown codes are 400.' },
+          branchCode: { type: ['string', 'null'], description: 'Branch code (SS/WD/UB, case-insensitive); resolved server-side. Unknown codes are 400.' },
           preferredBranchId: { type: ['string', 'null'], description: 'Branch cuid alternative to branchCode.' },
           preferredSize: { type: ['string', 'null'], maxLength: 40 },
           unitCode: { type: ['string', 'null'], maxLength: 40, description: 'Loose unit reference — stored as a column, never an FK.' },
@@ -5221,7 +5222,7 @@ export const openapiSpec = {
           unitCode: {
             type: 'string',
             minLength: 1,
-            description: 'e.g. SW-01-01.',
+            description: 'e.g. SS-01-01.',
           },
           moveInDate: {
             type: 'string',
@@ -5468,7 +5469,7 @@ export const openapiSpec = {
         properties: {
           id: { type: 'string', description: 'Notice row id (cuid).' },
           unitId: { type: 'string', description: "Noticed unit's database id." },
-          unitCode: { type: 'string', description: "Noticed unit's code, e.g. SW-01-01." },
+          unitCode: { type: 'string', description: "Noticed unit's code, e.g. SS-01-01." },
           status: {
             type: 'string',
             enum: ['SUBMITTED'],
@@ -5544,7 +5545,7 @@ export const openapiSpec = {
           },
           unitCode: {
             type: 'string',
-            description: "Noticed unit's code, e.g. SW-01-01. Additive since 1.1.0.",
+            description: "Noticed unit's code, e.g. SS-01-01. Additive since 1.1.0.",
           },
           submittedAt: {
             type: 'string',
@@ -6104,7 +6105,7 @@ export const openapiSpec = {
             required: ['id', 'code', 'name'],
             properties: {
               id: { type: 'string' },
-              code: { type: 'string', description: 'e.g. SW / WD / UB' },
+              code: { type: 'string', description: 'e.g. SS / WD / UB' },
               name: { type: 'string' },
             },
           },

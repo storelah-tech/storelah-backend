@@ -82,7 +82,7 @@ async function loadBookingForCheckout(bookingRef: string) {
   const booking = await prisma.booking.findUnique({
     where: { bookingRef },
     include: {
-      unit: true,
+      unit: { include: { branch: true } },
       tenant: {
         include: {
           invoices: {
@@ -97,6 +97,88 @@ async function loadBookingForCheckout(bookingRef: string) {
     throw new AppError(404, 'NOT_FOUND', `Booking ${bookingRef} not found`);
   }
   return booking;
+}
+
+/**
+ * Stripe DESCRIPTION COMPOSITION (canonical facility rename SW → SS).
+ * facilityCode = uppercased branch.code (SS for Sembawang); unitDigits =
+ * unitCode stripped of non-alphanumerics, minus any leading SW/SS/S facility
+ * prefix; label = facilityCode + unitDigits (e.g. unitCode 1011 at SS →
+ * SS1011; legacy SS-01-01 → SS0101). 4-digit branch-free codes stay
+ * branch-free: they carry no prefix to strip and are never rewritten.
+ */
+export function buildFacilityUnitLabel(unitCode: string, branchCode?: string | null): string {
+  const raw = (unitCode ?? '').trim();
+  const alnum = raw.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+  const digits = alnum.replace(/^(SW|SS|S)/, '');
+  const facility = (branchCode ?? '').trim().toUpperCase() || 'SS';
+  return `${facility}${digits}`;
+}
+
+/**
+ * Stripe Customer for the booking pay path, carrying name + email (mirrors
+ * ensureStripeCustomer in core/savedCards.ts). Name priority:
+ * booking.tenant.name → Customer.name. Returns null when Stripe/DB is
+ * unreachable — the caller then falls back to customer_email so the pay
+ * path never fails on customer linkage. Stripe rejects `customer` +
+ * `customer_email` together, so exactly one is ever sent.
+ */
+async function resolveBookingStripeCustomer(
+  booking: Pick<BookingWithRefs, 'id' | 'bookingRef'>,
+  email: string | undefined,
+  tenantName: string | undefined,
+): Promise<string | null> {
+  try {
+    const stripeApi = stripe();
+    const normalizedEmail = (email ?? '').trim();
+    const customer = normalizedEmail
+      ? await prisma.customer.findFirst({
+          where: { email: { equals: normalizedEmail, mode: 'insensitive' } },
+        })
+      : null;
+    const name = tenantName || customer?.name || undefined;
+    if (customer?.stripeCustomerId) {
+      try {
+        await stripeApi.customers.update(customer.stripeCustomerId, {
+          ...(normalizedEmail ? { email: normalizedEmail } : {}),
+          ...(name ? { name } : {}),
+        });
+      } catch {
+        // Best-effort name/email sync — the stored customer id is still usable.
+      }
+      return customer.stripeCustomerId;
+    }
+    if (customer) {
+      const created = await stripeApi.customers.create(
+        {
+          email: normalizedEmail || customer.email,
+          ...(name ? { name } : {}),
+          metadata: { portalCustomerId: customer.id },
+        },
+        { idempotencyKey: `portal-customer-${customer.id}` },
+      );
+      const won = await prisma.customer.updateMany({
+        where: { id: customer.id, stripeCustomerId: null },
+        data: { stripeCustomerId: created.id },
+      });
+      if (won.count > 0) return created.id;
+      const fresh = await prisma.customer.findUnique({ where: { id: customer.id } });
+      return fresh?.stripeCustomerId ?? created.id;
+    }
+    // Guest booking with no Customer row: ephemeral Stripe customer carrying
+    // name + email (no DB linkage to persist).
+    const created = await stripeApi.customers.create(
+      {
+        ...(normalizedEmail ? { email: normalizedEmail } : {}),
+        ...(name ? { name } : {}),
+        metadata: { bookingRef: booking.bookingRef, bookingId: booking.id },
+      },
+      { idempotencyKey: `booking-customer-${booking.id}` },
+    );
+    return created.id;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -282,17 +364,39 @@ export async function createCheckoutSession(
     // correlated in the Stripe Dashboard.
     const successUrl = `${appUrl}/checkout/success?session_id={CHECKOUT_SESSION_ID}`;
     const cancelUrl = `${appUrl}/checkout/cancel`;
+    // DESCRIPTION COMPOSITION: facility + unit (e.g. SS1011). Missing
+    // branch/code falls back to the raw unitCode in the name — never fail
+    // the pay path on a missing branch.
+    const branchCode = booking.unit.branch?.code ?? null;
+    let label: string;
+    let facilityCode: string;
+    if (branchCode) {
+      facilityCode = branchCode.trim().toUpperCase();
+      label = buildFacilityUnitLabel(booking.unit.unitCode, branchCode);
+    } else {
+      facilityCode = '';
+      label = booking.unit.unitCode;
+      console.log(
+        `[checkout] bookingRef=${booking.bookingRef} missing branch for unit ${booking.unit.unitCode} — using raw code`,
+      );
+    }
+    const stripeCustomerId = await resolveBookingStripeCustomer(
+      booking,
+      email,
+      booking.tenant.name?.trim() || undefined,
+    );
     const session = await stripe().checkout.sessions.create({
       mode: 'payment',
       currency: 'sgd',
-      customer_email: email,
+      ...(stripeCustomerId ? { customer: stripeCustomerId } : { customer_email: email }),
       line_items: [
         {
           price_data: {
             currency: 'sgd',
             unit_amount: unitAmount,
             product_data: {
-              name: `StoreLah booking ${booking.bookingRef} — ${booking.unit.unitCode}`,
+              name: `StoreLah ${label} — booking ${booking.bookingRef}`,
+              description: label,
             },
           },
           quantity: 1,
@@ -302,6 +406,8 @@ export async function createCheckoutSession(
         bookingRef: booking.bookingRef,
         unitCode: booking.unit.unitCode,
         email,
+        facilityCode,
+        unitLabel: label,
       },
       success_url: successUrl,
       cancel_url: cancelUrl,

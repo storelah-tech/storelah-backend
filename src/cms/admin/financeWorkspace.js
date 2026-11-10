@@ -506,7 +506,7 @@ export function initFinanceWorkspace() {
       ['Initial investment',money(Math.abs(t0.netCashFlow||0)),`${money(capex0)} CapEx · ${money(deposit0)} deposit`],
       ['Profitability index',c.profitabilityIndex==null?'n.a.':num(c.profitabilityIndex,2)+'×',c.profitabilityIndex==null?'':c.profitabilityIndex>=1?'Above required return':'Below required return'],
     ];
-    return `<div class="fm-start fm-returns-head"><div><b>Committed project valuation</b><span>${termMonths} months from ${startLong} · ${escapeHtml(r.source.modelName)} · v${c.modelVersion} ${STATUS_WORD[r.source.modelStatus]||''}</span></div><div class="actions"><button class="btn" data-val-jump>Edit valuation assumptions</button><button class="primary" data-returns-export ${(exportDisabled||!canExportModels)?`disabled title="${exportTitle}"`:''}>Export DCF</button></div></div>`
+    return `<div class="fm-start fm-returns-head"><div><b>Committed project valuation</b><span>${termMonths} months from ${startLong} · ${escapeHtml(r.source.modelName)} · v${c.modelVersion} ${STATUS_WORD[r.source.modelStatus]||''}</span></div><div class="actions"><button class="btn" data-val-jump>Edit valuation assumptions</button><button class="btn" data-returns-export ${(exportDisabled||!canExportModels)?`disabled title="${exportTitle}"`:''}>Export DCF</button><button class="primary" data-returns-report ${exportDisabled?'disabled title="Export is disabled until the calculation succeeds"':'title="Investment returns report for the loaded model (calculations only)"'}>Returns report (PDF)</button></div></div>`
     +(pending?`<div class="fm-note fm-lease-status" role="status"><b>Updating from model version ${c.modelVersion}.</b> Last-good figures are shown; export and approval actions are disabled until the recalculation succeeds.</div>`:'')
     +(failed?`<div class="fm-note fm-lease-status warn" role="alert"><b>Returns are out of date</b><span> — investment returns have not been recalculated for the latest lease term.</span><br><small>Last successful calculation ${failedLastSuccess(r)} · model version ${c.modelVersion}. Figures below are from model version ${c.modelVersion} and do not reflect the latest lease term. Stale figures are never presented as current.</small>${canRetry?' <button class="btn" data-returns-retry-calc>Retry calculation</button>':''}</div>`:'')
     // Prototype order: interpretation → KPIs → equity note → sensitivity +
@@ -726,6 +726,13 @@ export function initFinanceWorkspace() {
       notify('Generating the DCF export…');
       downloadFile(`/finance/models/${encodeURIComponent(m.id)}/export.csv?format=dcf`,`StoreLah_DCF_${slug(String(state.facility||'').replace(/^StoreLah/,''))}_${slug(m.name).slice(0,60)}_v${m.version}.csv`).then(()=>notify('DCF export downloaded (recorded in the audit log)')).catch(e=>notify(describeError(e)));
     }));
+    document.querySelectorAll('[data-returns-report]').forEach(b=>{if(b.dataset.bound)return;b.dataset.bound='1';b.addEventListener('click',()=>{
+      const m=srv.model;if(!m)return;
+      if((srv.model?.calculationStatus||'')!=='CURRENT'){notify('Returns are out of date — investment returns have not been recalculated for the latest lease term. Export is disabled until the calculation succeeds — retry the calculation first.');return}
+      const slug=x=>String(x||'').replace(/[^A-Za-z0-9]+/g,'-').replace(/^-|-$/g,'')||'Model';
+      notify(m.status==='CURRENT'?'Generating the investment returns report…':'Generating the investment returns report (marked DRAFT — this model is not approved)…');
+      downloadFile(`/finance/returns/report.pdf?modelId=${encodeURIComponent(m.id)}`,`StoreLah_Investment_Returns_${slug(String(state.facility||'').replace(/^StoreLah /,''))}_${slug(m.name).slice(0,60)}_v${m.version}${m.status==='CURRENT'?'':'_DRAFT'}.pdf`).then(()=>notify('Investment returns report PDF downloaded (recorded in the audit log)')).catch(e=>notify(describeError(e)));
+    })});
     document.querySelectorAll('[data-returns-retry-calc]').forEach(b=>{if(b.dataset.bound)return;b.dataset.bound='1';b.addEventListener('click',e=>{e.preventDefault();e.stopPropagation();leaseRetryClicked(b)})});
   }
 

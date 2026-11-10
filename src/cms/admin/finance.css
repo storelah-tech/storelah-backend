@@ -119,7 +119,7 @@
 .fm-returns-head .actions{display:flex;gap:8px;flex-wrap:wrap}
 .fm-banner-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center;justify-content:flex-end}
 @media(max-width:760px){.fm-kpis-returns{grid-template-columns:1fr 1fr}.fm-method .fm-scenario{width:100%}.fm-method .fm-scenario button{flex:1 1 auto}}
-.fm-sens-chart svg{display:block;width:100%;height:auto;background:#fff}
+.fm-sens-chart svg{display:block;width:100%;max-width:760px;height:auto;margin:0 auto;background:#fff}
 .fm-sens-controls{display:flex;align-items:flex-end;gap:10px;flex-wrap:wrap;margin-top:10px}
 .fm-sens-controls .fm-note{margin-left:auto}
 details.fm-details summary{cursor:pointer;font-size:11px;color:var(--ink)}

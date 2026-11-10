@@ -3,6 +3,7 @@ import { toNum } from '../lib/format';
 import { AppError } from '../lib/http';
 import { Prisma, UnitStatus } from '@prisma/client';
 import { quantizeSqft } from './unitSizing';
+import { canonicalBranchCode } from './branches';
 
 type UnitWithRelations = Prisma.UnitGetPayload<{
   include: { size: true; branch: true; floor: true; tenant: true };
@@ -50,8 +51,8 @@ export interface UpdateUnitInput {
 // re-assigned), starting at 1001. FKs (UnitPlacement.unitId, Tenant.unitId,
 // Booking/Invoice.unitId) all point at Unit.id, never at the code, so codes
 // are cosmetic identity only; Lead.unitCode is a loose (non-FK) reference.
-// Legacy branch-prefixed codes (SW-01-01 style; pre-rename BM-01-01 rows
-// keep working) are left untouched by codegen; the opt-in rename lives
+// Legacy branch-prefixed codes (SS-01-01 style; pre-rename SW-01-01 and
+// BM-01-01 rows keep working) are left untouched by codegen; the opt-in rename lives
 // in scripts/backfill-unit-codes-4digit.ts (dry-run first).
 
 // ---------- physical dimensions (decimal feet) ----------
@@ -182,7 +183,7 @@ export async function listUnits(query: UnitListQuery = {}) {
     // Prisma client predates the DRAFT enum value (migration 20261014000000).
     // An explicit ?status= filter passes through untouched (operator asked for it).
     ...(query.status ? { status: query.status as UnitStatus } : {}),
-    ...(query.branch ? { branch: { code: query.branch } } : {}),
+    ...(query.branch ? { branch: { code: canonicalBranchCode(query.branch) } } : {}),
     ...(query.level != null ? { floor: { level: query.level } } : {}),
     ...(query.hasAC != null ? { hasAC: query.hasAC } : {}),
     ...(createdAt.gte || createdAt.lte ? { createdAt } : {}),
@@ -271,7 +272,7 @@ export async function listPublicUnits(query: PublicUnitsQuery = {}) {
       // Inactive branches are hidden from the frontend entirely (branch
       // CRUD lives in Global Settings; only ACTIVE branches serve booking).
       branch: {
-        ...(query.branch ? { code: query.branch } : {}),
+        ...(query.branch ? { code: canonicalBranchCode(query.branch) } : {}),
         status: 'ACTIVE',
       },
       floor: {
@@ -331,8 +332,8 @@ export async function createUnit(input: CreateUnitInput) {
 
   // 4-digit codegen: next free code above the MAX 4-digit code across ALL
   // rows (deliberately no deletedAt filter — codes of soft-deleted units are
-  // never reused, keeping the sequence monotonic). Legacy SW-01-01 codes (and
-  // pre-rename BM-01-01 rows) never match /^\d{4}$/ so they neither collide nor disturb the sequence.
+  // never reused, keeping the sequence monotonic). Legacy SS-01-01 codes (and
+  // pre-rename SW-01-01 / BM-01-01 rows) never match /^\d{4}$/ so they neither collide nor disturb the sequence.
   let unitCode: string;
   if (input.unitCode !== undefined) {
     const explicit = input.unitCode.trim();
@@ -473,8 +474,11 @@ const NEAR_LIFT_FT = 8;
 
 export async function getUnitMap(branchCode: string, level: number, opts?: UnitMapQuery) {
   const isPublic = opts?.public ?? false;
+  // Canonical rename SW → SS (Sembawang): the deprecated SW alias resolves
+  // to SS here, so `?branch=SW` keeps working during transition.
+  const canonicalCode = canonicalBranchCode(branchCode);
   const floor = await prisma.floor.findFirst({
-    where: { branch: { code: branchCode }, level },
+    where: { branch: { code: canonicalCode }, level },
     include: {
       floorPlan: { include: { placements: true, blocks: true } },
     },
@@ -494,7 +498,7 @@ export async function getUnitMap(branchCode: string, level: number, opts?: UnitM
       // Public map never serves an INACTIVE branch (CMS branch CRUD lives in
       // Global Settings); the admin map is unfiltered so operators still see
       // the whole floor.
-      branch: isPublic ? { code: branchCode, status: 'ACTIVE' } : { code: branchCode },
+      branch: isPublic ? { code: canonicalCode, status: 'ACTIVE' } : { code: canonicalCode },
       floor: {
         level,
         // Public map never shows units on an inactive floor (admin map is
@@ -587,7 +591,7 @@ export async function getUnitMap(branchCode: string, level: number, opts?: UnitM
     .map(({ sortOrder: _sortOrder, ...rest }) => rest);
 
   return {
-    branch: branchCode,
+    branch: canonicalCode,
     level,
     legend,
     sizes,
@@ -599,7 +603,7 @@ export async function getUnitMap(branchCode: string, level: number, opts?: UnitM
     units: visible.map((u) => ({
       id: u.unitCode,
       code: u.unitCode,
-      // Legacy SW-01-01 codes (pre-rename BM-01-01 rows keep working) shorten
+      // Legacy SS-01-01 codes (pre-rename SW-01-01 / BM-01-01 rows keep working) shorten
       // to the trailing segments; 4-digit codes have no dashes and shorten to themselves.
       short: u.unitCode.includes('-') ? u.unitCode.split('-').slice(1).join('-') : u.unitCode,
       size: u.size.name,
@@ -958,12 +962,12 @@ export async function importUnits(csvText: string): Promise<UnitImportReport> {
         rows.push(fail(rowNum, `code must be a 4-digit code or blank (got ${JSON.stringify(codeRaw)})`));
         continue;
       }
-      const branchCode = branchRaw.toUpperCase();
+      const branchCode = canonicalBranchCode(branchRaw.toUpperCase());
       const branch =
         (branchCode ? await prisma.branch.findUnique({ where: { code: branchCode } }) : null) ??
         (branchRaw ? await prisma.branch.findUnique({ where: { id: branchRaw } }).catch(() => null) : null);
       if (!branch) {
-        rows.push(fail(rowNum, `unknown branch ${JSON.stringify(branchRaw)} (use branch code, e.g. SW)`));
+        rows.push(fail(rowNum, `unknown branch ${JSON.stringify(branchRaw)} (use branch code, e.g. SS)`));
         continue;
       }
       let floor = null;

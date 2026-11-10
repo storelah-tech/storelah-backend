@@ -52,6 +52,12 @@ export const state = {
   unitDate: { from: null, to: null },
   promoLibDate: { from: null, to: null },
   promoHistDate: { from: null, to: null },
+  // Overview + performance date presets ({ from, to } as YYYY-MM-DD or null;
+  // 'all' default = unfiltered, so the default view's requests are unchanged).
+  commandDate: { from: null, to: null },
+  commandPeriod: 'all',
+  analyticsDate: { from: null, to: null },
+  analyticsPeriod: 'all',
   // pipeline-view state
   pipelineFilter: '', // '' = all pipelines, otherwise a branch code
   // inbox-view state (real conversation threads from GET /conversations)
@@ -65,7 +71,7 @@ export const state = {
   perPage: 10,
   total: 0,
   totalPages: 1,
-  branchCode: 'SW', // drives map + table filter (sidebar branch switcher)
+  branchCode: 'SS', // drives map + table filter (sidebar branch switcher)
   level: 1, // drives map + table filter (floor tabs)
   statusFilter: '',
   // Units-toolbar explicit filters (override the sidebar scope while set).
@@ -78,7 +84,7 @@ export const state = {
   selectedCode: null,
   // floor-plan editor state (facility setup view)
   fp: {
-    branchCode: 'SW',
+    branchCode: 'SS',
     floorId: null, // selected floor row id
     plan: null, // plan object (or null when none exists)
     branchName: '',

@@ -46,16 +46,23 @@ export async function bindPortfolio() {
   const cards = $('#portfolioCards');
   try {
     const [portfolio, net] = await Promise.all([get('/portfolio'), get('/rates/net-psf').catch(() => null)]);
+    // Defensive: the API lists ACTIVE facilities only (GET /portfolio filters
+    // INACTIVE, with meta.excludedInactive). Re-filter client-side so a stale
+    // cache can never render a retired facility.
+    const facilities = (portfolio.facilities || []).filter((f) => (f.status || 'ACTIVE') === 'ACTIVE');
+    const excluded = portfolio.meta?.excludedInactive ?? 0;
     if (cards) {
-      cards.innerHTML = totalsHtml(portfolio.totals) +
-        `<div class="facility-cards" style="margin-top:12px;">` +
-        (portfolio.facilities || []).map(cardHtml).join('') + `</div>`;
+      cards.innerHTML = facilities.length
+        ? totalsHtml(portfolio.totals) +
+          `<div class="facility-cards" style="margin-top:12px;">` +
+          facilities.map(cardHtml).join('') + `</div>`
+        : '<div class="section-empty">No active facilities — reactivate one in Global Settings › Team &amp; access › Facilities.</div>';
     }
     const sub = $('#portfolioSub');
-    if (sub) sub.textContent = `${portfolio.totals.facilities} facilit${portfolio.totals.facilities === 1 ? 'y' : 'ies'} · ${fmtInt(portfolio.totals.totalSqft)} sqft · computed from live units`;
+    if (sub) sub.textContent = `${portfolio.totals.facilities} facilit${portfolio.totals.facilities === 1 ? 'y' : 'ies'} · ${fmtInt(portfolio.totals.totalSqft)} sqft · computed from live units` + (excluded ? ` · ${excluded} inactive hidden` : '');
     renderNetRate(net);
     // Recent NLA + UFA per facility (non-blocking; failures render per-card).
-    bindPortfolioArea(portfolio.facilities || []).catch(() => {});
+    bindPortfolioArea(facilities).catch(() => {});
   } catch (e) {
     if (cards) cards.innerHTML = '<div class="section-empty">Portfolio failed to load: ' + escapeHtml(describeError(e)) + '</div>';
   }
@@ -211,11 +218,13 @@ export async function renderPortfolioReport() {
   try {
     const [portfolio, net] = await Promise.all([get('/portfolio'), get('/rates/net-psf').catch(() => null)]);
     const t = portfolio.totals;
+    // Same ACTIVE-only filter as bindPortfolio so the report matches the cards.
+    const facilities = (portfolio.facilities || []).filter((f) => (f.status || 'ACTIVE') === 'ACTIVE');
     const netByBranch = new Map(((net && net.facilities) || []).map((f) => [f.branch, f.netPsf]));
     wrap.innerHTML = `<div class="tbl-card" style="margin-top:12px;"><div class="sec-hdr"><div><div class="sec-title">Portfolio report — ${new Date().toLocaleDateString('en-SG', { day: '2-digit', month: 'short', year: 'numeric' })}</div>` +
       `<div class="sec-sub">${t.leasedUnits}/${t.totalUnits} units (${t.occupancyPct}%) · ${fmtInt(t.leasedSqft)}/${fmtInt(t.totalSqft)} sqft (${t.sqftOccupancyPct}%) · MRR ${fmtMoney(t.mrr)}</div></div></div>` +
       `<table class="data-tbl"><thead><tr><th>Facility</th><th>Units</th><th>Sqft leased</th><th>MRR</th><th>Net PSF</th></tr></thead><tbody>` +
-      (portfolio.facilities || []).map((f) =>
+      facilities.map((f) =>
         `<tr><td><b>${escapeHtml(f.name)}</b> (${escapeHtml(f.code)})</td><td>${f.leasedUnits}/${f.totalUnits} · ${f.occupancyPct}%</td>` +
         `<td>${fmtInt(f.leasedSqft)}/${fmtInt(f.totalSqft)} · ${f.sqftOccupancyPct}%</td><td>${fmtMoney(f.mrr)}</td>` +
         `<td>$${Number(netByBranch.get(f.code) ?? f.netPsf ?? 0).toFixed(2)}</td></tr>`,

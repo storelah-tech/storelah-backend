@@ -163,6 +163,13 @@ export async function getMoveIns(opts?: { from?: Date; to?: Date }) {
 // (hides it from every public read — see listPublicBranches); DELETE is the
 // hard path and is blocked while any Floor/Unit/Tenant/Lead/Appointment rows
 // reference the branch (409, matching the deleteFloor guard pattern).
+//
+// ONE-TIME EXCEPTION (2026-11, canonical rename SW → SS for Sembawang):
+// the data migration renamed the stored Branch row (SW → SS) and legacy
+// unit codes (SW-01-01 → SS-01-01) in place. Do NOT reopen `code` on update —
+// updateBranchSchema stays strict and the core guard below still rejects
+// `code`. On reads, the deprecated alias SW keeps resolving to SS (see
+// canonicalBranchCode) during transition.
 
 export interface CreateBranchInput {
   code: string;
@@ -183,13 +190,24 @@ export interface UpdateBranchInput {
 
 const BRANCH_CODE_RE = /^[A-Z0-9]{2,8}$/;
 
+/**
+ * Canonical facility code for reads. SW is the deprecated alias for
+ * Sembawang (canonically SS since the 2026-11 rename): every branchCode
+ * read path maps SW → SS before lookup, so `?branch=SW` keeps resolving
+ * during transition. Writes must use the canonical code.
+ */
+export function canonicalBranchCode(raw: string): string {
+  const code = raw.trim().toUpperCase();
+  return code === 'SW' ? 'SS' : code;
+}
+
 function normalizeBranchCode(raw: string): string {
   const code = raw.trim().toUpperCase();
   if (!BRANCH_CODE_RE.test(code)) {
     throw new AppError(
       400,
       'VALIDATION',
-      `Branch code must be 2..8 uppercase letters/digits (e.g. SW, WD, UB) — got ${JSON.stringify(raw)}`,
+      `Branch code must be 2..8 uppercase letters/digits (e.g. SS, WD, UB) — got ${JSON.stringify(raw)}`,
     );
   }
   return code;

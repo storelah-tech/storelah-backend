@@ -21,6 +21,12 @@ const SCENARIO_LABEL = { downside: 'Downside', base: 'Base (saved plan)', upside
 const shortMonth = (ym: string) =>
   new Date(`${ym}-01T00:00:00Z`).toLocaleDateString('en-SG', { month: 'short', year: 'numeric', timeZone: 'UTC' });
 const yearSpan = (a: string, b: string) => (a === b ? shortMonth(a) : `${shortMonth(a)} - ${shortMonth(b)}`);
+const shortDay = (iso: string) => `${Number(iso.slice(8))} ${new Date(`${iso.slice(0, 7)}-01T00:00:00Z`).toLocaleDateString('en-SG', { month: 'short', timeZone: 'UTC' })}`;
+/** Stub rows show their exact date range (handoff §8.3); full months the label. */
+const monthCell = (m: { month: string; periodStart?: string; periodEnd?: string; isStub?: boolean }) =>
+  m.isStub && m.periodStart && m.periodEnd
+    ? `${shortDay(m.periodStart)}-${shortDay(m.periodEnd)} ${m.periodEnd.slice(0, 4)}`
+    : shortMonth(m.month);
 /** "Dec 26" — compact month for table cells. */
 const tinyMonth = (ym: string) =>
   new Date(`${ym}-01T00:00:00Z`).toLocaleDateString('en-SG', { month: 'short', timeZone: 'UTC' }).slice(0, 3) + ' ' + ym.slice(2, 4);
@@ -63,6 +69,9 @@ export async function buildProjectionReportPdf(r: ProjectionReport): Promise<Buf
   w.y -= 6;
 
   // ---- 1. Headline ----
+  // P5 corrected labels (§8.4): the year-window IRR/NPV are supplementary
+  // views, never the Project IRR/NPV — the committed valuation below is the
+  // full-term Project figure at the stored rate (rate identified, D7A).
   w.section('Headline projection', `Base case from the saved model. Returns are measured over the first ${r.returns.horizonYears} model year${r.returns.horizonYears === 1 ? '' : 's'} from the opening date.`);
   w.kpiGrid([
     { label: 'Capital investment', value: sgd(i.capitalTotal, 0) },
@@ -71,10 +80,27 @@ export async function buildProjectionReportPdf(r: ProjectionReport): Promise<Buf
     { label: 'NOI positive', value: modelMonth(i.startDate, k.noiPositiveMonth) },
     { label: 'Stabilised occupancy', value: modelMonth(i.startDate, k.stabilisedMonth) },
     { label: 'Payback', value: modelMonth(i.startDate, k.paybackMonth), note: 'Cumulative cash back to zero' },
-    { label: `IRR (${r.returns.horizonYears}-year, annualised)`, value: r.returns.irrAnnualised == null ? 'Not available' : pct(r.returns.irrAnnualised * 100), note: 'Operating cash flows, no sale value' },
-    { label: `NPV at ${r.returns.discountRatePct}%`, value: sgd(r.returns.npv, 0), note: 'Capital + monthly NOI, discounted' },
+    { label: `IRR (${r.returns.horizonYears}-year view, annualised)`, value: r.returns.irrAnnualised == null ? 'Not available' : pct(r.returns.irrAnnualised * 100), note: 'Supplementary view, not the committed Project IRR' },
+    { label: `NPV through Year ${r.returns.horizonYears} at ${r.returns.discountRatePct}%`, value: sgd(r.returns.npv, 0), note: `Supplementary (${r.returns.discountRateSource})` },
     { label: `Cash after ${r.returns.horizonYears} year${r.returns.horizonYears === 1 ? '' : 's'}`, value: sgd(r.returns.cashThroughHorizon, 0), note: 'Cumulative, after capital' },
   ]);
+
+  // ---- 1b. Committed project valuation (P5) ----
+  const committed = r.committed && !('valuationError' in r.committed) ? r.committed : null;
+  if (committed) {
+    w.section(
+      'Committed project valuation',
+      `Full ${committed.committedMonths}-month committed term (${day(committed.leaseStartDate)} to ${day(committed.committedEndDate)}) at the stored ${(committed.annualRate * 100).toFixed(2)}% annual rate (${committed.annualRateSource}). ${committed.limitation}`,
+    );
+    w.kpiGrid([
+      { label: 'Project NPV', value: sgd(committed.npv, 0), note: `At ${(committed.annualRate * 100).toFixed(2)}% (${committed.annualRateSource})` },
+      { label: 'Project IRR', value: committed.irr.display, note: 'Same cash-flow series as NPV' },
+      { label: 'Simple payback', value: committed.simplePayback.label, note: 'Undiscounted' },
+      { label: 'Discounted payback', value: committed.discountedPayback.label, note: `At ${(committed.annualRate * 100).toFixed(2)}%` },
+      { label: 'Cumulative free cash flow', value: sgd(committed.cumulativeFreeCashFlow, 0), note: 'Through committed end' },
+      { label: 'Profitability index', value: committed.profitabilityIndex == null ? '-' : committed.profitabilityIndex.toFixed(2), note: 'PV of future flows / investment' },
+    ]);
+  }
 
   // ---- 2. Yearly ----
   w.section('Projected results by year', 'Model years run 12 months from the opening date; each row shows the calendar months it covers. Other cost = operating costs other than the lease. NOI = revenue less lease and other cost. Occupancy is at year end. Cash is cumulative and starts at minus the capital investment.');
@@ -93,7 +119,9 @@ export async function buildProjectionReportPdf(r: ProjectionReport): Promise<Buf
   w.section('Monthly projection', `The first ${r.months.length} months from the opening date. Sq ft = occupied area and Occ. % = occupancy, both at month end; rent psf is the monthly rate per sq ft.`);
   const byYear = new Map<number, typeof r.months>();
   for (const m of r.months) {
-    const y = Math.floor((m.t - 1) / 12) + 1;
+    // P5: committed engine rows group by lease year (same as the Year-N
+    // table); legacy rows keep the t-index grouping (unchanged output).
+    const y = m.leaseYear ?? Math.floor((m.t - 1) / 12) + 1;
     byYear.set(y, [...(byYear.get(y) ?? []), m]);
   }
   for (const [y, list] of byYear) {
@@ -101,12 +129,15 @@ export async function buildProjectionReportPdf(r: ProjectionReport): Promise<Buf
     w.table(
       [{ label: 'Month', width: 0.12 }, { label: 'Sq ft', width: 0.1, align: 'right' }, { label: 'Occ. %', width: 0.09, align: 'right' }, { label: 'Rent psf', width: 0.1, align: 'right' }, { label: 'Revenue', width: 0.12, align: 'right' }, { label: 'Lease', width: 0.1, align: 'right' }, { label: 'Other cost', width: 0.11, align: 'right' }, { label: 'NOI', width: 0.11, align: 'right' }, { label: 'Cash', width: 0.15, align: 'right' }],
       list.map((m) => [
-        shortMonth(m.month), num(Math.round(m.closingSqft)), pct(m.occupancyPct), `S$${m.psf.toFixed(2)}`,
+        monthCell(m), num(Math.round(m.closingSqft)), pct(m.occupancyPct), `S$${m.psf.toFixed(2)}`,
         sgd(m.revenue, 0), sgd(m.opexLease, 0), sgd(m.opexNonLease, 0), sgd(m.noi, 0), sgd(m.cash, 0),
       ]),
     );
   }
   if (r.months.some((m) => m.periodFactor < 1)) w.para('The opening month is prorated for a mid-month opening date.', 8, MUTED);
+  if (r.months.length && r.months[r.months.length - 1].isStub) {
+    w.para('The final month is a closing stub ending on the committed end date — revenue, costs and move-ins are scaled by its partial period.', 8, MUTED);
+  }
 
   // ---- 4. Scenarios ----
   w.section('Scenarios', 'Downside and upside change occupancy only (move-in pace, move-out rate and the stabilisation target). Rent, lease, operating costs and capital stay as in the saved plan.');
@@ -158,7 +189,15 @@ export async function buildProjectionReportPdf(r: ProjectionReport): Promise<Buf
       { totals: ['Total / weighted', '', num(units), num(nla), `S$${k.weightedStartPsf.toFixed(2)}`] },
     );
   }
-  if (i.lease.monthlyByYear.length) {
+  if (r.leaseSchedule?.length) {
+    // P5: the Year-N lease table reflects the committed schedule (period
+    // dates + source per lease year) for v2 models.
+    w.sub('Lease schedule', '(committed landlord rent, period-dated)');
+    w.table(
+      [{ label: 'Lease year', width: 0.24 }, { label: 'Period', width: 0.36 }, { label: 'Monthly', width: 0.2, align: 'right' }, { label: 'Source', width: 0.2, align: 'right' }],
+      r.leaseSchedule.map((x) => [`Year ${x.leaseYear}`, `${day(x.periodStart)} - ${day(x.periodEnd)}`, sgd(x.monthlyRent, 0), x.source]),
+    );
+  } else if (i.lease.monthlyByYear.length) {
     w.sub('Lease schedule', '(landlord rent)');
     w.table(
       [{ label: 'Lease year', width: 0.4 }, { label: 'Monthly', width: 0.3, align: 'right' }, { label: 'Annual', width: 0.3, align: 'right' }],
@@ -190,9 +229,12 @@ export async function buildProjectionReportPdf(r: ProjectionReport): Promise<Buf
     'Revenue = occupied area x rent per sq ft. Rent starts at the weighted rate of the unit mix and rises by the annual increase at each model-year anniversary.',
     'Operating costs = landlord lease (per the lease schedule, after any rent-free months) + other operating costs. NOI = revenue - operating costs.',
     'Cash starts at minus the capital investment and adds each month\'s NOI. Payback is the first month cumulative cash reaches zero.',
-    `IRR uses the capital investment and monthly NOI only (no sale or terminal value, financing, tax or depreciation). NPV discounts the same cash flows at ${r.returns.discountRatePct}% a year. ${r.returns.irrNote}`,
+    `IRR uses the capital investment and monthly NOI only (no sale or terminal value, financing, tax or depreciation). NPV through Year ${r.returns.horizonYears} discounts the same cash flows at ${r.returns.discountRatePct}% a year (${r.returns.discountRateSource}). ${r.returns.irrNote}`,
     'Lease renewal beyond the schedule is not secured; the last scheduled rent is carried forward.',
   ]) w.para(`- ${line}`, 8.5);
+  if (committed) {
+    w.para(`- Committed project valuation: the full ${committed.committedMonths}-month term at the stored ${(committed.annualRate * 100).toFixed(2)}% annual rate (${committed.annualRateSource}). NPV, IRR, both paybacks, cumulative free cash flow and PI are read from that one series.`, 8.5);
+  }
   if (r.failedChecks.length) w.para(`Model checks not passing: ${r.failedChecks.join('; ')}`, 8, RED);
 
   // ---- Footer on every page ----

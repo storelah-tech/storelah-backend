@@ -13,7 +13,8 @@
 
 import { prisma } from '../../lib/prisma';
 import { getModel } from './models';
-import { getReturns, DEFAULT_DISCOUNT_RATE_PCT } from './returns';
+import { getReturns, isCommittedValued, DEFAULT_DISCOUNT_RATE_PCT, type CommittedValuation } from './returns';
+import { committedScheduleOf, type CommittedScheduleRow } from './leaseExpense';
 import {
   applyScenario,
   project,
@@ -72,13 +73,24 @@ export interface ProjectionReport {
   months: ProjectionMonth[];
   years: ProjectionReportYear[];
   scenarios: ProjectionReportScenario[];
+  /** Committed lease schedule for the Year-N lease table (v2 models only;
+   * null for legacy models, which keep the monthlyByYear table). */
+  leaseSchedule: CommittedScheduleRow[] | null;
+  /** Committed valuation at the stored rate (P5) — null for legacy models
+   * without a stored rate (never a substituted default). */
+  committed: CommittedValuation | null;
   returns: {
     horizonYears: number;
     initialInvestment: number;
     irrAnnualised: number | null;
     irrNote: string;
+    /** Truncated-view label — never "Project NPV" (§8.4). */
+    npvLabel: string;
     npv: number;
     discountRatePct: number;
+    /** Rate provenance: stored methodology/source when committed, else the
+     * illustrative query rate (D7A). */
+    discountRateSource: string;
     paybackMonth: number | null;
     annualNoiMarginPct: number | null;
     cashThroughHorizon: number;
@@ -88,11 +100,17 @@ export interface ProjectionReport {
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
-/** Model-year roll-up with calendar labels, lease split out (first `limit` years). */
+/** Model-year roll-up with calendar labels, lease split out (first `limit` years).
+ * P5: rows carrying a lease year (v2 committed engine) group by lease-year
+ * anniversary index, so the Year-N table reflects the committed schedule;
+ * legacy rows without one keep the t-index grouping (unchanged output). */
 export function yearRows(months: ProjectionMonth[], limit = PROJECTION_REPORT_YEARS): ProjectionReportYear[] {
   const out: ProjectionReportYear[] = [];
+  const byLeaseYear = months.length > 0 && months[0].leaseYear !== undefined;
   for (let y = 1; y <= limit; y++) {
-    const rows = months.filter((m) => m.t > (y - 1) * 12 && m.t <= y * 12);
+    const rows = byLeaseYear
+      ? months.filter((m) => m.leaseYear === y)
+      : months.filter((m) => m.t > (y - 1) * 12 && m.t <= y * 12);
     if (!rows.length) break;
     const revenue = round2(rows.reduce((s, m) => s + m.revenue, 0));
     const lease = round2(rows.reduce((s, m) => s + m.opexLease, 0));
@@ -129,6 +147,8 @@ export async function buildProjectionReport(opts: { modelId: string; generatedBy
 
   const horizonYears = Math.max(1, Math.min(PROJECTION_REPORT_YEARS, Math.ceil(projection.months.length / 12)));
   const r = await getReturns({ modelId: detail.id, horizonYears, discountRatePct: DEFAULT_DISCOUNT_RATE_PCT });
+  const committed = r.committed ?? null;
+  const committedValued = isCommittedValued(committed) ? committed : null;
 
   const scenarios: ProjectionReportScenario[] = (['downside', 'base', 'upside'] as ScenarioName[]).map((s) => {
     const overlay = applyScenario(inputs, s);
@@ -164,13 +184,17 @@ export async function buildProjectionReport(opts: { modelId: string; generatedBy
     months: projection.months.slice(0, PROJECTION_REPORT_MONTHS),
     years: yearRows(projection.months),
     scenarios,
+    leaseSchedule: committedScheduleOf(inputs),
+    committed,
     returns: {
       horizonYears,
       initialInvestment: r.initialInvestment,
       irrAnnualised: r.irrAnnualised,
       irrNote: r.irrNote,
+      npvLabel: r.npv.label,
       npv: r.npv.value,
       discountRatePct: r.npv.discountRatePct,
+      discountRateSource: committedValued ? committedValued.annualRateSource : 'illustrative query rate',
       paybackMonth: r.paybackMonth,
       annualNoiMarginPct: r.annualNoiMarginPct,
       cashThroughHorizon: r.cashThroughSelectedYear,

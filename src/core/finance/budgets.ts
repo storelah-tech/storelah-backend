@@ -21,6 +21,7 @@ import { writeAuditEvent } from './audit';
 import { publishFinanceEvent } from './events';
 import { assertFreshVersion, nextVersion, newCorrelationId } from './idempotency';
 import { isMonthClosed } from './monthClose';
+import { committedLeaseForMonth } from './leaseExpense';
 import { getModel } from './models';
 
 /** Categories reserved for the landlord lease line (§13.5). */
@@ -51,7 +52,11 @@ async function currentModelFor(branchId: string | null) {
   return m;
 }
 
-/** Derived read-only lease line for a fiscal month (§13.2). */
+/** Derived read-only lease line for a fiscal month (§13.2). P5: the amount is
+ * read from the ENGINE ROWS via the single shared lease-reader
+ * (`committedLeaseForMonth`) — never re-derived here — so budgets, actuals
+ * and performance agree and the lease is counted ONCE in total operating cost
+ * (LH11). Pre-start months stay null; post-term months read 0. */
 function leaseLineFor(model: { name: string; inputs: unknown } | null, fiscalMonth: string) {
   if (!model) {
     return {
@@ -63,21 +68,22 @@ function leaseLineFor(model: { name: string; inputs: unknown } | null, fiscalMon
       note: 'Not yet connected — no CURRENT model. Set a model as Current to link the lease line.',
     };
   }
-  const inputs = model.inputs as {
-    startDate: string; lease: { monthlyByYear: number[] };
-  };
-  const [sy, sm] = fiscalMonth.split('-').map(Number);
-  const [y0, m0] = inputs.startDate.split('-').map(Number);
-  const monthIndex = (sy - y0) * 12 + (sm - m0);
-  if (monthIndex < 0) {
+  let amount: number | null;
+  try {
+    amount = committedLeaseForMonth(model.inputs as Parameters<typeof committedLeaseForMonth>[0], fiscalMonth);
+  } catch {
+    return {
+      id: `lease:${fiscalMonth}`, category: 'Landlord lease', amount: null,
+      protected: true, linked: true, sourceModel: model.name,
+      note: 'Model lease is unreadable — review the Financial Model inputs. Edit the lease in Financial Models.',
+    };
+  }
+  if (amount === null) {
     return {
       id: `lease:${fiscalMonth}`, category: 'Landlord lease', amount: null,
       protected: true, linked: true, note: 'Month precedes the model start — no lease applies.',
     };
   }
-  const year = Math.floor(monthIndex / 12);
-  const schedule = inputs.lease.monthlyByYear;
-  const amount = schedule[Math.min(year, schedule.length - 1)] ?? 0;
   return {
     id: `lease:${fiscalMonth}`, category: 'Landlord lease', amount, protected: true,
     linked: true, sourceModel: model.name,

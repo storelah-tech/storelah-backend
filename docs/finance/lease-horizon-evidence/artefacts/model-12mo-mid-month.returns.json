@@ -1,0 +1,314 @@
+{
+ "modelVersion": 2,
+ "inputHash": "da6a21cfdf7415fb6f10705a1f31aa94b1263da53640d8f267390fb6c9277467",
+ "engineVersion": "finance-projection/2",
+ "calculationStatus": "CURRENT",
+ "annualRate": 0.15,
+ "annualRateSource": "manual",
+ "leaseStartDate": "2026-12-15",
+ "committedEndDate": "2027-12-14",
+ "committedMonths": 12,
+ "npv": -115486.41505225445,
+ "cumulativeFreeCashFlow": -114860.65999999999,
+ "profitabilityIndex": -0.06931865789124492,
+ "simplePayback": {
+  "month": null,
+  "fractionalMonths": null,
+  "label": "Beyond horizon"
+ },
+ "discountedPayback": {
+  "month": null,
+  "fractionalMonths": null,
+  "label": "Beyond horizon"
+ },
+ "paybackMonth": null,
+ "discountedPaybackMonth": null,
+ "irr": {
+  "status": "valid",
+  "annualRate": -0.9529436340904941,
+  "display": "-95.29%"
+ },
+ "dcf": [
+  {
+   "index": 0,
+   "month": "2026-12-15",
+   "period": 0,
+   "periodLabel": "0",
+   "revenue": 0,
+   "operatingCashFlow": 0,
+   "capex": -108000,
+   "otherCashFlow": 0,
+   "netCashFlow": -108000,
+   "discountFactor": 1,
+   "discountedCashFlow": -108000,
+   "cumulativeDiscountedCashFlow": -108000,
+   "display": {
+    "period": "0",
+    "discountFactor": 1,
+    "discountedCashFlow": -108000,
+    "cumulativeDiscountedCashFlow": -108000
+   }
+  },
+  {
+   "index": 1,
+   "month": "2026-12-15→2026-12-31",
+   "period": 0.5483870967741935,
+   "periodLabel": "0.548",
+   "revenue": 305.21,
+   "operatingCashFlow": -3094.79,
+   "capex": 0,
+   "otherCashFlow": 0,
+   "netCashFlow": -3094.79,
+   "discountFactor": 0.9936333828559851,
+   "discountedCashFlow": -3075.086656928874,
+   "cumulativeDiscountedCashFlow": -111075.08665692888,
+   "display": {
+    "period": "0.548",
+    "discountFactor": 0.9936334,
+    "discountedCashFlow": -3075.09,
+    "cumulativeDiscountedCashFlow": -111075.09
+   }
+  },
+  {
+   "index": 2,
+   "month": "2027-01",
+   "period": 1.5483870967741935,
+   "periodLabel": "1.548",
+   "revenue": 1571.48,
+   "operatingCashFlow": -4628.52,
+   "capex": 0,
+   "otherCashFlow": 0,
+   "netCashFlow": -4628.52,
+   "discountFactor": 0.9821278368426977,
+   "discountedCashFlow": -4545.798335383163,
+   "cumulativeDiscountedCashFlow": -115620.88499231204,
+   "display": {
+    "period": "1.548",
+    "discountFactor": 0.9821278,
+    "discountedCashFlow": -4545.8,
+    "cumulativeDiscountedCashFlow": -115620.88
+   }
+  },
+  {
+   "index": 3,
+   "month": "2027-02",
+   "period": 2.5483870967741935,
+   "periodLabel": "2.548",
+   "revenue": 2586.39,
+   "operatingCashFlow": -3613.61,
+   "capex": 0,
+   "otherCashFlow": 0,
+   "netCashFlow": -3613.61,
+   "discountFactor": 0.9707555166160514,
+   "discountedCashFlow": -3507.93184239893,
+   "cumulativeDiscountedCashFlow": -119128.81683471097,
+   "display": {
+    "period": "2.548",
+    "discountFactor": 0.9707555,
+    "discountedCashFlow": -3507.93,
+    "cumulativeDiscountedCashFlow": -119128.82
+   }
+  },
+  {
+   "index": 4,
+   "month": "2027-03",
+   "period": 3.5483870967741935,
+   "periodLabel": "3.548",
+   "revenue": 3601.3,
+   "operatingCashFlow": -2598.7,
+   "capex": 0,
+   "otherCashFlow": 0,
+   "netCashFlow": -2598.7,
+   "discountFactor": 0.9595148795191218,
+   "discountedCashFlow": -2493.4913174063418,
+   "cumulativeDiscountedCashFlow": -121622.30815211732,
+   "display": {
+    "period": "3.548",
+    "discountFactor": 0.9595149,
+    "discountedCashFlow": -2493.49,
+    "cumulativeDiscountedCashFlow": -121622.31
+   }
+  },
+  {
+   "index": 5,
+   "month": "2027-04",
+   "period": 4.548387096774194,
+   "periodLabel": "4.548",
+   "revenue": 4616.21,
+   "operatingCashFlow": -1583.79,
+   "capex": 0,
+   "otherCashFlow": 0,
+   "netCashFlow": -1583.79,
+   "discountFactor": 0.9484044007578207,
+   "discountedCashFlow": -1502.073405876229,
+   "cumulativeDiscountedCashFlow": -123124.38155799355,
+   "display": {
+    "period": "4.548",
+    "discountFactor": 0.9484044,
+    "discountedCashFlow": -1502.07,
+    "cumulativeDiscountedCashFlow": -123124.38
+   }
+  },
+  {
+   "index": 6,
+   "month": "2027-05",
+   "period": 5.548387096774194,
+   "periodLabel": "5.548",
+   "revenue": 5631.13,
+   "operatingCashFlow": -568.87,
+   "capex": 0,
+   "otherCashFlow": 0,
+   "netCashFlow": -568.87,
+   "discountFactor": 0.9374225731940573,
+   "discountedCashFlow": -533.2715792129034,
+   "cumulativeDiscountedCashFlow": -123657.65313720645,
+   "display": {
+    "period": "5.548",
+    "discountFactor": 0.9374226,
+    "discountedCashFlow": -533.27,
+    "cumulativeDiscountedCashFlow": -123657.65
+   }
+  },
+  {
+   "index": 7,
+   "month": "2027-06",
+   "period": 6.548387096774194,
+   "periodLabel": "6.548",
+   "revenue": 6195.14,
+   "operatingCashFlow": -4.86,
+   "capex": 0,
+   "otherCashFlow": 0,
+   "netCashFlow": -4.86,
+   "discountFactor": 0.9265679071412947,
+   "discountedCashFlow": -4.503120028706692,
+   "cumulativeDiscountedCashFlow": -123662.15625723515,
+   "display": {
+    "period": "6.548",
+    "discountFactor": 0.9265679,
+    "discountedCashFlow": -4.5,
+    "cumulativeDiscountedCashFlow": -123662.16
+   }
+  },
+  {
+   "index": 8,
+   "month": "2027-07",
+   "period": 7.548387096774194,
+   "periodLabel": "7.548",
+   "revenue": 6745.05,
+   "operatingCashFlow": 545.05,
+   "capex": 0,
+   "otherCashFlow": 0,
+   "netCashFlow": 545.05,
+   "discountFactor": 0.915838930162474,
+   "discountedCashFlow": 499.1780088850564,
+   "cumulativeDiscountedCashFlow": -123162.9782483501,
+   "display": {
+    "period": "7.548",
+    "discountFactor": 0.9158389,
+    "discountedCashFlow": 499.18,
+    "cumulativeDiscountedCashFlow": -123162.98
+   }
+  },
+  {
+   "index": 9,
+   "month": "2027-08",
+   "period": 8.548387096774194,
+   "periodLabel": "8.548",
+   "revenue": 7281.2,
+   "operatingCashFlow": 1081.2,
+   "capex": 0,
+   "otherCashFlow": 0,
+   "netCashFlow": 1081.2,
+   "discountFactor": 0.9052341868702778,
+   "discountedCashFlow": 978.7392028441444,
+   "cumulativeDiscountedCashFlow": -122184.23904550596,
+   "display": {
+    "period": "8.548",
+    "discountFactor": 0.9052342,
+    "discountedCashFlow": 978.74,
+    "cumulativeDiscountedCashFlow": -122184.24
+   }
+  },
+  {
+   "index": 10,
+   "month": "2027-09",
+   "period": 9.548387096774194,
+   "periodLabel": "9.548",
+   "revenue": 7804,
+   "operatingCashFlow": 1604,
+   "capex": 0,
+   "otherCashFlow": 0,
+   "netCashFlow": 1604,
+   "discountFactor": 0.8947522387297066,
+   "discountedCashFlow": 1435.1825909224492,
+   "cumulativeDiscountedCashFlow": -120749.05645458352,
+   "display": {
+    "period": "9.548",
+    "discountFactor": 0.8947522,
+    "discountedCashFlow": 1435.18,
+    "cumulativeDiscountedCashFlow": -120749.06
+   }
+  },
+  {
+   "index": 11,
+   "month": "2027-10",
+   "period": 10.548387096774194,
+   "periodLabel": "10.548",
+   "revenue": 8313.71,
+   "operatingCashFlow": 2113.71,
+   "capex": 0,
+   "otherCashFlow": 0,
+   "netCashFlow": 2113.71,
+   "discountFactor": 0.8843916638629413,
+   "discountedCashFlow": 1869.3475038237377,
+   "cumulativeDiscountedCashFlow": -118879.70895075978,
+   "display": {
+    "period": "10.548",
+    "discountFactor": 0.8843917,
+    "discountedCashFlow": 1869.35,
+    "cumulativeDiscountedCashFlow": -118879.71
+   }
+  },
+  {
+   "index": 12,
+   "month": "2027-11",
+   "period": 11.548387096774194,
+   "periodLabel": "11.548",
+   "revenue": 8810.68,
+   "operatingCashFlow": 2610.68,
+   "capex": 0,
+   "otherCashFlow": 0,
+   "netCashFlow": 2610.68,
+   "discountFactor": 0.8741510568564659,
+   "discountedCashFlow": 2282.128681114038,
+   "cumulativeDiscountedCashFlow": -116597.58026964575,
+   "display": {
+    "period": "11.548",
+    "discountFactor": 0.8741511,
+    "discountedCashFlow": 2282.13,
+    "cumulativeDiscountedCashFlow": -116597.58
+   }
+  },
+  {
+   "index": 13,
+   "month": "2027-12-01→2027-12-14",
+   "period": 12,
+   "periodLabel": "12",
+   "revenue": 4077.84,
+   "operatingCashFlow": 1277.84,
+   "capex": 0,
+   "otherCashFlow": 0,
+   "netCashFlow": 1277.84,
+   "discountFactor": 0.8695652173913044,
+   "discountedCashFlow": 1111.1652173913044,
+   "cumulativeDiscountedCashFlow": -115486.41505225445,
+   "display": {
+    "period": "12",
+    "discountFactor": 0.8695652,
+    "discountedCashFlow": 1111.17,
+    "cumulativeDiscountedCashFlow": -115486.42
+   }
+  }
+ ],
+ "limitation": "R11: the live model has no tax, financing or working-capital timing, so monthly NOI is used as operating cash; opening working capital stays inside the initial investment and is not released at term end; no property or fit-out sale value is assumed."
+}

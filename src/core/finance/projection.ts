@@ -27,8 +27,26 @@
 
 import { createHash } from 'node:crypto';
 import { AppError } from '../../lib/http';
+import {
+  addMonthsForLeaseEnd,
+  buildCalendarRows,
+  buildLeaseYears,
+  chargeableSegments,
+  committedEndDate,
+  daysInMonth,
+  diffDays,
+  leaseExpenseForRow,
+  resolveTimeline,
+  validateRentFree,
+  validateSchedule,
+  type CalendarRow,
+  type ProrationMethod,
+} from './leaseTerm';
 
 export const ENGINE_VERSION = 'finance-projection/1';
+
+/** P2 (lease horizon): inputs carrying the v2 lease block project as /2. */
+export const ENGINE_VERSION_V2 = 'finance-projection/2';
 
 export interface SizeCategoryInput {
   name: string;
@@ -57,6 +75,44 @@ export interface LeaseInput {
   ufaSqft?: number; // display only
 }
 
+/**
+ * P2 v2 lease block (built by `upcastInputs` in leaseTerm.ts, PLAN §6).
+ * Carried inside `ProjectionInput.lease`: when present the engine takes the
+ * /2 bucket path; inputs without it keep the EXACT v1 path (R14).
+ */
+export interface V2LeaseScheduleRow {
+  leaseYear: number;
+  periodStart: string;
+  periodEnd: string;
+  monthlyRent: number;
+  source: 'contract' | 'user_entered' | 'estimated';
+  confirmed: boolean;
+  excluded?: boolean; // shortened-term rows stay saved for re-extension
+}
+
+export interface V2LeaseBlock extends LeaseInput {
+  startDate: string; // lease commencement (inputs.startDate = operational start, D6B)
+  committedTermMonths: number; // mirrors inputs.horizonMonths
+  committedEndDate: string; // server-derived; the engine re-derives and ignores drift
+  rentFreeStartDate: string | null;
+  rentFreeEndDate: string | null;
+  prorationMethod: ProrationMethod;
+  currency: string; // 'SGD'
+  schedule: V2LeaseScheduleRow[];
+  legacyRentFreeMonths?: number; // D3-audit original, informational only
+}
+
+/** True when the lease carries the v2 block → project as finance-projection/2. */
+export function hasV2LeaseBlock(input: ProjectionInput): boolean {
+  const l = input.lease as unknown as Record<string, unknown> | null;
+  return (
+    !!l &&
+    typeof (l as { startDate?: unknown }).startDate === 'string' &&
+    typeof (l as { committedTermMonths?: unknown }).committedTermMonths === 'number' &&
+    Array.isArray((l as { schedule?: unknown }).schedule)
+  );
+}
+
 export interface OpexCategoryInput {
   name: string;
   budget: number; // monthly non-lease budget for this category
@@ -79,9 +135,21 @@ export interface CapitalItemInput {
   amount: number;
 }
 
+/**
+ * P4 stored Investment valuation assumptions (opaque to the projection
+ * engine — carried for the valuation step only, never read here).
+ */
+export interface ValuationAssumptionsInput {
+  methodology?: string;
+  manualAnnualRate?: number;
+  [k: string]: unknown;
+}
+
 export interface ProjectionInput {
   startDate: string; // YYYY-MM-DD (may be mid-month → month 1 prorated, §7.3)
   horizonMonths: number; // 1–120
+  // P4 (D7A/D8A): stamped at model creation, edited via PUT …/valuation.
+  valuation?: ValuationAssumptionsInput;
   nlaSqft: number;
   sizeMix: SizeCategoryInput[];
   occupancy: OccupancyPlanInput;
@@ -93,9 +161,9 @@ export interface ProjectionInput {
 }
 
 export interface ProjectionMonth {
-  t: number; // 1-based model month
+  t: number; // 1-based calendar-row index (v1: model month; v2: calendar row)
   month: string; // calendar label YYYY-MM
-  periodFactor: number; // 1 except a prorated opening month
+  periodFactor: number; // 1 except prorated stub rows (round4 display; math uses unrounded)
   openingSqft: number;
   moveInSqft: number;
   moveOutSqft: number;
@@ -110,6 +178,12 @@ export interface ProjectionMonth {
   noi: number; // cents
   noiMarginPct: number | null; // null when revenue is 0
   cash: number; // cumulative cash, cents
+  // ---- v2 bucket rows (R1/R2/D6B): present only on the /2 engine path ----
+  periodStart?: string; // YYYY-MM-DD (timeline start for the first row, else 1st)
+  periodEnd?: string; // YYYY-MM-DD (committed end for the last row, else month end)
+  leaseYear?: number; // anniversaries elapsed at the row's FIRST day + 1 (0 = before lease start)
+  isStub?: boolean; // true when the row is a partial calendar month
+  isPreOpening?: boolean; // true while the row starts before operational opening
 }
 
 export interface YearSummary {
@@ -141,6 +215,11 @@ export interface ProjectionResult {
   months: ProjectionMonth[];
   kpis: ProjectionKpis;
   checks: Record<string, { pass: boolean; detail: string }>;
+  // v2-only (B4): committed lease payable + payable-months per lease year,
+  // priced from each row's chargeable segments so anniversary-straddling rows
+  // split across years. Absent on the v1 path and on stored projections that
+  // predate it — readers must fall back to row grouping.
+  leasePayableByYear?: Record<number, { payable: number; factor: number }>;
 }
 
 // ---------- small deterministic helpers ----------
@@ -282,7 +361,17 @@ export function annualisedIrr(cashflows: number[]): number | null {
 
 // ---------- main projection (§§8.2–8.7) ----------
 
+/**
+ * Dispatcher: v2 lease block → /2 bucket engine; otherwise the EXACT v1 path
+ * (R14 — byte-identical rows for first-of-month models without surprises).
+ */
 export function project(rawInput: ProjectionInput): ProjectionResult {
+  if (hasV2LeaseBlock(rawInput)) return projectV2(rawInput);
+  return projectV1(rawInput);
+}
+
+/** V1 engine — UNCHANGED arithmetic (R14 lock; P2 must not touch this body). */
+export function projectV1(rawInput: ProjectionInput): ProjectionResult {
   const input: ProjectionInput = { ...rawInput, nlaSqft: effectiveNla(rawInput) };
   validateInput(input);
   const H = input.horizonMonths;
@@ -364,6 +453,355 @@ export function project(rawInput: ProjectionInput): ProjectionResult {
   const kpis = buildKpis(months, basePsf, input.capitalTotal, H);
   const checks = buildChecks(months, input, basePsf, proratedStart, cap);
   return { engineVersion: ENGINE_VERSION, inputHash: hashInput(input), months, kpis, checks };
+}
+
+// ---------- P2 v2 bucket engine (R2–R6, R12, D6B, D12A) ----------
+//
+// Rows are calendar months from the timeline start (the EARLIER of lease
+// commencement and operational start, D6B) through the derived committed end
+// date. Lease expense is split by lease year + rent-free dates via
+// leaseTerm.chargeableSegments/leaseExpenseForRow (R3); the proration method
+// applies to LANDLORD LEASE ONLY while revenue + non-lease opex always use
+// actual-days factors (R4); the closing stub scales revenue, non-lease opex,
+// planned move-ins and churn exactly like the opening stub (R5); a row that
+// straddles the operational start earns revenue/move-ins for its operational
+// days only (D6B fix — days before opening are pre-opening, days after are
+// not); model year is anniversaries elapsed at the row's FIRST calendar day
+// (R6).
+// P3 owns fractional discount periods + the dated cash-flow series — this
+// engine keeps the v1 integer-period valuation untouched.
+
+/** D12A: every money input on the v2 path carries at most SGD cents. */
+function assertCents(n: number, label: string): void {
+  if (!Number.isFinite(n)) throw new AppError(400, 'VALIDATION', `${label} must be a finite number.`);
+  if (Math.abs(n * 100 - Math.round(n * 100)) > 1e-6) {
+    throw new AppError(400, 'VALIDATION', `${label} must have at most two decimal places (SGD cents), got ${n}.`);
+  }
+}
+
+/** 1-based lease year containing dateISO (0 = before the lease starts). */
+function leaseYearAtDate(dateISO: string, leaseStart: string, termMonths: number): number {
+  if (dateISO < leaseStart) return 0;
+  const count = Math.ceil(termMonths / 12);
+  let year = 1;
+  for (let k = 1; k <= count; k++) {
+    if (addMonthsForLeaseEnd(leaseStart, (k - 1) * 12) <= dateISO) year = k;
+    else break;
+  }
+  return year;
+}
+
+export function projectV2(rawInput: ProjectionInput): ProjectionResult {
+  const lease = rawInput.lease as unknown as V2LeaseBlock;
+  const input: ProjectionInput = { ...rawInput, nlaSqft: effectiveNla(rawInput) };
+  const fail = (msg: string): never => {
+    throw new AppError(400, 'VALIDATION', msg);
+  };
+  // Shared guards mirror the v1 messages so callers see identical copy.
+  if (!input || typeof input !== 'object') fail('Projection input is required.');
+  if (!Number.isInteger(input.horizonMonths) || input.horizonMonths < 1 || input.horizonMonths > 120) {
+    fail('horizonMonths must be an integer 1–120.');
+  }
+  if (!(input.nlaSqft > 0)) fail('nlaSqft must be greater than zero.');
+  parseStartDate(input.startDate);
+  const o = input.occupancy;
+  if (o.rampFirst6 < 0 || o.rampFrom7 < 0) fail('Occupancy ramp values cannot be negative.');
+  if (!(o.moveOutRatePct >= 0) || o.moveOutRatePct > 100) fail('moveOutRatePct must be between 0 and 100.');
+  if (!Number.isInteger(o.churnStartMonth) || o.churnStartMonth < 1) {
+    fail('churnStartMonth must be within the horizon.');
+  }
+  if (!(o.targetPct > 0) || o.targetPct > 100) fail('targetPct must be between 0 and 100.');
+  if (input.capitalTotal < 0) fail('Capital values cannot be negative.');
+  if (input.opex.baseMonthly < 0) fail('Opex values cannot be negative.');
+  if (Object.values(input.opex.overrides ?? {}).some((v) => !(v >= 0))) fail('Monthly budget overrides cannot be negative.');
+  if ((input.capitalItems ?? []).some((c) => !(c.amount >= 0))) fail('Capital item amounts cannot be negative.');
+  if (!Array.isArray(lease.monthlyByYear) || !lease.monthlyByYear.length) {
+    fail('Lease schedule must cover at least model year 1.');
+  }
+  if (lease.monthlyByYear.some((r) => r < 0)) fail('Lease rent values cannot be negative.');
+  for (const c of input.sizeMix) {
+    if (c.nlaSqft < 0 || c.psf < 0 || c.units < 0) fail(`Size category ${c.name}: values cannot be negative.`);
+  }
+  // D12A: cents validation on every money input (rates/areas/percents excluded).
+  for (const r of lease.monthlyByYear) assertCents(r, 'Lease monthly rent');
+  assertCents(input.opex.baseMonthly, 'Monthly non-lease opex');
+  for (const [m, v] of Object.entries(input.opex.overrides ?? {})) assertCents(v, `Budget override ${m}`);
+  for (const c of input.opex.categories ?? []) assertCents(c.budget, `Opex category ${c.name}`);
+  assertCents(input.capitalTotal, 'Capital total');
+  for (const c of input.capitalItems ?? []) assertCents(c.amount, `Capital item ${c.name}`);
+  if (!Number.isInteger(lease.rentFreeMonths) || lease.rentFreeMonths < 0) {
+    fail('rentFreeMonths cannot be negative.');
+  }
+
+  const termMonths = lease.committedTermMonths;
+  if (!Number.isInteger(termMonths) || termMonths < 1 || termMonths > 120) {
+    fail('committedTermMonths must be an integer 1–120 (engine limit).');
+  }
+  if (input.horizonMonths !== termMonths) {
+    fail(`committedTermMonths (${termMonths}) must mirror horizonMonths (${input.horizonMonths}) — reload the model snapshot.`);
+  }
+  const leaseStart = lease.startDate;
+  const opsStart = input.startDate;
+  const committedEnd = committedEndDate(leaseStart, termMonths);
+  const timeline = resolveTimeline(leaseStart, opsStart);
+  const rows = buildCalendarRows(timeline.timelineStartISO, committedEnd);
+  const leaseYears = buildLeaseYears(leaseStart, termMonths);
+
+  // R12: every committed lease year needs a confirmed rent row (contract,
+  // user-entered, or a confirmed estimate). Anything else BLOCKS Update —
+  // the P4 command maps this named 400-shaped error to the LH07 422 gate.
+  const needYears = Math.ceil(termMonths / 12);
+  const schedule = Array.isArray(lease.schedule) ? lease.schedule : [];
+  const active = schedule.filter((r) => !r.excluded);
+  for (let k = 1; k <= needYears; k++) {
+    const row = active.find((r) => r.leaseYear === k);
+    if (!row) {
+      throw new AppError(
+        400,
+        'VALIDATION',
+        `Lease schedule is incomplete for the committed term — year ${k} of ${needYears} has no rent row. Review the estimated lease-year amounts before updating.`,
+        { code: 'LEASE_SCHEDULE_UNCONFIRMED', leaseYear: k, needYears },
+      );
+    }
+    if (row.monthlyRent < 0) fail('Lease rent values cannot be negative.');
+    assertCents(row.monthlyRent, `Lease year ${k} monthly rent`);
+    if (!(row.source === 'contract' || row.source === 'user_entered' || (row.source === 'estimated' && row.confirmed))) {
+      throw new AppError(
+        400,
+        'VALIDATION',
+        'Lease schedule is incomplete for the extended term. Review the estimated lease-year amounts before updating.',
+        { code: 'LEASE_SCHEDULE_UNCONFIRMED', leaseYear: k, source: row.source, confirmed: row.confirmed },
+      );
+    }
+  }
+  const schedProblems = validateSchedule(active, leaseStart, committedEnd);
+  if (schedProblems.length) fail(schedProblems.join(' '));
+
+  let rentFree: { startDate: string; endDate: string } | null = null;
+  const rfStart = lease.rentFreeStartDate;
+  const rfEnd = lease.rentFreeEndDate;
+  if (rfStart !== null || rfEnd !== null) {
+    if (rfStart === null || rfEnd === null) {
+      throw new AppError(400, 'VALIDATION', 'Rent-free start and end dates must both be set or both be empty.');
+    }
+    rentFree = { startDate: rfStart, endDate: rfEnd };
+  }
+  const rfProblems = validateRentFree(rentFree, leaseStart, committedEnd);
+  if (rfProblems.length) fail(rfProblems.join(' '));
+
+  // R6: churn stays row-indexed; starting it past the last calendar row is a
+  // named engine error (P4 maps it to a 422 with a clear message).
+  if (o.churnStartMonth > rows.length) {
+    throw new AppError(
+      400,
+      'VALIDATION',
+      `churnStartMonth (${o.churnStartMonth}) is beyond the ${termMonths}-month committed term (${rows.length} calendar rows) — churn cannot start after the lease ends.`,
+      { code: 'CHURN_BEYOND_TERM', churnStartMonth: o.churnStartMonth, termMonths, calendarRows: rows.length },
+    );
+  }
+
+  const method: ProrationMethod = lease.prorationMethod ?? 'actual_days';
+  const cap = input.nlaSqft * (o.targetPct / 100);
+  const basePsf = input.pricing.weightedStartPsf ?? weightedPsf(input.sizeMix);
+  const churnRate = o.moveOutRatePct / 100;
+  const growth = 1 + input.opex.annualGrowthPct / 100;
+  const rentGrowth = 1 + input.pricing.annualIncreasePct / 100;
+  const rentByYear = new Map(active.map((r) => [r.leaseYear, r.monthlyRent]));
+
+  const months: ProjectionMonth[] = [];
+  let opening = 0;
+  let cash = round2(-input.capitalTotal);
+  // Committed lease payable per lease year, priced from each row's chargeable
+  // segments (B4): a row straddling an anniversary — or the lease-start row
+  // when operations began first — attributes each day to its own lease year,
+  // so Year 1 always prices exactly 12 months for a 12-month term.
+  const payableByYear = new Map<number, { payable: number; factor: number }>();
+
+  for (let i = 0; i < rows.length; i++) {
+    const cal: CalendarRow = rows[i];
+    const t = i + 1;
+    // R4/R5: revenue + non-lease opex (+ move-ins/churn) always use the
+    // UNROUNDED actual-days factor; only the stored display factor is round4.
+    const activeDays = diffDays(cal.periodStart, cal.periodEnd) + 1;
+    const factor = activeDays / cal.daysInMonth;
+    const storedFactor = round4(factor);
+    const ly = leaseYearAtDate(cal.periodStart, leaseStart, termMonths);
+    const modelYear = Math.max(0, ly - 1);
+    const isStub = cal.periodStart.slice(8) !== '01' || Number(cal.periodEnd.slice(8)) !== cal.daysInMonth;
+    const isPreOpening = timeline.isPreOpening(cal.periodStart);
+    // D6B: only days before opening are pre-opening — operational days inside
+    // a straddle row earn revenue and move-ins, prorated by the OPERATIONAL
+    // days like the opening stub (not the whole-row factor). Revenue and
+    // occupancy additionally need the lease to have commenced, so the
+    // operational window starts at the later of the two commencement dates.
+    const revenueStart = opsStart > leaseStart ? opsStart : leaseStart;
+    const effStart = cal.periodStart > revenueStart ? cal.periodStart : revenueStart;
+    const opDays = effStart > cal.periodEnd ? 0 : diffDays(effStart, cal.periodEnd) + 1;
+    const gated = opDays === 0;
+    const opFactor = opDays / cal.daysInMonth;
+
+    // §8.2 movement, row-indexed (ramp t≤6, churn t≥churnStartMonth per R6).
+    let moveIn = 0;
+    let moveOut = 0;
+    if (!gated) {
+      const planned = (t <= 6 ? o.rampFirst6 : o.rampFrom7) * opFactor;
+      const moveOutRaw = t >= o.churnStartMonth ? opening * churnRate : 0;
+      const available = Math.max(0, cap - opening + moveOutRaw);
+      moveIn = round2(Math.min(planned, available));
+      moveOut = round2(moveOutRaw * opFactor);
+    }
+    const net = round2(moveIn - moveOut);
+    const closing = gated ? round2(opening) : Math.min(Math.max(round2(opening + net), 0), round2(cap));
+    const occupancy = closing / input.nlaSqft;
+
+    // §8.3 pricing over time — uplift at the LEASE anniversary (R6), so the
+    // closing stub never takes an uplift whose anniversary it hasn't reached.
+    const psf = round4(basePsf * rentGrowth ** modelYear);
+    const revenue = gated ? 0 : round2(closing * psf * opFactor);
+
+    // §8.4 landlord lease — R3 segments priced by schedule year (R4 method).
+    const segs = chargeableSegments(cal, leaseYears, rentFree);
+    const expense = leaseExpenseForRow(
+      cal,
+      segs.map((s) => ({ ...s, monthlyRent: rentByYear.get(s.leaseYear) ?? 0 })),
+      method,
+    );
+    const paidLease = expense.payableCents;
+    for (const d of expense.segments) {
+      const e = payableByYear.get(d.leaseYear) ?? { payable: 0, factor: 0 };
+      e.payable += d.amount;
+      e.factor += d.factor;
+      payableByYear.set(d.leaseYear, e);
+    }
+
+    // §8.5 opex — an approved monthly override replaces the base for that
+    // month only (as-is, like v1); otherwise base × growth^modelYear × factor.
+    const override = input.opex.overrides?.[cal.calendarMonth];
+    const opexNonLease = Number.isFinite(override)
+      ? round2(override as number)
+      : round2(input.opex.baseMonthly * growth ** modelYear * factor);
+    const operatingCost = round2(paidLease + opexNonLease);
+
+    // §8.6 NOI / margin / cash.
+    const noi = round2(revenue - operatingCost);
+    const margin = revenue !== 0 ? Math.round((noi / revenue) * 1000) / 10 : null;
+    cash = round2(cash + noi);
+
+    months.push({
+      t,
+      month: cal.calendarMonth,
+      periodFactor: storedFactor,
+      openingSqft: round2(opening),
+      moveInSqft: moveIn,
+      moveOutSqft: moveOut,
+      netMoveInSqft: net,
+      closingSqft: closing,
+      occupancyPct: Math.round(occupancy * 1000) / 10,
+      psf,
+      revenue,
+      opexLease: paidLease,
+      opexNonLease,
+      operatingCost,
+      noi,
+      noiMarginPct: margin,
+      cash,
+      periodStart: cal.periodStart,
+      periodEnd: cal.periodEnd,
+      leaseYear: ly,
+      isStub,
+      isPreOpening,
+    });
+    opening = closing;
+  }
+
+  const kpis = buildKpisV2(months, basePsf, input.capitalTotal, termMonths);
+  const checks = buildChecksV2(months, input, basePsf, cap);
+  const leasePayableByYear: Record<number, { payable: number; factor: number }> = {};
+  for (const [y, e] of payableByYear) leasePayableByYear[y] = { payable: round2(e.payable), factor: e.factor };
+  return { engineVersion: ENGINE_VERSION_V2, inputHash: hashInput(input), months, kpis, checks, leasePayableByYear };
+}
+
+/** R6: kpis.years follows the lease-year index — N months → ceil(N/12) years. */
+function buildKpisV2(months: ProjectionMonth[], basePsf: number, capital: number, termMonths: number): ProjectionKpis {
+  const yearCount = Math.ceil(termMonths / 12);
+  const years: YearSummary[] = [];
+  for (let y = 1; y <= yearCount; y++) {
+    const group = months.filter((m) => Math.max(1, m.leaseYear ?? 1) === y);
+    const revenue = round2(group.reduce((s, m) => s + m.revenue, 0));
+    const cost = round2(group.reduce((s, m) => s + m.operatingCost, 0));
+    const noi = round2(revenue - cost);
+    years.push({
+      year: y,
+      revenue,
+      operatingCost: cost,
+      noi,
+      noiMarginPct: revenue !== 0 ? Math.round((noi / revenue) * 1000) / 10 : null,
+      cashAtYearEnd: group.length ? group[group.length - 1].cash : y === 1 ? round2(-capital) : years[y - 2].cashAtYearEnd,
+      closingSqft: group.length ? group[group.length - 1].closingSqft : 0,
+    });
+  }
+  const firstWhere = (p: (m: ProjectionMonth) => boolean): number | null => {
+    const f = months.find(p);
+    return f ? f.t : null;
+  };
+  const cashflows = [-capital, ...months.map((m) => m.noi)];
+  const irr = annualisedIrr(cashflows);
+  const y1 = months.filter((m) => Math.max(1, m.leaseYear ?? 1) === 1);
+  return {
+    weightedStartPsf: round4(basePsf),
+    year1OccupiedSqft: y1.length ? y1[y1.length - 1].closingSqft : 0,
+    year1NetMoveInSqft: round2(y1.reduce((s, m) => s + m.netMoveInSqft, 0)),
+    years,
+    noiPositiveMonth: firstWhere((m) => m.noi >= 0),
+    stabilisedMonth: stabilised(months),
+    paybackMonth: firstWhere((m) => m.cash >= 0),
+    occupancy70Month: firstWhere((m) => m.occupancyPct >= 70),
+    irrAnnualised: irr,
+    irrNote: irr === null ? 'Not available — operating cash flows show no sign change (no sale value included).' : 'Operating cash-flow IRR, no sale value.',
+  };
+}
+
+function buildChecksV2(
+  months: ProjectionMonth[],
+  input: ProjectionInput,
+  basePsf: number,
+  cap: number,
+): Record<string, { pass: boolean; detail: string }> {
+  const eps = 0.011; // cents-level tolerance on rounded rows
+  const netOk = months.every((m) => Math.abs(m.netMoveInSqft - (m.moveInSqft - m.moveOutSqft)) < eps);
+  const churnOk = months.every((m) =>
+    m.t < input.occupancy.churnStartMonth ? m.moveOutSqft === 0 : true,
+  );
+  const lease2 = input.lease as unknown as { startDate?: string };
+  const revenueStart2 = input.startDate > (lease2.startDate ?? '') ? input.startDate : (lease2.startDate ?? input.startDate);
+  const revenueOk = months.every((m) => {
+    const effStart = (m.periodStart as string) > revenueStart2 ? (m.periodStart as string) : revenueStart2;
+    const opDays = effStart > (m.periodEnd as string) ? 0 : diffDays(effStart, m.periodEnd as string) + 1;
+    if (opDays === 0) return m.revenue === 0 && m.moveInSqft === 0 && m.closingSqft === (m.openingSqft ?? 0);
+    const [y, m1] = m.month.split('-').map(Number);
+    const unrounded = opDays / daysInMonth(y, m1);
+    return Math.abs(m.revenue - round2(m.closingSqft * m.psf * unrounded)) < eps;
+  });
+  const leaseOnce = months.every((m) => Math.abs(m.operatingCost - (m.opexLease + m.opexNonLease)) < eps);
+  const capOk = months.every((m) => m.closingSqft <= cap + eps);
+  const cashStart = months.length ? Math.abs(months[0].cash - round2(-input.capitalTotal + months[0].noi)) < eps : true;
+  const anyStub = months.some((m) => m.isStub);
+  const stubOk = anyStub
+    ? (months[0].periodFactor as number) < 1 || (months[months.length - 1].periodFactor as number) < 1
+    : months.every((m) => m.periodFactor === 1);
+  return {
+    netMoveIn: { pass: netOk, detail: 'net move-in equals move-in minus move-out every month' },
+    churnStart: { pass: churnOk, detail: `no move-out before model row ${input.occupancy.churnStartMonth}` },
+    revenueUsesOccupiedPsf: { pass: revenueOk, detail: 'revenue equals closing occupied sqft × month PSF × operational-days factor (zero before opening)' },
+    leaseCountedOnce: { pass: leaseOnce, detail: 'operating cost equals paid lease + non-lease opex, single lease line' },
+    stabilisationCap: { pass: capOk, detail: `occupied never exceeds target cap ${round2(cap)} sqft` },
+    openingProrated: {
+      pass: stubOk,
+      detail: anyStub ? `stub rows prorated (opening factor ${months[0].periodFactor})` : 'full opening month (factor 1)',
+    },
+    cashStartsAtCapital: { pass: cashStart, detail: `cash opens at −capital (${input.capitalTotal}) plus month-1 NOI` },
+    weightedPsf: { pass: true, detail: `weighted starting PSF ${round4(basePsf)} from size mix` },
+  };
 }
 
 function yearSlice(months: ProjectionMonth[], year: number): ProjectionMonth[] {

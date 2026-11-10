@@ -56,7 +56,8 @@ import {
   restoreVersion as restoreModelVersion, archiveModel, setCurrentModel, publishModel,
   listVersions as listModelVersions, modelAuditHistory,
   listBudgets, createBudget, updateBudget, listExpenses, recordExpense, expensesExportCsv, updateExpense, EXPENSE_STATUSES,
-  getPricing, overridePricing, getReturns,
+  getPricing, overridePricing, getReturns, isCommittedValued, committedDcfCsv,
+  getLandlordLease, updateLandlordLease, updateValuation, recalculateModel, requireCurrentCalculation,
   applyScenario, sensitivity, project as projectEngine,
   listFinanceInvoices, getInvoiceDetail, createInvoice, approveInvoice, issueInvoice,
   voidInvoice, writeOffInvoice, runBilling,
@@ -1700,6 +1701,62 @@ for (const section of ['inputs', 'occupancy', 'capital', 'pricing', 'lease', 'as
   });
 }
 
+// ---- Lease horizon P4 — governed landlord-lease write path (owner D9B) ----
+// Read + full-section Update (+ valuation assumptions + retry-only
+// recalculate). Request bodies pass through as objects: the service owns the
+// 422 VALIDATION + per-field details contract (§12.1). The server derives
+// committedEndDate (client values ignored) and never mutates CURRENT/PENDING
+// models (D4A auto-draft). Registered AFTER the generic `:id` routes above:
+// the three-segment paths cannot collide with them, and the literal-sibling
+// rule keeps the table shadowing-safe.
+const leaseBodySchema = z.object({}).passthrough();
+
+router.get('/finance/models/:id/landlord-lease', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await getLandlordLease(String(req.params.id)));
+});
+
+router.put('/finance/models/:id/landlord-lease', requireAuth, async (req: Request, res: Response) => {
+  const parsed = leaseBodySchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 422, 'VALIDATION', 'Invalid landlord lease payload', parsed.error.flatten());
+    return;
+  }
+  const admin = adminOf(req);
+  ok(res, await updateLandlordLease({
+    modelId: String(req.params.id),
+    body: parsed.data,
+    actor: admin?.email ?? 'unknown',
+    actorIsOwner: admin?.isOwner ?? false,
+    idempotencyKey: getIdempotencyKey(req.headers),
+  }));
+});
+
+router.put('/finance/models/:id/valuation', requireAuth, async (req: Request, res: Response) => {
+  const parsed = leaseBodySchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 422, 'VALIDATION', 'Invalid valuation payload', parsed.error.flatten());
+    return;
+  }
+  const admin = adminOf(req);
+  ok(res, await updateValuation({
+    modelId: String(req.params.id),
+    body: parsed.data,
+    actor: admin?.email ?? 'unknown',
+    actorIsOwner: admin?.isOwner ?? false,
+    idempotencyKey: getIdempotencyKey(req.headers),
+  }));
+});
+
+router.post('/finance/models/:id/recalculate', requireAuth, async (req: Request, res: Response) => {
+  const admin = adminOf(req);
+  ok(res, await recalculateModel({
+    modelId: String(req.params.id),
+    actor: admin?.email ?? 'unknown',
+    actorIsOwner: admin?.isOwner ?? false,
+    idempotencyKey: getIdempotencyKey(req.headers),
+  }));
+});
+
 router.post('/finance/models/:id/scenarios', requireAuth, async (req: Request, res: Response) => {
   const parsed = financeScenarioSchema.safeParse(req.body);
   if (!parsed.success) {
@@ -1720,7 +1777,53 @@ router.post('/finance/models/:id/sensitivity', requireAuth, async (req: Request,
 });
 
 router.get('/finance/models/:id/export.csv', requireAuth, async (req: Request, res: Response) => {
+  // P7 DCF variant (handoff §8.3): `?format=dcf` serves the committed DCF
+  // table (the ONE series at the stored rate) instead of the month table.
+  // Reused route on purpose — no new permission surface (`bill-models:view`
+  // already covers both finance viewers and approvers; the DCF is the same
+  // revision as the month table), no routePermissions entry, no openapi
+  // entry (booking-only spec carries no CMS finance routes by precedent).
+  const parsedFormat = z.object({ format: z.enum(['months', 'dcf']).optional() }).safeParse(req.query);
+  const format = parsedFormat.success ? (parsedFormat.data.format ?? 'months') : 'months';
   const detail = await getModel(String(req.params.id));
+  // Lease-horizon P4 (handoff §8.5): stale figures block exports until the
+  // calculation for the current revision succeeds (CURRENT only).
+  await requireCurrentCalculation(detail.id);
+  if (format === 'dcf') {
+    const returns = await getReturns({ modelId: detail.id });
+    if (!isCommittedValued(returns.committed)) {
+      fail(res, 409, 'BLOCKED', 'Returns are out of date — investment returns have not been recalculated for the latest lease term. Export is disabled until the calculation succeeds — retry the calculation first.', {
+        calculationStatus: detail.calculationStatus,
+      });
+      return;
+    }
+    const admin = adminOf(req);
+    const correlationId = newCorrelationId();
+    await writeAuditEvent(prisma, {
+      branchId: detail.branchId,
+      actor: admin?.email ?? 'unknown',
+      action: 'EXPORT_GENERATED',
+      entityType: 'financial-model',
+      entityId: detail.id,
+      after: { kind: 'dcf-export-csv', modelVersion: returns.committed.modelVersion, annualRate: returns.committed.annualRate, inputHash: detail.inputHash, engineVersion: detail.engineVersion },
+      reason: 'Model DCF export',
+      source: 'cms',
+      correlationId,
+    });
+    await publishFinanceEvent(prisma, {
+      type: 'export.generated',
+      payload: { kind: 'dcf-export-csv', modelId: detail.id, inputHash: detail.inputHash },
+      branchId: detail.branchId,
+      correlationId,
+    });
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    // The file name identifies the model version and stored annual rate the
+    // rows were discounted at (Section 5: "every exported DCF identifies it").
+    const ratePct = Math.round(returns.committed.annualRate * 10000) / 100;
+    res.setHeader('Content-Disposition', `attachment; filename="financial-model-${detail.id}-v${returns.committed.modelVersion}-${ratePct}pct-${returns.committed.annualRateSource}-dcf.csv"`);
+    res.send(committedDcfCsv(returns.committed));
+    return;
+  }
   const admin = adminOf(req);
   const correlationId = newCorrelationId();
   await writeAuditEvent(prisma, {
@@ -1752,6 +1855,8 @@ router.get('/finance/models/:id/export.csv', requireAuth, async (req: Request, r
 router.get('/finance/models/:id/report.pdf', requireAuth, async (req: Request, res: Response) => {
   const admin = adminOf(req);
   const report = await buildProjectionReport({ modelId: String(req.params.id), generatedBy: admin?.name || admin?.email || 'unknown' });
+  // Lease-horizon P4 (handoff §8.5): stale figures block exports.
+  await requireCurrentCalculation(report.meta.modelId);
   const pdf = await buildProjectionReportPdf(report);
   const correlationId = newCorrelationId();
   const branchId = (await prisma.financialModel.findUnique({ where: { id: report.meta.modelId }, select: { branchId: true } }))?.branchId ?? null;

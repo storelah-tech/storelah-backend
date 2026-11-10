@@ -16,7 +16,7 @@ import { prisma } from '../../lib/prisma';
 import { toNum } from '../../lib/format';
 import { AppError } from '../../lib/http';
 import { project } from './projection';
-import { getReturns } from './returns';
+import { getReturns, isCommittedValued } from './returns';
 import { ACTUAL_METRICS } from './monthClose';
 
 export const INVESTOR_WATERMARK = 'MASKED SUMMARY — APPROVED DATA ONLY';
@@ -138,6 +138,13 @@ export async function getInvestorSummary(opts: InvestorSummaryOpts = {}) {
 
   const branch = branchId ? await prisma.branch.findUnique({ where: { id: branchId } }) : null;
 
+  // P5: the committed valuation (P3 series at the stored rate) is the
+  // reported Project NPV/IRR/payback when present; legacy models without a
+  // stored rate keep the legacy slice (never a substituted default). The rate
+  // is identified on every output (D7A).
+  const c = isCommittedValued(returns.committed) ? returns.committed : null;
+  const committedRatePct = c ? Math.round(c.annualRate * 100 * 10000) / 10000 : null;
+
   return {
     watermark: INVESTOR_WATERMARK,
     label: 'Masked summary — approved data only. Customer names, transaction detail and draft data are never included.',
@@ -179,19 +186,32 @@ export async function getInvestorSummary(opts: InvestorSummaryOpts = {}) {
     returns: {
       horizonYears: returns.horizon.years,
       initialInvestment: roundWhole(returns.initialInvestment),
-      paybackMonth: returns.paybackMonth,
+      paybackMonth: c?.paybackMonth ?? returns.paybackMonth,
+      paybackLabel: c
+        ? c.simplePayback.label
+        : (returns.paybackMonth == null ? 'Beyond horizon' : `Month ${returns.paybackMonth}`),
       paybackWithinHorizon: returns.paybackWithinHorizon,
       stabilisationMonth: returns.stabilisationMonth,
       noiPositiveMonth: returns.noiPositiveMonth,
       annualNoiMarginPct: returns.annualNoiMarginPct,
       cashThroughSelectedYear: roundWhole(returns.cashThroughSelectedYear),
       irrAnnualisedPct:
-        returns.irrAnnualised === null || returns.irrAnnualised === undefined
-          ? null
-          : pct1(returns.irrAnnualised * 100),
-      irrNote: returns.irrNote,
-      npv: roundWhole(returns.npv.value),
-      npvDiscountRatePct: returns.npv.discountRatePct,
+        c
+          ? (c.irr.annualRate === null ? null : pct1(c.irr.annualRate * 100))
+          : returns.irrAnnualised === null || returns.irrAnnualised === undefined
+            ? null
+            : pct1(returns.irrAnnualised * 100),
+      irrNote: c
+        ? `Committed project IRR at the stored ${(committedRatePct as number).toFixed(2)}% annual rate (${c.annualRateSource}). ${c.limitation}`
+        : returns.irrNote,
+      npv: roundWhole(c?.npv ?? returns.npv.value),
+      npvLabel: c
+        ? `Project NPV (${c.committedMonths}-month committed term)`
+        : returns.npv.label,
+      npvDiscountRatePct: committedRatePct ?? returns.npv.discountRatePct,
+      valuationRateSource: c?.annualRateSource ?? 'illustrative query rate',
+      committedMonths: c?.committedMonths ?? null,
+      committedEndDate: c?.committedEndDate ?? null,
       noTerminalValueDisclosure:
         'No terminal value / property sale is included (lease renewal unsecured). IRR is operating cash-flow only.',
     },
@@ -243,8 +263,14 @@ export function investorSummaryCsv(s: Awaited<ReturnType<typeof getInvestorSumma
     ['avg customer value', s.modelling.avgCustomerValue],
     ['total revenue (model)', s.modelling.totalRevenueModel],
     ['payback month', s.returns.paybackMonth],
+    ['payback', s.returns.paybackLabel],
     ['IRR annualised %', s.returns.irrAnnualisedPct],
     ['NPV', s.returns.npv],
+    ['NPV label', s.returns.npvLabel],
+    ['NPV discount rate %', s.returns.npvDiscountRatePct],
+    ['valuation rate source', s.returns.valuationRateSource],
+    ['committed term months', s.returns.committedMonths],
+    ['committed end date', s.returns.committedEndDate],
     ['issued invoices', s.aggregates.issuedInvoices],
     ['issued total', s.aggregates.issuedTotal],
     ['paid invoices', s.aggregates.paidInvoices],

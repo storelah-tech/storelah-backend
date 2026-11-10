@@ -15,6 +15,7 @@ import { publishFinanceEvent } from './events';
 import { assertFreshVersion, nextVersion, newCorrelationId } from './idempotency';
 import { lineMonthWhere } from './reconciliation';
 import { project } from './projection';
+import { committedLeaseForMonth } from './leaseExpense';
 
 export const ACTUAL_METRICS = ['REVENUE', 'CASH', 'OPEX', 'LEASE', 'NOI', 'OCCUPIED_SQFT'] as const;
 export type ActualMetricKey = (typeof ACTUAL_METRICS)[number];
@@ -42,6 +43,19 @@ type Db = Pick<typeof prisma,
 export async function isMonthClosed(branchId: string, fiscalMonth: string): Promise<boolean> {
   const row = await prisma.monthClose.findUnique({ where: { branchId_fiscalMonth: { branchId, fiscalMonth } } });
   return row?.status === 'CLOSED';
+}
+
+/**
+ * Lease-horizon P4: latest CLOSED fiscal month (YYYY-MM) for a branch, or
+ * null when nothing is posted. Shortening a committed term before this month
+ * is BLOCKED (no model-rebase workflow in v1) — see landlordLease.ts.
+ */
+export async function latestClosedFiscalMonth(branchId: string): Promise<string | null> {
+  const row = await prisma.monthClose.findFirst({
+    where: { branchId, status: 'CLOSED' },
+    orderBy: { fiscalMonth: 'desc' },
+  });
+  return row?.fiscalMonth ?? null;
 }
 
 export interface ActualLine {
@@ -93,19 +107,17 @@ export async function computeActuals(branchId: string, fiscalMonth: string): Pro
     warnings.push('No CURRENT model for this facility — LEASE posts 0. Set a current model before closing.');
   } else {
     try {
-      const inputs = current.inputs as unknown as { startDate?: string; lease?: { monthlyByYear?: number[]; rentFreeMonths?: number } };
-      const { start: perfStart } = parseFiscalMonth(fiscalMonth);
-      const modelStart = new Date(`${inputs.startDate ?? '2026-12-01'}T00:00:00Z`);
-      const idx = (perfStart.getUTCFullYear() - modelStart.getUTCFullYear()) * 12 + (perfStart.getUTCMonth() - modelStart.getUTCMonth());
-      if (idx < 0) {
+      // P5: the actuals lease is the COMMITTED engine-row expense (single
+      // shared reader — never a local schedule re-derivation).
+      const committed = committedLeaseForMonth(
+        current.inputs as unknown as Parameters<typeof committedLeaseForMonth>[0],
+        fiscalMonth,
+      );
+      if (committed === null) {
         leaseSource = 'pre-model-start';
         warnings.push('Fiscal month predates the CURRENT model start — LEASE posts 0.');
       } else {
-        const sched = inputs.lease?.monthlyByYear ?? [];
-        const year = Math.floor(idx / 12);
-        const contractual = sched.length ? (sched[Math.min(year, sched.length - 1)] ?? 0) : 0;
-        const free = inputs.lease?.rentFreeMonths ?? 0;
-        lease = round2(idx < free ? 0 : contractual);
+        lease = round2(committed);
       }
     } catch {
       leaseSource = 'schedule-unreadable';
@@ -392,15 +404,13 @@ export async function getPerformance(branchId: string, fiscalMonth: string): Pro
   let budgetLease: number | null = null;
   if (current) {
     try {
-      const inputs = current.inputs as unknown as { startDate?: string; lease?: { monthlyByYear?: number[]; rentFreeMonths?: number } };
-      const { start } = parseFiscalMonth(fiscalMonth);
-      const modelStart = new Date(`${inputs.startDate ?? '2026-12-01'}T00:00:00Z`);
-      const idx = (start.getUTCFullYear() - modelStart.getUTCFullYear()) * 12 + (start.getUTCMonth() - modelStart.getUTCMonth());
-      if (idx >= 0) {
-        const sched = inputs.lease?.monthlyByYear ?? [];
-        const contractual = sched.length ? (sched[Math.min(Math.floor(idx / 12), sched.length - 1)] ?? 0) : 0;
-        budgetLease = round2(idx < (inputs.lease?.rentFreeMonths ?? 0) ? 0 : contractual);
-      }
+      // P5: the performance budget lease is the COMMITTED engine-row expense
+      // (single shared reader — the same derivation as the budgets screen).
+      const committed = committedLeaseForMonth(
+        current.inputs as unknown as Parameters<typeof committedLeaseForMonth>[0],
+        fiscalMonth,
+      );
+      if (committed !== null) budgetLease = round2(committed);
     } catch { budgetLease = null; }
   }
   const hasBudget = budgets.length > 0 || budgetLease !== null;

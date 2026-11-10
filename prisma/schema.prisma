@@ -2084,10 +2084,16 @@ model FinancialModel {
   createdBy     String
   updatedBy     String?
   version       Int      @default(0)
+  // Lease-horizon P4: recalculation state for the committed valuation.
+  // CURRENT = figures match the stored revision; PENDING = recalculation
+  // scheduled/running; FAILED = the lease saved but valuation did not
+  // (stale figures are labelled, exports blocked until retry succeeds).
+  calculationStatus String @default("CURRENT") // CURRENT | PENDING | FAILED
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
   versions FinancialModelVersion[]
+  calculations FinancialModelCalculation[]
 
   @@index([branchId])
   @@index([status])
@@ -2110,6 +2116,31 @@ model FinancialModelVersion {
   createdAt     DateTime       @default(now())
 
   @@unique([modelId, version])
+  @@index([modelId, status])
+}
+
+// Lease-horizon P4: one calculation row per model revision (never rewritten —
+// FinancialModelVersion snapshot semantics apply: a retry writes a NEW row
+// only via a new model version; the after-commit valuation step updates the
+// PENDING row to CURRENT/FAILED conditionally on modelVersion so a stale
+// result can never overwrite a newer revision).
+model FinancialModelCalculation {
+  id             String    @id @default(cuid())
+  modelId        String
+  model          FinancialModel @relation(fields: [modelId], references: [id], onDelete: Cascade)
+  modelVersion   Int
+  engineVersion  String
+  inputHash      String
+  status         String    @default("PENDING") // PENDING | CURRENT | FAILED
+  result         Json?
+  error          String?
+  idempotencyKey String?
+  actor          String
+  startedAt      DateTime  @default(now())
+  completedAt    DateTime?
+
+  @@unique([modelId, modelVersion])
+  @@unique([modelId, idempotencyKey])
   @@index([modelId, status])
 }
 

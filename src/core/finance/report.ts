@@ -18,8 +18,11 @@ import { listBudgets } from './budgets';
 import { listArrearsCases } from './arrears';
 import { listRegister } from './register';
 import { getReconciliation } from './reconciliation';
-import { getReturns } from './returns';
+import { getReturns, isCommittedValued } from './returns';
 import { getModel } from './models';
+import { committedScheduleOf, type CommittedScheduleRow } from './leaseExpense';
+import { getFinancePolicies } from './policies';
+import { effectiveAnnualRate, methodologyInputsOf, type ValuationAssumptions } from './valuation';
 import type { ProjectionInput, ProjectionKpis } from './projection';
 
 export const REPORT_SECTIONS = ['summary', 'performance', 'budgets', 'arrears', 'transactions', 'reconciliation', 'model', 'returns'] as const;
@@ -93,7 +96,16 @@ export async function buildFinanceReport(opts: FinanceReportOpts) {
     transactions?: { total: number; pending: number; failed: number; byType: Array<{ docType: string; count: number; amount: number }>; pendingRows: Array<{ date: string; recordId: string; customer: string; docType: string; amount: number; status: string }> };
     reconciliation?: Array<{ branch: string; fiscalMonth: string; settled: number; allocated: number; variance: number; unmatched: number; suspense: number; status: string }>;
     model?: Array<ReportModel>;
-    returns?: Array<{ branch: string; model: string; initialInvestment: number; paybackMonth: number | null; irr: number | null; npv: number | null; noiMarginPct: number | null }>;
+    returns?: Array<{
+      branch: string; model: string; initialInvestment: number;
+      paybackMonth: number | null; paybackLabel: string;
+      irr: number | null; irrDisplay: string;
+      npv: number; npvLabel: string; noiMarginPct: number | null;
+      // Committed valuation identity (D7A: the rate is identified on every
+      // output). Legacy rows carry the illustrative query rate instead.
+      valuationRate: number; valuationRateSource: string;
+      committedMonths: number | null; committedEndDate: string | null;
+    }>;
   } = {
     meta: {
       title: 'Financial report',
@@ -222,6 +234,7 @@ export async function buildFinanceReport(opts: FinanceReportOpts) {
 
   if (sections.has('model')) {
     report.model = [];
+    const { leaseHorizonReturns } = await getFinancePolicies();
     for (const b of branches) {
       const m = await prisma.financialModel.findFirst({ where: { branchId: b.id, status: 'CURRENT' }, orderBy: { updatedAt: 'desc' } });
       if (!m) {
@@ -229,6 +242,27 @@ export async function buildFinanceReport(opts: FinanceReportOpts) {
         continue;
       }
       const { inputs, projection } = await getModel(m.id);
+      // Committed valuation identity for the model section (D7A): present
+      // only when the returns rollout is on AND the model stores a rate —
+      // legacy models keep the legacy shape (never a substituted default).
+      const storedValuation = (inputs as unknown as { valuation?: ValuationAssumptions }).valuation;
+      let valuationBlock: {
+        annualRate: number; annualRateSource: string; committedMonths: number; committedEndDate: string;
+      } | null = null;
+      if (leaseHorizonReturns === 'on' && storedValuation && typeof storedValuation.manualAnnualRate === 'number') {
+        try {
+          valuationBlock = {
+            annualRate: effectiveAnnualRate(methodologyInputsOf(storedValuation)),
+            annualRateSource: storedValuation.methodology ?? 'manual',
+            committedMonths: inputs.horizonMonths,
+            committedEndDate: projection.months.length
+              ? (projection.months[projection.months.length - 1].periodEnd ?? projection.months[projection.months.length - 1].month)
+              : '',
+          };
+        } catch {
+          valuationBlock = null;
+        }
+      }
       report.model.push({
         branch: b.name,
         model: {
@@ -239,6 +273,8 @@ export async function buildFinanceReport(opts: FinanceReportOpts) {
           inputs,
           kpis: projection.kpis,
           failedChecks: Object.entries(projection.checks).filter(([, c]) => !c.pass).map(([k, c]) => `${k}: ${c.detail}`),
+          valuation: valuationBlock,
+          leaseSchedule: valuationBlock ? committedScheduleOf(inputs) : null,
         },
       });
     }
@@ -250,14 +286,31 @@ export async function buildFinanceReport(opts: FinanceReportOpts) {
       const model = await prisma.financialModel.findFirst({ where: { branchId: b.id, status: 'CURRENT' }, orderBy: { updatedAt: 'desc' } });
       if (!model) continue;
       const r = await getReturns({ modelId: model.id, horizonYears: 5 });
+      // P5: the committed valuation (P3 series at the stored rate) is the
+      // reported Project NPV/IRR/payback when present; legacy models without
+      // a stored rate keep the legacy slice (never a substituted default).
+      const c = isCommittedValued(r.committed) ? r.committed : null;
       report.returns.push({
         branch: b.name,
         model: r.source.modelName,
         initialInvestment: r.initialInvestment,
-        paybackMonth: r.paybackMonth,
-        irr: r.irrAnnualised,
-        npv: r.npv.value,
+        paybackMonth: c?.paybackMonth ?? r.paybackMonth,
+        paybackLabel: c
+          ? c.simplePayback.label
+          : (r.paybackMonth == null ? 'Beyond 5y' : `Month ${r.paybackMonth}`),
+        irr: c?.irr.annualRate ?? r.irrAnnualised,
+        irrDisplay: c
+          ? c.irr.display
+          : (r.irrAnnualised == null ? 'Not available' : `${(r.irrAnnualised * 100).toFixed(1)}%`),
+        npv: c?.npv ?? r.npv.value,
+        npvLabel: c
+          ? `Project NPV (${c.committedMonths}-month committed term)`
+          : r.npv.label,
         noiMarginPct: r.annualNoiMarginPct,
+        valuationRate: c?.annualRate ?? r.npv.discountRatePct / 100,
+        valuationRateSource: c?.annualRateSource ?? 'illustrative query rate',
+        committedMonths: c?.committedMonths ?? null,
+        committedEndDate: c?.committedEndDate ?? null,
       });
     }
   }
@@ -278,5 +331,11 @@ export interface ReportModel {
     inputs: ProjectionInput;
     kpis: ProjectionKpis;
     failedChecks: string[];
+    // Committed valuation identity (D7A) + committed schedule for the Year-N
+    // lease table. Null for legacy models / rollout off (legacy shape kept).
+    valuation: {
+      annualRate: number; annualRateSource: string; committedMonths: number; committedEndDate: string;
+    } | null;
+    leaseSchedule: CommittedScheduleRow[] | null;
   } | null;
 }

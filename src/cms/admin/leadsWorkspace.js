@@ -12,6 +12,7 @@
 import { escapeHtml as esc, showBanner } from './dom.js';
 import { get, post, put, patch, del, can, describeError, downloadFile } from './api.js';
 import { confirmDialog } from './confirmDialog.js';
+import { normalizeWaDigits, shareQuoteViaWhatsApp } from './opsQueuesView.js';
 import { state } from './state.js';
 
 const PRODUCT = 'AC Self-Storage';
@@ -521,7 +522,7 @@ export async function renderQuotes() {
     page.querySelector('#lwQuoteFacility').addEventListener('change', (e) => { quoteState.facility = e.target.value; renderQuotes(); });
   }
   page.querySelector('#lwQuoteSummary').innerHTML = `<div><small>Total quotations</small><b>${s.total}</b><span>All statuses</span></div><div><small>Awaiting follow-up</small><b>${s.awaitingFollowUp}</b><span>Sent or viewed</span></div><div><small>Accepted</small><b>${s.accepted}</b><span>Conversion retained</span></div><div><small>Drafts</small><b>${s.drafts}</b><span>Not customer-facing</span></div>`;
-  page.querySelector('#lwQuoteTable tbody').innerHTML = data.rows.map((x) => `<tr><td><b>${esc(x.number)}</b><small>${x.status === 'DRAFT' ? 'Draft · number assigned on send' : 'Serialised quotation'}</small></td><td><button class="v2-name" data-lw="open-lead" data-id="${esc(x.leadId)}">${esc(x.leadName)}</button><small>${esc(x.leadDisplayId)} · ${esc(x.enquiry)}</small></td><td>${esc(x.unit || 'Size recommendation only')}<small>${esc(x.facility ? 'StoreLah ' + x.facility : '')}</small></td><td><b>${x.gross == null ? '—' : money(x.gross)}</b><small>Net ${x.net == null ? '—' : money(x.net)} + protection ${money(x.protection || 0)}</small></td><td>${esc(humanDate(x.createdAt))}<small>Expires ${esc(humanDate(x.expiresAt))}</small></td><td>${esc(x.delivery)}</td><td><span class="pill ${x.status === 'ACCEPTED' ? 'green' : x.status === 'DRAFT' ? 'grey' : /EXPIRED|VOIDED/.test(x.status) ? 'red' : 'blue'}">${esc(QUOTE_STATUS_LABEL[x.status] || x.status)}</span></td><td>${esc(x.owner || '—')}</td><td><div class="v29-actions"><button class="btn" data-lw="quote-preview" data-id="${esc(x.id)}">Preview</button>${x.status === 'VOIDED' ? '' : `<button class="btn" data-lw="quote-send" data-id="${esc(x.id)}">${x.status === 'DRAFT' ? 'Send' : 'Resend'}</button>`}<button class="btn" data-lw="quote-more" data-id="${esc(x.id)}">More ▾</button></div></td></tr>`).join('') || '<tr><td colspan="9" style="text-align:center;padding:28px">No quotations match.</td></tr>';
+  page.querySelector('#lwQuoteTable tbody').innerHTML = data.rows.map((x) => `<tr><td><b>${esc(x.number)}</b><small>${x.status === 'DRAFT' ? 'Draft · number assigned on send' : 'Serialised quotation'}</small></td><td><button class="v2-name" data-lw="open-lead" data-id="${esc(x.leadId)}">${esc(x.leadName)}</button><small>${esc(x.leadDisplayId)} · ${esc(x.enquiry)}</small></td><td>${esc(x.unit || 'Size recommendation only')}<small>${esc(x.facility ? 'StoreLah ' + x.facility : '')}</small></td><td><b>${x.gross == null ? '—' : money(x.gross)}</b><small>Net ${x.net == null ? '—' : money(x.net)} + protection ${money(x.protection || 0)}</small></td><td>${esc(humanDate(x.createdAt))}<small>Expires ${esc(humanDate(x.expiresAt))}</small></td><td>${esc(x.delivery)}</td><td><span class="pill ${x.status === 'ACCEPTED' ? 'green' : x.status === 'DRAFT' ? 'grey' : /EXPIRED|VOIDED/.test(x.status) ? 'red' : 'blue'}">${esc(QUOTE_STATUS_LABEL[x.status] || x.status)}</span></td><td>${esc(x.owner || '—')}</td><td><div class="v29-actions"><button class="btn" data-lw="quote-preview" data-id="${esc(x.id)}">Preview</button>${x.status === 'VOIDED' ? '' : `<button class="btn" data-lw="quote-send" data-id="${esc(x.id)}">${x.status === 'DRAFT' ? 'Send' : 'Resend'}</button>`}${registerWaButton(x, null, 'WhatsApp')}<button class="btn" data-lw="quote-more" data-id="${esc(x.id)}">More ▾</button></div></td></tr>`).join('') || '<tr><td colspan="9" style="text-align:center;padding:28px">No quotations match.</td></tr>';
 }
 
 async function openQuoteBuilder(leadId) {
@@ -616,13 +617,67 @@ async function createQuote(btn, draft) {
 
 function registerRow(id) { return quoteState.data?.rows.find((r) => r.id === id); }
 
-function previewIssued(id) {
+// ---------------------------------------------------------------------------
+// Quotation register › Share via WhatsApp (reuses the ops-queues wa.me pattern)
+// ---------------------------------------------------------------------------
+// Register rows carry no customer mobile (listQuotationRegister omits it), so
+// the lead is fetched like opsQueuesView.js shareQuoteRow does. Non-SG numbers
+// pass through digits-as-is via normalizeWaDigits.
+async function shareRegisterQuote(id) {
+  const x = registerRow(id);
+  if (!x || x.status === 'DRAFT') {
+    showBanner('Quotation not issued yet — create it first to share.');
+    return;
+  }
+  if (x.status === 'VOIDED') {
+    showBanner(`${x.number} is void and can no longer be shared.`);
+    return;
+  }
+  let lead = null;
+  try { lead = await get('/leads/' + encodeURIComponent(x.leadId)); } catch { lead = null; }
+  const mobile = lead?.mobile || '';
+  if (!normalizeWaDigits(mobile)) {
+    showBanner('Add customer mobile to share via WhatsApp.');
+    return;
+  }
+  shareQuoteViaWhatsApp({
+    quoteNo: x.number,
+    name: (lead && leadDisplayName(lead)) || x.leadName,
+    mobile,
+    unitCode: x.unit,
+    branch: x.facility ? 'StoreLah ' + x.facility : '',
+    monthlyRate: x.net ?? x.gross,
+    totalDueToday: (lead && lead.totalDueToday) ?? null,
+    moveInDate: (lead && lead.moveInDate) ?? null,
+  });
+}
+
+// Lead mobile for an accurate disabled-with-tooltip WhatsApp button in the
+// More ▾ menu and Preview footer: '' when the lead is known to have no mobile,
+// null when the lead could not be read (the click-time guard in
+// shareRegisterQuote then applies).
+async function registerLeadMobile(x) {
+  try {
+    const lead = await get('/leads/' + encodeURIComponent(x.leadId));
+    return normalizeWaDigits(lead?.mobile || '') ? lead.mobile : '';
+  } catch { return null; }
+}
+
+function registerWaButton(x, mobile, label) {
+  if (x.status === 'DRAFT') return `<button class="btn" disabled title="Quotation not issued yet">${esc(label)}</button>`;
+  if (x.status === 'VOIDED') return `<button class="btn" disabled title="${esc(x.number)} is void and can no longer be shared">${esc(label)}</button>`;
+  if (mobile === '') return `<button class="btn" disabled title="Add customer mobile to share via WhatsApp">${esc(label)}</button>`;
+  return `<button class="btn" data-lw="quote-wa" data-id="${esc(x.id)}" title="Share ${esc(x.number)} via WhatsApp">${esc(label)}</button>`;
+}
+
+async function previewIssued(id) {
   const x = registerRow(id);
   if (!x) return;
+  const mobile = await registerLeadMobile(x);
   const d = { leadName: x.leadName, enquiry: `${x.leadDisplayId} · ${x.enquiry}`, facility: x.facility ? 'StoreLah ' + x.facility : 'StoreLah', unit: x.unit, gross: x.gross || 0, net: x.net || 0, protection: x.protection || 0, commitment: x.commitmentMonths || '—', expiry: x.expiresAt };
   openModal({
     title: `Quotation preview · ${x.number}`, kicker: `${x.leadDisplayId} · ${x.enquiry}`, wide: true, body: quotePaper(d, x.number),
-    footer: `<button class="btn" data-lw="close">Close</button>${x.hasPdf ? `<button class="btn" data-lw="quote-pdf" data-id="${esc(x.id)}">Export PDF</button>` : ''}${x.status === 'VOIDED' ? '' : `<button class="primary" data-lw="quote-send" data-id="${esc(x.id)}">${x.status === 'DRAFT' ? 'Send' : 'Send / resend'}</button>`}`,
+    footer: `<button class="btn" data-lw="close">Close</button>${x.hasPdf ? `<button class="btn" data-lw="quote-pdf" data-id="${esc(x.id)}">Export PDF</button>` : ''}${registerWaButton(x, mobile, 'Share via WhatsApp')}${x.status === 'VOIDED' ? '' : `<button class="primary" data-lw="quote-send" data-id="${esc(x.id)}">${x.status === 'DRAFT' ? 'Send' : 'Send / resend'}</button>`}`,
   });
 }
 
@@ -636,12 +691,13 @@ function quoteSendDialog(id) {
   openModal({ title: `Send / resend · ${x.number}`, kicker: 'CHANNEL DELIVERY', body: '<div class="v2-check-row"><label><input type="checkbox" id="lwSendEmail" checked> Email</label><label><input type="checkbox" id="lwSendWa"> WhatsApp</label></div>', footer: `<button class="btn" data-lw="close">Cancel</button><button class="primary" data-lw="quote-resend" data-id="${esc(id)}">Queue delivery</button>` });
 }
 
-function quoteMore(id) {
+async function quoteMore(id) {
   const x = registerRow(id);
   if (!x) return;
+  const mobile = await registerLeadMobile(x);
   openModal({
     title: `Quotation actions · ${x.number}`, kicker: `${(QUOTE_STATUS_LABEL[x.status] || x.status).toUpperCase()} · CLEAR ACTIONS`,
-    body: `<div class="v29-callout"><i>i</i><div><b>What the actions mean</b>Preview opens the customer copy. Send/resend opens channel delivery. Duplicate creates a new draft and number only when saved. Void preserves the issued record. Delete is restricted to Administrators and draft records.</div></div><div class="v29-actions"><button class="btn" data-lw="quote-preview" data-id="${esc(id)}">Preview customer copy</button>${can('quotes:create') ? `<button class="btn" data-lw="quote-duplicate" data-id="${esc(id)}">Duplicate as draft</button>` : ''}${can('quotes:update') && !['DRAFT', 'VOIDED'].includes(x.status) ? `<button class="btn" data-lw="quote-void" data-id="${esc(id)}">Void quote</button>` : ''}${can('quotes:delete') ? `<button class="btn" data-lw="quote-delete" data-id="${esc(id)}">Delete draft · Admin only</button>` : ''}</div>${x.voidReason ? `<p class="v29-help">Voided: ${esc(x.voidReason)}</p>` : ''}`,
+    body: `<div class="v29-callout"><i>i</i><div><b>What the actions mean</b>Preview opens the customer copy. Send/resend opens channel delivery. Duplicate creates a new draft and number only when saved. Void preserves the issued record. Delete is restricted to Administrators and draft records.</div></div><div class="v29-actions"><button class="btn" data-lw="quote-preview" data-id="${esc(id)}">Preview customer copy</button>${registerWaButton(x, mobile, 'Share via WhatsApp')}${can('quotes:create') ? `<button class="btn" data-lw="quote-duplicate" data-id="${esc(id)}">Duplicate as draft</button>` : ''}${can('quotes:update') && !['DRAFT', 'VOIDED'].includes(x.status) ? `<button class="btn" data-lw="quote-void" data-id="${esc(id)}">Void quote</button>` : ''}${can('quotes:delete') ? `<button class="btn" data-lw="quote-delete" data-id="${esc(id)}">Delete draft · Admin only</button>` : ''}</div>${x.voidReason ? `<p class="v29-help">Voided: ${esc(x.voidReason)}</p>` : ''}`,
     footer: '<button class="primary" data-lw="close">Done</button>',
   });
 }
@@ -744,6 +800,7 @@ document.addEventListener('click', (e) => {
     'quote-create': () => createQuote(el),
     'quote-preview-confirm': () => createQuote(el, JSON.parse(ensureOverlay().dataset.quoteDraft || '{}')),
     'quote-preview': () => previewIssued(id),
+    'quote-wa': () => shareRegisterQuote(id),
     'quote-send': () => quoteSendDialog(id),
     'quote-send-draft': () => busy(el, async () => { const q = await post(`/quotations/${encodeURIComponent(id)}/send`, {}); closeModal(); notify(`${q.quoteNo} serialised, sent and added to the quotation register.`); renderQuotes(); }),
     'quote-resend': () => busy(el, async () => { const ch = [document.getElementById('lwSendEmail')?.checked && 'Email', document.getElementById('lwSendWa')?.checked && 'WhatsApp'].filter(Boolean); if (!ch.length) { notify('Choose email and/or WhatsApp.'); return; } const q = await post(`/quotations/${encodeURIComponent(id)}/resend`, { channels: ch }); closeModal(); notify(`${q.number} delivery queued by ${ch.join(' / ').toLowerCase()} and logged.`); renderQuotes(); }),

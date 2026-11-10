@@ -12,11 +12,11 @@ import { confirmDialog } from './confirmDialog.js';
 const fmtMoney = (n) => n == null ? '—' : '$' + Number(n).toLocaleString('en-SG', { maximumFractionDigits: 2 });
 const fmtDay = (d) => d ? new Date(d).toLocaleDateString('en-SG', { day: '2-digit', month: 'short', year: 'numeric' }) : '—';
 
-// ---------- quotes: Export + Share via WhatsApp (Option A MVP) ----------
-
-// Latest listQuotes rows by lead id — backs the per-row WhatsApp share so no
-// new endpoint is needed (extras come from the existing GET /leads/:id).
-const quoteRowCache = new Map();
+// ---------- quotes: Export + Share via WhatsApp ----------
+// WhatsApp share lives on the Create Quotation form (#quoteModal footer,
+// injected in JS — dashboard.html stays frozen) and on the issued-quotation
+// view footer (#quoteViewWhatsApp, enabled after POST /quotes sets
+// issuedQuoteCtx below). The quotations table itself carries no share UI.
 
 // Context for the quotation-preview modal footer (#quoteViewActions): set on
 // 201 (POST /quotes) so Download/WhatsApp act on the issued quotation; null
@@ -83,35 +83,89 @@ export function shareQuoteViaWhatsApp(quote) {
   window.open(`https://wa.me/${digits}?text=${encodeURIComponent(buildQuoteWaMessage(quote))}`, '_blank', 'noopener');
 }
 
-// Row-level share: enriches the cached list row (mobile, rate, branch,
-// quoteNo) with unitCode / totalDueToday / moveInDate from the existing
-// GET /leads/:id — falls back to row-only fields when that read fails.
-async function shareQuoteRow(id) {
-  const row = quoteRowCache.get(id);
-  if (!row || !row.quotation) {
-    showBanner('Quotation not issued yet — create it first to share.');
+// Create-form share: builds the wa.me message from the live unsaved form
+// (quoteViewData: name/mobile/unit/rate/total/move-in), enriched with the
+// freshest lead row via the existing GET /leads/:id when a lead is picked.
+// Pre-issue there is no quoteNo yet — buildQuoteWaMessage already renders
+// that variant ("Your quotation … is ready"). Guards mirror the old row
+// ones: nothing issuable yet (no lead + no name, or a non-quotable lead
+// stage the server would 409) and no customer mobile.
+async function shareQuoteForm() {
+  const leadId = $('#qf-lead')?.value || '';
+  const name = $('#qf-name')?.value.trim() || '';
+  if (!leadId && !name) {
+    showBanner('Enter a customer name or pick a lead first.');
     return;
   }
-  if (!normalizeWaDigits(row.mobile)) {
-    showBanner('Add customer mobile to share via WhatsApp.');
+  if (leadId && NON_QUOTABLE_STAGES.has(quotableLeadCache.get(leadId)?.stage)) {
+    showBanner('This lead stage cannot be quoted.');
     return;
   }
   let lead = null;
-  try {
-    lead = await get(`/leads/${encodeURIComponent(id)}`);
-  } catch {
-    lead = null;
+  if (leadId) {
+    try {
+      lead = await get(`/leads/${encodeURIComponent(leadId)}`);
+    } catch {
+      lead = null;
+    }
   }
-  shareQuoteViaWhatsApp({
-    quoteNo: row.quotation.quoteNo,
-    name: row.name,
-    mobile: row.mobile,
-    unitCode: (lead && lead.unitCode) || null,
-    branch: row.branchCode || row.branchName || '',
-    monthlyRate: row.monthlyRate,
-    totalDueToday: (lead && lead.totalDueToday) ?? null,
-    moveInDate: (lead && lead.moveInDate) ?? null,
-  });
+  const d = quoteViewData();
+  const mobile = (lead && lead.mobile) || d.leadMobile || '';
+  if (!normalizeWaDigits(mobile)) {
+    showBanner('Add customer mobile to share via WhatsApp.');
+    return;
+  }
+  window.open(`https://wa.me/${normalizeWaDigits(mobile)}?text=${encodeURIComponent(buildQuoteWaMessage({
+    quoteNo: null,
+    name: d.leadName,
+    mobile,
+    unitCode: d.unitCode || (lead && lead.unitCode) || null,
+    branch: d.branchName || '',
+    monthlyRate: d.monthlyRate,
+    totalDueToday: d.totalDueToday ?? (lead && lead.totalDueToday) ?? null,
+    moveInDate: d.moveInDate ?? (lead && lead.moveInDate) ?? null,
+  }))}`, '_blank', 'noopener');
+}
+
+// Issuable guard for the create-form button: a name (new-lead mode) or a
+// picked lead in a quotable stage (mirrors the NON_QUOTABLE_STAGES 409
+// guards — PROPOSAL_SENT/WON/LOST can never be quoted).
+function quoteFormIssuable() {
+  const leadId = $('#qf-lead')?.value || '';
+  if (leadId) return !NON_QUOTABLE_STAGES.has(quotableLeadCache.get(leadId)?.stage);
+  return !!($('#qf-name')?.value.trim() || '');
+}
+
+// Live disabled state for the create-form button: needs something issuable
+// plus a customer mobile. Called from refreshQuoteTotalPreview (runs on
+// every form edit) and after the modal opens.
+function paintQuoteFormWhatsApp() {
+  const btn = $('#qfShareWhatsApp');
+  if (!btn) return;
+  const issuable = quoteFormIssuable();
+  const digits = normalizeWaDigits($('#qf-mobile')?.value.trim() || '');
+  btn.disabled = !issuable || !digits;
+  btn.title = !issuable
+    ? 'Enter a customer name or pick a quotable lead first'
+    : (!digits ? 'Add customer mobile to share via WhatsApp' : 'Share this quotation via WhatsApp');
+}
+
+// Injects the create-form footer button in JS (dashboard.html stays frozen —
+// same pattern as the Promotion (auto) select). Order: View · WhatsApp ·
+// Cancel · Create.
+function ensureQuoteFormWhatsApp() {
+  if ($('#qfShareWhatsApp')) return;
+  const foot = $('#quoteModal .qm-foot');
+  const cancel = $('#quoteFormCancel');
+  if (!foot || !cancel) return;
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'act-btn';
+  btn.id = 'qfShareWhatsApp';
+  btn.textContent = 'Share via WhatsApp';
+  btn.addEventListener('click', () => { shareQuoteForm().catch((e) => showBanner('WhatsApp share: ' + describeError(e))); });
+  foot.insertBefore(btn, cancel);
+  paintQuoteFormWhatsApp();
 }
 
 // ---------- quotes ----------
@@ -149,11 +203,6 @@ function renderQuotes(rows) {
     const pdfCell = qn
       ? `<button class="act-btn" data-q-act="pdf" data-q-id="${escapeHtml(q.id)}" title="Download ${escapeHtml(qn.quoteNo)}">PDF</button>`
       : '<span class="t-type">—</span>';
-    const waBtn = !qn
-      ? '<button class="act-btn" disabled title="Quotation not issued yet">WhatsApp</button>'
-      : (!normalizeWaDigits(q.mobile)
-        ? '<button class="act-btn" disabled title="Add customer mobile to share via WhatsApp">WhatsApp</button>'
-        : `<button class="act-btn" data-q-act="wa" data-q-id="${escapeHtml(q.id)}" title="Share ${escapeHtml(qn.quoteNo)} via WhatsApp">WhatsApp</button>`);
     return `<tr><td><b>${escapeHtml(q.name)}</b><div class="t-type">${escapeHtml(q.type || '')}${q.segment ? ' · ' + escapeHtml(q.segment) : ''}</div></td>` +
     `<td><span class="pill amber">Quoted</span></td>` +
     `<td>${escapeHtml(q.branchCode || '—')}${q.preferredSize ? ' · ' + escapeHtml(q.preferredSize) : ''}</td>` +
@@ -163,38 +212,23 @@ function renderQuotes(rows) {
     `<td>${qn ? `<b>${escapeHtml(qn.quoteNo)}</b>` : '<span class="t-type">—</span>'}</td>` +
     `<td>${pdfCell}</td>` +
     `<td>${quoteEmailPill(q)}</td>` +
-    `<td class="unit-actions"><button class="act-btn" data-q-act="view" data-q-id="${escapeHtml(q.id)}">Units</button> ${waBtn}</td></tr>`;
+    `<td class="unit-actions"><button class="act-btn" data-q-act="view" data-q-id="${escapeHtml(q.id)}">Units</button></td></tr>`;
   }).join('');
-  quoteRowCache.clear();
-  for (const q of rows) quoteRowCache.set(q.id, q);
 }
 
 async function showQuoteUnits(id) {
   const detail = $('#quoteDetail');
   try {
-    const [q, lead] = await Promise.all([
-      get(`/quotes/${encodeURIComponent(id)}`),
-      get(`/leads/${encodeURIComponent(id)}`).catch(() => null),
-    ]);
+    const q = await get(`/quotes/${encodeURIComponent(id)}`);
     const opts = q.options || [];
     const qn = q.quote?.quotation || null;
-    const digits = qn ? normalizeWaDigits(q.quote?.mobile) : '';
     const pdfBtn = qn
       ? `<button class="act-btn primary" data-qd-act="pdf" data-qd-id="${escapeHtml(id)}" title="Download ${escapeHtml(qn.quoteNo)}">Download PDF</button>`
       : '<button class="act-btn" disabled title="Quotation not issued yet">Download PDF</button>';
-    const waBtn = !qn
-      ? '<button class="act-btn" disabled title="Quotation not issued yet">Share via WhatsApp</button>'
-      : (!digits
-        ? '<button class="act-btn" disabled title="Add customer mobile to share via WhatsApp">Share via WhatsApp</button>'
-        : `<button class="act-btn" data-qd-act="wa" data-qd-id="${escapeHtml(id)}" title="Share ${escapeHtml(qn.quoteNo)} via WhatsApp">Share via WhatsApp</button>`);
     if (detail) {
       detail.innerHTML = `<div class="t-type" style="margin:8px 2px;">Live options for <b>${escapeHtml(q.quote?.name || '')}</b> — ${opts.length} unit(s): ` +
         (opts.length ? opts.map((u) => `${escapeHtml(u.code)} (${escapeHtml(u.sizeCode)} · ${u.sqft} sqft · $${u.rate}/mo)`).join(' · ') : 'none match right now') + `</div>` +
-        `<div style="display:flex;gap:8px;margin:2px 2px 8px;flex-wrap:wrap;">${pdfBtn}${waBtn}</div>`;
-    }
-    // Keep the row-share path warm even for rows rendered before this load.
-    if (q.quote && q.quote.id && !quoteRowCache.has(q.quote.id) && lead) {
-      quoteRowCache.set(q.quote.id, { ...q.quote, quotation: qn });
+        `<div style="display:flex;gap:8px;margin:2px 2px 8px;flex-wrap:wrap;">${pdfBtn}</div>`;
     }
   } catch (e) {
     showBanner('Quote: ' + describeError(e));
@@ -256,13 +290,11 @@ export function wireOpsQueues() {
     if (!btn) return;
     if (btn.dataset.qAct === 'view') showQuoteUnits(btn.dataset.qId).catch(() => {});
     if (btn.dataset.qAct === 'pdf') downloadQuotePdf(btn.dataset.qId).catch((err) => showBanner('Quotation PDF: ' + describeError(err)));
-    if (btn.dataset.qAct === 'wa') shareQuoteRow(btn.dataset.qId).catch((err) => showBanner('WhatsApp share: ' + describeError(err)));
   });
   $('#quoteDetail')?.addEventListener('click', (e) => {
     const btn = e.target.closest('button[data-qd-act]');
     if (!btn || btn.disabled) return;
     if (btn.dataset.qdAct === 'pdf') downloadQuotePdf(btn.dataset.qdId).catch((err) => showBanner('Quotation PDF: ' + describeError(err)));
-    if (btn.dataset.qdAct === 'wa') shareQuoteRow(btn.dataset.qdId).catch((err) => showBanner('WhatsApp share: ' + describeError(err)));
   });
   $('#moveoutsBody')?.addEventListener('click', (e) => {
     const btn = e.target.closest('button[data-mo-act]');
@@ -275,6 +307,10 @@ export function wireOpsQueues() {
   $('#quoteModalClose')?.addEventListener('click', closeQuoteModal);
   $('#quoteFormCancel')?.addEventListener('click', closeQuoteModal);
   $('#quoteForm')?.addEventListener('submit', submitQuoteForm);
+  // Create-form WhatsApp share (injected footer button — dashboard.html
+  // stays frozen). Ensure here for already-open sessions; openQuoteModal
+  // re-ensures after every reset.
+  ensureQuoteFormWhatsApp();
   // Sectioned-form live behaviour: lead auto-fill, unit narrowing, unit →
   // rate and plan → protection-cost fill, add-on rows, live summary.
   $('#quoteForm')?.addEventListener('change', (e) => {
@@ -298,6 +334,7 @@ export function wireOpsQueues() {
     if (id === 'qf-promoCode' || id === 'qf-promoDiscount') markQuotePromoTouched();
     if (id === 'qf-rate' || id === 'qf-duration') scheduleQuotePromoRefresh();
     if (inAddon || ['qf-rate', 'qf-duration', 'qf-protectionCost', 'qf-promoDiscount', 'qf-promoCode', 'qf-total', 'qf-name'].includes(id)) refreshQuoteTotalPreview();
+    paintQuoteFormWhatsApp();
   });
   $('#qfAddonAdd')?.addEventListener('click', () => { addAddonRow(); refreshQuoteTotalPreview(); });
   $('#qfAddonRows')?.addEventListener('click', (e) => {
@@ -790,6 +827,7 @@ let quoteEstimate = null;
 const money = (n) => '$' + Number(n).toLocaleString('en-SG', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 function refreshQuoteTotalPreview() {
+  paintQuoteFormWhatsApp();
   const el = $('#qf-quoteTotalPreview');
   if (!el) return;
   const num = (id) => {
@@ -1094,6 +1132,7 @@ export async function openQuoteModal() {
   clearQuoteFieldErrors();
   await refreshQuoteUnitOptions();
   ensureQuotePromotionSelect();
+  ensureQuoteFormWhatsApp();
   quotePromoTouched = false;
   await refreshQuotePromotions();
   refreshQuoteTotalPreview();

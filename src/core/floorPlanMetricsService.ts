@@ -66,6 +66,7 @@ import { AppError } from '../lib/http';
 import type { PlanStatus, Prisma } from '@prisma/client';
 import { MARKET_PSF } from './market';
 import { computeBoundaryMetrics, doorEdgesToArray, pillarRectsOf, type BoundaryMetrics, type GfaSource } from './floorPlans';
+import { canonicalBranchCode } from './branches';
 import {
   computeFloorMetrics,
   computeOccupancy,
@@ -962,9 +963,10 @@ export interface FacilityMetricsReport {
  */
 export async function getFacilityMetrics(branchRef: string): Promise<FacilityMetricsReport> {
   const ref = String(branchRef || '').trim();
+  // Canonical rename SW → SS: the deprecated SW alias resolves to SS here.
   const branch =
     (ref ? await prisma.branch.findUnique({ where: { id: ref } }) : null) ??
-    (ref ? await prisma.branch.findUnique({ where: { code: ref } }) : null);
+    (ref ? await prisma.branch.findUnique({ where: { code: canonicalBranchCode(ref) } }) : null);
   if (!branch) throw new AppError(404, 'NOT_FOUND', `Facility ${branchRef} not found`);
 
   const floors = await prisma.floor.findMany({

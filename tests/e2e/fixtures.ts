@@ -2,7 +2,7 @@
 //
 // Every spec calls resetDb() first (truncate + cascade on the ISOLATED test
 // DB only — see test-db.ts), then seedMoveInWorld() to build a pinned world:
-// branch SW, floor L1 (authored plan with real placements) + floor L2
+// branch SS, floor L1 (authored plan with real placements) + floor L2
 // (plan-less, for the plan:null empty state), and one unit per edge case with
 // pinned unitCodes. Emails are unique per test (`e2e+<uuid>@test.local`) so
 // Customer/Tenant uniqueness never collides across tests.
@@ -19,15 +19,15 @@ import { assertSafeTestDb } from './test-db';
 export const api = request(app);
 
 export const PIN = {
-  branchCode: 'SW',
+  branchCode: 'SS',
   level: 1,
   planlessLevel: 2,
-  rentableUnit: 'SW-01-01',
-  guestUnit: 'SW-01-02',
-  occupiedUnit: 'SW-01-03',
-  blockedUnit: 'SW-01-04',
-  deletedUnit: 'SW-01-05',
-  maintenanceUnit: 'SW-01-06',
+  rentableUnit: 'SS-01-01',
+  guestUnit: 'SS-01-02',
+  occupiedUnit: 'SS-01-03',
+  blockedUnit: 'SS-01-04',
+  deletedUnit: 'SS-01-05',
+  maintenanceUnit: 'SS-01-06',
 } as const;
 
 export function uniqueEmail(): string {
@@ -77,7 +77,7 @@ export interface MoveInWorld {
 }
 
 /**
- * Pinned world: SMALL size, branch SW with floors L1 (plan + placements) and
+ * Pinned world: SMALL size, branch SS with floors L1 (plan + placements) and
  * L2 (no plan), and one unit per scenario. All units are 50 sqft with 5×10 ft
  * placement rects (1 grid unit = 1 ft) at non-overlapping positions.
  */

@@ -42,8 +42,8 @@ interface Selector {
 
 // Sembawang Level 1 — mix of legacy dashboard units and synthetic seeds
 // (generated via genSeeds to match the same density as other branches).
-// SW L1 gets the same 60-unit layout as every other floor.
-const SW_L1: U[] = ((s: Record<number, U[]>) => s[1] ?? [])(genSeeds('SW'));
+// SS L1 gets the same 60-unit layout as every other floor.
+const SS_L1: U[] = ((s: Record<number, U[]>) => s[1] ?? [])(genSeeds('SS'));
 
 function genSeeds(_branch: string): Record<number, U[]> {
   // 60 units per level for every branch → rich floor plan with X+Y scroll
@@ -72,22 +72,22 @@ const REAL_TENANTS: Array<{
   name: string; unit: string; type: AccountType; segment: string; rate: number;
   sinceMonths: number; payInDays: number; status: TenantStatus; pay: number; missed: number; ltv: number;
 }> = [
-  { name:'Priya Nair', unit:'SW-01-01', type:'BUSINESS', segment:'E-commerce', rate:144, sinceMonths:14, payInDays:12, status:'ACTIVE', pay:14, missed:0, ltv:2016 },
-  { name:'Aisha & Farid', unit:'SW-01-05', type:'PERSONAL', segment:'Renovation', rate:264, sinceMonths:5, payInDays:1, status:'DUE_SOON', pay:5, missed:0, ltv:1320 },
-  { name:'Mr & Mrs Tan', unit:'SW-01-06', type:'PERSONAL', segment:'Downsizing', rate:138, sinceMonths:21, payInDays:-30, status:'OVERDUE', pay:20, missed:2, ltv:2760 },
+  { name:'Priya Nair', unit:'SS-01-01', type:'BUSINESS', segment:'E-commerce', rate:144, sinceMonths:14, payInDays:12, status:'ACTIVE', pay:14, missed:0, ltv:2016 },
+  { name:'Aisha & Farid', unit:'SS-01-05', type:'PERSONAL', segment:'Renovation', rate:264, sinceMonths:5, payInDays:1, status:'DUE_SOON', pay:5, missed:0, ltv:1320 },
+  { name:'Mr & Mrs Tan', unit:'SS-01-06', type:'PERSONAL', segment:'Downsizing', rate:138, sinceMonths:21, payInDays:-30, status:'OVERDUE', pay:20, missed:2, ltv:2760 },
   { name:'Wei Ming Lim', unit:'WD-02-03', type:'PERSONAL', segment:'Between homes', rate:456, sinceMonths:2, payInDays:1, status:'ACTIVE', pay:2, missed:0, ltv:912 },
   { name:'Ravi Kumar', unit:'UB-03-01', type:'BUSINESS', segment:'SME inventory', rate:480, sinceMonths:7, payInDays:1, status:'ACTIVE', pay:7, missed:0, ltv:4480 },
 ];
 
 const LEADS: Array<{ name: string; type: AccountType; size: SizeKey; branch: string; stage: LeadStage; source: LeadSource }> = [
-  { name:'Sarah Lim', type:'PERSONAL', size:'SMALL', branch:'SW', stage:'NEW_ENQUIRY', source:'WEBSITE' },
+  { name:'Sarah Lim', type:'PERSONAL', size:'SMALL', branch:'SS', stage:'NEW_ENQUIRY', source:'WEBSITE' },
   { name:'James Koh', type:'PERSONAL', size:'MEDIUM', branch:'WD', stage:'NEW_ENQUIRY', source:'WEBSITE' },
   { name:'Mei Ling', type:'PERSONAL', size:'LARGE', branch:'UB', stage:'NEW_ENQUIRY', source:'REFERRAL' },
   { name:'David Ng', type:'BUSINESS', size:'LARGE', branch:'UB', stage:'CONTACTED', source:'GOOGLE' },
-  { name:'Siti Rahman', type:'PERSONAL', size:'SMALL', branch:'SW', stage:'CONTACTED', source:'WHATSAPP' },
+  { name:'Siti Rahman', type:'PERSONAL', size:'SMALL', branch:'SS', stage:'CONTACTED', source:'WHATSAPP' },
   { name:'Ahmad Fauzi', type:'BUSINESS', size:'MEDIUM', branch:'WD', stage:'VIEWING_BOOKED', source:'WHATSAPP' },
   { name:'TechFlow Pte Ltd', type:'BUSINESS', size:'LARGE', branch:'UB', stage:'PROPOSAL_SENT', source:'GOOGLE' },
-  { name:'Priya Nair', type:'BUSINESS', size:'SMALL', branch:'SW', stage:'WON', source:'WEBSITE' },
+  { name:'Priya Nair', type:'BUSINESS', size:'SMALL', branch:'SS', stage:'WON', source:'WEBSITE' },
 ];
 
 const namePool = [
@@ -173,7 +173,7 @@ async function main() {
   }
 
   const branches: { code: string; name: string; address: string; description?: string; floors: number }[] = [
-    { code: 'SW', name: 'Sembawang', address: 'Admirax, Sembawang', description: 'Admirax Sembawang Singapore', floors: 4 },
+    { code: 'SS', name: 'Sembawang', address: 'Admirax, Sembawang', description: 'Admirax Sembawang Singapore', floors: 4 },
     { code: 'WD', name: 'Woodlands', address: '12 Woodlands Loop, Singapore 738999', floors: 4 },
     { code: 'UB', name: 'Ubi', address: '13 Ubi Close, Singapore 409761', floors: 4 },
   ];
@@ -217,11 +217,11 @@ async function main() {
     unitByCode.set(code, { id: created!.id, sqft, size, code, monthly, status });
   };
 
-  for (const s of SW_L1) await mkUnit('SW', 1, s.n, s.size, s.psf, s.status);
+  for (const s of SS_L1) await mkUnit('SS', 1, s.n, s.size, s.psf, s.status);
   let next = 61;
   for (const lv of [2, 3, 4]) {
-    const seeds = genSeeds('SW')[lv] ?? [];
-    for (const u of seeds) await mkUnit('SW', lv, next++, u.size, u.psf, u.status);
+    const seeds = genSeeds('SS')[lv] ?? [];
+    for (const u of seeds) await mkUnit('SS', lv, next++, u.size, u.psf, u.status);
   }
   for (const code of ['WD', 'UB']) {
     let start = 1;
@@ -318,13 +318,13 @@ async function main() {
     });
   }
 
-  // Rate history for SW-01-01 (from dashboard unit detail)
-  const sw001 = await prisma.unit.findUnique({ where: { unitCode: 'SW-01-01' } });
-  if (sw001) {
+  // Rate history for SS-01-01 (from dashboard unit detail)
+  const ss001 = await prisma.unit.findUnique({ where: { unitCode: 'SS-01-01' } });
+  if (ss001) {
     await prisma.rateChange.createMany({
       data: [
-        { unitId: sw001.id, date: monthAgo(1), previous: 136, current: 144, changePct: 5.88, reason: 'Annual review', appliedBy: 'Faisal Z.' },
-        { unitId: sw001.id, date: monthAgo(7), previous: 130, current: 136, changePct: 4.61, reason: 'CPI adjustment', appliedBy: 'System' },
+        { unitId: ss001.id, date: monthAgo(1), previous: 136, current: 144, changePct: 5.88, reason: 'Annual review', appliedBy: 'Faisal Z.' },
+        { unitId: ss001.id, date: monthAgo(7), previous: 130, current: 136, changePct: 4.61, reason: 'CPI adjustment', appliedBy: 'System' },
       ],
     });
   }

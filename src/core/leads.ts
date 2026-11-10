@@ -6,6 +6,7 @@ import { normalizeEmail } from './customers';
 import {
   LEAD_PRODUCT, PIPELINE_COLUMNS, STAGE_LABEL, displayLeadNo, potentialValue, sgToday, stageProbability, warmPipelineCache, ymd,
 } from './leadPipeline';
+import { canonicalBranchCode } from './branches';
 
 const COLUMNS: LeadStage[] = PIPELINE_COLUMNS;
 
@@ -519,7 +520,8 @@ export interface PublicLeadInput {
   purpose?: 'personal' | 'business' | null;
   companyName?: string | null;
   uen?: string | null;
-  // Either a Branch.code (SW/WD/UB, case-insensitive) or a raw branch cuid.
+  // Either a Branch.code (SS/WD/UB, case-insensitive; deprecated SW alias
+  // resolves to SS) or a raw branch cuid.
   branchCode?: string | null;
   preferredBranchId?: string | null;
   preferredSize?: string | null;
@@ -578,7 +580,8 @@ export function packPublicLeadNote(input: PublicLeadInput): string | null {
 
 async function resolvePublicBranchId(input: PublicLeadInput): Promise<string | null> {
   if (input.branchCode?.trim()) {
-    const code = input.branchCode.trim().toUpperCase();
+    // Canonical rename SW → SS: the deprecated SW alias resolves to SS here.
+    const code = canonicalBranchCode(input.branchCode.trim());
     const branch = await prisma.branch.findUnique({ where: { code } });
     if (!branch) throw new AppError(400, 'VALIDATION', `Unknown branchCode: ${input.branchCode.trim()}`);
     return branch.id;
@@ -881,8 +884,19 @@ function median(values: number[]): number | null {
   return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
 }
 
-export async function getLeadStats() {
+export async function getLeadStats(opts?: { from?: Date; to?: Date }) {
+  // Optional YYYY-MM-DD range (inclusive UTC bounds, resolved by
+  // resolveDateRange in src/lib/dateRange.ts — never ISO timestamps, see the
+  // F-7 parity regression). Scopes the lead set by Lead.createdAt; every
+  // derived stat below (funnel, conversion, scorecard, loss, response) is
+  // computed over that set. Omitted = all time (existing behaviour: default
+  // analytics view unchanged). newToday counts in-set rows created since local
+  // midnight — 0 when the range excludes today.
+  const createdAt: { gte?: Date; lte?: Date } = {};
+  if (opts?.from) createdAt.gte = opts.from;
+  if (opts?.to) createdAt.lte = opts.to;
   const leads = await prisma.lead.findMany({
+    where: createdAt.gte || createdAt.lte ? { createdAt } : undefined,
     include: { branch: true },
     orderBy: { createdAt: 'desc' },
   });
@@ -1235,7 +1249,11 @@ export async function getLeadGroupTimeline(groupKey: string): Promise<{
 // Weekly enquiry/booking series for the analytics chart. Buckets count
 // createdAt per ISO week (Monday-start, UTC); value columns sum monthlyRate.
 // Weeks with no data return zeros so the chart renders honest empty states.
-export async function getWeeklyAnalytics(weeks = 8) {
+// Optional YYYY-MM-DD range (inclusive UTC bounds — never ISO timestamps,
+// F-7) narrows the counted rows to [from, to]; buckets stay the last N weeks
+// ending now, so out-of-window weeks render zeros. Omitted = current
+// behaviour (default analytics view unchanged).
+export async function getWeeklyAnalytics(weeks = 8, opts?: { from?: Date; to?: Date }) {
   const n = Math.min(Math.max(Math.floor(weeks) || 8, 1), 26);
   const now = new Date();
   const thisMonday = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
@@ -1245,15 +1263,20 @@ export async function getWeeklyAnalytics(weeks = 8) {
   const start = new Date(thisMonday);
   start.setUTCDate(start.getUTCDate() - (n - 1) * 7);
 
+  // Range floor never precedes the window start (a from older than start is
+  // equivalent to no from); range ceiling applies as-is.
+  const gte = opts?.from && opts.from.getTime() > start.getTime() ? opts.from : start;
+  const lte = opts?.to;
+
   const leads = await prisma.lead.findMany({
-    where: { createdAt: { gte: start } },
+    where: { createdAt: { gte, ...(lte ? { lte } : {}) } },
     select: { createdAt: true, stage: true, monthlyRate: true, updatedAt: true },
   });
 
   // WON attribution uses updatedAt (close time) so a booking lands in the week
   // it closed; enquiries always use createdAt.
   const wonAll = await prisma.lead.findMany({
-    where: { stage: 'WON', updatedAt: { gte: start } },
+    where: { stage: 'WON', updatedAt: { gte, ...(lte ? { lte } : {}) } },
     select: { updatedAt: true, monthlyRate: true },
   });
 
@@ -1291,7 +1314,16 @@ export async function getWeeklyAnalytics(weeks = 8) {
 
   return {
     weeks: buckets.map(({ _s, _e, ...rest }) => rest),
-    meta: { count: n, from: start.toISOString().slice(0, 10) },
+    meta: {
+      count: n,
+      from: start.toISOString().slice(0, 10),
+      // Echo of the caller's filter (YYYY-MM-DD or null) so the UI can label
+      // a filtered chart honestly; nulls = unfiltered (default view).
+      filter: {
+        from: opts?.from ? opts.from.toISOString().slice(0, 10) : null,
+        to: opts?.to ? opts.to.toISOString().slice(0, 10) : null,
+      },
+    },
   };
 }
 

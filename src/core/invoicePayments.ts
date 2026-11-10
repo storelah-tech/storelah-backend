@@ -33,12 +33,13 @@ import { prisma } from '../lib/prisma';
 import { toNum } from '../lib/format';
 import { AppError } from '../lib/http';
 import type { CustomerJwtPayload } from '../middleware/auth';
-import { createCheckoutSession, getBookingAppUrl, getStripe } from './checkout';
+import { createCheckoutSession, getBookingAppUrl, getStripe, buildFacilityUnitLabel } from './checkout';
 import { loadCustomer } from './customers';
 import { resolveSupportContact, type BookingConfirmationData } from './emails';
 import { buildReceiptPdfBytes, deriveReceiptNumber } from './receiptPdf';
 import { loadOwnedPaymentMethod } from './savedCards';
 import { claimStripeEvent } from './finance/events';
+import { ensureStripeCustomer } from './savedCards';
 
 export const INVOICE_SESSION_KIND = 'invoice';
 /** Queued-charge PaymentIntents (core/finance/payments.ts) carry this kind. */
@@ -195,17 +196,52 @@ export async function createInvoiceCheckoutSession(
       `&session_id={CHECKOUT_SESSION_ID}`;
     const cancelUrl = `${appUrl}/portal?screen=invoices`;
     const email = customer.email?.trim() || invoice.tenant.email?.trim() || undefined;
+    // DESCRIPTION COMPOSITION (same contract as the booking pay path):
+    // facility + unit (e.g. SS1011). Missing branch falls back to the raw
+    // unitCode — never fail the pay path on a missing branch.
+    const invoiceBranchCode = invoice.unit.branch?.code ?? null;
+    let label: string;
+    let facilityCode: string;
+    if (invoiceBranchCode) {
+      facilityCode = invoiceBranchCode.trim().toUpperCase();
+      label = buildFacilityUnitLabel(invoice.unit.unitCode, invoiceBranchCode);
+    } else {
+      facilityCode = '';
+      label = invoice.unit.unitCode;
+      console.log(
+        `[invoice-checkout] invoiceNo=${invoice.invoiceNo} missing branch for unit ${invoice.unit.unitCode} — using raw code`,
+      );
+    }
+    // Named Stripe customer (name priority: tenant → customer). Falls back
+    // to customer_email when the wallet is unreachable — Stripe rejects
+    // `customer` + `customer_email` together, so exactly one is ever sent.
+    const payerName = invoice.tenant.name?.trim() || customer.name || undefined;
+    let stripeCustomerId: string | null = null;
+    try {
+      stripeCustomerId = await ensureStripeCustomer(customer);
+      try {
+        await getStripe().customers.update(stripeCustomerId, {
+          ...(email ? { email } : {}),
+          ...(payerName ? { name: payerName } : {}),
+        });
+      } catch {
+        // Best-effort name/email sync — the stored customer id is still usable.
+      }
+    } catch {
+      stripeCustomerId = null;
+    }
     const session = await getStripe().checkout.sessions.create({
       mode: 'payment',
       currency: 'sgd',
-      customer_email: email,
+      ...(stripeCustomerId ? { customer: stripeCustomerId } : (email ? { customer_email: email } : {})),
       line_items: [
         {
           price_data: {
             currency: 'sgd',
             unit_amount: Math.round(amountSgd * 100),
             product_data: {
-              name: `StoreLah invoice ${invoice.invoiceNo} — unit ${invoice.unit.unitCode}`,
+              name: `StoreLah ${label} — invoice ${invoice.invoiceNo}`,
+              description: label,
             },
           },
           quantity: 1,
@@ -216,6 +252,8 @@ export async function createInvoiceCheckoutSession(
         invoiceId: invoice.id,
         invoiceNo: invoice.invoiceNo,
         unitCode: invoice.unit.unitCode,
+        facilityCode,
+        unitLabel: label,
       },
       success_url: successUrl,
       cancel_url: cancelUrl,
@@ -437,6 +475,32 @@ export async function payInvoiceWithSavedCard(
 
   const task = (async (): Promise<SavedCardPayResult> => {
     const idempotencyKey = `inv-pay-${invoice.id}-${pm.id}-${amountCents}-${invoice.paymentIntentId ?? 'none'}`;
+    // DESCRIPTION COMPOSITION (same contract as the checkout paths):
+    // facility + unit (e.g. SS1011); raw unitCode fallback, never fail pay.
+    const piBranchCode = invoice.unit.branch?.code ?? null;
+    let piLabel: string;
+    let piFacilityCode: string;
+    if (piBranchCode) {
+      piFacilityCode = piBranchCode.trim().toUpperCase();
+      piLabel = buildFacilityUnitLabel(invoice.unit.unitCode, piBranchCode);
+    } else {
+      piFacilityCode = '';
+      piLabel = invoice.unit.unitCode;
+      console.log(
+        `[invoice-pay] invoiceNo=${invoice.invoiceNo} missing branch for unit ${invoice.unit.unitCode} — using raw code`,
+      );
+    }
+    // Keep the named wallet customer carrying name + email (best-effort).
+    const piPayerName = invoice.tenant.name?.trim() || customer.name || undefined;
+    const piPayerEmail = customer.email?.trim() || invoice.tenant.email?.trim() || undefined;
+    try {
+      await stripe.customers.update(stripeCustomerId, {
+        ...(piPayerEmail ? { email: piPayerEmail } : {}),
+        ...(piPayerName ? { name: piPayerName } : {}),
+      });
+    } catch {
+      // Best-effort sync — the charge still uses the wallet customer id.
+    }
     let pi: Stripe.PaymentIntent;
     try {
       pi = await stripe.paymentIntents.create(
@@ -451,12 +515,14 @@ export async function payInvoiceWithSavedCard(
           // 3-D Secure runs in Stripe.js's in-page modal (handleNextAction)
           // so the customer stays in the pay sheet — no return_url redirect.
           use_stripe_sdk: true,
-          description: `StoreLah invoice ${invoice.invoiceNo} — unit ${invoice.unit.unitCode}`,
+          description: `StoreLah ${piLabel} — invoice ${invoice.invoiceNo}`,
           metadata: {
             kind: INVOICE_SESSION_KIND,
             invoiceId: invoice.id,
             invoiceNo: invoice.invoiceNo,
             unitCode: invoice.unit.unitCode,
+            facilityCode: piFacilityCode,
+            unitLabel: piLabel,
           },
         },
         { idempotencyKey },

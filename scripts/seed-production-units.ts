@@ -210,7 +210,7 @@ function deriveBucket(
 // units are never reused) + 1, starting at 1001. The `nextCode` counter is
 // shared ACROSS branches (one object threaded through every projectBranch
 // call) to match the sequential insert loop, where each createUnit sees the
-// previous inserts. Legacy SW-01-01 codes (pre-rename BM-01-01 rows keep
+// previous inserts. Legacy SS-01-01 codes (pre-rename SW-01-01 / BM-01-01 rows keep
 // working) never match /^\d{4}$/ so they are ignored by both the projection and the real codegen.
 function projectBranch(
   floors: FloorLite[],

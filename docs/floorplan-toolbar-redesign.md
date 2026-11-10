@@ -115,7 +115,7 @@ Update `FP_TOOLBAR_GROUPS` and its comment to the new grouping (e.g. `panel`, `t
 
 ## Acceptance checks
 
-Run locally (`pnpm dev` in `storelah-backend/`, open the CMS → Facilities → Floor plans, pick SW · Level 1):
+Run locally (`pnpm dev` in `storelah-backend/`, open the CMS → Facilities → Floor plans, pick SS · Level 1):
 
 1. Toolbar is one row at ≥1280px wide; at 1024px it scrolls inside itself, the page does not scroll sideways.
 2. No emoji/glyph icons left in header, toolbar or status bar; `⌨` renders as an icon.

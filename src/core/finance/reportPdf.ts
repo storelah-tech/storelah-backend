@@ -364,13 +364,29 @@ export async function buildFinanceReportPdf(r: FinanceReport): Promise<Buffer> {
         { label: 'IRR (annualised)', value: k.irrAnnualised == null ? 'Not available' : pct(k.irrAnnualised * 100), note: 'Operating cash flows, no sale value' },
       ]);
       // Runs of equal years collapse: "S$5,000/month (years 1-5), S$5,500/month (years 6-10)".
-      const leaseRuns: Array<{ v: number; a: number; b: number }> = [];
-      i.lease.monthlyByYear.forEach((v, n) => {
-        const last = leaseRuns[leaseRuns.length - 1];
-        if (last && last.v === v) last.b = n + 1;
-        else leaseRuns.push({ v, a: n + 1, b: n + 1 });
-      });
-      const leaseYears = leaseRuns.map((x) => `${sgd(x.v, 0)}/month (${x.a === x.b ? `year ${x.a}` : `years ${x.a}-${x.b}`})`).join(', ');
+      // P5: for committed (v2) models the Year-N table reflects the committed
+      // schedule (period-dated); legacy models keep the monthlyByYear runs.
+      const leaseYears = fm.model.leaseSchedule?.length
+        ? fm.model.leaseSchedule.map((x) => `${sgd(x.monthlyRent, 0)}/month (year ${x.leaseYear}, ${day(x.periodStart)} - ${day(x.periodEnd)})`).join(', ')
+        : (() => {
+            const leaseRuns: Array<{ v: number; a: number; b: number }> = [];
+            i.lease.monthlyByYear.forEach((v, n) => {
+              const last = leaseRuns[leaseRuns.length - 1];
+              if (last && last.v === v) last.b = n + 1;
+              else leaseRuns.push({ v, a: n + 1, b: n + 1 });
+            });
+            return leaseRuns.map((x) => `${sgd(x.v, 0)}/month (${x.a === x.b ? `year ${x.a}` : `years ${x.a}-${x.b}`})`).join(', ');
+          })();
+      if (fm.model.valuation) {
+        w.sub('Committed valuation', `at the stored ${(fm.model.valuation.annualRate * 100).toFixed(2)}% annual rate (${fm.model.valuation.annualRateSource})`);
+        w.table(
+          [{ label: 'Measure', width: 0.5 }, { label: 'Value', width: 0.5, align: 'right' }],
+          [
+            ['Valuation rate (annual)', `${(fm.model.valuation.annualRate * 100).toFixed(2)}% (${fm.model.valuation.annualRateSource})`],
+            ['Committed term', `${fm.model.valuation.committedMonths} months to ${day(fm.model.valuation.committedEndDate)}`],
+          ],
+        );
+      }
       w.sub('Key assumptions');
       w.table(
         [{ label: 'Assumption', width: 0.36 }, { label: 'Value', width: 0.64 }],
@@ -416,12 +432,28 @@ export async function buildFinanceReportPdf(r: FinanceReport): Promise<Buffer> {
 
   // ---- 8. Investment returns ----
   if (r.returns) {
-    w.section('Investment returns', 'Five-year view from each facility’s current approved financial model. Projections, not results.');
+    const anyCommitted = r.returns.some((x) => x.committedMonths != null);
+    w.section(
+      'Investment returns',
+      anyCommitted
+        ? 'Committed project valuation from each facility\u2019s current approved financial model: full committed term at the model\u2019s stored rate (rate identified per row). Projections, not results.'
+        : 'Five-year view from each facility\u2019s current approved financial model. Projections, not results.',
+    );
     w.table(
-      [{ label: 'Facility', width: 0.18 }, { label: 'Model', width: 0.22 }, { label: 'Investment', width: 0.16, align: 'right' }, { label: 'Payback', width: 0.12, align: 'right' }, { label: 'IRR', width: 0.1, align: 'right' }, { label: 'NPV', width: 0.12, align: 'right' }, { label: 'NOI margin', width: 0.1, align: 'right' }],
-      r.returns.map((x) => [x.branch, x.model, sgd(x.initialInvestment, 0), x.paybackMonth == null ? 'Beyond 5y' : `Month ${x.paybackMonth}`, x.irr == null ? 'Not available' : pct(x.irr * 100), sgd(x.npv, 0), pct(x.noiMarginPct)]),
+      [{ label: 'Facility', width: 0.15 }, { label: 'Model', width: 0.17 }, { label: 'Investment', width: 0.12, align: 'right' }, { label: 'Payback', width: 0.13, align: 'right' }, { label: 'IRR', width: 0.12, align: 'right' }, { label: 'NPV', width: 0.11, align: 'right' }, { label: 'Rate', width: 0.1, align: 'right' }, { label: 'NOI margin', width: 0.1, align: 'right' }],
+      r.returns.map((x) => [
+        x.branch, x.model, sgd(x.initialInvestment, 0), x.paybackLabel, x.irrDisplay, sgd(x.npv, 0),
+        `${(x.valuationRate * 100).toFixed(2)}%`, pct(x.noiMarginPct),
+      ]),
       { empty: 'No facility has a current approved model.' },
     );
+    if (anyCommitted) {
+      for (const x of r.returns) {
+        if (x.committedMonths != null) {
+          w.para(`- ${x.branch}: ${x.npvLabel} at ${(x.valuationRate * 100).toFixed(2)}% (${x.valuationRateSource}), ${x.committedMonths}-month term to ${day(x.committedEndDate as string)}.`, 8, MUTED);
+        }
+      }
+    }
   }
 
   // ---- Footer on every page ----

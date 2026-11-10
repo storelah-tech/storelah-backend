@@ -20,6 +20,16 @@ import { publishFinanceEvent } from './events';
 import { assertFreshVersion, nextVersion, newCorrelationId } from './idempotency';
 import { projectModel } from './models';
 import { project, type ProjectionInput } from './projection';
+import { getFinancePolicies } from './policies';
+import {
+  analyse,
+  buildCashFlowSeries,
+  effectiveAnnualRate,
+  methodologyInputsOf,
+  seriesInputsOf,
+  solveIrr,
+  type ValuationAssumptions,
+} from './valuation';
 
 const VERSION_STATUSES = ['DRAFT', 'SUBMITTED', 'APPROVED', 'REJECTED', 'ARCHIVED'] as const;
 
@@ -36,6 +46,8 @@ async function latestVersionRow(modelId: string) {
 
 /** Library cards: model + latest version + headline assumptions/results. */
 export async function listLibrary(opts: { branchId?: string; status?: string; search?: string } = {}) {
+  const { leaseHorizonReturns } = await getFinancePolicies();
+  const committedHeadlineEnabled = leaseHorizonReturns === 'on';
   const models = await prisma.financialModel.findMany({
     where: {
       ...(opts.branchId ? { branchId: opts.branchId } : {}),
@@ -60,6 +72,14 @@ export async function listLibrary(opts: { branchId?: string; status?: string; se
         stabilisedMonth: res.kpis.stabilisedMonth,
         inputHash: res.inputHash,
       };
+      // P5: the headline uses the committed valuation when present (rollout
+      // on + stored rate) and falls back to the legacy kpis otherwise. A
+      // valuation read failure never breaks the library listing. The rollout
+      // flag is read once per listing (not per model) for determinism.
+      if (committedHeadlineEnabled) {
+        const committed = committedHeadline(toInputs(m.inputs));
+        if (committed) headline.committed = committed;
+      }
     } catch {
       headline = { error: 'Stored inputs no longer project — restore a prior version.' };
     }
@@ -82,13 +102,69 @@ export async function listLibrary(opts: { branchId?: string; status?: string; se
   });
 }
 
+/**
+ * P5 headline committed valuation (pure, read-only): the same P3 series the
+ * returns committed block reads, summarised for the library card. Null when
+ * the model stores no rate (legacy fallback) or the series cannot be valued —
+ * callers keep the legacy kpis headline in both cases.
+ */
+function committedHeadline(inputs: ProjectionInput): Record<string, unknown> | null {
+  try {
+    const stored = (inputs as unknown as { valuation?: ValuationAssumptions }).valuation;
+    if (!stored || typeof stored.manualAnnualRate !== 'number') return null;
+    const result = projectModel(inputs);
+    const annualRate = effectiveAnnualRate(methodologyInputsOf(stored));
+    const series = buildCashFlowSeries(result, seriesInputsOf(inputs.capitalTotal, stored));
+    const analysis = analyse(series, annualRate);
+    const irr = solveIrr(series);
+    return {
+      annualRate,
+      annualRateSource: stored.methodology ?? 'manual',
+      npv: analysis.npv,
+      irr: irr.status === 'valid' ? irr.annualRate : null,
+      irrDisplay: irr.display,
+      simplePayback: analysis.simplePayback.label,
+      discountedPayback: analysis.discountedPayback.label,
+      cumulativeFreeCashFlow: analysis.cumulativeFreeCashFlow,
+      profitabilityIndex: analysis.profitabilityIndex,
+      // Contractual term months (inputs.horizonMonths), not the calendar-row
+      // count — mid-month starts yield N+1 rows for N months.
+      committedMonths: inputs.horizonMonths,
+      committedEndDate: series.metadata.committedEndDate,
+    };
+  } catch {
+    return null;
+  }
+}
+
 /** Validates a version snapshot for the submit gate (§11.8). */
 export function validateSubmittable(inputs: ProjectionInput): string[] {
   const problems: string[] = [];
   // No size-mix vs facility NLA reconcile gate (owner 2026-11-07): models are
   // planning tools and every number is editable; Sync pulls real inventory.
   const needYears = Math.ceil(inputs.horizonMonths / 12);
-  if (inputs.lease.monthlyByYear.length < needYears) {
+  // P2 (lease horizon): a v2 lease block carries its own schedule — count only
+  // non-excluded rows, so shortened-term rows (excluded:true, kept for
+  // re-extension) neither satisfy coverage nor trigger false problems.
+  const leaseAny = inputs.lease as unknown as {
+    monthlyByYear?: number[];
+    schedule?: Array<{ leaseYear?: number; excluded?: boolean; monthlyRent?: number }>;
+  };
+  if (Array.isArray(leaseAny.schedule)) {
+    const active = leaseAny.schedule.filter((r) => !r.excluded);
+    const present = new Set(active.map((r) => r.leaseYear));
+    for (let k = 1; k <= needYears; k++) {
+      if (!present.has(k)) {
+        problems.push(
+          `Lease schedule covers ${active.length} active year(s) but the horizon needs ${needYears} — extend it or confirm the estimated rows (excluded rows from a shortened term stay saved for re-extension).`,
+        );
+        break;
+      }
+    }
+    if (active.some((r) => (r.monthlyRent ?? 0) < 0)) problems.push('Lease rent values cannot be negative.');
+    return problems;
+  }
+  if ((inputs.lease.monthlyByYear?.length ?? 0) < needYears) {
     problems.push(`Lease schedule covers ${inputs.lease.monthlyByYear.length} year(s) but the horizon needs ${needYears} — extend it or select an explicit carry-forward.`);
   }
   if (inputs.lease.monthlyByYear.some((r) => r < 0)) problems.push('Lease rent values cannot be negative.');
@@ -201,11 +277,28 @@ export async function duplicateModel(opts: { modelId: string; name: string; reas
   return { id: created.id, name: created.name, status: created.status, version: created.version };
 }
 
+/**
+ * Lease-horizon P4: figures that are not CURRENT (recalculation PENDING or
+ * FAILED) cannot move forward — the lease was saved but returns are out of
+ * date (handoff §8.5). Retry the calculation first.
+ */
+function assertFiguresCurrent(m: { name: string; calculationStatus: string }): void {
+  if (m.calculationStatus !== 'CURRENT') {
+    throw new AppError(
+      409,
+      'BLOCKED',
+      'Returns are out of date — investment returns have not been recalculated for the latest lease term. Retry calculation before submitting or approving.',
+      { calculationStatus: m.calculationStatus },
+    );
+  }
+}
+
 /** Submits the working revision for approval (locks the model to PENDING). */
 export async function submitModel(opts: { modelId: string; expectedVersion?: number; actor: string; changeSummary?: string }) {
   const m = await prisma.financialModel.findUnique({ where: { id: opts.modelId } });
   if (!m) throw new AppError(404, 'NOT_FOUND', `Financial model ${opts.modelId} not found.`);
   if (m.status !== 'DRAFT') throw new AppError(403, 'LOCKED', `Model "${m.name}" is ${m.status} — only DRAFT models can be submitted.`);
+  assertFiguresCurrent(m);
   assertFreshVersion(m.version, opts.expectedVersion, 'FinancialModel');
   const inputs = toInputs(m.inputs);
   const problems = validateSubmittable(inputs);
@@ -247,6 +340,7 @@ async function decideModel(opts: {
   if (m.status !== 'PENDING') {
     throw new AppError(403, 'LOCKED', `Model "${m.name}" is ${m.status} — only PENDING models can be ${opts.approve ? 'approved' : 'rejected'}.`);
   }
+  if (opts.approve) assertFiguresCurrent(m);
   assertFreshVersion(m.version, opts.expectedVersion, 'FinancialModel');
   if (opts.approve) {
     const gate = await inventoryMappingProblems(m.id);
@@ -434,6 +528,7 @@ export async function publishModel(opts: { modelId: string; expectedVersion?: nu
   if (m.status !== 'DRAFT' && m.status !== 'PENDING') {
     throw new AppError(403, 'LOCKED', `Model "${m.name}" is ${m.status === 'CURRENT' ? 'already published' : m.status} — only drafts can be published.`);
   }
+  assertFiguresCurrent(m);
   assertFreshVersion(m.version, opts.expectedVersion, 'FinancialModel');
   const problems = validateSubmittable(toInputs(m.inputs));
   if (problems.length) throw new AppError(409, 'BLOCKED', `Model "${m.name}" cannot be published: ${problems.join(' ')}`, { problems });

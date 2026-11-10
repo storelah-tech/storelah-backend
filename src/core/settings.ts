@@ -206,6 +206,52 @@ export const SETTING_DEFS: SettingDef[] = [
     max: 180,
     integer: true,
   },
+  // Lease horizon — committed term policy bounds (owner D10: default maximum
+  // 120 months, globally configurable; the 12–120 policy check lives in the
+  // lease COMMAND in P4, not in the date engine, which accepts 1–120).
+  {
+    key: 'finance.leaseHorizon.minTermMonths',
+    group: 'billing',
+    kind: 'number',
+    label: 'Finance: min lease term (months)',
+    description: 'Minimum committed landlord lease term in months. Policy check lives in the lease command (P4).',
+    default: 12,
+    min: 1,
+    max: 120,
+    integer: true,
+  },
+  {
+    key: 'finance.leaseHorizon.maxTermMonths',
+    group: 'billing',
+    kind: 'number',
+    label: 'Finance: max lease term (months)',
+    description: 'Maximum committed landlord lease term in months. Existing models beyond a lowered cap stay readable.',
+    default: 120,
+    min: 1,
+    max: 120,
+    integer: true,
+  },
+  // Lease horizon P4 rollout gates (owner D11A; default off — the new write
+  // path and the committed returns block stay inert until Finance enables
+  // them, first for admins then for all operators with the lease permission).
+  {
+    key: 'finance.leaseHorizon.rollout',
+    group: 'billing',
+    kind: 'select',
+    label: 'Finance: lease horizon rollout',
+    description: 'Lease-horizon write path (landlord-lease, valuation, recalculate). off = blocked; admins = Owners only; all = every operator with the lease permission.',
+    default: 'off',
+    options: ['off', 'admins', 'all'],
+  },
+  {
+    key: 'finance.leaseHorizon.returns',
+    group: 'billing',
+    kind: 'select',
+    label: 'Finance: committed returns block',
+    description: 'Investment Returns committed valuation block (full-horizon NPV/IRR/paybacks at the stored rate). off = legacy 1/3/5-year output only.',
+    default: 'off',
+    options: ['off', 'on'],
+  },
   // Phase 4 — refund maker-checker (owner Q4 v1.2 FINAL: EVERY refund needs a
   // distinct requestor + approver; ONLY a Super Admin (Owner) may single-step,
   // and every bypass writes a FinanceAuditEvent with actor + reason). Visible

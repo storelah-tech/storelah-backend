@@ -86,6 +86,57 @@ Test commands: `pnpm check` (primary) + `pnpm test:e2e` (vitest, isolated
 | Audit append-only, no update/delete path | `finance export + audit + outbox` append-only test | 1 | ✅ |
 | Audit correlation links cause and effect | export audit ↔ outbox correlationId assertion | 1 | ✅ |
 
+## Lease Horizon acceptance (LH01–LH18) + handoff §12.3 calculation list (P8)
+
+Verdict key: ✅ = automated e2e (API/engine). Browser-only interaction parts
+(toast rendering, dirty badge, click paths) are `visual-pending` — exact
+screens/states are itemised in
+`docs/finance/lease-horizon-evidence/01-acceptance-mapping-LH01-LH18.md`; no
+Playwright, no new dependencies.
+
+| Spec bullet | Named test | Phase | Status |
+|---|---|---|---|
+| LH01 change 60→36 + Update saves term/end/forecast + success toast | `landlord-lease.update-end-to-end` (60→48) + `LH16 draft isolation` (60→36 read-back) + `LH12-server refresh` (36→48 new version) | P4/P5 | ✅ `tests/e2e/finance-lease-horizon-api.test.ts:90` + `:192`, `tests/e2e/finance-lease-horizon-consumers.test.ts:202` (toast copy `src/cms/admin/financeWorkspace.js:836` — visual-pending) |
+| LH02 edit-without-Update leaves forecast + Returns on committed value | `models.staged-sections-commit` (nothing mutates until Update) + `stale-results version-scoped` | P2/P4 | ✅ `tests/e2e/finance-phase2.test.ts:68`, `tests/e2e/finance-lease-horizon-api.test.ts:251` (“Unsaved changes” badge — visual-pending) |
+| LH03 Undo restores 60, no recalc/audit | client staged-draft discard (`leaseUndoClicked`, no PUT) + `failed-update-preserves-committed` | P4/P6 | ✅ engine semantics (`tests/e2e/finance-phase2.test.ts:110`); click path `src/cms/admin/financeWorkspace.js:1038` — visual-pending |
+| LH04 11 months blocked with range error | `LH04/LH05` | P4 | ✅ `tests/e2e/finance-lease-horizon-api.test.ts:132` (422 VALIDATION + fieldErrors) |
+| LH05 121 months blocked with range error | `LH04/LH05` | P4 | ✅ same test, 121 in the loop |
+| LH06 36.5 months blocked as non-integer | `LH06` | P4 | ✅ `tests/e2e/finance-lease-horizon-api.test.ts:144` |
+| LH07 extend-without-rents blocks on Estimated rows until confirmed | `LH07` + `R12 unconfirmed schedule blocks` | P4/P2 | ✅ `tests/e2e/finance-lease-horizon-api.test.ts:154`, `tests/e2e/finance-projection-v2.test.ts:256` |
+| LH08 shorten excludes later cash flows; actuals untouched | `LH08 truncation` + shorten-rebase block + actuals parity | P2/P4/P5 | ✅ `tests/e2e/finance-projection-v2.test.ts:366`, `tests/e2e/finance-lease-horizon-api.test.ts:217`, `tests/e2e/finance-lease-horizon-consumers.test.ts:256` |
+| LH09 mid-month 15 Dec 12-mo → end 14 Dec 2027, stubs prorated | `R2 calendar rows` + startDate re-derivation + mid-month buckets + persisted parity | P1/P2/P4/P5 | ✅ `tests/e2e/finance-lease-term.test.ts:79`, `tests/e2e/finance-projection-v2.test.ts:116`, `tests/e2e/finance-lease-horizon-api.test.ts:207`, `tests/e2e/finance-lease-horizon-consumers.test.ts:375` |
+| LH10 rent-free 0 → opening lease non-zero (prorated only mid-month) | `LH11 budgets` (5000 / 2741.94) + proration method matrix | P5/P2 | ✅ `tests/e2e/finance-lease-horizon-consumers.test.ts:131`, `tests/e2e/finance-projection-v2.test.ts:182` |
+| LH11 budgets counts the lease ONCE in total operating cost | `LH11` + `R8 prefix counts lease once` | P5/P2 | ✅ `tests/e2e/finance-lease-horizon-consumers.test.ts:131`, `tests/e2e/finance-projection-v2.test.ts:388` |
+| LH12 NPV/IRR/paybacks/cumulative/PI/DCF refresh to same model version | `LH12-server` (×2) + committed-at-stored-rate + DCF column set + report labels | P5/P7 | ✅ `tests/e2e/finance-lease-horizon-consumers.test.ts:162` + `:202`, `tests/e2e/finance-lease-horizon-api.test.ts:368`, `tests/e2e/finance-lease-horizon-dcf-export.test.ts:45`, `tests/e2e/finance-lease-horizon-consumers.test.ts:298` |
+| LH13 payback beyond horizon → Beyond horizon | `R10 payback labels` (inside + beyond) | P3 | ✅ `tests/e2e/finance-valuation.test.ts:452` |
+| LH14 renewal separate, committed byte-identical | `R13/D11A renewal stays separate` | P3 | ✅ `tests/e2e/finance-valuation.test.ts:376` |
+| LH15 concurrent same-version → 409 conflict copy | `LH15` | P4 | ✅ `tests/e2e/finance-lease-horizon-api.test.ts:177` |
+| LH16 draft isolation (own horizon in Returns/Library) | `LH16` (×2) + D4A fork | P4/P5 | ✅ `tests/e2e/finance-lease-horizon-api.test.ts:192` + `:283`, `tests/e2e/finance-lease-horizon-consumers.test.ts:229` |
+| LH17 failure → FAILED/stale/export-disabled/retry | `LH17` + DCF stale block | P4/P7 | ✅ `tests/e2e/finance-lease-horizon-api.test.ts:328`, `tests/e2e/finance-lease-horizon-dcf-export.test.ts:94` |
+| LH18 scenarios share horizon + lease + opex | `LH18 scenario isolation` + overlay/sensitivity | P2 | ✅ `tests/e2e/finance-projection-v2.test.ts:399` (+ phase-2 `scenario-overlay-no-fork`, `sensitivity-tornado`) |
+| §12.3 first-day + mid-month date boundaries | `D1B end dates` + `R2 calendar rows` + `R2 mid-month buckets` | P1/P2 | ✅ `tests/e2e/finance-lease-term.test.ts:36` + `:72`, `tests/e2e/finance-projection-v2.test.ts:112` |
+| §12.3 leap year + end-of-month handling | `D1B clamp rule` + leap-day/month-end spot-checks | P1/P3 | ✅ `tests/e2e/finance-lease-term.test.ts:51`, `tests/e2e/finance-valuation.test.ts:497` |
+| §12.3 partial opening + closing periods | `R5 closing stub scaling` + stub factors | P2 | ✅ `tests/e2e/finance-projection-v2.test.ts:207`, `:116` |
+| §12.3 rent-free crossing year boundaries | `R3 anniversary straddles` + partial rent-free window | P2/P3 | ✅ `tests/e2e/finance-lease-term.test.ts:164`, `tests/e2e/finance-valuation.test.ts:491` |
+| §12.3 non-escalating + escalating schedules | flat-vs-escalating parity + escalation24 fixture + Dec straddle | P2/P3 | ✅ `tests/e2e/finance-lease-term.test.ts:188`, `tests/e2e/finance-projection-v2.test.ts:163` |
+| §12.3 12/13/36/54/60/120-month terms | `N and N+1 rows` (12/13/36/54/60/120) + fixture cases midMonth12/short36/sembawang60/term120 + 13-mo partial year | P1/P2/P3 | ✅ `tests/e2e/finance-lease-term.test.ts:87`, `tests/e2e/finance-valuation.test.ts:180`, `tests/e2e/finance-projection-v2.test.ts:98` |
+| §12.3 NPV before/after horizon change (independent fixture) | truncation prefix-equality + LH12 refresh + full fixture analyses @0/8/15% | P3/P5 | ✅ `tests/e2e/finance-valuation.test.ts:349` + `:194`, `tests/e2e/finance-lease-horizon-consumers.test.ts:202` |
+| §12.3 IRR uses the exact same array as NPV | `NPV and IRR consume the identical array` (D12A/R8) | P3 | ✅ `tests/e2e/finance-valuation.test.ts:212` |
+| §12.3 no-IRR + multiple-IRR cases | `R9 IRR statuses` (valid / n.a. / Multiple solutions) | P3 | ✅ `tests/e2e/finance-valuation.test.ts:407` |
+| §12.3 simple + discounted payback beyond horizon | `R10 payback labels` beyond-horizon branch | P3 | ✅ `tests/e2e/finance-valuation.test.ts:452` |
+| §12.3 deposit recovery + reinstatement at terminal date | truncation terminal placement (36→2029-11-30, 60→2031-11-30) + R11 sunk shape | P3 | ✅ `tests/e2e/finance-valuation.test.ts:349`, `:333` |
+| §12.3 lease counted once in total operating cost | (same as LH11) | P2/P5 | ✅ (see LH11 row) |
+| §12.3 scenario isolation (occupancy never mutates lease/opex) | (same as LH18) | P2 | ✅ (see LH18 row) |
+| §12.3 model versioning + stale-calculation rejection | version-scoped calculations + LH15/LH16 + idempotent replay | P4/P5 | ✅ `tests/e2e/finance-lease-horizon-api.test.ts:177` + `:192` + `:233` + `:251` |
+
+### Browser-only captures (visual-pending — owner/user session, no Playwright)
+
+Section 4 Landlord lease Update toast; dirty “Unsaved changes” badge; Undo
+click path; Section 5 linked card + jump-focus; Returns DCF selector + stub
+date ranges + `Beyond horizon`; stale/pending notes + disabled export + Retry;
+Budgets read-only lease line. Full list:
+`docs/finance/lease-horizon-evidence/01-acceptance-mapping-LH01-LH18.md`.
+
 ## Golden fixture — Sembawang Launch Plan (spec §28)
 
 File: `tests/e2e/fixtures/finance-projection-golden.json`.

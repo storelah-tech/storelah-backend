@@ -10,7 +10,7 @@
 // Panel ids are the CMS ones (bill-models, bill-performance, bill-pricing,
 // bill-library) so RBAC resource keys are unchanged.
 
-import { get, post, put, del, can, describeError, downloadFile } from './api.js';
+import { get, post, put, del, can, describeError, downloadFile, request, getMe, getCurrentUser } from './api.js';
 import { getFinMount, finState } from './financeShared.js';
 import { state as cmsState } from './state.js';
 
@@ -31,10 +31,10 @@ export function initFinanceWorkspace() {
   const sum=a=>a.reduce((s,n)=>s+(Number(n)||0),0);
   const escapeHtml=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
   const addMonths=(date,n)=>new Date(date.getFullYear(),date.getMonth()+n,1);
-  const monthLabel=d=>d.toLocaleDateString('en-SG',{month:'short',year:'2-digit'});
+  const monthLabel=d=>`${MON_S[d.getMonth()]} ${String(d.getFullYear()).slice(2)}`;
   const modelPeriodDate=(start,m)=>m===0?new Date(start):new Date(start.getFullYear(),start.getMonth()+m,1);
   const firstMonthFraction=value=>{const d=value instanceof Date?value:new Date(value+'T00:00:00'),days=new Date(d.getFullYear(),d.getMonth()+1,0).getDate();return Math.max(1,days-d.getDate()+1)/days};
-  const periodLabel=r=>r.periodFactor<.999?`${r.date.getDate()}–${new Date(r.date.getFullYear(),r.date.getMonth()+1,0).getDate()} ${r.date.toLocaleDateString('en-SG',{month:'short',year:'2-digit'})}`:monthLabel(r.date);
+  const periodLabel=r=>{if(r._srv){if(r._srv.isStub&&r._srv.periodStart&&r._srv.periodEnd)return leaseStubRange(r._srv.periodStart,r._srv.periodEnd);return ymShort(r._srv.month)}return r.periodFactor<.999?`${r.date.getDate()}–${new Date(r.date.getFullYear(),r.date.getMonth()+1,0).getDate()} ${monthLabel(r.date)}`:monthLabel(r.date)};
 
   const scenarios={
     downside:{rampEarlySqft:125,rampLateSqft:80,churn:.035,churnStart:5,targetOcc:.86,rateGrowth:.02,leasePSF:1.9,leaseGrowth:.03,opexGrowth:.03,rentFree:2},
@@ -74,7 +74,7 @@ export function initFinanceWorkspace() {
     ],
     inventory:{facility:'StoreLah Sembawang',updated:'22 Oct 2026 · 2:45 PM',items:[{size:'XS',area:455,units:31},{size:'S',area:500,units:20},{size:'M',area:650,units:16},{size:'L',area:405,units:7},{size:'XL',area:264,units:2}]},
     expenses:[],
-    inventorySynced:true,periodView:'monthly',monthsShown:12,chartMonths:24,returnYear:5,budgetMonth:'2026-12',actualYear:'2026',actualMonths:12,financePeriod:'mtd',financeBasis:'accrual',projectionYears:3,demoActuals:true,opexOverrides:{},churnInputMode:'percent',budgetApplyScope:'future',activeDraftId:null,
+    inventorySynced:true,periodView:'monthly',monthsShown:12,chartMonths:24,returnYear:5,budgetMonth:'2026-12',actualYear:'2026',actualMonths:12,financePeriod:'mtd',financeBasis:'accrual',projectionYears:3,leaseScheduleYears:'3',demoActuals:true,opexOverrides:{},churnInputMode:'percent',budgetApplyScope:'future',activeDraftId:null,
     leaseYearlyRents:[5000,5000,5000,5000,5000,5000,5000],
     paymentTransactions:[]
   };
@@ -221,7 +221,7 @@ export function initFinanceWorkspace() {
     <div class="fm-kpi"><small>Initial investment</small><strong>${money(m.totalCapex)}</strong><span>Capex + opening cash</span></div>
     <div class="fm-kpi"><small>${tip('Stabilised occupancy','The first month closing occupied NLA reaches at least 99% of the selected steady-state occupancy target. It does not mean 100% full.')}</small><strong>${percent(state.targetOcc,0)}</strong><span>${m.stabilization?'Reached in model month '+m.stabilization:'Beyond horizon'}</span></div>
     <div class="fm-kpi"><small>Monthly NOI positive</small><strong>${m.breakEven?'M'+m.breakEven:'—'}</strong><span>${m.breakEven?monthLabel(m.rows[m.breakEven-1].date):'Not reached'}</span></div>
-    <div class="fm-kpi"><small>Cash payback</small><strong>${m.payback?'M'+m.payback:'—'}</strong><span>${m.payback?monthLabel(m.rows[m.payback-1].date):'Beyond 5 years'}</span></div>
+    <div class="fm-kpi"><small>Cash payback</small><strong>${m.payback?'M'+m.payback:'—'}</strong><span>${m.payback?monthLabel(m.rows[m.payback-1].date):'Beyond horizon'}</span></div>
     <div class="fm-kpi"><small>Year ${state.returnYear} NOI margin</small><strong>${percent(p.noiMargin,0)}</strong><span>${money(p.noi)} annual NOI</span></div>
     <div class="fm-kpi ${p.endCash<0?'warn':''}"><small>Cash through Year ${state.returnYear}</small><strong>${money(p.endCash)}</strong><span>${p.irr==null?'IRR not meaningful yet':percent(p.irr,0)+' annualised IRR'}</span></div>
   </div>`}
@@ -231,7 +231,7 @@ export function initFinanceWorkspace() {
     const y1=m.rows[11],latest=m.rows[Math.min(state.monthsShown,m.rows.length)-1],firstChurn=m.rows[Math.max(0,state.churnStart-1)],stabilisedMoveOut=state.nla*state.targetOcc*state.churn;
     finMount('bill-models').innerHTML=toolbar()+financeJourney('forecast')+`<div class="fm-start"><div><b>Start here: review month-by-month performance</b><span>Move-in and move-out activity updates occupied square feet, revenue, NOI and cash automatically.</span></div><button class="btn" data-fm-action="formula-notes">How calculations work</button></div>
       <div class="fm-kpis fm-kpis-simple"><div class="fm-kpi"><small>Year 1 occupied area</small><strong>${num(y1.occupied)} sq ft</strong><span>${percent(y1.occupancy)} occupancy</span></div><div class="fm-kpi"><small>Year 1 net move-in</small><strong>${signedNumber(sum(m.rows.slice(0,12).map(x=>x.netMoveIn)))} sq ft</strong><span>Move-ins less move-outs</span></div><div class="fm-kpi"><small>NOI becomes positive</small><strong>${m.breakEven?'Month '+m.breakEven:'Not reached'}</strong><span>${m.breakEven?monthLabel(m.rows[m.breakEven-1].date):'Review price or costs'}</span></div><div class="fm-kpi ${m.endCash<0?'warn':''}"><small>5-year cash position</small><strong>${money(m.endCash)}</strong><span>After ${money(m.totalCapex)} capital</span></div></div>
-      <div class="card fm-performance-card"><div class="card-head"><div><h3>Month-by-month performance</h3><small style="color:var(--muted)">Each row shows exactly how occupied area and cash change</small></div><div class="actions"><div class="fm-scenario"><button data-fm-months="12" class="${state.monthsShown===12?'active':''}">12 months</button><button data-fm-months="24" class="${state.monthsShown===24?'active':''}">24 months</button><button data-fm-months="60" class="${state.monthsShown===60?'active':''}">All 60</button></div><button class="btn" data-fm-action="yearly-summary">Yearly summary</button><button class="btn" data-fm-action="export">Download CSV</button><button class="primary" data-fm-action="projection-report" title="Investor projection report for the loaded model (calculations only)">Projection report (PDF)</button></div></div><div class="table-wrap" id="fmForecastTable">${forecastTable(m)}</div><div class="fm-table-key"><b>Latest displayed month:</b> ${num(latest.moveIn)} sq ft moved in − ${num(latest.moveOut)} sq ft moved out = <b>${signedNumber(latest.netMoveIn)} sq ft net move-in</b>.</div></div>
+      <div class="card fm-performance-card"><div class="card-head"><div><h3>Month-by-month performance</h3><small style="color:var(--muted)">Each row shows exactly how occupied area and cash change</small></div><div class="actions">${monthsToggle(m.rows.length,state.monthsShown)}<button class="btn" data-fm-action="yearly-summary">Yearly summary</button><button class="btn" data-fm-action="export">Download CSV</button><button class="primary" data-fm-action="projection-report" title="Investor projection report for the loaded model (calculations only)">Projection report (PDF)</button></div></div><div class="table-wrap" id="fmForecastTable">${forecastTable(m)}</div><div class="fm-table-key"><b>Latest displayed month:</b> ${num(latest.moveIn)} sq ft moved in − ${num(latest.moveOut)} sq ft moved out = <b>${signedNumber(latest.netMoveIn)} sq ft net move-in</b>.</div></div>
       <div class="fm-chart-controls"><div><b>Visual performance roadmap</b><small>Hover anywhere on a chart for the monthly values. Use Zoom for a larger view.</small></div><div class="fm-scenario"><button data-chart-months="12" class="${state.chartMonths===12?'active':''}">12 months</button><button data-chart-months="24" class="${state.chartMonths===24?'active':''}">24 months</button><button data-chart-months="60" class="${state.chartMonths===60?'active':''}">5 years</button></div></div>
       <div class="fm-chart-grid">${performanceCharts(m)}</div><div class="fm-note fm-projection-note"><b>Projection versus actual:</b> these charts are projections today because the model starts in December 2026. After each month-end is closed, the occupied area, move-ins, move-outs, revenue and costs for that month will use actual CRM/accounting data; only the remaining months stay forecast.</div>
       <div class="fm-simple-grid"><div class="card"><div class="card-head"><div><h3>1. Occupancy plan</h3><small style="color:var(--muted)">Enter square feet, not percentages</small></div><button class="btn" data-fm-action="reset">Reset base case</button></div><div class="card-body fm-assumptions">
@@ -255,26 +255,36 @@ export function initFinanceWorkspace() {
   function sectionActions(section,extra=''){const dirty=!!modelDrafts[section];return `<div class="actions fm-section-actions">${extra}<span class="fm-unsaved ${dirty?'show':''}">Unsaved changes</span><button class="btn" data-model-undo="${section}" ${dirty?'':'disabled'}>Undo</button><button class="primary" data-model-update="${section}" ${dirty?'':'disabled'}>Update</button></div>`}
   function draftAssumption(section,key,label,value,suffix,step,min,max,note,scale=1){return `<label class="fm-assumption"><span>${tip(label,note)}<small>${note}</small></span><span class="fm-number-wrap"><input type="number" min="${min}" max="${max}" step="${step}" value="${num(value*scale,step<1?1:0).replaceAll(',','')}" data-model-draft="${section}" data-model-key="${key}" data-model-scale="${scale}"><em>${suffix}</em></span></label>`}
   function projectionSelector(){return `<label class="fm-inline-select"><span>Show projection</span><select data-projection-years><option value="1" ${state.projectionYears===1?'selected':''}>1 year</option><option value="3" ${state.projectionYears===3?'selected':''}>3 years</option><option value="5" ${state.projectionYears===5?'selected':''}>5 years</option><option value="7" ${state.projectionYears===7?'selected':''}>7 years</option></select></label>`}
+  /** B6: the "All N" toggle labels the bound row count — never a hard-coded 60. */
+  function monthsToggle(rowCount,active){
+    const n=Math.max(1,Number(rowCount)||1);
+    return `<div class="fm-scenario"><button data-fm-months="12" class="${active===12?'active':''}">12 months</button><button data-fm-months="24" class="${active===24?'active':''}">24 months</button><button data-fm-months="${n}" class="${active===n?'active':''}">All ${n}</button></div>`;
+  }
   function customerPricingSchedule(rateGrowth,years){const rate=weightedRate(),targetArea=state.nla*state.targetOcc;return `<div class="table-wrap"><table class="fm-table fm-year-table"><thead><tr><th>Year</th><th>Net customer rate</th><th>Monthly rent potential</th><th>Annual rent potential</th><th>Annual increase</th></tr></thead><tbody>${Array.from({length:years},(_,i)=>{const psf=rate*Math.pow(1+rateGrowth,i),monthly=targetArea*psf;return `<tr><td>Year ${i+1}</td><td>$${num(psf,2)} / sq ft</td><td>${money(monthly)}</td><td>${money(monthly*12)}</td><td>${i?percent(rateGrowth):'Starting rate'}</td></tr>`}).join('')}</tbody></table></div>`}
   function leaseSchedule(draft,years){const rents=draft.leaseYearlyRents||[];return `<div class="table-wrap"><table class="fm-table fm-year-table fm-lease-year-table"><thead><tr><th>Lease year</th><th>Monthly landlord rent</th><th>Implied UFA PSF</th><th>Annual payable</th><th>Basis</th></tr></thead><tbody>${Array.from({length:years},(_,i)=>{const monthly=Number(rents[i]??(rents.at(-1)||draft.ufa*draft.leasePSF)),psf=draft.ufa?monthly/draft.ufa:0,months=i===0?Math.max(0,12-draft.rentFree):12;return `<tr><td>Year ${i+1}</td><td><span class="fm-table-input"><em>$</em><input type="number" min="0" step="1" value="${monthly.toFixed(2)}" data-lease-year-rent="${i}"></span></td><td>$${num(psf,2)} / UFA sq ft</td><td>${money(monthly*months)}${i===0&&draft.rentFree?`<small class="fm-capped">${draft.rentFree} rent-free months applied</small>`:''}</td><td>${i?'Entered for Year '+(i+1):'Starting lease rent'}</td></tr>`}).join('')}</tbody></table></div>`}
   function churnAssumptionPanel(occ){const stabilisedArea=state.nla*occ.targetOcc,stabilisedSqft=stabilisedArea*occ.churn,firstMonth=Math.max(1,occ.churnStart),firstOpening=calculate({...state,...occ}).rows[Math.max(0,firstMonth-1)]?.opening||0,firstSqft=firstOpening*occ.churn,displayValue=occ.churnInputMode==='sqft'?stabilisedSqft:occ.churn*100;return `<div class="fm-churn-control"><label class="fm-assumption"><span>${tip('Monthly move-out rate','Choose percentage of opening occupied NLA or square feet at stabilisation. Both values remain visible and the model always converts them to the same monthly churn rate.')}<small>The model calculates move-outs from occupied NLA—not UFA or total facility area.</small></span><span class="fm-number-wrap"><input type="number" min="0" step="${occ.churnInputMode==='sqft'?1:.1}" value="${num(displayValue,occ.churnInputMode==='sqft'?0:1).replaceAll(',','')}" data-model-churn-display><em>${occ.churnInputMode==='sqft'?'sq ft':'%'}</em></span></label><label class="fm-inline-select fm-churn-mode"><span>Enter move-out as</span><select data-churn-input-mode><option value="percent" ${occ.churnInputMode!=='sqft'?'selected':''}>Percentage of occupied NLA</option><option value="sqft" ${occ.churnInputMode==='sqft'?'selected':''}>Sq ft at stabilisation</option></select></label><div class="fm-churn-equivalence"><div><small>Monthly rate</small><b>${percent(occ.churn)}</b></div><div><small>First churn month</small><b>${num(firstSqft)} sq ft</b></div><div><small>At stabilisation</small><b>${num(stabilisedSqft)} sq ft</b></div></div></div>`}
 
   function renderModelControlled(){
     const m=calculate(),y1=annualModelMetrics(m,1),y2=annualModelMetrics(m,2),y3=annualModelMetrics(m,3),y5=annualModelMetrics(m,5),latest=m.rows[Math.min(state.monthsShown,m.rows.length)-1];
+    // Committed month-by-month table binds the server projection months (P6 §3);
+    // the local preview engine is used only while unsaved edits are staged.
+    const committed=committedRows(),forecastClean=!forecastHasStagedEdits()&&!!committed;
+    const forecastM=forecastClean?{rows:committed}:m;
     const occ=modelDrafts.occupancy||sectionSnapshot('occupancy'),capital=modelDrafts.capital||sectionSnapshot('capital'),pricing=modelDrafts.pricing||sectionSnapshot('pricing'),lease=modelDrafts.lease||sectionSnapshot('lease');
     const capitalTotal=sum(capital.map(x=>x.amount)),leaseMonthly=Number(lease.leaseYearlyRents?.[0]??lease.ufa*lease.leasePSF),leasePsf=lease.ufa?leaseMonthly/lease.ufa:0;
     const activeDays=Math.round(m.rows[0].periodFactor*new Date(m.rows[0].date.getFullYear(),m.rows[0].date.getMonth()+1,0).getDate()),monthDays=new Date(m.rows[0].date.getFullYear(),m.rows[0].date.getMonth()+1,0).getDate();
     finMount('bill-models').innerHTML=toolbar()+financeJourney('forecast')+`<div class="fm-start"><div><b>Committed financial model</b><span>Edit one section at a time. Each section’s Update button saves its latest values to the model (versioned and audited) and recalculates KPIs, charts, cash flow and Investment Returns.</span></div><button class="btn" data-fm-action="formula-notes">How calculations work</button></div>${m.rows[0].periodFactor<.999?`<div class="fm-note fm-proration-note"><b>Partial opening month:</b> operations begin ${new Date(state.start+'T00:00:00').toLocaleDateString('en-SG',{day:'numeric',month:'long',year:'numeric'})}. Month 1 uses ${activeDays} active days out of ${monthDays}; move-ins, rental revenue, landlord rent and recurring non-lease expenses are prorated.</div>`:''}
       <div class="fm-kpis fm-kpis-8"><div class="fm-kpi"><small>Year 1 occupied area</small><strong>${num(m.rows[11].occupied)} sq ft</strong><span>${percent(y1.endOccupancy)} occupancy</span></div><div class="fm-kpi"><small>Year 1 net move-in</small><strong>${signedNumber(sum(m.rows.slice(0,12).map(x=>x.netMoveIn)))} sq ft</strong><span>Move-ins less move-outs</span></div><div class="fm-kpi ${y1.endCash<0?'warn':''}"><small>1-year cash position</small><strong>${money(y1.endCash)}</strong><span>After ${money(m.totalCapex)} capital</span></div><div class="fm-kpi ${y3.endCash<0?'warn':''}"><small>3-year cash position</small><strong>${money(y3.endCash)}</strong><span>Cumulative through Year 3</span></div><div class="fm-kpi ${y5.endCash<0?'warn':''}"><small>5-year cash position</small><strong>${money(y5.endCash)}</strong><span>Cumulative through Year 5</span></div><div class="fm-kpi ${y1.noi<0?'warn':''}"><small>Year 1 NOI</small><strong>${money(y1.noi)}</strong><span>${percent(y1.revenue?y1.noi/y1.revenue:0)} margin</span></div><div class="fm-kpi ${y2.noi<0?'warn':''}"><small>Year 2 NOI</small><strong>${money(y2.noi)}</strong><span>${percent(y2.revenue?y2.noi/y2.revenue:0)} margin</span></div><div class="fm-kpi ${y3.noi<0?'warn':''}"><small>Year 3 NOI</small><strong>${money(y3.noi)}</strong><span>${percent(y3.revenue?y3.noi/y3.revenue:0)} margin</span></div></div>
-      <div class="card fm-performance-card"><div class="card-head"><div><h3>Month-by-month performance</h3><small style="color:var(--muted)">The committed model—pending edits do not affect this table until Update is clicked</small></div><div class="actions"><div class="fm-scenario"><button data-fm-months="12" class="${state.monthsShown===12?'active':''}">12 months</button><button data-fm-months="24" class="${state.monthsShown===24?'active':''}">24 months</button><button data-fm-months="60" class="${state.monthsShown===60?'active':''}">All 60</button></div><button class="btn" data-fm-action="yearly-summary">Yearly summary</button><button class="btn" data-fm-action="export">Download CSV</button><button class="primary" data-fm-action="projection-report" title="Investor projection report for the loaded model (calculations only)">Projection report (PDF)</button></div></div><div class="table-wrap" id="fmForecastTable">${forecastTable(m)}</div><div class="fm-table-key"><b>Latest displayed month:</b> ${num(latest.moveIn)} sq ft moved in − ${num(latest.moveOut)} sq ft moved out = <b>${signedNumber(latest.netMoveIn)} sq ft net move-in</b>.</div></div>
+      <div class="card fm-performance-card"><div class="card-head"><div><h3>Month-by-month performance</h3><small style="color:var(--muted)">The committed model—pending edits do not affect this table until Update is clicked</small></div><div class="actions">${monthsToggle(forecastM.rows.length,state.monthsShown)}<button class="btn" data-fm-action="yearly-summary">Yearly summary</button><button class="btn" data-fm-action="export">Download CSV</button><button class="primary" data-fm-action="projection-report" title="Investor projection report for the loaded model (calculations only)">Projection report (PDF)</button></div></div><div class="table-wrap" id="fmForecastTable">${forecastTable(forecastM)}</div><div class="fm-table-key"><b>Latest displayed month:</b> ${num(latest.moveIn)} sq ft moved in − ${num(latest.moveOut)} sq ft moved out = <b>${signedNumber(latest.netMoveIn)} sq ft net move-in</b>. ${forecastClean?`Committed server revision v${srv.model.version}.`:'Preview with unsaved changes.'}</div></div>
       <div class="fm-chart-controls"><div><b>Visual performance roadmap</b><small>Hover anywhere on a chart for the monthly values. Use Zoom for a larger view.</small></div><div class="fm-scenario"><button data-chart-months="12" class="${state.chartMonths===12?'active':''}">12 months</button><button data-chart-months="24" class="${state.chartMonths===24?'active':''}">24 months</button><button data-chart-months="60" class="${state.chartMonths===60?'active':''}">5 years</button></div></div><div class="fm-chart-grid">${performanceCharts(m)}</div><div class="fm-note fm-projection-note"><b>Synchronisation:</b> every section Update recalculates the monthly model, charts, cash positions, NOI, scenario comparison and Investment Returns from the same committed assumptions.</div>
       <div class="fm-model-sections">
         <div class="card" data-model-section="occupancy"><div class="card-head"><div><h3>1. Occupancy plan</h3><small style="color:var(--muted)">Enter operational assumptions, then click Update</small></div>${sectionActions('occupancy','<button class="btn" data-model-reset="occupancy">Load base values</button>')}</div><div class="card-body fm-assumptions">${draftAssumption('occupancy','rampEarlySqft','Gross move-ins per month · months 1–6',occ.rampEarlySqft,'sq ft',10,0,state.nla,'Total area customers move into each month before move-outs.')}${draftAssumption('occupancy','rampLateSqft','Gross move-ins per month · month 7+',occ.rampLateSqft,'sq ft',10,0,state.nla,'Ongoing monthly move-in area before move-outs.')}${churnAssumptionPanel(occ)}${draftAssumption('occupancy','churnStart','Move-outs begin in month',occ.churnStart,'month',1,1,60,'No churn is applied before this month.')}${draftAssumption('occupancy','targetOcc','Stabilisation occupancy',occ.targetOcc,'%',1,50,100,'The planned steady-state occupied NLA divided by total NLA.',100)}</div></div>
         <div class="card" data-model-section="capital"><div class="card-head"><div><h3>2. Capital investment</h3><small style="color:var(--muted)">Stage changes before updating the main cash flow</small></div>${sectionActions('capital','<button class="btn" data-draft-add-capital>＋ Add item</button>')}</div><div class="card-body"><div class="fm-capex-row header"><span>Capital item</span><span>Amount</span><span></span></div>${capital.map((x,i)=>`<div class="fm-capex-row"><input data-draft-capital-name="${i}" value="${x.name}"><input data-draft-capital-amount="${i}" type="number" min="0" step="500" value="${x.amount}"><button class="iconbtn" data-draft-remove-capital="${i}" title="Remove capital item">×</button></div>`).join('')}<div class="fm-capex-total"><span>Pending capital total</span><b data-capital-draft-total>${money(capitalTotal)}</b></div></div></div>
         <div class="card" data-model-section="pricing"><div class="card-head"><div><h3>3. Customer pricing</h3><small style="color:var(--muted)">Customer rates and annual increases—not landlord rent</small></div>${sectionActions('pricing')}</div><div class="card-body"><div class="fm-live-calc"><span>Starting weighted net customer rate</span><b>$${num(m.baseRate,2)} per occupied sq ft / month</b><small>Synced from Size Mix &amp; Pricing and applied directly to customer revenue.</small></div>${draftAssumption('pricing','rateGrowth','Annual customer rent increase',pricing.rateGrowth,'%',.5,0,15,'Applied to customer net rental rates every 12 months.',100)}<div class="fm-schedule-head"><div><b>Customer rent projection</b><small>At ${percent(state.targetOcc,0)} target occupancy</small></div>${projectionSelector()}</div>${customerPricingSchedule(pricing.rateGrowth,state.projectionYears)}</div></div>
-        <div class="card" data-model-section="lease"><div class="card-head"><div><h3>4. Landlord lease</h3><small style="color:var(--muted)">The single source for lease expense throughout the model</small></div>${sectionActions('lease')}</div><div class="card-body"><div class="fm-live-calc fm-lease-total"><span>Year 1 landlord rent</span><b data-lease-monthly>${money(leaseMonthly)} per month</b><small data-lease-annual>${num(lease.ufa)} UFA sq ft · implied $${num(leasePsf,2)} PSF · ${money(leaseMonthly*12)} before rent-free months.</small></div>${draftAssumption('lease','ufa','Usable floor area (UFA)',lease.ufa,'sq ft',1,0,100000,'The landlord’s chargeable usable floor area. This is used only to show the implied lease PSF.')}${draftAssumption('lease','rentFree','Rent-free period',lease.rentFree,'months',1,0,24,'Landlord rent is zero for these opening model months. If this is 0, Month 1 lease is charged and prorated only when operations begin mid-month.')}<div class="fm-schedule-head"><div><b>Editable landlord lease schedule</b><small>Enter the contractual total monthly rent for every lease year; no assumed escalation overrides your figures.</small></div>${projectionSelector()}</div>${leaseSchedule(lease,state.projectionYears)}<div class="fm-note fm-lease-sync-note"><b>Direct model link:</b> Expenses reads this landlord lease automatically. The other editable categories are non-lease expenses. Operating costs use the lease plus those expenses once, so nothing is double-counted.</div></div></div>
-        <div class="card fm-checks-card"><div class="card-head"><h3>Calculation checks</h3><button class="btn" data-fm-action="formula-notes">View definitions</button></div><div class="card-body fm-health">${health(m)}</div></div>
-      </div><div class="card" style="margin-top:14px"><div class="card-head"><h3>Operating milestones</h3><button class="btn" data-fm-action="targets">Set target owners</button></div><div class="card-body"><div class="fm-roadmap">${roadmap(m)}</div></div></div>`;
+        ${leaseSectionCard({lease,leaseMonthly,leasePsf})}
+        ${valuationSectionCard()}
+        <div class="card fm-checks-card"><div class="card-head"><h3>Operating milestones</h3><div class="actions"><button class="btn" data-fm-action="targets">Set target owners</button><button class="btn" data-mile-toggle>${srv.mileOpen?'Collapse':'Expand'}</button></div></div>${srv.mileOpen?`<div class="card-body"><div class="fm-roadmap">${roadmap(m)}</div></div>`:''}</div>
+      </div><div class="card" style="margin-top:14px"><div class="card-head"><h3>Calculation checks</h3><div class="actions"><button class="btn" data-fm-action="formula-notes">View definitions</button><button class="btn" data-checks-toggle>${srv.checksOpen?'Collapse':'Expand'}</button></div></div>${srv.checksOpen?`<div class="card-body fm-health">${health(m)}</div>`:''}</div>`;
     bindCommon();bindControlledModel();
   }
 
@@ -288,6 +298,9 @@ export function initFinanceWorkspace() {
     document.querySelectorAll('[data-draft-capital-name]').forEach(input=>input.addEventListener('input',()=>{const draft=ensureSectionDraft('capital');draft[Number(input.dataset.draftCapitalName)].name=input.value||'Capital item';markDraftSection('capital')}));
     document.querySelectorAll('[data-draft-capital-amount]').forEach(input=>input.addEventListener('input',()=>{const draft=ensureSectionDraft('capital');draft[Number(input.dataset.draftCapitalAmount)].amount=Math.max(0,Number(input.value)||0);markDraftSection('capital');document.querySelector('[data-capital-draft-total]').textContent=money(sum(draft.map(x=>x.amount)))}));
     document.querySelectorAll('[data-projection-years]').forEach(select=>select.addEventListener('change',()=>{state.projectionYears=Number(select.value);renderModelControlled()}));
+    // P11: Operating milestones / Calculation checks Expand/Collapse toggles.
+    document.querySelector('[data-mile-toggle]')?.addEventListener('click',e=>{e.preventDefault();e.stopPropagation();srv.mileOpen=!srv.mileOpen;renderModelControlled()});
+    document.querySelector('[data-checks-toggle]')?.addEventListener('click',e=>{e.preventDefault();e.stopPropagation();srv.checksOpen=!srv.checksOpen;renderModelControlled()});
   }
 
   function numberAssumption(key,label,value,suffix,step,min,max,note){return `<label class="fm-assumption"><span>${tip(label,note)}<small>${note}</small></span><span class="fm-number-wrap"><input type="number" min="${min}" max="${max}" step="${step}" value="${num(value,step<1?1:0).replaceAll(',','')}" data-fm-key="${key}" data-fm-scale="${['churn','targetOcc','rateGrowth'].includes(key)?100:1}"><em>${suffix}</em></span></label>`}
@@ -317,9 +330,25 @@ export function initFinanceWorkspace() {
   }
 
   function bindCommon(){
-    document.querySelectorAll('.fm-tip').forEach(b=>b.addEventListener('click',e=>{e.preventDefault();e.stopPropagation()}));
+    // Tooltips: keyboard focus shows via :focus; touch taps toggle (tap again
+    // or tap elsewhere to dismiss). Buttons keep their native keyboard support.
+    document.querySelectorAll('.fm-tip').forEach(b=>{b.addEventListener('click',e=>{e.preventDefault();e.stopPropagation()});if(b.dataset.tipBound)return;b.dataset.tipBound='1';b.setAttribute('aria-expanded','false');b.addEventListener('click',()=>{const open=b.classList.toggle('open');b.setAttribute('aria-expanded',open?'true':'false')})});
+    document.querySelectorAll('.fm-horizon-banner [data-lh-retry]').forEach(b=>{if(b.dataset.lhBound)return;b.dataset.lhBound='1';b.addEventListener('click',e=>{e.preventDefault();e.stopPropagation();leaseRetryClicked(b)})});
+    bindLeaseSection();
+    bindValuationSection();
+    // Hash-route jump actions + cross-panel destinations (P7): the buttons
+    // rendered by the horizon banner, Section 5 and Returns are dead without
+    // a delegated handler, so one binding covers every current panel.
+    document.querySelectorAll('[data-lh-jump]').forEach(b=>{if(b.dataset.jumpBound)return;b.dataset.jumpBound='1';b.addEventListener('click',e=>{e.preventDefault();e.stopPropagation();jumpToLeaseSection()})});
+    document.querySelectorAll('[data-val-jump]').forEach(b=>{if(b.dataset.jumpBound)return;b.dataset.jumpBound='1';b.addEventListener('click',e=>{e.preventDefault();e.stopPropagation();jumpToValuationSection()})});
+    document.querySelectorAll('[data-finance-destination]').forEach(b=>{if(b.dataset.jumpBound)return;b.dataset.jumpBound='1';b.addEventListener('click',e=>{e.preventDefault();e.stopPropagation();showPanel(b.dataset.financeDestination)})});
     document.querySelectorAll('[data-fm-scenario]').forEach(b=>b.addEventListener('click',e=>{e.stopPropagation();applyScenario(b.dataset.fmScenario)}));
-    document.querySelectorAll('[data-fm-start-date]').forEach(input=>input.addEventListener('change',()=>{if(!/^\d{4}-\d{2}-\d{2}$/.test(input.value)){notify('Choose a valid operational start date');return}state.start=input.value;state.budgetMonth=input.value.slice(0,7);markDirty('inputs');persistFinancePreferences();clearModelDrafts();clearBudgetDraft();renderActive();const factor=firstMonthFraction(input.value);notify(factor<.999?'Operational start updated. Month 1 move-ins, revenue, landlord rent and recurring non-lease expenses are prorated by active days.':'Operational start updated to the first day of the month. Month 1 uses full-month values.')}));
+    document.querySelectorAll('[data-fm-start-date]').forEach(input=>input.addEventListener('change',async()=>{if(!/^\d{4}-\d{2}-\d{2}$/.test(input.value)){notify('Choose a valid operational start date');return}state.start=input.value;state.budgetMonth=input.value.slice(0,7);markDirty('inputs');clearModelDrafts();clearBudgetDraft();renderActive();
+      // B2: no success toast before the server confirms — await the queued
+      // save and only toast when it lands (flush already reports failures).
+      if(!srv.model){persistFinancePreferences();return}
+      srv.chain=srv.chain.then(flush);const ok=await srv.chain;if(ok===false)return;
+      const factor=firstMonthFraction(input.value);notify(factor<.999?'Operational start updated. Month 1 move-ins, revenue, landlord rent and recurring non-lease expenses are prorated by active days.':'Operational start updated to the first day of the month. Month 1 uses full-month values.')}));
     document.querySelectorAll('[data-fm-months]').forEach(b=>b.addEventListener('click',e=>{e.stopPropagation();state.monthsShown=Number(b.dataset.fmMonths);renderModel()}));
     document.querySelectorAll('[data-chart-months]').forEach(b=>b.addEventListener('click',e=>{e.stopPropagation();state.chartMonths=Number(b.dataset.chartMonths);renderModel()}));
     document.querySelectorAll('[data-fm-key]').forEach(input=>input.addEventListener('input',()=>{state[input.dataset.fmKey]=Number(input.value)/(Number(input.dataset.fmScale)||1);state.scenario='custom';clearTimeout(assumptionTimer);assumptionTimer=setTimeout(renderModel,250)}));
@@ -330,6 +359,9 @@ export function initFinanceWorkspace() {
     document.querySelectorAll('[data-fm-select="model"]').forEach(s=>s.addEventListener('change',()=>{if(s.value.startsWith('draft:'))loadModelDraft(s.value.slice(6));else if(s.value==='approved')loadApprovedModel();else if(s.value==='conservative'){applyScenario('downside');state.activeDraftId=null;persistFinanceState()}else if(s.value==='blank')showModal('Create from blank template','Start with a clean set of assumptions.',`<div class="fm-note">The current model will remain unchanged. Name and save the new working draft when you are ready.</div>`,'Create draft',()=>notify('Blank facility model opened as a working draft'))}));
     bindChartHover();
   }
+  // Dismiss open tooltip popovers on outside tap / Escape (touch support).
+  document.addEventListener('click',e=>{if(!e.target.closest?.('.fm-tip'))document.querySelectorAll('.fm-tip.open').forEach(b=>{b.classList.remove('open');b.setAttribute('aria-expanded','false')})},true);
+  document.addEventListener('keydown',e=>{if(e.key==='Escape')document.querySelectorAll('.fm-tip.open').forEach(b=>{b.classList.remove('open');b.setAttribute('aria-expanded','false')})});
   function applyScenario(name){clearModelDrafts();const base=clone(state.baseOccupancy||occupancySnapshot()),adj=occupancyScenarioAdjustments[name]||occupancyScenarioAdjustments.base;Object.assign(state,base);if(name!=='base'){state.rampEarlySqft=base.rampEarlySqft*(1+adj.moveIn);state.rampLateSqft=base.rampLateSqft*(1+adj.moveIn);state.churn=Math.max(0,base.churn*(1+adj.churn));state.targetOcc=Math.max(.5,Math.min(.99,base.targetOcc*(1+adj.targetOcc)))}state.scenario=name;renderActive();notify((name[0].toUpperCase()+name.slice(1))+' occupancy scenario applied · '+adj.label+'. Lease, pricing, OPEX and capital are unchanged.')}
   function renderActive(){const p=billing.querySelector('.module-panel.active');if(!p)return;({
     'bill-transactions':renderTransactions,'bill-models':renderModel,'bill-performance':renderActuals,'bill-budgets':renderBudgets,'bill-pricing':renderMix,'bill-returns':renderReturns,'bill-library':renderLibrary
@@ -365,8 +397,17 @@ export function initFinanceWorkspace() {
   function budgetRow(d){const {x,i,actual,committed,draft}=d,forecast=Math.max(x.budget,actual+committed+draft),variance=forecast-x.budget;return `<div class="fm-budget-row"><b class="name">${x.name}<small>${x.owner}</small></b><input data-budget-index="${i}" type="number" min="0" step="50" value="${x.budget}"><span>${actual?money(actual):'—'}</span><span>${money(committed)}</span><span>${money(forecast)}</span><span class="fm-variance ${variance<=0?'good':'bad'}">${money(variance)}</span><input class="fm-line-note" data-budget-note="${i}" value="${x.note||''}" placeholder="Add a note…"></div>`}
   function controlledBudgetRow(d){const {x,i,actual,committed,draft}=d,forecast=Math.max(x.budget,actual+committed+draft),variance=forecast-x.budget;return `<div class="fm-budget-row"><b class="name">${x.name}<small>${x.owner}</small></b><input data-budget-index="${i}" type="number" min="0" step="50" value="${x.budget}"><span>${actual?money(actual):'—'}</span><span>${money(committed)}</span><span>${money(forecast)}</span><span class="fm-variance ${variance<=0?'good':'bad'}">${money(variance)}</span><input class="fm-line-note" data-budget-note="${i}" value="${x.note||''}" placeholder="Add a note…"></div>`}
   function renderBudgetsControlled(){
-    const model=calculate(),months=model.rows.slice(0,24),modelRow=model.rows.find(r=>modelMonthValue(r.date)===state.budgetMonth)||model.rows[0],lease=modelRow?.lease||0,dirty=budgetDraft?.month===state.budgetMonth,lines=budgetLinesForMonth(),details=lines.map((x,i)=>({x,i,...expenseTotals(x.name)})),otherActual=sum(details.map(x=>x.actual)),otherCommitted=sum(details.map(x=>x.committed)),otherBudget=sum(lines.map(x=>x.budget)),otherForecast=sum(details.map(x=>Math.max(x.x.budget,x.actual+x.committed+x.draft))),actual=otherActual,committed=lease+otherCommitted,total=lease+otherBudget,forecast=lease+otherForecast,variance=forecast-total,ledger=state.expenses.filter(x=>x.month===state.budgetMonth),leaseNote=lease===0?'No landlord rent for this month under the committed rent-free terms.':`${money(lease)} is pulled directly from Financial Model → Landlord lease${modelRow?.periodFactor<.999?' and prorated for the partial opening month':''}.`;
-    finMount('bill-budgets').innerHTML=toolbar()+financeJourney('costs')+`<div class="fm-filter-bar"><label class="fm-select-wrap"><small>Budget month</small><select class="fm-select" data-budget-month>${months.map(r=>{const value=modelMonthValue(r.date);return `<option value="${value}" ${value===state.budgetMonth?'selected':''}>${monthName(value)}</option>`}).join('')}</select></label><label class="fm-select-wrap"><small>View</small><select class="fm-select"><option>Budget + commitments + actuals</option><option>Budget only</option><option>Individual expenditure only</option></select></label><label class="fm-select-wrap"><small>When Update is clicked</small><select class="fm-select" data-budget-scope><option value="future" ${state.budgetApplyScope!=='month'?'selected':''}>Apply this month onward</option><option value="month" ${state.budgetApplyScope==='month'?'selected':''}>Selected month only</option></select></label><span class="spacer"></span><span class="pill ${actual?'green':'amber'}">${actual?'Actuals posted':'Forecast month · no actuals yet'}</span></div>
+    const model=calculate(),months0=model.rows.slice(0,24);
+    // B7: the selectable months come from the COMMITTED server projection when
+    // present — the preview engine stops at the last full month, hiding the
+    // closing part-month (e.g. Dec 2027 of a 15 Dec 2026 12-month lease).
+    const srvMonths=srv.model?.projection?.months;
+    const monthKeys=(srvMonths&&srvMonths.length?srvMonths.map(m=>m.month):months0.map(r=>modelMonthValue(r.date)));
+    const srvRow=srvMonths?.length?srvMonths.find(m=>m.month===state.budgetMonth)||srvMonths[0]:null;
+    const previewRow=model.rows.find(r=>modelMonthValue(r.date)===state.budgetMonth)||model.rows[0];
+    const modelRow=srvRow?{lease:Number(srvRow.opexLease)||0,periodFactor:Number(srvRow.periodFactor ?? 1)}:previewRow;
+    const lease=modelRow?.lease||0,dirty=budgetDraft?.month===state.budgetMonth,lines=budgetLinesForMonth(),details=lines.map((x,i)=>({x,i,...expenseTotals(x.name)})),otherActual=sum(details.map(x=>x.actual)),otherCommitted=sum(details.map(x=>x.committed)),otherBudget=sum(lines.map(x=>x.budget)),otherForecast=sum(details.map(x=>Math.max(x.x.budget,x.actual+x.committed+x.draft))),actual=otherActual,committed=lease+otherCommitted,total=lease+otherBudget,forecast=lease+otherForecast,variance=forecast-total,ledger=state.expenses.filter(x=>x.month===state.budgetMonth),leaseNote=lease===0?'No landlord rent for this month under the committed rent-free terms.':`${money(lease)} is pulled directly from Financial Model → Landlord lease${modelRow?.periodFactor<.999?' and prorated for the partial opening month':''}.`;
+    finMount('bill-budgets').innerHTML=toolbar()+financeJourney('costs')+`<div class="fm-filter-bar"><label class="fm-select-wrap"><small>Budget month</small><select class="fm-select" data-budget-month>${monthKeys.map(value=>`<option value="${value}" ${value===state.budgetMonth?'selected':''}>${monthName(value)}</option>`).join('')}</select></label><label class="fm-select-wrap"><small>View</small><select class="fm-select"><option>Budget + commitments + actuals</option><option>Budget only</option><option>Individual expenditure only</option></select></label><label class="fm-select-wrap"><small>When Update is clicked</small><select class="fm-select" data-budget-scope><option value="future" ${state.budgetApplyScope!=='month'?'selected':''}>Apply this month onward</option><option value="month" ${state.budgetApplyScope==='month'?'selected':''}>Selected month only</option></select></label><span class="spacer"></span><span class="pill ${actual?'green':'amber'}">${actual?'Actuals posted':'Forecast month · no actuals yet'}</span></div>
       <div class="fm-budget-grid"><div class="card"><div class="card-head"><div><h3>Monthly operating budget</h3><small style="color:var(--muted)">${monthName(state.budgetMonth)} · lease is model-linked; operating lines are staged until Update</small></div><div class="actions"><button class="btn" data-fm-action="add-expense">＋ Add category</button><button class="primary" data-fm-action="add-transaction">＋ Add expenditure</button><span class="fm-unsaved" data-budget-unsaved style="display:${dirty?'inline-flex':'none'}">Unsaved changes</span><button class="btn" data-budget-undo ${dirty?'':'disabled'}>Undo</button><button class="primary" data-budget-update ${dirty?'':'disabled'}>Update</button></div></div><div class="card-body"><div class="fm-budget-row header"><span class="name">Category</span><span>Budget</span><span>Actual</span><span>Committed</span><span>Forecast</span><span>Variance</span><span>Note</span></div>
       <div class="fm-budget-row fm-model-linked-row"><b class="name">Lease expense<small>Model-linked · read only</small></b><input value="${num(lease)}" disabled title="Managed in Financial Models → Landlord lease"><span>—</span><span>${money(lease)}</span><span>${money(lease)}</span><span class="fm-variance neutral">$0</span><input class="fm-line-note" value="${leaseNote}" disabled></div>${details.map(d=>controlledBudgetRow(d)).join('')}<div class="fm-budget-row total"><b class="name">Total monthly operating cost</b><b>${money(total)}</b><b>${money(actual)}</b><b>${money(committed)}</b><b>${money(forecast)}</b><span class="fm-variance ${variance<=0?'good':'bad'}">${money(variance)}</span><span></span></div><div class="fm-note fm-lease-sync-note"><b>Single-source calculation:</b> landlord lease is pulled from Financial Model → Landlord lease and cannot be edited here. Total operating cost already includes lease: ${money(lease)} lease + ${money(otherBudget)} other expenses = ${money(total)}. The Financial Model uses this total once.</div><div class="fm-note fm-persistence-note"><b>Saved model values:</b> Update saves this budget to the model and, by default, carries it into every future forecast month. Use “Selected month only” only for a genuine one-off budget.</div></div></div>
       <div class="fm-stack"><div class="card"><div class="card-head"><h3>Expense mix</h3></div><div class="card-body"><div class="fm-donut"><div><b>${money(total)}</b><small>Total operating budget</small></div></div><div class="fm-note">Linked landlord lease ${money(lease)} · Other operating expenses ${money(otherBudget)}</div></div></div><div class="card"><div class="card-head"><h3>How the figures work</h3></div><div class="card-body fm-health"><div class="fm-check"><i>B</i><div><b>Budget</b><small>Landlord lease is model-linked. Edit the other operating-expense lines, then click Update.</small></div></div><div class="fm-check"><i>A</i><div><b>Actual</b><small>Paid non-lease expenditure posted in the detailed ledger after month-end processing.</small></div></div><div class="fm-check"><i>C</i><div><b>Committed</b><small>Linked contractual lease plus approved non-lease purchase orders and contracts.</small></div></div><div class="fm-check"><i>F</i><div><b>Forecast</b><small>Linked lease plus the higher of each non-lease expense budget or its actual, committed and draft spend.</small></div></div><button class="primary" data-fm-action="approve-budget">Submit revised budget</button></div></div></div></div>
@@ -387,17 +428,305 @@ export function initFinanceWorkspace() {
   function renderReturns(){const m=calculate(),p=periodMetrics(m),progress=[1,2,3,4,5].map(y=>({y,p:periodMetrics(m,y)}));finMount('bill-returns').innerHTML=toolbar()+`<div class="fm-filter-bar"><label class="fm-select-wrap"><small>Return period</small><select class="fm-select" data-return-year>${[1,2,3,4,5].map(y=>`<option value="${y}" ${y===state.returnYear?'selected':''}>Through Year ${y}</option>`).join('')}</select></label><div class="fm-period-explain"><b>Period starts at model commencement</b><small>Returns are cumulative from Dec 2026—not arbitrary calendar-date snapshots.</small></div><span class="spacer"></span><button class="btn" data-fm-action="returns-help">How IRR changes</button></div>${kpis(m)}<div class="fm-main-grid"><div class="fm-stack"><div class="card"><div class="card-head"><h3>Return summary · through Year ${state.returnYear}</h3><button class="btn" data-fm-action="returns-help">Definitions</button></div><div class="card-body"><div class="info-grid"><div class="info"><small>Total initial investment</small><b>${money(m.totalCapex)}</b></div><div class="info"><small>Operating cash through period</small><b>${money(p.operatingCash)}</b></div><div class="info"><small>Annualised IRR through period</small><b>${p.irr==null?'n.a.':percent(p.irr)}</b></div><div class="info"><small>Payback</small><b>${m.payback&&m.payback<=p.end?'Month '+m.payback:'Not reached by Year '+state.returnYear}</b></div><div class="info"><small>Year ${state.returnYear} NOI / investment</small><b>${percent(m.totalCapex?p.noi/m.totalCapex:0)}</b></div><div class="info"><small>Year ${state.returnYear} NOI margin</small><b>${percent(p.noiMargin)}</b></div></div><div class="fm-note" style="margin-top:12px"><b>IRR advice:</b> the IRR is recalculated using all cash flows from the initial investment through the selected year. It can therefore change as each year is added. It is not a separate annual profit percentage. With no property-sale or terminal value assumed, early-year IRR may be negative or not meaningful.</div></div></div><div class="card"><div class="card-head"><div><h3>Editable capital investment</h3><small style="color:var(--muted)">Changes update cash flow, IRR and payback</small></div><button class="btn" data-fm-action="add-capital">＋ Add item</button></div><div class="card-body"><div class="fm-capex-row header"><span>Capital item</span><span>Amount</span><span></span></div>${state.capex.map((x,i)=>`<div class="fm-capex-row"><input data-capex-name="${i}" value="${x.name}"><input data-capex-amount="${i}" type="number" min="0" step="500" value="${x.amount}"><button class="iconbtn" data-remove-capital="${i}" title="Remove capital item">×</button></div>`).join('')}<div class="fm-capex-total"><span>Total initial capital</span><b>${money(m.totalCapex)}</b></div></div></div><div class="card"><div class="card-head"><h3>IRR progression by horizon</h3></div><div class="table-wrap"><table class="fm-table fm-compact-table"><thead><tr><th>Horizon</th><th>Operating cash</th><th>Cash position</th><th>Annualised IRR</th></tr></thead><tbody>${progress.map(x=>`<tr class="${x.y===state.returnYear?'total':''}"><td>Through Year ${x.y}</td><td>${money(x.p.operatingCash)}</td><td>${money(x.p.endCash)}</td><td>${x.p.irr==null?'n.a.':percent(x.p.irr)}</td></tr>`).join('')}</tbody></table></div></div></div>
       <div class="fm-stack"><div class="card"><div class="card-head"><div><h3>Year ${state.returnYear} NOI margin sensitivity</h3><small style="color:var(--muted)">Target occupancy versus weighted net PSF</small></div><span class="pill grey">Click a cell to apply</span></div><div class="card-body"><div class="fm-sensitivity">${sensitivity()}</div><div class="fm-note" style="margin-top:10px"><b>What the percentages mean:</b> each cell is Year ${state.returnYear} NOI ÷ Year ${state.returnYear} rental revenue for that occupancy and weighted net PSF combination. For example, 30% means $0.30 of NOI remains from every $1.00 of rental revenue after lease and recurring OPEX. It is not occupancy, discount or IRR.</div></div></div><div class="card"><div class="card-head"><h3>Scenario comparison · through Year ${state.returnYear}</h3><button class="btn" data-fm-action="compare">Open comparison</button></div><div class="table-wrap">${comparisonTable()}</div></div><div class="fm-note"><b>Stabilised occupancy:</b> the first month closing occupied NLA reaches at least 99% of the selected steady-state occupancy target. It does not mean the facility is 100% full.</div></div></div>`;bindCommon();document.querySelector('[data-return-year]')?.addEventListener('change',e=>{state.returnYear=Number(e.target.value);renderReturns()});document.querySelectorAll('[data-sens]').forEach(c=>c.addEventListener('click',e=>{e.stopPropagation();const [occ,psf]=c.dataset.sens.split(',').map(Number),current=weightedRate(),factor=current?psf/current:1;state.targetOcc=occ;state.mix.forEach(x=>x.rate*=factor);state.scenario='custom';renderReturns();notify('Target occupancy and weighted net PSF applied')}))}
   function renderReturnsInvestor(){
-    const m=calculate(),p=periodMetrics(m),progress=[1,2,3,4,5].map(y=>({y,p:periodMetrics(m,y)}));
-    finMount('bill-returns').innerHTML=toolbar()+financeJourney('returns')+`<div class="fm-filter-bar"><label class="fm-select-wrap"><small>Return period</small><select class="fm-select" data-return-year>${[1,2,3,4,5].map(y=>`<option value="${y}" ${y===state.returnYear?'selected':''}>Through Year ${y}</option>`).join('')}</select></label><div class="fm-period-explain"><b>Measured from project commencement</b><small>All cash flows from Dec 2026 through the selected year are included.</small></div><span class="spacer"></span><button class="btn" data-fm-action="returns-help">Definitions &amp; IRR guidance</button></div>
-      ${kpis(m)}
-      <div class="card fm-return-summary"><div class="card-head"><div><h3>Investor return summary · through Year ${state.returnYear}</h3><small style="color:var(--muted)">The headline investment position before reviewing sensitivities and assumptions</small></div><button class="btn" data-fm-action="compare">Compare scenarios</button></div><div class="card-body"><div class="info-grid"><div class="info"><small>Total initial investment</small><b>${money(m.totalCapex)}</b></div><div class="info"><small>Operating cash through period</small><b>${money(p.operatingCash)}</b></div><div class="info"><small>Cash position after investment</small><b>${money(p.endCash)}</b></div><div class="info"><small>Annualised IRR through period</small><b>${p.irr==null?'n.a.':percent(p.irr)}</b></div><div class="info"><small>Payback</small><b>${m.payback&&m.payback<=p.end?'Month '+m.payback:'Not reached by Year '+state.returnYear}</b></div><div class="info"><small>Year ${state.returnYear} NOI margin</small><b>${percent(p.noiMargin)}</b></div></div><div class="fm-note" style="margin-top:12px"><b>How to read this:</b> IRR is recalculated from the original investment through the selected year. NOI margin measures operating efficiency for that year; it is not the investor return.</div></div></div>
-      <div class="fm-return-pair"><div class="card"><div class="card-head"><div><h3>IRR progression</h3><small style="color:var(--muted)">See how the return develops as more cash flows are included</small></div></div><div class="table-wrap"><table class="fm-table fm-compact-table"><thead><tr><th>Horizon</th><th>Operating cash</th><th>Cash position</th><th>Annualised IRR</th></tr></thead><tbody>${progress.map(x=>`<tr class="${x.y===state.returnYear?'total':''}"><td>Through Year ${x.y}</td><td>${money(x.p.operatingCash)}</td><td>${money(x.p.endCash)}</td><td>${x.p.irr==null?'n.a.':percent(x.p.irr)}</td></tr>`).join('')}</tbody></table></div></div>
-      <div class="card"><div class="card-head"><div><h3>Simple return sensitivity</h3><small style="color:var(--muted)">Three understandable outcomes instead of a percentage matrix</small></div><span class="pill grey">Year ${state.returnYear}</span></div><div class="card-body"><div class="fm-sensitivity-cards">${simpleSensitivityCards()}</div><div class="fm-note" style="margin-top:10px"><b>NOI margin</b> means the share of customer revenue remaining after landlord lease and the other operating expenses. Choose a case to test occupancy and customer rate assumptions.</div></div></div></div>
-      <div class="card fm-scenario-card"><div class="card-head"><div><h3>Scenario comparison · through Year ${state.returnYear}</h3><small style="color:var(--muted)">Downside, base and upside use the same calculation engine</small></div><button class="btn" data-fm-action="compare">Open comparison</button></div><div class="table-wrap">${comparisonTable()}</div></div>
-      <div class="card fm-capital-card"><div class="card-head"><div><h3>Committed capital assumptions</h3><small style="color:var(--muted)">Read-only here so investor returns cannot bypass the Financial Model’s Update and Undo controls</small></div><button class="btn" data-finance-destination="bill-models">Edit capital assumptions</button></div><div class="card-body"><div class="fm-capital-layout"><div><div class="fm-capex-row header fm-capex-readonly"><span>Capital item</span><span>Committed amount</span><span></span></div>${state.capex.map(x=>`<div class="fm-capex-row fm-capex-readonly"><b>${x.name}</b><span>${money(x.amount)}</span><span class="pill grey">Committed</span></div>`).join('')}<div class="fm-capex-total"><span>Total initial capital</span><b>${money(m.totalCapex)}</b></div></div><div class="fm-health"><div class="fm-check"><i>1</i><div><b>Controlled update</b><small>Edit the Capital investment section in Financial Models, then click Update to recalculate every return.</small></div></div><div class="fm-check"><i>2</i><div><b>Operating cash</b><small>Monthly NOI after subtracting the approved Expenses total exactly once.</small></div></div><div class="fm-check"><i>3</i><div><b>Single source of truth</b><small>IRR, cash position, payback and scenario comparison all use these committed assumptions.</small></div></div></div></div></div></div>`;
-    bindCommon();
-    document.querySelector('[data-return-year]')?.addEventListener('change',e=>{state.returnYear=Number(e.target.value);renderReturnsInvestor()});
-    document.querySelectorAll('[data-sens],[data-simple-sens]').forEach(c=>c.addEventListener('click',e=>{e.stopPropagation();const value=c.dataset.simpleSens||c.dataset.sens,[occ,psf]=value.split(',').map(Number),current=weightedRate(),factor=current?psf/current:1;state.targetOcc=occ;state.mix.forEach(x=>x.rate*=factor);state.scenario='custom';renderReturnsInvestor();notify('Occupancy and customer rate case applied across the model')}));
+    // P7: server-backed Investment Returns (handoff §8). Every figure comes
+    // from the ONE committed series at the model's stored rate
+    // (`GET /finance/returns` → `committed`); the browser never re-derives
+    // dates or cash flows. The DCF table binds server months verbatim
+    // (§8.3, P6 §3: string slicing only, no Date construction or date math).
+    const host=finMount('bill-returns');
+    if(!srv.model){host.innerHTML=toolbar()+financeJourney('returns')+'<div class="card"><div class="card-body"><div class="section-empty">Load a financial model first.</div></div></div>';bindCommon();return}
+    if(srv.returnsModelId!==srv.model.id&&!srv.returnsBusy){
+      host.innerHTML=toolbar()+financeJourney('returns')+'<div class="card"><div class="card-body"><div class="section-empty">Loading committed project valuation…</div></div></div>';bindCommon();void refreshReturns();return;
+    }
+    if(srv.returnsError&&!srv.returns){
+      host.innerHTML=toolbar()+financeJourney('returns')+`<div class="card"><div class="card-body"><div class="fm-note"><b>Investment returns could not load.</b> ${escapeHtml(srv.returnsError)}</div><button class="btn" data-returns-retry style="margin-top:10px">Retry</button></div></div>`;
+      bindCommon();host.querySelector('[data-returns-retry]')?.addEventListener('click',()=>{srv.returnsModelId=null;srv.returnsError=null;renderReturnsInvestor()});return;
+    }
+    const r=srv.returns;
+    if(!r||!r.committed||!isCommittedValuedLocal(r.committed)){
+      host.innerHTML=toolbar()+financeJourney('returns')+returnsUnavailableCard(r);
+      bindCommon();bindReturnsCommon();return;
+    }
+    const c=r.committed;
+    const calcStatus=srv.model?.calculationStatus||c.calculationStatus||'CURRENT';
+    host.innerHTML=toolbar()+financeJourney('returns')+returnsCommittedHtml(r,c,calcStatus);
+    bindCommon();bindReturnsCommon();
+  }
+
+  function isCommittedValuedLocal(c){return !!c&&!('valuationError' in c)}
+
+  function returnsUnavailableCard(r){
+    // Rollout-gated or legacy model: no committed block (P4 gate
+    // finance.leaseHorizon.returns, default off; legacy models without a
+    // stored rate keep the legacy shape). Degrade with a notice, never with
+    // invented figures — mirrors the P6 rollout degradation.
+    const failed=r&&r.committed&&('valuationError' in r.committed)?r.committed:null;
+    if(failed){
+      return `<div class="fm-start"><div><b>Committed project valuation</b><span>${escapeHtml(r.source?.modelName||state.modelName)} · model version ${failed.modelVersion}</span></div><div class="actions">${can('bill-lease:update')?'<button class="primary" data-returns-retry-calc>Retry calculation</button>':''}</div></div>
+      <div class="card"><div class="card-body"><div class="fm-note warn" role="alert"><b>Returns are out of date</b><span> — ${escapeHtml(failed.valuationError||'investment returns have not been recalculated for the latest lease term.')}</span><br><small>Last successful calculation ${failedLastSuccess(r)} · model version ${failed.modelVersion}. Stale figures are never presented as current — export is disabled until the calculation succeeds.</small></div></div></div>`;
+    }
+    return `<div class="fm-start"><div><b>Committed project valuation</b><span>${escapeHtml(r?.source?.modelName||state.modelName)} · model version ${escapeHtml(String(r?.source?.modelVersion??srv.model?.version??'—'))}</span></div></div>
+    <div class="card"><div class="card-body"><div class="fm-note"><b>Committed valuation is unavailable for this model.</b> The committed returns block appears once the finance.leaseHorizon.returns rollout is on and the model stores valuation assumptions (new models default to a 15% manual rate). No figures are shown rather than showing uncommitted ones.</div></div></div>`;
+  }
+
+  function failedLastSuccess(r){
+    const asOf=r?.source?.asOf;
+    try{return asOf?new Date(asOf).toLocaleString('en-SG',{day:'numeric',month:'short',year:'numeric',hour:'numeric',minute:'2-digit'}):'—'}catch{return '—'}
+  }
+
+  function returnsCommittedHtml(r,c,calcStatus){
+    const termMonths=c.committedMonths;
+    const startLong=fmtDayLong(c.leaseStartDate);
+    const pending=calcStatus==='PENDING';
+    const failed=calcStatus==='FAILED';
+    const exportDisabled=calcStatus!=='CURRENT';
+    // The DCF route requires bill-models:view (same as the month-table
+    // export). A role that can open Returns but not model exports gets a
+    // disabled button with the reason instead of a 403 dead end.
+    const canExportModels=can('bill-models:view');
+    const exportTitle=exportDisabled?'Export is disabled until the calculation succeeds':(canExportModels?'':'Model exports need the Financial Models view permission');
+    const canRetry=can('bill-lease:update');
+    const irrNote=c.irr.status==='none'
+      ?'IRR requires both positive and negative cash flows — this series has only one sign, so Project NPV is the decision metric.'
+      :c.irr.status==='multiple'
+        ?'Multiple solutions — more than one discount rate zeroes the NPV. Use Project NPV for this model.'
+        :'Solved from the same committed series as Project NPV.';
+    // Prototype KPI cards and subtitles (8 cards). The breakeven rate moved to
+    // its own panel beside the sensitivity chart, as in the prototype.
+    const t0=c.dcf[0]||{};
+    const capex0=Math.abs(Number(t0.capex)||0),deposit0=Math.abs(Number(t0.otherCashFlow)||0);
+    const irrPct=c.irr.status==='valid'?percent(c.irr.annualRate,1):c.irr.display;
+    const metrics=[
+      ['Project NPV',money(c.npv),'Committed lease case'],
+      ['Annual discount rate',percent(c.annualRate,1),`${methodologyLabel(c.annualRateSource)} · ${percent(monthlyRateOf(c.annualRate),3)} monthly`],
+      ['Project IRR',irrPct,c.irr.status==='valid'?'Same project cash-flow series':irrNote],
+      ['Simple payback period',c.simplePayback.label,'Undiscounted recovery'],
+      ['Discounted payback period',c.discountedPayback.label,c.discountedPayback.month==null?'Not recovered in lease term':'Time-value adjusted'],
+      ['Cumulative free cash flow',money(c.cumulativeFreeCashFlow),`Undiscounted through Month ${termMonths}`],
+      ['Initial investment',money(Math.abs(t0.netCashFlow||0)),`${money(capex0)} CapEx · ${money(deposit0)} deposit`],
+      ['Profitability index',c.profitabilityIndex==null?'n.a.':num(c.profitabilityIndex,2)+'×',c.profitabilityIndex==null?'':c.profitabilityIndex>=1?'Above required return':'Below required return'],
+    ];
+    return `<div class="fm-start fm-returns-head"><div><b>Committed project valuation</b><span>${termMonths} months from ${startLong} · ${escapeHtml(r.source.modelName)} · v${c.modelVersion} ${STATUS_WORD[r.source.modelStatus]||''}</span></div><div class="actions"><button class="btn" data-val-jump>Edit valuation assumptions</button><button class="primary" data-returns-export ${(exportDisabled||!canExportModels)?`disabled title="${exportTitle}"`:''}>Export DCF</button></div></div>`
+    +(pending?`<div class="fm-note fm-lease-status" role="status"><b>Updating from model version ${c.modelVersion}.</b> Last-good figures are shown; export and approval actions are disabled until the recalculation succeeds.</div>`:'')
+    +(failed?`<div class="fm-note fm-lease-status warn" role="alert"><b>Returns are out of date</b><span> — investment returns have not been recalculated for the latest lease term.</span><br><small>Last successful calculation ${failedLastSuccess(r)} · model version ${c.modelVersion}. Figures below are from model version ${c.modelVersion} and do not reflect the latest lease term. Stale figures are never presented as current.</small>${canRetry?' <button class="btn" data-returns-retry-calc>Retry calculation</button>':''}</div>`:'')
+    // Prototype order: interpretation → KPIs → equity note → sensitivity +
+    // breakeven → DCF table → scenarios → renewal → lineage.
+    +returnsInterpretationCard(c)
+    +`<div class="fm-kpis fm-kpis-returns">${metrics.map(([label,value,note])=>`<div class="fm-kpi"><small>${label}</small><strong>${escapeHtml(String(value))}</strong><span>${escapeHtml(note)}</span></div>`).join('')}</div>`
+    +`<div class="fm-note"><b>Equity NPV is not calculated.</b> No financing drawdowns, interest, principal repayments or lender fees exist in this model. Project cash flows are therefore kept separate from equity returns. <span class="pill">Financing not configured</span></div>`
+    +`<div class="fm-return-pair"><div class="card"><div class="card-head"><div><h3>Discount-rate sensitivity</h3><small style="color:var(--muted)">Horizontal axis: required return (%) · Vertical axis: Project NPV (S$)</small></div></div><div class="card-body">${returnsSensitivityChart(c)}</div><div class="table-wrap">${returnsSensitivityTable(c)}</div><div class="fm-table-key">Recomputed from the same committed cash-flow series at each tested rate. The committed horizon, lease expense and cash flows do not change.</div></div>`
+    +returnsBreakevenCard(c)+`</div>`
+    +`<div class="card"><div class="card-head"><div><h3>Monthly discounted cash flow</h3><small style="color:var(--muted)">The exact cash-flow series used for Project NPV and Project IRR · exact contractual dates · SGD cents on display</small></div><div class="actions"><label class="fm-select-wrap"><small>Rows</small><select class="fm-select" data-dcf-view aria-label="DCF row selector"><option value="12" ${srv.dcfView==='12'?'selected':''}>First 12 months</option><option value="24" ${srv.dcfView==='24'?'selected':''}>First 24 months</option><option value="full" ${srv.dcfView==='full'?'selected':''}>Full lease horizon</option></select></label></div></div><div class="table-wrap">${returnsDcfTable(c)}</div><div class="fm-table-key">Full lease horizon is based on the exact contractual end date (${fmtDayLong(c.committedEndDate)}). Opening and closing stubs show their exact date ranges. Period is the running-sum contractual month (0 at commencement, e.g. 0.548 for a mid-month start).</div></div>`
+    +`<div class="card fm-scenario-card"><div class="card-head"><div><h3>Scenario comparison</h3><small style="color:var(--muted)">Existing Base, Upside and Downside occupancy assumptions</small></div><span class="pill">OPEX unchanged</span></div><div class="table-wrap">${committedScenarioTable(c)}</div><div class="fm-table-key"><b>Controlled occupancy comparison:</b> customer pricing, lease, non-lease OPEX, CapEx, operational start and valuation assumptions are unchanged. Only the existing occupancy scenario assumptions vary.</div></div>`
+    +`<div class="card"><div class="card-head"><div><h3>Optional renewal</h3><small style="color:var(--muted)">Separate comparison — never replacing the committed case</small></div></div><div class="card-body">${returnsRenewalBlock(c)}</div></div>`
+    +`<div class="card"><div class="card-body"><details class="fm-details"><summary><b>Calculation details and data lineage · Show details</b></summary><div class="fm-note" style="margin-top:10px">${returnsLineage(c, r)}</div></details></div></div>`
+    +`<div class="fm-note"><b>R11 limitation:</b> ${escapeHtml(c.limitation||'Monthly NOI is used as operating cash; no property or fit-out sale value is assumed.')}</div>`;
+  }
+
+  /** Server date strings only — string slicing, never Date construction or date math. */
+  function dcfMonthLabel(m){
+    if(!m)return '—';
+    if(m.includes('→')){const [a,b]=m.split('→');return leaseStubRange(a,b)}
+    if(/^\d{4}-\d{2}$/.test(m))return ymShort(m);
+    if(/^\d{4}-\d{2}-\d{2}$/.test(m))return fmtDayLong(m);
+    return m;
+  }
+  function money2(n){return new Intl.NumberFormat('en-SG',{style:'currency',currency:'SGD',minimumFractionDigits:2,maximumFractionDigits:2}).format(Number.isFinite(n)?n:0)}
+
+  function returnsDcfTable(c){
+    const rows=c.dcf;
+    const view=srv.dcfView==='12'?rows.slice(0,13):srv.dcfView==='24'?rows.slice(0,25):rows;
+    return `<table class="fm-table fm-dcf-table"><thead><tr><th>Month or exact date range</th><th>Period</th><th>Revenue</th><th>Operating cash flow</th><th>CapEx</th><th>Other cash flows</th><th>Net free cash flow</th><th>Discount factor</th><th>Discounted cash flow</th><th>Cumulative DCF</th></tr></thead><tbody>${view.map(r=>`<tr class="${r.index===0?'total':''}"><td>${escapeHtml(dcfMonthLabel(r.month))}</td><td>${escapeHtml(r.periodLabel)}</td><td>${money2(r.revenue)}</td><td>${money2(r.operatingCashFlow)}</td><td>${money2(r.capex)}</td><td>${money2(r.otherCashFlow)}</td><td><b>${money2(r.netCashFlow)}</b></td><td>${Number(r.discountFactor).toFixed(7)}</td><td>${money2(r.discountedCashFlow)}</td><td><b>${money2(r.cumulativeDiscountedCashFlow)}</b></td></tr>`).join('')}</tbody></table>`;
+  }
+
+  /** Rate-only sensitivity from the SAME series (netCashFlow + period). The
+   * horizon and cash flows are fixed by construction — only the tested rate
+   * varies. Browser arithmetic on server numbers; the server DCF above stays
+   * the authoritative valuation. */
+  function npvAtAnnualRate(rows,annualRate){
+    let s=0;
+    for(const r of rows){s+=Number(r.netCashFlow)*Math.pow(1+annualRate,-Number(r.period)/12)}
+    return s;
+  }
+
+  function returnsSensitivityTable(c){
+    // P3 prototype rates: 10/12/15/18/20% plus any rates the user pins with
+    // Add to chart. Every value is the NPV of the SAME committed series at
+    // the tested rate — horizon and cash flows never change.
+    const fixed=[0.10,0.12,0.15,0.18,0.20];
+    const customs=(srv.sensCustom||[]).filter(x=>Number.isFinite(x)&&x>=0&&x<=1&&!fixed.some(f=>Math.abs(f-x)<1e-9));
+    const rows=[...fixed.map(rate=>({rate,custom:false})),...customs.map(rate=>({rate,custom:true}))]
+      .sort((a,b)=>a.rate-b.rate)
+      .map(x=>({...x,npv:npvAtAnnualRate(c.dcf,x.rate)}));
+    return `<table class="fm-table fm-compact-table"><thead><tr><th>Tested annual rate</th><th>Project NPV</th><th></th></tr></thead><tbody>${rows.map(x=>`<tr class="${x.rate===c.annualRate?'total':''}"><td>${percent(x.rate,2)}${x.rate===c.annualRate?' · stored rate':''}</td><td>${money(x.npv)}</td><td>${x.rate===c.annualRate?'<span class="pill green">Committed</span>':x.custom?`<button class="btn" data-sens-remove="${x.rate}" title="Remove this test rate">Remove</button>`:''}</td></tr>`).join('')}</tbody></table>`;
+  }
+
+  /** Effective test rate for the sensitivity chart (decimal). */
+  function sensTestRate(c){
+    // srv.sensTest is null until the user tests a rate; Number(null) is 0, so
+    // check for null explicitly or the default would be 0% instead of the
+    // stored rate (prototype starts at the stored rate).
+    if(srv.sensTest==null||srv.sensTest==='')return c.annualRate;
+    const t=Number(srv.sensTest);
+    return Number.isFinite(t)&&t>=0&&t<=1?t:c.annualRate;
+  }
+
+  /** P3: prototype sensitivity chart — read-only points at 10/12/15/18/20%
+   * plus pinned customs; the test-rate marker follows the input + slider. */
+  function returnsSensitivityChart(c){
+    const fixed=[0.10,0.12,0.15,0.18,0.20];
+    const testRate=sensTestRate(c);
+    const customs=(srv.sensCustom||[]).filter(x=>Number.isFinite(x)&&x>=0&&x<=1);
+    const all=[...new Set([...fixed,testRate,c.annualRate,...customs])].sort((a,b)=>a-b);
+    const pts=all.map(rate=>({rate,npv:npvAtAnnualRate(c.dcf,rate)}));
+    const W=620,H=250,PL=76,PR=16,PT=16,PB=34;
+    const xs=pts.map(p=>p.rate),ys=pts.map(p=>p.npv);
+    const x0=Math.min(...xs,0.08)-0.005,x1=Math.max(...xs,0.22)+0.005;
+    let y0=Math.min(...ys),y1=Math.max(...ys);
+    const pad=(y1-y0)||1;y0-=pad*0.18;y1+=pad*0.18;
+    const X=r=>PL+(r-x0)/(x1-x0)*(W-PL-PR);
+    const Y=v=>PT+(1-(v-y0)/(y1-y0))*(H-PT-PB);
+    const line=pts.map((p,i)=>`${i?'L':'M'}${X(p.rate).toFixed(1)},${Y(p.npv).toFixed(1)}`).join(' ');
+    const isCustom=r=>customs.some(x=>Math.abs(x-r)<1e-9);
+    const dots=pts.map(p=>{
+      const fill=p.rate===c.annualRate?'var(--green, #1a7f4b)':isCustom(p.rate)?'var(--amber, #b7791f)':'var(--ink, #1f2937)';
+      const ring=p.rate===c.annualRate?` circle cx="${X(p.rate).toFixed(1)}" cy="${Y(p.npv).toFixed(1)}" r="8" fill="none" stroke="${fill}" stroke-width="1.5"`:'' ;
+      return `${ring}<circle cx="${X(p.rate).toFixed(1)}" cy="${Y(p.npv).toFixed(1)}" r="4.5" fill="${fill}"><title>${percent(p.rate,2)} → ${money(p.npv)} (read-only)</title></circle>`;
+    }).join('');
+    const xticks=fixed.map(r=>`<text x="${X(r).toFixed(1)}" y="${H-10}" text-anchor="middle" font-size="11" fill="currentColor">${percent(r,0)}</text><line x1="${X(r).toFixed(1)}" y1="${H-PT-PB}" x2="${X(r).toFixed(1)}" y2="${H-PT-PB+5}" stroke="currentColor"/>`).join('');
+    const yticks=[y0+(y1-y0)*0.12,(y0+y1)/2,y1-(y1-y0)*0.12].map(v=>`<text x="${PL-8}" y="${(Y(v)+4).toFixed(1)}" text-anchor="end" font-size="11" fill="currentColor">${money(v)}</text><line x1="${PL-8}" y1="${Y(v).toFixed(1)}" x2="${W-PR}" y2="${Y(v).toFixed(1)}" stroke="currentColor" stroke-width="0.5" opacity="0.35"/>`).join('');
+    const testX=X(testRate).toFixed(1);
+    const testPct=Math.round(testRate*1000)/10;
+    const markerX=Math.min(W-PR,Math.max(PL,Number(testX))).toFixed(1);
+    const guide=`<div class="fm-npv-guide"><div><b>1. Read across</b><span>Moving right means StoreLah demands a higher return.</span></div><div><b>2. Read the height</b><span>Higher on the chart means more value in today’s SGD.</span></div><div><b>3. Use the rule</b><span>Positive NPV passes the selected return; negative NPV does not.</span></div></div>`;
+    return `<div class="fm-sens-chart">${guide}<svg viewBox="0 0 ${W} ${H+18}" width="100%" role="img" aria-label="Project NPV by discount rate (read-only points at 10, 12, 15, 18 and 20 percent)" data-sens-svg data-x0="${x0}" data-x1="${x1}" data-pl="${PL}" data-pr="${PR}" data-w="${W}">${yticks}<line x1="${PL}" y1="${H-PT-PB}" x2="${W-PR}" y2="${H-PT-PB}" stroke="currentColor"/><path d="${line}" fill="none" stroke="currentColor" stroke-width="2"/>${dots}<line data-sens-marker x1="${markerX}" y1="${PT}" x2="${markerX}" y2="${H-PT-PB}" stroke="currentColor" stroke-width="1.5" stroke-dasharray="5 4"><title>Test rate ${percent(testRate,2)}</title></line>${xticks}<text x="${((PL+W-PR)/2).toFixed(1)}" y="${H+12}" text-anchor="middle" font-size="11" fill="currentColor" opacity="0.75">ANNUAL DISCOUNT RATE (REQUIRED RETURN)</text><text x="12" y="${((PT+H-PB)/2).toFixed(1)}" text-anchor="middle" font-size="11" fill="currentColor" opacity="0.75" transform="rotate(-90 12 ${((PT+H-PB)/2).toFixed(1)})">PROJECT NPV (SGD)</text></svg>`
+    +`<div class="fm-sens-controls"><label class="fm-select-wrap"><small>Test rate (%)</small><input class="fm-select" type="number" data-sens-test value="${testPct}" min="0" max="100" step="0.5" aria-label="Test rate percent"></label><button class="btn" data-sens-add>Add to chart</button><span class="fm-note" data-sens-readout>${percent(testRate,2)} → <b>${money(npvAtAnnualRate(c.dcf,testRate))}</b></span></div>`
+    +`<label class="fm-rate-slider"><span><b>Drag to test another required return</b><small>This moves the test rate only. The calculated chart points themselves are read-only.</small></span><input type="range" data-sens-slider value="${testPct}" min="0" max="100" step="0.5" aria-label="Drag the test rate"></label>`
+    +`<div class="fm-chart-readonly-note"><b>Why the circles cannot be dragged:</b> each circle is an output calculated from the same monthly cash flows. To test another discount rate, use the slider or input above. To permanently change the model’s discount rate, open <b>Financial Models → Investment valuation assumptions</b>.</div></div>`;
+  }
+
+  /** Live test-rate update without re-rendering the card. A re-render on the
+   * field's change event replaced the Add button between mousedown and
+   * click, so the first Add click was lost. */
+  function sensLiveUpdate(root,pct,from){
+    const c=srv.returns?.committed;if(!c||!root)return;
+    const v=Number(pct)/100;if(!Number.isFinite(v)||v<0||v>1)return;
+    srv.sensTest=v;
+    const field=root.querySelector('[data-sens-test]'),slider=root.querySelector('[data-sens-slider]');
+    if(field&&from!=='field')field.value=String(Math.round(v*1000)/10);
+    if(slider&&from!=='slider')slider.value=String(Math.round(v*1000)/10);
+    const readout=root.querySelector('[data-sens-readout]');
+    if(readout)readout.innerHTML=`${percent(v,2)} → <b>${money(npvAtAnnualRate(c.dcf,v))}</b>`;
+    const svg=root.querySelector('[data-sens-svg]'),mk=root.querySelector('[data-sens-marker]');
+    if(svg&&mk){const x0=Number(svg.dataset.x0),x1=Number(svg.dataset.x1),pl=Number(svg.dataset.pl),pr=Number(svg.dataset.pr),w=Number(svg.dataset.w);
+      const x=Math.min(w-pr,Math.max(pl,pl+(v-x0)/(x1-x0)*(w-pl-pr))).toFixed(1);mk.setAttribute('x1',x);mk.setAttribute('x2',x)}
+  }
+
+  function returnsRenewalBlock(c){
+    // P5: the renewal comparison from the committed block (buildRenewalCase on
+    // the server). Committed figures are byte-identical with renewal on/off.
+    if(!c||!c.renewal){
+      const v=srv.lease?.valuation;
+      if(!v)return '<div class="section-empty">Load the model to see the renewal scenario.</div>';
+      return `<div class="fm-note"><b>Optional renewal is off.</b> The committed case above excludes any renewal — renewal is kept separate and is never silently included. Enable it in Section 5 Investment valuation assumptions for a separate comparison.</div><button class="btn" data-val-jump>Edit valuation assumptions</button>`;
+    }
+    const w=c.renewal;
+    return `<div class="info-grid"><div class="info"><small>Renewal scenario</small><b>${money(w.npv)} NPV</b></div><div class="info"><small>Renewal IRR</small><b>${w.irr.display}</b></div><div class="info"><small>Renewal term</small><b>+${w.renewalMonths} months through ${escapeHtml(fmtDayLong(String(w.renewalEndDate||'')))}</b></div><div class="info"><small>Committed term</small><b>${c.committedMonths} months (unchanged)</b></div></div><div class="fm-note" style="margin-top:10px"><b>Renewal is a separate run at the stored ${percent(w.annualRate,2)} rate.</b> Simple payback ${escapeHtml(w.simplePayback.label)} · discounted payback ${escapeHtml(w.discountedPayback.label)}. The committed figures above are byte-identical with renewal on or off — the renewal comparison never replaces the committed case.</div>`;
+  }
+
+  /** Effective monthly rate from an annual rate: (1+a)^(1/12) − 1. */
+  function monthlyRateOf(a){return Math.pow(1+Number(a),1/12)-1}
+
+  function returnsInterpretationCard(c){
+    // P4: prototype npvStatusCopy() wording (positive > S$1, negative < −S$1,
+    // otherwise neutral), bound to the committed figure.
+    const v=c.npv,rate=percent(c.annualRate,1);
+    const s=v>1
+      ?{tone:'positive',title:'Forecast value exceeds the required return',copy:`A positive NPV means the modelled project cash flows are worth ${money(v)} more than the initial investment after discounting at ${rate}. It is not guaranteed profit.`}
+      :v<-1
+        ?{tone:'negative',title:'Forecast value is below the required return',copy:`A negative NPV means the current forecast does not meet the ${rate} required return. Review the cash-flow assumptions; it is not a booked loss.`}
+        :{tone:'neutral',title:'Forecast is approximately at the required return',copy:'NPV is close to zero, so the forecast approximately earns the selected required return.'};
+    return `<div class="fm-npv-status ${s.tone}" role="status"><div><span class="eyebrow">PROJECT NPV INTERPRETATION</span><b>${s.title}</b><p>${escapeHtml(s.copy)}</p></div><strong>${money(v)}</strong></div>`;
+  }
+
+  function returnsBreakevenCard(c){
+    // Prototype "NPV breakeven rate" panel: the rate that zeroes Project NPV,
+    // equal to Project IRR when a unique valid solution exists.
+    const valid=c.irr.status==='valid',irr=valid?percent(c.irr.annualRate,1):'n.a.';
+    const high=valid&&c.irr.annualRate>1;
+    return `<div class="card fm-breakeven-card ${high?'fm-breakeven-review':''}"><div class="card-head"><h3>NPV breakeven rate</h3></div><div class="card-body"><span class="fm-breakeven-number">${irr}</span><b>Theoretical rate where Project NPV becomes S$0</b><p>This is the same as Project IRR. It is not occupancy, rental yield, profit margin or guaranteed investment profit.</p>`
+    +(valid?`<div class="fm-breakeven-rule"><span><b>Below ${irr}</b> → positive NPV</span><span><b>Above ${irr}</b> → negative NPV</span></div>`:`<p>${escapeHtml(c.irr.status==='multiple'?'Multiple solutions — more than one discount rate zeroes the NPV. Use Project NPV for this model.':'No valid solution — the series has only one sign, so Project NPV is the decision metric.')}</p>`)
+    +(high?`<div class="fm-breakeven-alert"><b>Review this unusually high result</b><span>${irr} can be mathematically valid, but it usually means the initial investment is small relative to the forecast monthly cash flows. Verify CapEx, opening working capital, monthly NOI and lease duration before relying on it.</span></div>`:'')
+    +`<div class="fm-note"><b>Current decision check:</b> At the current ${percent(c.annualRate,1)} required return, Project NPV is ${money(c.npv)} and is ${c.npv>=0?'positive':'negative'}.</div>`
+    +(c.renewal?`<div class="fm-renewal-result"><small>Optional renewal scenario · +${c.renewal.renewalMonths} months</small><b>${money(c.renewal.npv)} NPV</b><span>Separate from the committed lease case</span></div>`:'')
+    +`</div></div>`;
+  }
+
+  function returnsLineage(c,r){
+    // P4: calculation details and data lineage (read-only provenance).
+    const rows=[
+      ['Loaded model',`${r?.source?.modelName||'—'} · model version ${c.modelVersion} (${r?.source?.modelStatus||'—'})`],
+      ['Input hash',String(c.inputHash||'—')],
+      ['Engine',`${c.engineVersion||'—'} · ${c.dcf.length-1} monthly rows + commencement outflow`],
+      ['Annual discount rate',`${percent(c.annualRate,2)} · stored methodology ${methodologyLabel(c.annualRateSource)} (read from the model version, never a substituted default)`],
+      ['Committed window',`${fmtDayLong(c.leaseStartDate)} – ${fmtDayLong(c.committedEndDate)} (${c.committedMonths} months)`],
+      ['Renewal',c.renewal?`separate run +${c.renewal.renewalMonths} months (excluded from committed figures)`:'off — excluded'],
+      ['Source of truth','One dated cash-flow series: Project NPV, IRR, paybacks, cumulative FCF and PI all read the same array; only displayed metrics are rounded (D12A).'],
+    ];
+    return rows.map(([k,v])=>`<div><b>${escapeHtml(k)}:</b> ${escapeHtml(String(v))}</div>`).join('');
+  }
+
+  function committedScenarioTable(c){
+    // P2: server-valued scenario comparison (committed.scenarios). Same
+    // committed lease, OPEX, capital, start and horizon in every column —
+    // only occupancy move-ins, churn and stabilisation differ.
+    const order=['downside','base','upside'];
+    const labels={downside:'Downside',base:'Base · saved',upside:'Upside'};
+    const subs={downside:'Move-ins −20% · churn +25% · stabilisation −5%',base:'Your last saved occupancy plan',upside:'Move-ins +20% · churn −20% · stabilisation +3%'};
+    const cols=(c.scenarios||[]).slice().sort((a,b)=>order.indexOf(a.scenario)-order.indexOf(b.scenario));
+    if(!cols.length)return '<div class="section-empty">Scenario comparison is unavailable for this model.</div>';
+    const line=(label,fn)=>`<tr><td>${label}</td>${cols.map(x=>`<td>${fn(x)}</td>`).join('')}</tr>`;
+    return `<table class="fm-table" style="min-width:760px"><thead><tr><th>Metric</th>${cols.map(x=>`<th>${labels[x.scenario]||x.scenario}<small class="fm-capped">${escapeHtml(x.note||subs[x.scenario]||'')}</small></th>`).join('')}</tr></thead><tbody>`
+    +line('Project NPV',x=>`<b>${money(x.npv)}</b>`)
+    +line('Project IRR',x=>x.irr.status==='valid'?percent(x.irr.annualRate,1):'n.a.')
+    +line('Simple payback',x=>x.simplePayback.label)
+    +line('Discounted payback',x=>x.discountedPayback.label)
+    +line('Initial investment',x=>money(x.initialInvestment))
+    +line('Annual discount rate',x=>percent(x.annualRate,1))
+    +`</tbody></table>`;
+  }
+
+  function bindReturnsCommon(){
+    document.querySelectorAll('[data-dcf-view]').forEach(b=>{if(b.dataset.bound)return;b.dataset.bound='1';b.addEventListener('change',e=>{e.stopPropagation();srv.dcfView=b.value;renderReturnsInvestor()})});
+    // P3 sensitivity controls: test-rate input + drag slider move the marker,
+    // Add to chart pins the rate. Points on the chart are read-only.
+    // Field and slider update the readout + marker live (no re-render), so the
+    // Add button is never replaced mid-click.
+    document.querySelectorAll('[data-sens-test]').forEach(input=>{if(input.dataset.bound)return;input.dataset.bound='1';
+      const root=input.closest('.fm-sens-chart');
+      input.addEventListener('input',()=>sensLiveUpdate(root,input.value,'field'));
+      input.addEventListener('change',()=>sensLiveUpdate(root,input.value,'field'));
+      input.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();root?.querySelector('[data-sens-add]')?.click()}})});
+    document.querySelectorAll('[data-sens-slider]').forEach(slider=>{if(slider.dataset.bound)return;slider.dataset.bound='1';
+      const root=slider.closest('.fm-sens-chart');
+      slider.addEventListener('input',()=>sensLiveUpdate(root,slider.value,'slider'));
+      slider.addEventListener('change',()=>sensLiveUpdate(root,slider.value,'slider'))});
+    document.querySelectorAll('[data-sens-add]').forEach(b=>{if(b.dataset.bound)return;b.dataset.bound='1';b.addEventListener('click',e=>{e.stopPropagation();
+      // Read the field directly: it is the source of truth at click time.
+      const field=b.closest('.fm-sens-chart')?.querySelector('[data-sens-test]');
+      const typed=field&&field.value!==''?Number(field.value)/100:NaN;
+      const v=Number.isFinite(typed)&&typed>=0&&typed<=1?typed:sensTestRate(srv.returns?.committed);
+      srv.sensTest=v;srv.sensCustom=[...(srv.sensCustom||[]).filter(x=>Math.abs(x-v)>1e-9),v];renderReturnsInvestor()})});
+    document.querySelectorAll('[data-sens-remove]').forEach(b=>{if(b.dataset.bound)return;b.dataset.bound='1';b.addEventListener('click',e=>{e.stopPropagation();const v=Number(b.dataset.sensRemove);srv.sensCustom=(srv.sensCustom||[]).filter(x=>Math.abs(x-v)>1e-9);renderReturnsInvestor()})});
+    document.querySelectorAll('[data-returns-export]').forEach(b=>b.addEventListener('click',()=>{
+      const m=srv.model;if(!m)return;
+      if(!can('bill-models:view')){notify('Model exports need the Financial Models view permission.');return}
+      if((srv.model?.calculationStatus||'')!=='CURRENT'){notify('Returns are out of date — investment returns have not been recalculated for the latest lease term. Export is disabled until the calculation succeeds — retry the calculation first.');return}
+      const slug=x=>String(x||'').replace(/[^A-Za-z0-9]+/g,'-').replace(/^-|-$/g,'')||'Model';
+      notify('Generating the DCF export…');
+      downloadFile(`/finance/models/${encodeURIComponent(m.id)}/export.csv?format=dcf`,`StoreLah_DCF_${slug(String(state.facility||'').replace(/^StoreLah/,''))}_${slug(m.name).slice(0,60)}_v${m.version}.csv`).then(()=>notify('DCF export downloaded (recorded in the audit log)')).catch(e=>notify(describeError(e)));
+    }));
+    document.querySelectorAll('[data-returns-retry-calc]').forEach(b=>{if(b.dataset.bound)return;b.dataset.bound='1';b.addEventListener('click',e=>{e.preventDefault();e.stopPropagation();leaseRetryClicked(b)})});
   }
 
   function simpleSensitivityCards(){const base=weightedRate(),cases=[{name:'Lower demand',tone:'low',occ:Math.max(.5,state.targetOcc-.06),psf:Math.max(.5,base-.5),note:'Slower occupancy and lower achieved customer rate'},{name:'Current plan',tone:'base',occ:state.targetOcc,psf:base,note:'Your committed occupancy and weighted net rate'},{name:'Stronger demand',tone:'high',occ:Math.min(.98,state.targetOcc+.03),psf:base+.5,note:'Higher occupancy and stronger achieved rate'}];return cases.map(c=>{const s=clone(state),current=weightedRate(),factor=current?c.psf/current:1;s.targetOcc=c.occ;s.mix.forEach(x=>x.rate*=factor);const p=periodMetrics(calculate(s),state.returnYear);return `<div class="fm-sensitivity-case ${c.tone}"><header><div><b>${c.name}</b><small>${c.note}</small></div>${c.tone==='base'?'<span class="pill green">Current</span>':''}</header><div class="fm-case-metrics"><div><small>Occupancy</small><b>${percent(c.occ,0)}</b></div><div><small>Net customer PSF</small><b>$${num(c.psf,2)}</b></div><div><small>Year ${state.returnYear} NOI</small><b>${money(p.noi)}</b></div><div><small>NOI margin</small><b>${percent(p.noiMargin,0)}</b></div><div><small>Cash position</small><b>${money(p.endCash)}</b></div></div><button class="btn" data-simple-sens="${c.occ},${c.psf}">${c.tone==='base'?'Keep current plan':'Apply this case'}</button></div>`}).join('')}
@@ -418,7 +747,7 @@ export function initFinanceWorkspace() {
   function renderLibrary(){finMount('bill-library').innerHTML=`<div class="fm-toolbar"><button class="primary" data-fm-action="new-model">＋ New financial model</button><button class="btn" data-fm-action="template">Manage templates</button><button class="filter" data-fm-action="facility-filter">Facility: All</button><button class="filter" data-fm-action="status-filter">Status: All</button><span class="spacer"></span><button class="btn" data-fm-action="audit">Audit history</button></div><div class="fm-library-grid"><div class="fm-library-card"><header><div><h3>Sembawang Launch Plan</h3><p>StoreLah Sembawang · Lease model</p></div><span class="pill green">Approved</span></header><div class="fm-library-meta"><div><small>Version</small><b>v3</b></div><div><small>Horizon</small><b>60 months</b></div><div><small>Updated</small><b>Today</b></div></div><div class="fm-card-actions"><button class="primary" data-fm-action="open-model">Open model</button><button class="btn" data-fm-action="duplicate">Duplicate</button><button class="btn" data-fm-action="compare">Compare</button></div></div><div class="fm-library-card"><header><div><h3>Sembawang Conservative Case</h3><p>Lower ramp-up and higher churn</p></div><span class="pill amber">Draft</span></header><div class="fm-library-meta"><div><small>Version</small><b>v2</b></div><div><small>Horizon</small><b>60 months</b></div><div><small>Updated</small><b>18 Oct</b></div></div><div class="fm-card-actions"><button class="btn" data-fm-action="open-downside">Open</button><button class="btn" data-fm-action="duplicate">Duplicate</button><button class="btn" data-fm-action="submit-approval">Submit for approval</button></div></div><div class="fm-library-card"><header><div><h3>New Facility Template</h3><p>Blank lease underwriting model</p></div><span class="pill grey">Template</span></header><div class="fm-library-meta"><div><small>Version</small><b>v1</b></div><div><small>Horizon</small><b>120 months</b></div><div><small>Updated</small><b>3 Sep</b></div></div><div class="fm-card-actions"><button class="btn" data-fm-action="new-model">Use template</button><button class="btn" data-fm-action="template">Configure</button></div></div></div><div class="card" style="margin-top:14px"><div class="card-head"><div><h3>Version and approval history</h3><small style="color:var(--muted)">Named versions show the commercial summary; the full audit log records every field change</small></div><button class="btn" data-fm-action="audit-export">Export audit log</button></div><div class="table-wrap"><table class="fm-table"><thead><tr><th>Version</th><th>Change</th><th>Changed by</th><th>Approved by</th><th>Effective from</th><th>Status</th><th>Action</th></tr></thead><tbody><tr><td>v3</td><td>Lease rate updated to $1.80; three rent-free months</td><td>Faisal · Today</td><td>Finance Admin</td><td>1 Dec 2026</td><td><span class="pill green">Current</span></td><td><button class="btn" data-fm-action="compare">Compare</button></td></tr><tr><td>v2</td><td>Added size-mix pricing and working capital</td><td>Faisal · 18 Oct</td><td>—</td><td>Draft only</td><td><span class="pill grey">Superseded</span></td><td><button class="btn" data-fm-action="restore">Restore as draft</button></td></tr><tr><td>v1</td><td>Initial model imported from spreadsheet</td><td>Faisal · 15 Oct</td><td>—</td><td>Draft only</td><td><span class="pill grey">Superseded</span></td><td><button class="btn" data-fm-action="compare">Compare</button></td></tr></tbody></table></div></div>`}
 
   function draftLibraryCard(draft){const snapshot=draft.snapshot,capex=sum((snapshot.capex||[]).map(x=>x.amount)),fullMonthlyCost=Number(snapshot.leaseYearlyRents?.[0]||0)+sum((snapshot.opex||[]).map(x=>x.budget)),loaded=state.activeDraftId===draft.id;return `<div class="fm-library-card ${loaded?'is-loaded':''}"><header><div><h3>${escapeHtml(draft.name)}</h3><p>${escapeHtml(draft.facility||state.facility)} · ${escapeHtml(draft.note||'Named financial-model draft')}</p></div><span class="pill ${loaded?'green':'amber'}">${loaded?'Loaded':escapeHtml(draft.status||'Draft')}</span></header><div class="fm-library-meta"><div><small>Version</small><b>v${draft.version}</b></div><div><small>Capital</small><b>${money(capex)}</b></div><div><small>Monthly costs</small><b>${money(fullMonthlyCost)}</b></div><div><small>Updated</small><b>${escapeHtml(draftUpdatedLabel(draft))}</b></div></div><div class="fm-card-actions"><button class="primary" data-fm-action="load-draft" data-draft-id="${escapeHtml(draft.id)}" data-load-view="actuals">${loaded?'View forecast':'Load & view forecast'}</button><button class="btn" data-fm-action="load-draft" data-draft-id="${escapeHtml(draft.id)}" data-load-view="model">Open inputs</button><button class="btn" data-fm-action="duplicate" data-draft-id="${escapeHtml(draft.id)}">Duplicate</button><button class="btn" data-fm-action="submit-approval" data-draft-id="${escapeHtml(draft.id)}">Submit for approval</button></div></div>`}
-  function renderLibraryV2(){const dynamicCards=modelLibrary.map(draftLibraryCard).join(''),dynamicHistory=modelLibrary.map(draft=>`<tr><td>v${draft.version}</td><td>${escapeHtml(draft.note||'Named model draft')}</td><td>Faisal · ${escapeHtml(draftUpdatedLabel(draft))}</td><td>—</td><td>${escapeHtml(monthName(draft.effectiveMonth||state.start.slice(0,7)))}</td><td><span class="pill ${state.activeDraftId===draft.id?'green':'amber'}">${state.activeDraftId===draft.id?'Loaded':'Draft'}</span></td><td><button class="btn" data-fm-action="load-draft" data-draft-id="${escapeHtml(draft.id)}" data-load-view="actuals">Load</button></td></tr>`).join('');finMount('bill-library').innerHTML=`<div class="fm-toolbar"><button class="primary" data-fm-action="new-model">＋ New financial model</button><button class="btn" data-fm-action="template">Manage templates</button><button class="filter" data-fm-action="facility-filter">Facility: All</button><button class="filter" data-fm-action="status-filter">Status: All</button><span class="spacer"></span><button class="btn" data-fm-action="audit">Audit history</button></div><div class="fm-loaded-model-banner"><div><small>Currently loaded</small><b>${escapeHtml(state.modelName)} · ${activeModelVersion()}</b><span>This is the source used by Forecast vs Actual, charts, cash flow and Investment Returns.</span></div><div><small>Saved drafts</small><b>${modelLibrary.length}</b><span>Each draft is a complete restorable snapshot, not just a name.</span></div><button class="btn" data-finance-destination="bill-performance">View forecast vs actual</button></div><div class="fm-library-grid"><div class="fm-library-card ${state.activeDraftId?'':'is-loaded'}"><header><div><h3>Sembawang Launch Plan</h3><p>StoreLah Sembawang · Approved baseline</p></div><span class="pill ${state.activeDraftId?'green':'green'}">${state.activeDraftId?'Approved':'Loaded'}</span></header><div class="fm-library-meta"><div><small>Version</small><b>v3</b></div><div><small>Capital</small><b>$108,000</b></div><div><small>Monthly costs</small><b>$6,200</b></div><div><small>Updated</small><b>29 Oct 2026</b></div></div><div class="fm-card-actions"><button class="primary" data-fm-action="load-approved" data-load-view="actuals">${state.activeDraftId?'Load & view forecast':'View forecast'}</button><button class="btn" data-fm-action="load-approved" data-load-view="model">Open inputs</button><button class="btn" data-fm-action="duplicate">Duplicate</button></div></div>${dynamicCards}<div class="fm-library-card"><header><div><h3>Sembawang Conservative Case</h3><p>Lower ramp-up and higher churn</p></div><span class="pill amber">Built-in scenario</span></header><div class="fm-library-meta"><div><small>Version</small><b>v2</b></div><div><small>Horizon</small><b>60 months</b></div><div><small>Updated</small><b>18 Oct</b></div></div><div class="fm-card-actions"><button class="btn" data-fm-action="open-downside">Open</button><button class="btn" data-fm-action="duplicate">Duplicate</button></div></div><div class="fm-library-card"><header><div><h3>New Facility Template</h3><p>Blank lease underwriting model</p></div><span class="pill grey">Template</span></header><div class="fm-library-meta"><div><small>Version</small><b>v1</b></div><div><small>Horizon</small><b>120 months</b></div><div><small>Updated</small><b>3 Sep</b></div></div><div class="fm-card-actions"><button class="btn" data-fm-action="new-model">Use template</button><button class="btn" data-fm-action="template">Configure</button></div></div></div><div class="card" style="margin-top:14px"><div class="card-head"><div><h3>Version and approval history</h3><small style="color:var(--muted)">Saving a named draft immediately adds it here and to the library above</small></div><button class="btn" data-fm-action="audit-export">Export audit log</button></div><div class="table-wrap"><table class="fm-table"><thead><tr><th>Version</th><th>Change</th><th>Changed by</th><th>Approved by</th><th>Effective from</th><th>Status</th><th>Action</th></tr></thead><tbody>${dynamicHistory}<tr><td>v3</td><td>Approved baseline: $5,000 lease + $1,200 other operating expenses</td><td>Faisal · 29 Oct</td><td>Finance Admin</td><td>1 Dec 2026</td><td><span class="pill ${state.activeDraftId?'grey':'green'}">${state.activeDraftId?'Approved':'Current'}</span></td><td><button class="btn" data-fm-action="load-approved" data-load-view="actuals">Load</button></td></tr><tr><td>v2</td><td>Added size-mix pricing and working capital</td><td>Faisal · 18 Oct</td><td>—</td><td>Draft only</td><td><span class="pill grey">Superseded</span></td><td><button class="btn" data-fm-action="restore">Restore as draft</button></td></tr><tr><td>v1</td><td>Initial model imported from spreadsheet</td><td>Faisal · 15 Oct</td><td>—</td><td>Draft only</td><td><span class="pill grey">Superseded</span></td><td><button class="btn" data-fm-action="compare">Compare</button></td></tr></tbody></table></div></div>`}
+  function renderLibraryV2(){const dynamicCards=modelLibrary.map(draftLibraryCard).join(''),dynamicHistory=modelLibrary.map(draft=>`<tr><td>v${draft.version}</td><td>${escapeHtml(draft.note||'Named model draft')}</td><td>Faisal · ${escapeHtml(draftUpdatedLabel(draft))}</td><td>—</td><td>${escapeHtml(monthName(draft.effectiveMonth||state.start.slice(0,7)))}</td><td><span class="pill ${state.activeDraftId===draft.id?'green':'amber'}">${state.activeDraftId===draft.id?'Loaded':'Draft'}</span></td><td><button class="btn" data-fm-action="load-draft" data-draft-id="${escapeHtml(draft.id)}" data-load-view="actuals">Load</button></td></tr>`).join('');finMount('bill-library').innerHTML=`<div class="fm-toolbar"><button class="primary" data-fm-action="new-model">＋ New financial model</button><button class="btn" data-fm-action="template">Manage templates</button><button class="filter" data-fm-action="facility-filter">Facility: All</button><button class="filter" data-fm-action="status-filter">Status: All</button><span class="spacer"></span><button class="btn" data-fm-action="audit">Audit history</button></div><div class="fm-loaded-model-banner"><div><small>Currently loaded</small><b>${escapeHtml(state.modelName)} · ${activeModelVersion()}</b><span>This is the source used by Forecast vs Actual, charts, cash flow and Investment Returns.</span></div><div><small>Saved drafts</small><b>${modelLibrary.length}</b><span>Each draft is a complete restorable snapshot, not just a name.</span></div><div class="fm-banner-actions"><button class="btn" data-finance-destination="bill-performance">View forecast vs actual</button><button class="btn" data-fm-action="model-history" title="Field-level audit history for the loaded model (read-only, no restore)">History</button></div></div><div class="fm-library-grid"><div class="fm-library-card ${state.activeDraftId?'':'is-loaded'}"><header><div><h3>Sembawang Launch Plan</h3><p>StoreLah Sembawang · Approved baseline</p></div><span class="pill ${state.activeDraftId?'green':'green'}">${state.activeDraftId?'Approved':'Loaded'}</span></header><div class="fm-library-meta"><div><small>Version</small><b>v3</b></div><div><small>Capital</small><b>$108,000</b></div><div><small>Monthly costs</small><b>$6,200</b></div><div><small>Updated</small><b>29 Oct 2026</b></div></div><div class="fm-card-actions"><button class="primary" data-fm-action="load-approved" data-load-view="actuals">${state.activeDraftId?'Load & view forecast':'View forecast'}</button><button class="btn" data-fm-action="load-approved" data-load-view="model">Open inputs</button><button class="btn" data-fm-action="duplicate">Duplicate</button></div></div>${dynamicCards}<div class="fm-library-card"><header><div><h3>Sembawang Conservative Case</h3><p>Lower ramp-up and higher churn</p></div><span class="pill amber">Built-in scenario</span></header><div class="fm-library-meta"><div><small>Version</small><b>v2</b></div><div><small>Horizon</small><b>60 months</b></div><div><small>Updated</small><b>18 Oct</b></div></div><div class="fm-card-actions"><button class="btn" data-fm-action="open-downside">Open</button><button class="btn" data-fm-action="duplicate">Duplicate</button></div></div><div class="fm-library-card"><header><div><h3>New Facility Template</h3><p>Blank lease underwriting model</p></div><span class="pill grey">Template</span></header><div class="fm-library-meta"><div><small>Version</small><b>v1</b></div><div><small>Horizon</small><b>120 months</b></div><div><small>Updated</small><b>3 Sep</b></div></div><div class="fm-card-actions"><button class="btn" data-fm-action="new-model">Use template</button><button class="btn" data-fm-action="template">Configure</button></div></div></div><div class="card" style="margin-top:14px"><div class="card-head"><div><h3>Version and approval history</h3><small style="color:var(--muted)">Saving a named draft immediately adds it here and to the library above</small></div><button class="btn" data-fm-action="audit-export">Export audit log</button></div><div class="table-wrap"><table class="fm-table"><thead><tr><th>Version</th><th>Change</th><th>Changed by</th><th>Approved by</th><th>Effective from</th><th>Status</th><th>Action</th></tr></thead><tbody>${dynamicHistory}<tr><td>v3</td><td>Approved baseline: $5,000 lease + $1,200 other operating expenses</td><td>Faisal · 29 Oct</td><td>Finance Admin</td><td>1 Dec 2026</td><td><span class="pill ${state.activeDraftId?'grey':'green'}">${state.activeDraftId?'Approved':'Current'}</span></td><td><button class="btn" data-fm-action="load-approved" data-load-view="actuals">Load</button></td></tr><tr><td>v2</td><td>Added size-mix pricing and working capital</td><td>Faisal · 18 Oct</td><td>—</td><td>Draft only</td><td><span class="pill grey">Superseded</span></td><td><button class="btn" data-fm-action="restore">Restore as draft</button></td></tr><tr><td>v1</td><td>Initial model imported from spreadsheet</td><td>Faisal · 15 Oct</td><td>—</td><td>Draft only</td><td><span class="pill grey">Superseded</span></td><td><button class="btn" data-fm-action="compare">Compare</button></td></tr></tbody></table></div></div>`}
 
   function renderFinanceOverview(){const data={month:{label:'October 2026',billed:285400,collected:280000,outstanding:11800,overdue:3400,failed:8,refunds:1280,credits:6400,rate:.981},quarter:{label:'Q4 2026 to date',billed:822600,collected:803900,outstanding:18700,overdue:5200,failed:14,refunds:2840,credits:6400,rate:.977},ytd:{label:'2026 year to date',billed:3214800,collected:3146300,outstanding:68500,overdue:14800,failed:31,refunds:9240,credits:6400,rate:.979}}[state.financePeriod],trend=[84,88,91,94,96,98],overview=finMount('bill-overview');if(!overview)return;overview.innerHTML=`<div class="fm-filter-bar"><label class="fm-select-wrap"><small>Reporting period</small><select class="fm-select" data-finance-period><option value="month" ${state.financePeriod==='month'?'selected':''}>October 2026</option><option value="quarter" ${state.financePeriod==='quarter'?'selected':''}>Q4 2026 to date</option><option value="ytd" ${state.financePeriod==='ytd'?'selected':''}>2026 year to date</option></select></label><label class="fm-select-wrap"><small>Facility</small><select class="fm-select"><option>All facilities</option><option>StoreLah Sembawang</option></select></label><label class="fm-select-wrap"><small>Accounting basis</small><select class="fm-select"><option>Accrual</option><option>Cash collected</option></select></label><span class="spacer"></span><button class="btn" data-fm-action="finance-export">Export summary</button><button class="primary" data-fm-action="open-reconciliation">Open reconciliation</button></div><div class="fm-kpis"><div class="fm-kpi"><small>Revenue billed</small><strong>${money(data.billed)}</strong><span>${data.label}</span></div><div class="fm-kpi"><small>Cash collected</small><strong>${money(data.collected)}</strong><span>${percent(data.rate)} collection rate</span></div><div class="fm-kpi"><small>Accounts receivable</small><strong>${money(data.outstanding)}</strong><span>42 customer accounts</span></div><div class="fm-kpi"><small>Overdue balance</small><strong>${money(data.overdue)}</strong><span>13 accounts require action</span></div><div class="fm-kpi"><small>Failed auto-pay</small><strong>${data.failed}</strong><span>${money(data.failed*355)} to recover</span></div><div class="fm-kpi"><small>Credits &amp; refunds</small><strong>${money(data.credits+data.refunds)}</strong><span>${money(data.refunds)} awaiting approval</span></div></div><div class="fm-overview-grid"><div class="card"><div class="card-head"><div><h3>Collection performance</h3><small style="color:var(--muted)">Six-month collection rate</small></div><span class="pill green">${percent(data.rate)}</span></div><div class="card-body"><div class="fm-spark-bars">${trend.map((v,i)=>`<div title="${['May','Jun','Jul','Aug','Sep','Oct'][i]} 2026 · ${v}% collected"><span style="height:${v}%"></span><small>${['May','Jun','Jul','Aug','Sep','Oct'][i]}</small><b>${v}%</b></div>`).join('')}</div><div class="fm-note"><b>Current position:</b> ${money(data.collected)} collected against ${money(data.billed)} billed. ${money(data.outstanding)} remains in accounts receivable.</div></div></div><div class="card"><div class="card-head"><h3>Cash and control snapshot</h3><button class="btn" data-fm-action="finance-period-help">Definitions</button></div><div class="card-body"><div class="info-grid"><div class="info"><small>Unallocated receipts</small><b>$1,420</b></div><div class="info"><small>Reconciliation exceptions</small><b>7</b></div><div class="info"><small>Refunds pending</small><b>5</b></div><div class="info"><small>Credit-wallet balance</small><b>${money(data.credits)}</b></div><div class="info"><small>Next payout</small><b>24 Oct</b></div><div class="info"><small>Projected month-end cash</small><b>$296,800</b></div></div></div></div></div><div class="aging"><div class="agebox"><small>Current</small><b>$5,420</b><span class="pill green">18 accounts</span></div><div class="agebox"><small>1–7 days</small><b>$2,880</b><span class="pill amber">11 accounts</span></div><div class="agebox"><small>8–30 days</small><b>$1,960</b><span class="pill amber">7 accounts</span></div><div class="agebox danger"><small>31–60 days</small><b>$980</b><span class="pill red">4 accounts</span></div><div class="agebox danger"><small>60+ days</small><b>$560</b><span class="pill red">2 accounts</span></div></div><div class="fm-overview-grid" style="margin-top:14px"><div class="card"><div class="card-head"><h3>Priority finance actions</h3><button class="btn" data-fm-action="finance-queue">Open all</button></div><div class="card-body"><div class="exception"><span class="severity red">3×</span><div><b>Adrian Chua · SL-08331</b><br><small>$412 · Third failed payment attempt</small></div><button class="btn" data-fm-action="finance-recover">Collect</button></div><div class="exception"><span class="severity">!</span><div><b>Unallocated Stripe settlement</b><br><small>$1,420 · Match to 6 customer invoices</small></div><button class="btn" data-fm-action="open-reconciliation">Match</button></div><div class="exception"><span class="severity">5</span><div><b>Refund approvals</b><br><small>$1,280 · Oldest waiting 2 days</small></div><button class="btn" data-fm-action="finance-refunds">Review</button></div></div></div><div class="card"><div class="card-head"><h3>Finance health checks</h3><button class="btn" data-fm-action="finance-controls">Configure</button></div><div class="card-body fm-health"><div class="fm-check"><i>✓</i><div><b>Invoice-to-ledger sync</b><small>Last completed today at 13:45.</small></div><em>Healthy</em></div><div class="fm-check warn"><i>!</i><div><b>Seven reconciliation exceptions</b><small>Two bank transfers and five gateway settlements need matching.</small></div><em>Review</em></div><div class="fm-check"><i>✓</i><div><b>Refund approval control</b><small>All refunds above $250 require a second approver.</small></div><em>Active</em></div><div class="fm-check"><i>✓</i><div><b>Month-end readiness</b><small>October close checklist is 82% complete.</small></div><em>On track</em></div></div></div></div>`;document.querySelector('[data-finance-period]')?.addEventListener('change',e=>{state.financePeriod=e.target.value;renderFinanceOverview()})}
 
@@ -465,6 +794,28 @@ export function initFinanceWorkspace() {
   //    result is shown in Calculation checks.
   // ===================================================================
   const srv={branches:[],branchId:null,models:[],model:null,dirty:new Set(),chain:Promise.resolve(),overview:null,overviewKey:'',overviewError:null,transactions:null,txError:null,series:null,currentDetail:null,versions:null,expenses:null,inventory:null,agree:null,booted:false,bootError:null};
+  // ---- Section 4 Landlord lease (governed write path, lease horizon P6) ----
+  // Committed section from GET …/landlord-lease (`srv.lease`); staged edits
+  // live in `leaseDraft` until Update commits them in one PUT. The server
+  // derives every date (D1B) — the browser never does date math on the
+  // committed path: committed screens bind `srv.lease` + `srv.model`
+  // `.projection.months` (periodStart/periodEnd/leaseYear/isStub/isPreOpening).
+  srv.lease=null;srv.leaseError=null;srv.leaseModelId=null;srv.leaseRollout='unknown';srv.leaseBusy=false;srv.leaseFork=null;srv.leaseStaleMsg=null;
+  let leaseDraft=null; // staged Section 4 edits (null = clean, matches committed)
+  let leaseAck=false; // LH07 acknowledgement checkbox (estimated rents confirmed)
+  // ---- Section 5 Investment valuation assumptions + Investment Returns (P7) ----
+  // Committed valuation INPUTS live in `srv.lease.valuation` (GET landlord-lease);
+  // the valued OUTPUTS live in `srv.returns.committed` (GET /finance/returns).
+  // Staged Section 5 edits live in `valuationDraft` until Update commits them in
+  // one PUT …/valuation. `srv.dcfView` is a pure row selector (First 12 /
+  // First 24 / Full lease horizon), never draft state in the URL — hash routes
+  // stay #bill-models / #bill-returns.
+  srv.returns=null;srv.returnsError=null;srv.returnsModelId=null;srv.returnsBusy=false;
+  srv.valuationBusy=false;srv.valuationStaleMsg=null;srv.valuationConflict=false;
+  srv.dcfView='full';
+  srv.sensCustom=[]; // P3: extra test rates pinned to the sensitivity chart (rate-only, never committed)
+  let valuationDraft=null; // staged Section 5 edits (null = clean, matches committed)
+  const LEASE_FORBIDDEN='Lease-horizon editing is limited to Owners while the rollout is admins-only.';
   const r6=n=>Math.round(Number(n)*1e6)/1e6;
   const r2=n=>Math.round(Number(n)*100)/100;
   const SIZE_FROM_BUCKET={LOCKER:'XS',SMALL:'S',MEDIUM:'M',LARGE:'L',XL:'XL',XXL:'XXL'};
@@ -474,7 +825,10 @@ export function initFinanceWorkspace() {
   function statusPill(){const s=STATUS_PILL[srv.model?.status]||['grey','No model'];return `<span class="pill ${s[0]}">${s[1]}</span>`}
   function facilityOpts(){return srv.branches.map(b=>`<option value="${escapeHtml(b.id)}" ${b.id===srv.branchId?'selected':''}>StoreLah ${escapeHtml(b.name)}</option>`).join('')||'<option>No facility</option>'}
   const SECTION_PATCH={
-    inputs:()=>({startDate:state.start,horizonMonths:state.horizon,nlaSqft:state.nla}),
+    // B2: the committed term travels ONLY through the governed landlord-lease
+    // route — the generic inputs section sends startDate (+ NLA) alone, so the
+    // server never sees a stale horizonMonths here.
+    inputs:()=>({startDate:state.start,nlaSqft:state.nla}),
     occupancy:()=>{const o=state.baseOccupancy||occupancySnapshot();return {occupancy:{rampFirst6:r6(o.rampEarlySqft),rampFrom7:r6(o.rampLateSqft),moveOutRatePct:r6(o.churn*100),churnStartMonth:Math.round(o.churnStart),targetPct:r6(o.targetOcc*100)}}},
     capital:()=>({capitalItems:state.capex.map(x=>({name:String(x.name||'Capital item'),amount:r2(Number(x.amount)||0)}))}),
     pricing:()=>({pricing:{...(srv.model?.inputs?.pricing||{}),annualIncreasePct:r6(state.rateGrowth*100)}}),
@@ -482,7 +836,7 @@ export function initFinanceWorkspace() {
     'size-mix':()=>({sizeMix:state.mix.map(x=>({name:x.size,range:x.range||'',nlaSqft:r2(x.area),units:Math.round(x.units),psf:r6(x.rate)})),nlaSqft:r2(mixNla(state.mix,state.nla))}),
     opex:()=>{const lines=state.opexOverrides||{};return {opex:{baseMonthly:0,annualGrowthPct:r6(state.opexGrowth*100),categories:state.opex.map(x=>({name:x.name,budget:r2(Number(x.budget)||0),owner:x.owner||'',note:x.note||''})),overrides:Object.fromEntries(Object.entries(lines).map(([k,v])=>[k,r2(sum(v.map(x=>x.budget)))])),overrideLines:clone(lines)}}}
   };
-  function hydrate(detail){
+  function hydrate(detail,keepStaged){
     srv.model=detail;const i=detail.inputs||{};
     state.modelName=detail.name;state.activeDraftId=detail.id;
     const b=srv.branches.find(x=>x.id===detail.branchId);state.facility=b?'StoreLah '+b.name:'Portfolio model';
@@ -500,8 +854,14 @@ export function initFinanceWorkspace() {
     state.units=sum(state.mix.map(x=>x.units));state.nla=mixNla(state.mix,i.nlaSqft);
     const months=Array.from({length:Math.min(24,state.horizon)},(_,k)=>modelMonthValue(modelPeriodDate(new Date(state.start+'T00:00:00'),k)));
     if(!months.includes(state.budgetMonth))state.budgetMonth=state.start.slice(0,7);
-    clearModelDrafts();clearBudgetDraft();
+    // state.start/state.horizon mirror the loaded model's server inputs, so the
+    // preview engine's period boundaries always come from the server (P6 §3).
+    if(!keepStaged){clearModelDrafts();clearBudgetDraft()}
     srv.agree=compareWithServer();srv.versions=null;
+    // Keep the governed Section 4 + Section 5 in step with the loaded model revision.
+    if(srv.leaseModelId!==detail.id){srv.lease=null;srv.leaseError=null;leaseDraft=null;leaseAck=false;srv.leaseFork=null;void refreshLease()}
+    // The valued Returns block follows the same revision (P7).
+    if(srv.returnsModelId!==detail.id){srv.returns=null;srv.returnsError=null;valuationDraft=null;srv.valuationConflict=false;srv.valuationStaleMsg=null;srv.sensCustom=[];srv.sensTest=null;void refreshReturns()}
   }
   function compareWithServer(){
     const p=srv.model?.projection;if(!p)return {ok:false,detail:'No server projection loaded.'};
@@ -533,6 +893,11 @@ export function initFinanceWorkspace() {
       try{srv.model=await put(`/finance/models/${srv.model.id}/${section}`,{version:srv.model.version,patch:SECTION_PATCH[section]()})}
       catch(err){notify(describeError(err));try{hydrate(await get(`/finance/models/${srv.model.id}`))}catch{}renderActive();return false}
     }
+    // B9: every section write bumps the model version, but Section 4/5 PUTs
+    // carry srv.lease.rowVersion — re-fetch the lease block after our own
+    // write so the next section Update cannot 409 against it. (Including the
+    // auto-draft path above, where srv.model is now a different draft.)
+    if(srv.lease&&srv.model){srv.leaseModelId=null;await refreshLease()}
     srv.agree=compareWithServer();srv.versions=null;
     if(autoDraft){srv.lastAutoDraft=autoDraft;await refreshModelList();renderActive();notify(`“${autoDraft.from}” is published, so your change was saved to a new draft of it (now loaded). Publish the draft when ready — it replaces the published one.`);return true}
     refreshModelList();
@@ -579,6 +944,8 @@ export function initFinanceWorkspace() {
       const pick=srv.models.find(m=>m.id===srv.model?.id)||srv.models.find(m=>m.status==='CURRENT')||srv.models[0];
       srv.model=null;if(pick)hydrate(await get(`/finance/models/${pick.id}`));
       await loadInventory();
+      await refreshLease();
+      await refreshReturns();
       srv.booted=true;
     }catch(err){srv.bootError=describeError(err)}
   }
@@ -597,6 +964,863 @@ export function initFinanceWorkspace() {
 
   function healthAgreement(){const a=srv.agree||{ok:false,detail:'Not verified.'};return `<div class="fm-check ${a.ok?'':'warn'}" data-fm-server-check><i>${a.ok?'✓':'!'}</i><div><b>Server engine agrees</b><small>${a.detail}</small></div><em>${a.ok?'Passed':'Review'}</em></div>`}
   function health(m){return healthBase(m)+healthAgreement()}
+
+  // ===================================================================
+  // Section 4 Landlord lease — server-backed UI (lease horizon P6).
+  //
+  // Committed screens bind server data only: `srv.lease` (GET …/landlord-lease)
+  // for the summary + schedule, and `srv.model.projection.months`
+  // (periodStart/periodEnd/leaseYear/isStub/isPreOpening) for payable amounts.
+  // No browser date math on the committed path — the formatters below only
+  // slice server ISO strings for display. `calculate()` stays the preview
+  // engine for unsaved edits of OTHER sections; its period boundaries come
+  // from the server via hydrate() (state.start/state.horizon mirror the
+  // loaded model's inputs), and compareWithServer() guards any drift.
+  // Update commits the whole section in one PUT …/landlord-lease; the global
+  // Save (Model Library save-version) snapshots the server model afterwards,
+  // so the committed horizon is always in the snapshot. D4A auto-draft is the
+  // server fork (updateLandlordLease): CURRENT/PENDING are never mutated —
+  // the response carries the child draft and this UI navigates into it.
+  // ===================================================================
+
+  // Display-only formatting from server ISO strings — fixed month-name table,
+  // string slicing only. No Date construction and no date arithmetic anywhere
+  // on the committed path (P6 §3).
+  // P10: prototype spells September "Sept" ("Sept 27") — the shared CMS
+  // table follows it so committed and preview labels agree.
+  const MON_S=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sept','Oct','Nov','Dec'];
+  const ymShort=ym=>{const m=/^(\d{4})-(\d{2})$/.exec(String(ym||''));if(!m)return String(ym||'—');return `${MON_S[Number(m[2])-1]} ${m[1].slice(2)}`};
+  function leaseStubRange(startISO,endISO){
+    if(!startISO||!endISO)return '—';
+    const d1=Number(startISO.slice(8,10)),d2=Number(endISO.slice(8,10));
+    const my=iso=>`${MON_S[Number(iso.slice(5,7))-1]} ${iso.slice(0,4)}`;
+    if(startISO.slice(0,7)===endISO.slice(0,7))return `${d1}–${d2} ${my(endISO)}`;
+    return `${d1} ${my(startISO)} – ${d2} ${my(endISO)}`;
+  }
+  const fmtDayLong=iso=>{if(!iso||iso.length<10)return '—';return `${Number(iso.slice(8,10))} ${MON_S[Number(iso.slice(5,7))-1]} ${iso.slice(0,4)}`};
+  // Handoff §4.5 interface copy, verbatim. Server messages carry the same text;
+  // locally-originated toasts use these constants so the copy lives in one place.
+  const LEASE_COPY={
+    range:'Committed lease term must be between 12 and 120 months.',
+    whole:v=>`Committed lease term must be a whole number of months — decimals such as ${v} are rejected so the contractual duration is never silently changed.`,
+    incomplete:'Lease schedule is incomplete for the extended term. Review the estimated lease-year amounts before updating.',
+    undone:'Landlord lease changes undone.',
+    recalculating:'Recalculating forecast and investment returns...',
+    savedButFailed:'The lease was saved, but investment returns could not be recalculated. Retry calculation or contact Finance support.',
+    conflict:'This model was changed by another user. Reload the latest version before updating.',
+    forkDraft:v=>`Editing draft based on approved version ${v}.`,
+    success:n=>`Landlord lease updated to ${n} months. Forecast horizon, NPV, IRR, payback, monthly lease and budgets are synced.`,
+  };
+  /** Payable-months equivalent from server period factors — arithmetic on server numbers, never dates. */
+  function leaseFactorLabel(f){const r=Math.round(Number(f)*100)/100;return `${Number.isInteger(r)?r:r.toFixed(2)} months`; }
+  const PRORATION_OPTIONS=[
+    ['actual_days','Actual days','Each day is charged at its calendar month\u2019s daily rate.'],
+    ['30_day','30-day month','Every month counts as 30 days (capped at 30/30).'],
+    ['full_month','Full month','Any chargeable day bills the whole month.'],
+  ];
+
+  function leaseCanEdit(){
+    if(!can('bill-lease:update'))return {ok:false,why:'role'};
+    if(srv.leaseRollout==='off')return {ok:false,why:'rollout'};
+    if(srv.leaseRollout==='admins'&&!(function(){try{return getMe()?.isOwner}catch{return false}})())return {ok:false,why:'admins'};
+    if(srv.model&&srv.model.status==='ARCHIVED')return {ok:false,why:'archived'};
+    if(srv.leaseBusy)return {ok:false,why:'busy'};
+    return {ok:true,why:''};
+  }
+
+  async function refreshLease(){
+    const id=srv.model?.id;
+    if(!id){srv.lease=null;srv.leaseModelId=null;return}
+    if(srv.leaseModelId===id&&srv.lease)return;
+    try{
+      const sec=await get(`/finance/models/${encodeURIComponent(id)}/landlord-lease`);
+      let rollout='off';
+      try{const s=await get('/settings');const r=s?.['finance.leaseHorizon.rollout'];rollout=r==='all'?'all':r==='admins'?'admins':'off'}catch{rollout=srv.leaseRollout==='unknown'?'off':srv.leaseRollout}
+      srv.lease=sec;srv.leaseError=null;srv.leaseModelId=id;srv.leaseRollout=rollout;srv.leaseConflict=false;
+      leaseDraft=null;leaseAck=false;
+    }catch(err){srv.lease=null;srv.leaseError=err instanceof Error?err.message:String(err)}
+    if(isActive('bill-models'))renderActive();
+  }
+
+  /** Committed section as an editable-shaped view (no draft involved). */
+  function committedLeaseView(){
+    const c=srv.lease;if(!c)return null;
+    return {
+      committedTermMonths:c.committedTermMonths,leaseStartDate:c.leaseStartDate,
+      ufaSqft:c.ufaSqft??0,rentFreeStartDate:c.rentFreeStartDate??'',rentFreeEndDate:c.rentFreeEndDate??'',
+      prorationMethod:c.prorationMethod||'actual_days',
+      rows:(c.leaseSchedule||[]).filter(r=>!r.excluded).map(r=>({leaseYear:r.leaseYear,monthlyRent:r.monthlyRent,source:r.source,confirmed:!!r.confirmed,periodStart:r.periodStart,periodEnd:r.periodEnd})),
+      excluded:(c.leaseSchedule||[]).filter(r=>r.excluded),
+    };
+  }
+  /** Merged editable view: staged draft over the committed section. */
+  function leaseEditView(){
+    if(leaseDraft)return leaseDraft;
+    return committedLeaseView();
+  }
+  function leaseNeedYears(term){return Math.max(1,Math.ceil((Number(term)||12)/12))}
+  /** Inline term validation (B1/B8): decimals stay in the field and
+   * out-of-range terms never grow estimated rows — Update stays blocked with
+   * the same copy the server enforces (LH06 range/whole-number gates). */
+  function leaseTermError(term){
+    const n=Number(term);
+    if(!Number.isFinite(n)||!Number.isInteger(n))return LEASE_COPY.whole(String(term??''));
+    if(n<12||n>120)return LEASE_COPY.range;
+    return null;
+  }
+  function ensureLeaseDraft(){
+    if(leaseDraft)return leaseDraft;
+    const v=committedLeaseView();if(!v)return null;
+    leaseDraft=clone(v);return leaseDraft;
+  }
+  function leaseDirty(){
+    if(!srv.lease||!leaseDraft)return false;
+    return JSON.stringify(leaseDraft)!==JSON.stringify(committedLeaseView());
+  }
+  function leaseUnconfirmed(){
+    const v=leaseDraft;if(!v)return [];
+    return (v.rows||[]).filter(r=>!(r.source==='contract'||r.source==='user_entered'||(r.source==='estimated'&&r.confirmed)));
+  }
+  /** Committed payable per lease year. B4: prefer the engine's segment-priced
+   * breakdown (`projection.leasePayableByYear`) — anniversary-straddling rows
+   * (e.g. the lease-start row when operations began first) split across years
+   * there, while row-start grouping misattributes the whole row. Falls back to
+   * row grouping for stored projections that predate the field. */
+  function leasePayableByYear(){
+    const out={};
+    const lp=srv.model?.projection?.leasePayableByYear;
+    if(lp&&typeof lp==='object'){
+      for(const [k,v] of Object.entries(lp)){
+        const y=Number(k);if(!y||y<1)continue;
+        out[y]={payable:Number(v?.payable)||0,factor:Number(v?.factor)||0,rows:0};
+      }
+      return out;
+    }
+    (srv.model?.projection?.months||[]).forEach(m=>{
+      const y=m.leaseYear;if(!y||y<1)return;
+      out[y]=out[y]||{payable:0,factor:0,rows:0};
+      out[y].payable+=Number(m.opexLease)||0;out[y].factor+=Number(m.periodFactor)||0;out[y].rows+=1;
+    });
+    return out;
+  }
+  function leaseSummaryRent(){
+    const c=srv.lease;if(!c)return 0;
+    return c.leaseSchedule?.find(r=>r.leaseYear===1&&!r.excluded)?.monthlyRent??0;
+  }
+
+  function leaseSectionCard(legacy){
+    // legacy = {lease, leaseMonthly, leasePsf} for the rollout-off path only.
+    if(srv.leaseRollout==='off'||srv.leaseRollout==='unknown'&&srv.leaseError){
+      if(srv.leaseError&&!srv.lease)return `<div class="card" data-model-section="lease" id="fm-lease-section"><div class="card-head"><div><h3>4. Landlord lease</h3><small style="color:var(--muted)">The single source for lease term and lease expense throughout the model</small></div></div><div class="card-body"><div class="fm-note"><b>Landlord lease could not load.</b> ${escapeHtml(srv.leaseError)}</div><button class="btn" data-lh-retry-load style="margin-top:10px">Retry</button></div></div>`;
+    }
+    if(srv.leaseRollout==='off'){
+      return `<div class="card" data-model-section="lease" id="fm-lease-section"><div class="card-head"><div><h3>4. Landlord lease</h3><small style="color:var(--muted)">The single source for lease term and lease expense throughout the model</small></div>${sectionActions('lease')}</div><div class="card-body"><div class="fm-note"><b>Lease-horizon editing is not enabled yet (finance.leaseHorizon.rollout is off).</b> The saved lease values below remain readable through the existing model path.</div>${legacyLeaseCardBody(legacy)}</div></div>`;
+    }
+    if(srv.leaseError&&!srv.lease)return `<div class="card" data-model-section="lease" id="fm-lease-section"><div class="card-head"><div><h3>4. Landlord lease</h3><small style="color:var(--muted)">The single source for lease term and lease expense throughout the model</small></div></div><div class="card-body"><div class="fm-note"><b>Landlord lease could not load.</b> ${escapeHtml(srv.leaseError)}</div><button class="btn" data-lh-retry-load style="margin-top:10px">Retry</button></div></div>`;
+    if(!srv.lease)return `<div class="card" data-model-section="lease" id="fm-lease-section"><div class="card-head"><div><h3>4. Landlord lease</h3><small style="color:var(--muted)">The single source for lease term and lease expense throughout the model</small></div></div><div class="card-body"><div class="section-empty">Loading landlord lease…</div></div></div>`;
+    return leaseCardNew();
+  }
+
+  function legacyLeaseCardBody(legacy){
+    const {lease,leaseMonthly,leasePsf}=legacy;
+    return `<div class="fm-live-calc fm-lease-total"><span>Year 1 landlord rent</span><b data-lease-monthly>${money(leaseMonthly)} per month</b><small data-lease-annual>${num(lease.ufa)} UFA sq ft · implied $${num(leasePsf,2)} PSF · ${money(leaseMonthly*12)} before rent-free months.</small></div>${draftAssumption('lease','ufa','Usable floor area (UFA)',lease.ufa,'sq ft',1,0,100000,'The landlord\u2019s chargeable usable floor area. This is used only to show the implied lease PSF.')}${draftAssumption('lease','rentFree','Rent-free period',lease.rentFree,'months',1,0,24,'Landlord rent is zero for these opening model months. If this is 0, Month 1 lease is charged and prorated only when operations begin mid-month.')}<div class="fm-schedule-head"><div><b>Editable landlord lease schedule</b><small>Enter the contractual total monthly rent for every lease year; no assumed escalation overrides your figures.</small></div>${projectionSelector()}</div>${leaseSchedule(lease,state.projectionYears)}<div class="fm-note fm-lease-sync-note"><b>Direct model link:</b> Expenses reads this landlord lease automatically. The other editable categories are non-lease expenses. Operating costs use the lease plus those expenses once, so nothing is double-counted.</div>`;
+  }
+
+  function leaseCardNew(){
+    const c=srv.lease,v=leaseEditView(),dirty=leaseDirty(),edit=leaseCanEdit(),canEdit=edit.ok;
+    const unconfirmed=leaseUnconfirmed(),needsAck=unconfirmed.length>0;
+    const ackOk=!needsAck||leaseAck;
+    const termErr=leaseDraft?leaseTermError(leaseDraft.committedTermMonths):null;
+    const updateDisabled=!dirty||!canEdit||!ackOk||!!termErr||srv.leaseBusy;
+    const termMonths=c.committedTermMonths,rent0=leaseSummaryRent();
+    const endLong=fmtDayLong(c.committedEndDate);
+    const payable=leasePayableByYear();
+    const statusPill=srv.model?.status==='DRAFT'?'draft':srv.model?.status==='CURRENT'?'approved':(srv.model?.status||'').toLowerCase();
+    return `<div class="card" data-model-section="lease" id="fm-lease-section"><div class="card-head"><div><h3>4. Landlord lease</h3><small style="color:var(--muted)">The single source for lease term and lease expense throughout the model</small></div><div class="actions fm-section-actions"><span class="fm-unsaved ${dirty?'show':''}">Unsaved changes</span><button class="btn" data-lh-undo ${dirty&&canEdit&&!srv.leaseBusy?'':'disabled'}>Undo</button><button class="primary" data-lh-update ${updateDisabled?'disabled':''}>Update</button></div></div><div class="card-body">`
+    +`${srv.leaseFork?`<div class="fm-note fm-fork" role="status"><b>${LEASE_COPY.forkDraft(srv.leaseFork.basedOnVersion)}</b><small>Created by ${escapeHtml(srv.leaseFork.actor)} · ${escapeHtml(srv.leaseFork.at)} from ${escapeHtml(srv.leaseFork.basedOnStatus||'CURRENT')} version ${srv.leaseFork.basedOnVersion}. The approved version is unchanged until this draft is published.</small></div>`:''}`
+    +`<div class="fm-live-calc fm-lease-total"><span>Committed landlord lease</span><b>${termMonths} months - ${money(rent0)} per month</b><small>${escapeHtml(srv.model?.name||state.modelName)} · v${srv.model?.version??c.rowVersion} ${statusPill} · ends ${endLong}.</small></div>`
+    +`<div class="fm-lease-grid">`
+    +`<label class="fm-assumption"><span>${tip('Committed lease term','The signed, non-cancellable landlord lease period. This controls the monthly forecast horizon and the committed cash flows used for Project NPV, IRR and payback. Any unsigned extension belongs in the separate renewal scenario.')}<small>The signed, non-cancellable landlord lease period. This controls the monthly forecast horizon and the committed cash flows used for Project NPV, IRR and payback. Any unsigned extension belongs in the separate renewal scenario.</small></span><span class="fm-number-wrap"><input type="number" step="1" min="1" value="${v.committedTermMonths}" data-lh-term aria-label="Committed lease term" ${canEdit?'':'disabled'}><em>months</em></span>${termErr?`<small class="fm-term-error" role="alert" style="color:var(--red, #b3261e)">${escapeHtml(termErr)}</small>`:''}</label>`
+    +`<label class="fm-assumption"><span>Lease commencement date<small>The contract start. The end date is derived by the server and cannot be typed in.</small></span><span class="fm-date-wrap"><input type="date" value="${escapeHtml(v.leaseStartDate)}" data-lh-start aria-label="Lease commencement date" ${canEdit?'':'disabled'}></span></label>`
+    +`<div class="fm-assumption"><span>Committed end date (read-only)<small>Derived by the server as start + term − 1 day. A new end date appears here after Update.</small></span><span class="fm-readonly-date" aria-readonly="true">${endLong}</span></div>`
+    +`<label class="fm-assumption"><span>Usable floor area (UFA)<small>The landlord\u2019s chargeable usable floor area. This is used only to show the implied lease PSF.</small></span><span class="fm-number-wrap"><input type="number" min="0" step="1" value="${v.ufaSqft}" data-lh-ufa aria-label="Usable floor area" ${canEdit?'':'disabled'}><em>sq ft</em></span></label>`
+    +`<div class="fm-assumption"><span>Rent-free period (contract dates)<small>Explicit start and end dates from the signed lease. Leave both empty when there is no rent-free period.</small></span><span class="fm-date-pair"><input type="date" value="${escapeHtml(v.rentFreeStartDate||'')}" data-lh-rfstart aria-label="Rent-free start date" ${canEdit?'':'disabled'}><i>–</i><input type="date" value="${escapeHtml(v.rentFreeEndDate||'')}" data-lh-rfend aria-label="Rent-free end date" ${canEdit?'':'disabled'}></span></div>`
+    +`</div>`
+    +`<fieldset class="fm-proration" ${canEdit?'':'disabled'}><legend>Proration method</legend><div class="fm-scenario" role="radiogroup" aria-label="Proration method">${PRORATION_OPTIONS.map(([val,label])=>`<button type="button" role="radio" aria-checked="${v.prorationMethod===val?'true':'false'}" class="${v.prorationMethod===val?'active':''}" data-lh-proration="${val}" ${canEdit?'':'disabled'}>${label}</button>`).join('')}</div><small>${(PRORATION_OPTIONS.find(o=>o[0]===v.prorationMethod)||PRORATION_OPTIONS[0])[2]} Applies to landlord lease only.</small></fieldset>`
+    +`<div class="fm-schedule-head"><div><b>Editable landlord lease schedule</b><small>Enter the contractual total monthly rent for every lease year. Prefilled rows are marked Estimated and need confirmation before Update.</small></div>${leaseScheduleSelector(leaseNeedYears(v.committedTermMonths))}</div>`
+    +`${leaseScheduleTable(v,dirty,payable,canEdit)}`
+    +`${needsAck?`<label class="fm-ack"><input type="checkbox" data-lh-ack ${leaseAck?'checked':''} ${canEdit?'':'disabled'}><span>I have reviewed the estimated lease-year amounts and confirm them for this update.</span></label>`:''}`
+    +`${srv.leaseBusy?`<div class="fm-note fm-lease-status" role="status"><b>${LEASE_COPY.recalculating}</b></div>`:''}`
+    +`${(srv.leaseStaleMsg||srv.model?.calculationStatus==='FAILED')?`<div class="fm-note fm-lease-status warn" role="alert"><b>${escapeHtml(srv.leaseStaleMsg||LEASE_COPY.savedButFailed)}</b> ${canEdit?'<button class="btn" data-lh-retry>Retry calculation</button>':''}</div>`:''}`
+    +`${srv.leaseConflict?`<div class="fm-note fm-lease-status warn" role="alert"><b>This model was changed by another user. Reload the latest version before updating.</b> <button class="btn" data-lh-reload>Reload latest</button></div>`:''}`
+    +`${!canEdit?`<div class="fm-note"><b>${edit.why==='admins'||edit.why==='role'?'You can view this section but your role cannot update it.':edit.why==='archived'?'This model is archived. Restore a version to a new draft to continue.':'Lease-horizon editing is not enabled yet.'}</b>${edit.why==='admins'?' Lease-horizon editing is limited to Owners while the rollout is admins-only.':''}</div>`:''}`
+    +`<div class="fm-note fm-lease-sync-note"><b>Downstream effects:</b> Update recalculates the monthly forecast, Investment Returns (Project NPV, IRR and payback), budgets and the projection report from the same model revision. Posted actuals and version history are never rewritten.</div>`
+    +`</div></div>`;
+  }
+
+  /** P9: Section 4 lease-schedule year selector — same select control as the
+   * prototype ("Show projection"). Extra handoff columns stay untouched. */
+  function leaseScheduleSelector(need){
+    // Prototype options: 1 / 3 / 5 / 7 years, default 3 years.
+    const cur=state.leaseScheduleYears||'3';
+    const opts=[['1','1 year'],['3','3 years'],['5','5 years'],['7','7 years']];
+    return `<label class="fm-inline-select"><span>Show projection</span><select data-lease-schedule-years>${opts.map(([val,label])=>`<option value="${val}" ${String(cur)===val?'selected':''}>${label}</option>`).join('')}</select></label>`;
+  }
+
+  function leaseScheduleTable(v,dirty,payable,canEdit){
+    const need=leaseNeedYears(v.committedTermMonths);
+    // An unconfirmed Estimated year is never hidden: it must be reviewed
+    // before Update (handoff §4.4), so the table extends to show it.
+    const picked=Math.min(need,Number(state.leaseScheduleYears||3)||need);
+    const lastUnconfirmed=Math.max(0,...(v.rows||[]).filter(r=>r.leaseYear<=need&&r.source==='estimated'&&!r.confirmed).map(r=>r.leaseYear));
+    const show=Math.max(picked,lastUnconfirmed);
+    const rows=(v.rows||[]).filter(r=>r.leaseYear<=show).sort((a,b)=>a.leaseYear-b.leaseYear);
+    const ufa=Number(v.ufaSqft)||0;
+    const body=rows.map(r=>{
+      const psf=ufa?r.monthlyRent/ufa:0;
+      const p=payable[r.leaseYear];
+      const basis=r.source==='contract'?'Contract':r.source==='user_entered'?'Entered':r.confirmed?'Estimated · confirmed':'Estimated - review required';
+      return `<tr class="${r.source==='estimated'&&!r.confirmed?'fm-est-row':''}"><td><b>Year ${r.leaseYear}</b><small class="fm-capped">${r.periodStart&&r.periodEnd?escapeHtml(leaseStubRange(r.periodStart,r.periodEnd)):'Dates appear after Update'}</small></td>`
+      +`<td><span class="fm-table-input"><em>$</em><input type="number" min="0" step="0.01" value="${Number(r.monthlyRent).toFixed(2)}" data-lh-rent="${r.leaseYear}" aria-label="Year ${r.leaseYear} monthly rent" ${canEdit?'':'disabled'}></span></td>`
+      +`<td>$${num(psf,2)} / UFA sq ft</td>`
+      +`<td>${p?money(Math.round(p.payable*100)/100):money(r.monthlyRent*12)}${dirty?'<small class="fm-capped">committed · refreshes on Update</small>':''}</td>`
+      +`<td>${p?leaseFactorLabel(p.factor):leaseFactorLabel(12)}</td>`
+      +`<td>${basis}${r.source==='estimated'?`<label class="fm-confirm"><input type="checkbox" data-lh-confirm="${r.leaseYear}" ${r.confirmed?'checked':''} ${canEdit?'':'disabled'}> Confirm</label>`:''}</td></tr>`;
+    }).join('');
+    // Years outside the term are listed only when the whole term is shown.
+    const excluded=show<need?'':(v.excluded||[]).map(r=>`<tr class="fm-excluded-row"><td><b>Year ${r.leaseYear}</b></td><td>${money(r.monthlyRent)}</td><td>—</td><td colspan="3">Outside the committed term — kept for re-extension and audit.</td></tr>`).join('');
+    return `<div class="table-wrap"><table class="fm-table fm-year-table fm-lease-year-table"><thead><tr><th>Lease year</th><th>Monthly landlord rent</th><th>Implied UFA PSF</th><th>Payable amount within the committed term</th><th>Payable months</th><th>Basis or source</th></tr></thead><tbody>${body}${excluded}</tbody></table></div><div class="fm-table-key">Showing ${show} of ${need} lease year${need===1?'':'s'} for a ${v.committedTermMonths}-month term. Payable amounts are the committed server revision and refresh on Update.</div>`;
+  }
+
+  function paintLeaseDirty(){
+    const card=document.querySelector('[data-model-section="lease"]');if(!card||!srv.lease)return;
+    const dirty=leaseDirty(),edit=leaseCanEdit(),unconfirmed=leaseUnconfirmed().length,ackOk=!unconfirmed||leaseAck;
+    const termErr=leaseDraft?leaseTermError(leaseDraft.committedTermMonths):null;
+    card.querySelector('.fm-unsaved')?.classList.toggle('show',!!dirty);
+    const undoBtn=card.querySelector('[data-lh-undo]'),updateBtn=card.querySelector('[data-lh-update]');
+    if(undoBtn){if(dirty&&edit.ok&&!srv.leaseBusy)undoBtn.removeAttribute('disabled');else undoBtn.setAttribute('disabled','')}
+    if(updateBtn){if(dirty&&edit.ok&&ackOk&&!termErr&&!srv.leaseBusy)updateBtn.removeAttribute('disabled');else updateBtn.setAttribute('disabled','')}
+    // Keep the inline term message live per keystroke (B1/B8) — the full
+    // re-render on change rebuilds it anyway.
+    let termErrEl=card.querySelector('.fm-term-error');
+    if(termErr){
+      if(!termErrEl){card.querySelector('[data-lh-term]')?.closest('label')?.insertAdjacentHTML('beforeend','<small class="fm-term-error" role="alert"></small>');termErrEl=card.querySelector('.fm-term-error')}
+      if(termErrEl){termErrEl.textContent=termErr;termErrEl.style.color='var(--red, #b3261e)'}
+    }else termErrEl?.remove();
+  }
+
+  function leaseSyncRowsForTerm(d){
+    // Invalid terms (B1 decimal, B8 out-of-range) never churn rows: the typed
+    // value stays in the field, no estimated rows are added, Update stays
+    // blocked with the inline message until the term is valid again.
+    const termNum=Number(d.committedTermMonths);
+    if(!Number.isInteger(termNum)||termNum<12||termNum>120)return;
+    // Add-only while typing: rows beyond the current need stay in the draft so
+    // mid-keystroke terms (e.g. "6" on the way to "60") never discard rents.
+    // Display + payload show only years within the need (see leaseScheduleTable
+    // and leasePayload).
+    const need=leaseNeedYears(d.committedTermMonths);
+    const rows=(d.rows||[]);
+    // Re-extension (B5): resurrect kept excluded rows inside the new term
+    // first — their rent + source are reused, so only years never entered
+    // become Estimated. Without this the kept years show twice (estimated +
+    // "Outside the committed term").
+    const kept=Array.isArray(d.excluded)?d.excluded:[];
+    for(const r of kept){
+      if(r.leaseYear<=need&&!rows.some(x=>x.leaseYear===r.leaseYear))rows.push({...r});
+    }
+    if(kept.length)d.excluded=kept.filter(r=>r.leaseYear>need);
+    const have=new Set(rows.map(r=>r.leaseYear));
+    let last=rows.length?rows.slice().sort((a,b)=>a.leaseYear-b.leaseYear).at(-1).monthlyRent:null;
+    if(last==null){
+      const committed=(srv.lease?.leaseSchedule||[]).filter(r=>!r.excluded);
+      last=committed.length?committed.slice().sort((a,b)=>a.leaseYear-b.leaseYear).at(-1).monthlyRent:0;
+    }
+    for(let k=1;k<=need;k++)if(!have.has(k)){rows.push({leaseYear:k,monthlyRent:last,source:'estimated',confirmed:false,periodStart:'',periodEnd:''});last=rows.at(-1).monthlyRent}
+    rows.sort((a,b)=>a.leaseYear-b.leaseYear);
+    d.rows=rows;
+  }
+
+  function bindLeaseSection(){
+    const card=document.querySelector('[data-model-section="lease"]');if(!card)return;
+    card.querySelector('[data-lh-retry-load]')?.addEventListener('click',()=>{srv.leaseModelId=null;void refreshLease()});
+    if(!srv.lease||srv.leaseRollout==='off')return;
+    const rerender=()=>renderModelControlled();
+    card.querySelector('[data-lh-term]')?.addEventListener('input',e=>{
+      const d=ensureLeaseDraft();if(!d)return;
+      // B1: never truncate — decimals stay in the field and Update is blocked
+      // with the whole-number message until the term is valid again.
+      if(e.target.value==='')return;
+      const n=Number(e.target.value);
+      if(!Number.isFinite(n))return;
+      d.committedTermMonths=n;
+      leaseSyncRowsForTerm(d);paintLeaseDirty();
+    });
+    card.querySelector('[data-lh-term]')?.addEventListener('change',rerender);
+    card.querySelector('[data-lh-start]')?.addEventListener('change',e=>{const d=ensureLeaseDraft();if(!d)return;d.leaseStartDate=e.target.value;paintLeaseDirty();rerender()});
+    card.querySelector('[data-lh-ufa]')?.addEventListener('input',e=>{const d=ensureLeaseDraft();if(!d)return;d.ufaSqft=Math.max(0,Number(e.target.value)||0);paintLeaseDirty()});
+    card.querySelector('[data-lh-ufa]')?.addEventListener('change',rerender);
+    card.querySelector('[data-lh-rfstart]')?.addEventListener('change',e=>{const d=ensureLeaseDraft();if(!d)return;d.rentFreeStartDate=e.target.value||'';paintLeaseDirty();rerender()});
+    card.querySelector('[data-lh-rfend]')?.addEventListener('change',e=>{const d=ensureLeaseDraft();if(!d)return;d.rentFreeEndDate=e.target.value||'';paintLeaseDirty();rerender()});
+    card.querySelectorAll('[data-lh-proration]').forEach(b=>b.addEventListener('click',()=>{const d=ensureLeaseDraft();if(!d)return;d.prorationMethod=b.dataset.lhProration;paintLeaseDirty();rerender()}));
+    // P9: the Section 4 schedule year selector re-renders the lease card only.
+    card.querySelector('[data-lease-schedule-years]')?.addEventListener('change',e=>{state.leaseScheduleYears=e.target.value;rerender()});
+    card.querySelectorAll('[data-lh-rent]').forEach(input=>{
+      input.addEventListener('input',()=>{const d=ensureLeaseDraft();if(!d)return;const y=Number(input.dataset.lhRent),row=d.rows.find(r=>r.leaseYear===y);if(row){row.monthlyRent=Math.max(0,Number(input.value)||0);if(row.source==='estimated'&&!row.confirmed){/* stays estimated until confirmed */}}paintLeaseDirty()});
+      input.addEventListener('change',rerender);
+    });
+    card.querySelectorAll('[data-lh-confirm]').forEach(box=>box.addEventListener('change',()=>{const d=ensureLeaseDraft();if(!d)return;const y=Number(box.dataset.lhConfirm),row=d.rows.find(r=>r.leaseYear===y);if(row)row.confirmed=box.checked;paintLeaseDirty();rerender()}));
+    card.querySelector('[data-lh-ack]')?.addEventListener('change',e=>{leaseAck=e.target.checked;paintLeaseDirty()});
+    card.querySelector('[data-lh-update]')?.addEventListener('click',()=>leaseUpdateClicked());
+    card.querySelector('[data-lh-undo]')?.addEventListener('click',()=>leaseUndoClicked());
+    card.querySelector('[data-lh-retry]')?.addEventListener('click',e=>{e.preventDefault();leaseRetryClicked(e.target)});
+    card.querySelector('[data-lh-reload]')?.addEventListener('click',()=>leaseReloadClicked());
+  }
+
+  function leaseUndoClicked(){
+    if(!leaseDirty())return;
+    leaseDraft=null;leaseAck=false;srv.leaseConflict=false;
+    renderModelControlled();
+    notify(LEASE_COPY.undone);
+  }
+
+  function leaseUpdateClicked(){
+    if(!leaseDirty()||srv.leaseBusy)return;
+    const edit=leaseCanEdit();
+    if(!edit.ok){
+      notify(edit.why==='admins'?LEASE_FORBIDDEN:'You can view this section but your role cannot update it.');
+      return;
+    }
+    if(srv.model&&srv.model.status!=='DRAFT'){
+      const next=`${srv.model.name} — Draft`;
+      showModal('Save changes to a new draft',`“${srv.model.name}” is ${srv.model.status==='CURRENT'?'approved':'waiting to publish'} and cannot be changed directly.`,`<div class="form-grid"><label class="field full"><span>Draft name *</span><input id="fmLeaseDraftName" value="${escapeHtml(next)}"></label></div><div class="fm-note" style="margin-top:10px">The approved version stays unchanged until the new draft is published.</div>`,'Continue',()=>{
+        const name=document.getElementById('fmLeaseDraftName')?.value.trim();
+        if(!name){notify('Name the draft first.');return false}
+        void leaseCommit(name);
+      });
+      return;
+    }
+    void leaseCommit(undefined);
+  }
+
+  function leasePayload(){
+    const d=ensureLeaseDraft();
+    return {
+      version: srv.lease.rowVersion,
+      leaseStartDate: d.leaseStartDate,
+      committedTermMonths: d.committedTermMonths,
+      rentFreeStartDate: d.rentFreeStartDate||null,
+      rentFreeEndDate: d.rentFreeEndDate||null,
+      prorationMethod: d.prorationMethod,
+      currency: 'SGD',
+      ufaSqft: d.ufaSqft,
+      schedule: d.rows.filter(r=>r.leaseYear<=leaseNeedYears(d.committedTermMonths)).map(r=>({leaseYear:r.leaseYear,monthlyRent:Math.round(Number(r.monthlyRent)*100)/100,source:r.source,confirmed:!!r.confirmed})),
+    };
+  }
+
+  async function leaseCommit(draftName){
+    const id=srv.model?.id;if(!id||!srv.lease)return;
+    const key=crypto.randomUUID();
+    srv.leaseBusy=true;srv.leaseConflict=false;srv.leaseStaleMsg=null;paintLeaseDirty();
+    const card=document.querySelector('[data-model-section="lease"]');
+    card?.querySelector('[data-lh-update]')?.setAttribute('disabled','');
+    card?.querySelector('[data-lh-undo]')?.setAttribute('disabled','');
+    if(!card?.querySelector('.fm-lease-status'))card?.querySelector('.card-body')?.insertAdjacentHTML('beforeend',`<div class="fm-note fm-lease-status" role="status"><b>${LEASE_COPY.recalculating}</b></div>`);
+    try{
+      const body=leasePayload();
+      if(draftName)body.draftName=draftName;
+      const d=await request(`/finance/models/${encodeURIComponent(id)}/landlord-lease`,{method:'PUT',body:JSON.stringify(body),headers:{'Idempotency-Key':key}}).then(b=>b.data);
+      await applyLeaseResult(d);
+    }catch(err){leaseHandleError(err)}
+    finally{srv.leaseBusy=false;paintLeaseDirty()}
+  }
+
+  async function applyLeaseResult(d){
+    srv.lease=d.lease;srv.leaseModelId=d.model.id;srv.leaseConflict=false;
+    if(d.fork){
+      let me='';try{me=getCurrentUser()?.email||getMe()?.user?.email||''}catch{console.warn('lease actor lookup failed')}
+      srv.leaseFork={...d.fork,actor:me||'you',at:new Date().toLocaleString('en-SG',{day:'numeric',month:'short',year:'numeric',hour:'numeric',minute:'2-digit'})};
+    }else srv.leaseFork=null;
+    leaseDraft=null;leaseAck=false;srv.leaseBusy=false;
+    try{
+      const detail=await get(`/finance/models/${encodeURIComponent(d.model.id)}`);
+      hydrate(detail,true);
+    }catch{}
+    // A new model revision owns a new committed valuation — reload Returns.
+    srv.returnsModelId=null;await refreshReturns();
+    srv.agree=compareWithServer();
+    await refreshModelList();
+    renderActive();
+    notify(d.replayed?'Idempotent replay — the first result is returned without re-projecting.':(d.message||LEASE_COPY.success(d.lease.committedTermMonths)));
+    if(d.warning){srv.leaseStaleMsg=d.warning;notify(d.warning);if(isActive('bill-models'))renderActive()}
+  }
+
+  function leaseHandleError(err){
+    srv.leaseBusy=false;
+    const msg=err instanceof Error?err.message:String(err);
+    if(err&&err.status===409&&err.details&&err.details.policy==='finance.leaseHorizon.rollout'){
+      srv.leaseRollout='off';renderActive();notify(msg);return;
+    }
+    if(err&&err.status===409){
+      srv.leaseConflict=true;renderModelControlled();
+      notify(LEASE_COPY.conflict);
+      return;
+    }
+    if(err&&err.status===422&&err.details&&err.details.code==='LEASE_SCHEDULE_UNCONFIRMED'){
+      if(Array.isArray(err.details.schedule))srv.lease.leaseSchedule=err.details.schedule;
+      renderModelControlled();
+      notify(LEASE_COPY.incomplete);
+      return;
+    }
+    if(err&&err.status===422){notify(msg||LEASE_COPY.range);return}
+    notify(msg&&typeof msg==='string'?msg:describeError(err));
+  }
+
+  async function leaseRetryClicked(btn){
+    const id=srv.model?.id;if(!id)return;
+    if(btn)btn.disabled=true;
+    try{
+      const d=await post(`/finance/models/${encodeURIComponent(id)}/recalculate`,{});
+      srv.leaseStaleMsg=null;srv.valuationStaleMsg=null;
+      try{const detail=await get(`/finance/models/${encodeURIComponent(id)}`);hydrate(detail,true)}catch{}
+      // Retry revalues the same revision — reload both governed sections.
+      srv.leaseModelId=null;await refreshLease();
+      srv.returnsModelId=null;await refreshReturns();
+      srv.agree=compareWithServer();renderActive();
+      notify(d?.message||'Investment returns recalculated.');
+    }catch(err){notify(err instanceof Error?err.message:describeError(err))}
+    finally{if(btn)btn.disabled=false}
+  }
+
+  async function leaseReloadClicked(){
+    srv.leaseConflict=false;srv.leaseModelId=null;leaseDraft=null;leaseAck=false;
+    try{const detail=await get(`/finance/models/${encodeURIComponent(srv.model.id)}`);hydrate(detail,true)}catch{}
+    await refreshLease();
+    renderActive();
+  }
+
+  /** Hash-route jump: #bill-models + in-page section anchor, never draft state in the URL. */
+  function jumpToLeaseSection(){
+    try{if(location.hash!=='#bill-models')location.hash='bill-models'}catch{}
+    showPanel('bill-models');
+    setTimeout(()=>{
+      const el=document.querySelector('[data-model-section="lease"]');
+      if(el&&el.scrollIntoView)el.scrollIntoView({behavior:'smooth',block:'start'});
+      const input=document.querySelector('[data-lh-term]');
+      if(input)input.focus({preventScroll:true});
+    },80);
+  }
+
+  /** Hash-route jump to Section 5 (P7): Investment valuation assumptions. */
+  function jumpToValuationSection(){
+    try{if(location.hash!=='#bill-models')location.hash='bill-models'}catch{}
+    // P8: the card is collapsible — expand it before focusing a setting.
+    srv.valSettingsOpen=true;
+    showPanel('bill-models');
+    setTimeout(()=>{
+      const el=document.querySelector('[data-model-section="valuation"]');
+      if(el&&el.scrollIntoView)el.scrollIntoView({behavior:'smooth',block:'start'});
+      const input=document.querySelector('[data-val-method]');
+      if(input)input.focus({preventScroll:true});
+    },80);
+  }
+
+  // ===================================================================
+  // Section 5 Investment valuation assumptions (P7, owner D7A/D8A).
+  // Committed screens bind `srv.lease.valuation` (stored assumptions +
+  // server-resolved effectiveAnnualRate) — the browser never invents a rate.
+  // D7A: the UI offers the 15% manual default for NEW input only and never
+  // overwrites a stored rate (the draft is always seeded from the stored
+  // valuation; the server backfills 15% at model creation only).
+  // ===================================================================
+  const VALUATION_COPY={
+    recalculating:'Recalculating forecast and investment returns...',
+    savedButFailed:'The lease was saved, but investment returns could not be recalculated. Retry calculation or contact Finance support.',
+    conflict:'This model was changed by another user. Reload the latest version before updating.',
+    undone:'Investment valuation assumptions changes undone.',
+    waccIncomplete:'WACC needs cost of equity, cost of debt, equity weight, debt weight and tax rate — enter all five or use the manual rate.',
+    waccWeights:'WACC equity and debt weights must sum to 1.',
+    notDraft:'Valuation assumptions apply to DRAFT models only. Fork a draft through the Landlord lease update first.',
+    success:v=>`Investment valuation assumptions updated for model version ${v}. Project NPV, IRR and payback are recalculated.`,
+  };
+  const VALUATION_METHODS=[
+    ['manual','Manual','A single required return you enter.'],
+    ['risk','Risk-adjusted','Base return plus business, lease and execution risk.'],
+    ['wacc','WACC','Weighted cost of equity and debt. Available only when the financing inputs are complete.'],
+  ];
+
+  function valuationCanEdit(){
+    if(!can('bill-lease:update'))return {ok:false,why:'role'};
+    if(srv.leaseRollout==='off')return {ok:false,why:'rollout'};
+    if(srv.leaseRollout==='admins'&&!(function(){try{return getMe()?.isOwner}catch{return false}})())return {ok:false,why:'admins'};
+    if(srv.model&&srv.model.status==='ARCHIVED')return {ok:false,why:'archived'};
+    if(srv.valuationBusy)return {ok:false,why:'busy'};
+    return {ok:true,why:''};
+  }
+
+  function committedValuationView(){
+    const v=srv.lease?.valuation;if(!v)return null;
+    return {
+      methodology:v.methodology||'manual',
+      // D7A: 15% is the default for NEW models only (server backfills it at
+      // creation). The draft always starts from the STORED value — a stored
+      // rate is never overwritten by the default.
+      manualAnnualRate:typeof v.manualAnnualRate==='number'?v.manualAnnualRate:0.15,
+      // P7 (prototype v36): Risk-adjusted 8% + 3% + 2% + 2%, WACC 18% / 6.5% /
+      // 70:30 / 17% tax, renewal length 24 — shown when the stored field is
+      // null, never overwriting a stored value (D7A).
+      baseReturn:v.baseReturn??0.08,businessRisk:v.businessRisk??0.03,leaseRisk:v.leaseRisk??0.02,executionRisk:v.executionRisk??0.02,
+      costEquity:v.costEquity??0.18,costDebt:v.costDebt??0.065,equityWeight:v.equityWeight??0.7,debtWeight:v.debtWeight??0.3,taxRate:v.taxRate??0.17,
+      renewalEnabled:!!v.renewalEnabled,renewalMonths:v.renewalMonths??24,
+      includeTerminalCashFlows:!!v.includeTerminalCashFlows,
+      refundableDeposit:v.refundableDeposit||0,reinstatementCost:v.reinstatementCost||0,otherTerminalCashFlow:v.otherTerminalCashFlow||0,
+      effectiveAnnualRate:(typeof v.effectiveAnnualRate==='number'?v.effectiveAnnualRate:null),
+    };
+  }
+  function valuationEditView(){
+    if(valuationDraft)return valuationDraft;
+    return committedValuationView();
+  }
+  function ensureValuationDraft(){
+    if(valuationDraft)return valuationDraft;
+    const v=committedValuationView();if(!v)return null;
+    valuationDraft=clone(v);delete valuationDraft.effectiveAnnualRate;
+    return valuationDraft;
+  }
+  function valuationDirty(){
+    if(!srv.lease||!valuationDraft)return false;
+    const clean=committedValuationView();if(!clean)return false;
+    const c=clone(clean);delete c.effectiveAnnualRate;
+    return JSON.stringify(valuationDraft)!==JSON.stringify(c);
+  }
+  function valuationWaccComplete(v){
+    return [v.costEquity,v.costDebt,v.equityWeight,v.debtWeight,v.taxRate].every(x=>typeof x==='number'&&Number.isFinite(x));
+  }
+  function valuationWaccWeightsOk(v){
+    if(v.equityWeight==null||v.debtWeight==null)return true; // completeness message owns this case
+    return Math.abs(v.equityWeight+v.debtWeight-1)<1e-9;
+  }
+  /** Effective monthly rate for DISPLAY ONLY (mirrors the server R7 formula;
+   * every DCF row is discounted by the server, which stays authoritative). */
+  function displayMonthlyRate(annual){
+    if(!(annual>=-1&&annual<=10&&Number.isFinite(annual)))return null;
+    return (1+annual)**(1/12)-1;
+  }
+
+  function valuationSectionCard(){
+    if(!srv.lease){
+      if(srv.leaseError)return '';
+      return `<div class="card" data-model-section="valuation" id="fm-valuation-section"><div class="card-head"><div><h3>5. Investment valuation assumptions</h3><small style="color:var(--muted)">Discount rate, lease horizon and explicit terminal cash-flow treatment</small></div></div><div class="card-body"><div class="section-empty">Loading investment valuation assumptions…</div></div></div>`;
+    }
+    if(srv.leaseRollout==='off'){
+      return `<div class="card" data-model-section="valuation" id="fm-valuation-section"><div class="card-head"><div><h3>5. Investment valuation assumptions</h3><small style="color:var(--muted)">Discount rate, lease horizon and explicit terminal cash-flow treatment</small></div></div><div class="card-body"><div class="fm-note"><b>Investment valuation editing is not enabled yet (finance.leaseHorizon.rollout is off).</b> The saved valuation assumptions below remain readable through the existing model path.</div>${valuationReadonlyBody()}</div></div>`;
+    }
+    return valuationCardNew();
+  }
+
+  function valuationReadonlyBody(){
+    const c=srv.lease,v=committedValuationView();
+    const annual=v.effectiveAnnualRate,monthly=annual==null?null:displayMonthlyRate(annual);
+    return `<div class="fm-live-calc"><span>Annual discount rate (stored)</span><b>${annual==null?'—':percent(annual,2)+' · '+methodologyLabel(v.methodology)}</b><small>${monthly==null?'The stored methodology needs complete inputs before a rate can be resolved.':'Effective monthly rate '+percent(monthly,4)+' · every screen and export reads this stored rate.'}</small></div>
+      <div class="fm-note"><b>No property or fit-out sale value is assumed.</b> Refundable deposit ${money(v.refundableDeposit)} · reinstatement ${money(v.reinstatementCost)} · terminal cash flows ${v.includeTerminalCashFlows?'enabled':'off'} · renewal ${v.renewalEnabled?v.renewalMonths+' months (separate comparison)':'off'}.</div>`;
+  }
+
+  function methodologyLabel(m){return m==='risk'?'Risk-adjusted':m==='wacc'?'WACC':'Manual'}
+
+  function valuationCardNew(){
+    const c=srv.lease,v=valuationEditView(),dirty=valuationDirty(),edit=valuationCanEdit(),canEdit=edit.ok;
+    // P7 client mirror of the server rate: manual and risk-adjusted resolve
+    // locally; WACC resolves when the five financing inputs are complete
+    // (server formula: ce·ew + cd·dw·(1−tax)). The server stays authoritative.
+    const annual=v.effectiveAnnualRate!=null?v.effectiveAnnualRate:(v.methodology==='manual'?v.manualAnnualRate:(v.methodology==='risk'?(v.baseReturn+v.businessRisk+v.leaseRisk+v.executionRisk):(valuationWaccComplete(v)?v.costEquity*v.equityWeight+v.costDebt*v.debtWeight*(1-v.taxRate):null)));
+    const monthly=annual==null?null:displayMonthlyRate(annual);
+    const waccReady=v.methodology!=='wacc'||valuationWaccComplete(v);
+    const updateDisabled=!dirty||!canEdit||srv.valuationBusy||srv.model?.status!=='DRAFT';
+    const notDraft=srv.model&&srv.model.status!=='DRAFT';
+    const open=!!srv.valSettingsOpen;
+    const head=`<div class="card-head"><div><h3>5. Investment valuation assumptions</h3><small style="color:var(--muted)">Discount rate, lease horizon and explicit terminal cash-flow treatment</small></div><div class="actions fm-section-actions"><span class="fm-unsaved ${dirty?'show':''}">Unsaved changes</span><button class="btn" data-val-undo ${dirty&&canEdit&&!srv.valuationBusy?'':'disabled'}>Undo</button><button class="primary" data-val-update ${updateDisabled?'disabled':''}>Update</button>${open?'<button class="btn" data-val-toggle>Collapse settings</button>':''}</div></div>`;
+    const statusNotes=`${srv.valuationBusy?`<div class="fm-note fm-lease-status" role="status"><b>${VALUATION_COPY.recalculating}</b></div>`:''}`
+    +`${(srv.valuationStaleMsg||srv.model?.calculationStatus==='FAILED')?`<div class="fm-note fm-lease-status warn" role="alert"><b>${escapeHtml(srv.valuationStaleMsg||VALUATION_COPY.savedButFailed)}</b> ${canEdit?'<button class="btn" data-val-retry>Retry calculation</button>':''}</div>`:''}`
+    +`${srv.valuationConflict?`<div class="fm-note fm-lease-status warn" role="alert"><b>${VALUATION_COPY.conflict}</b> <button class="btn" data-val-reload>Reload latest</button></div>`:''}`
+    +`${notDraft?`<div class="fm-note"><b>${VALUATION_COPY.notDraft}</b></div>`:''}`
+    +`${!canEdit&&!notDraft?`<div class="fm-note"><b>${edit.why==='admins'||edit.why==='role'?'You can view this section but your role cannot update it.':'Investment valuation editing is not enabled yet.'}</b>${edit.why==='admins'?' Lease-horizon editing is limited to Owners while the rollout is admins-only.':''}</div>`:''}`;
+    if(!open){
+      // P8 collapsed summary (prototype): methodology + annual on line one,
+      // effective monthly + committed months on line two, Expand settings.
+      return `<div class="card" data-model-section="valuation" id="fm-valuation-section">${head}<div class="card-body">`
+      +`<div class="fm-val-summary"><div><b>${methodologyLabel(v.methodology)} · ${annual==null?'—':percent(annual,1)}</b><span>${monthly==null?'Complete the methodology inputs to resolve a rate.':percent(monthly,3)+' effective monthly · '+c.committedTermMonths+' committed months'}</span></div><button class="btn" data-val-toggle>Expand settings</button></div>`
+      +statusNotes
+      +`</div></div>`;
+    }
+    // Prototype summary tiles: effective annual + monthly rate, committed
+    // horizon and the renewal result (server committed block when current).
+    const ren=srv.returns?.committed?.renewal;
+    const renewalTile=!v.renewalEnabled?'Not included':ren?`${money(ren.npv)} NPV`:'Update to calculate';
+    const tiles=`<div class="fm-val-tiles"><div><small>Effective annual discount rate</small><b>${annual==null?'—':percent(annual,1)}</b></div><div><small>Effective monthly discount rate</small><b>${monthly==null?'—':percent(monthly,3)}</b></div><div><small>Committed valuation horizon</small><b>${c.committedTermMonths} months</b></div><div><small>Renewal scenario</small><b>${renewalTile}</b></div></div>`;
+    return `<div class="card" data-model-section="valuation" id="fm-valuation-section">${head}<div class="card-body">`+tiles
+    // §4.6 read-only committed valuation horizon summary card (verbatim copy).
+    +`<div class="fm-live-calc fm-valuation-horizon"><span>Committed valuation horizon</span><b>${c.committedTermMonths} months</b><small><button type="button" class="fm-tip" aria-label="About Committed valuation horizon" title="The signed landlord lease term. Edit it in Section 4 Landlord lease. Renewal is kept separate and is never silently included." data-tip="The signed landlord lease term. Edit it in Section 4 Landlord lease. Renewal is kept separate and is never silently included.">?</button> ${fmtDayLong(c.leaseStartDate)} – ${fmtDayLong(c.committedEndDate)}.</small><span class="fm-horizon-actions"><button class="btn" data-lh-jump>Edit in Landlord lease</button></span></div>`
+    // §4.6 linked row (verbatim copy).
+    +`<div class="fm-horizon-row"><span><b>Committed lease term</b><small>Managed in Section 4 because it comes from the signed landlord lease.</small></span><b>${c.committedTermMonths} months</b><button class="btn" data-lh-jump>Edit lease term</button></div>`
+    +`<label class="fm-assumption"><span>Discount methodology<small>Manual, Risk-adjusted and WACC. Project NPV stays unlevered at the effective rate below.</small></span><span class="fm-select-wrap"><select class="fm-select" data-val-method aria-label="Discount methodology" ${canEdit&&!notDraft?'':'disabled'}>${VALUATION_METHODS.map(([val,label])=>`<option value="${val}" ${v.methodology===val?'selected':''}>${label}</option>`).join('')}</select></span></label>`
+    +valuationMethodFields(v,canEdit&&!notDraft)
+    +`<div class="fm-live-calc"><span>Effective rate (stored methodology)</span><b>${annual==null?'—':percent(annual,2)+' annual · '+percent(monthly,4)+' monthly'}</b><small>${annual==null?'Complete the methodology inputs to resolve a rate. Every screen and export reads the stored rate.':'Every screen and the exported DCF use this stored rate. Screens show it; the DCF file name carries the model version, rate and methodology.'}</small></div>`
+    +(!waccReady?`<div class="fm-note warn" role="alert"><b>${VALUATION_COPY.waccIncomplete}</b> Saving now is allowed — the revision is marked failed and Returns are out of date until the inputs are complete.</div>`:'')
+    +(!valuationWaccWeightsOk(v)?`<div class="fm-note warn" role="alert"><b>${VALUATION_COPY.waccWeights}</b></div>`:'')
+    +`<div class="fm-lease-grid">`
+    +`<label class="fm-assumption"><span>Optional renewal scenario<small>A separate comparison case. It never changes the committed term above.</small></span><span class="fm-check-inline"><input type="checkbox" data-val-renewal-enabled ${v.renewalEnabled?'checked':''} ${canEdit&&!notDraft?'':'disabled'}> <em>Enable renewal comparison</em></span></label>`
+    +(v.renewalEnabled?`<label class="fm-assumption"><span>Renewal length<small>Extra committed-equivalent months valued separately.</small></span><span class="fm-number-wrap"><input type="number" min="1" max="120" step="1" value="${v.renewalMonths}" data-val-renewal-months aria-label="Renewal months" ${canEdit&&!notDraft?'':'disabled'}><em>months</em></span></label>`:'')
+    +`<label class="fm-assumption"><span>Include terminal cash flows<small>Refundable lease deposit recovery, reinstatement and any other explicit terminal flow occur at the committed end date only when enabled. Off by default — no sale value.</small></span><span class="fm-check-inline"><input type="checkbox" data-val-terminal-enabled ${v.includeTerminalCashFlows?'checked':''} ${canEdit&&!notDraft?'':'disabled'}> <em>Enable terminal flows</em></span></label>`
+    +valuationMoneyField('Refundable lease deposit','SGD cents, outflow at commencement and recovery at the committed end when terminal flows are enabled.',v.refundableDeposit,'data-val-deposit',canEdit&&!notDraft)
+    +valuationMoneyField('Reinstatement cost at lease end','Positive outflow magnitude at the committed end when terminal flows are enabled.',v.reinstatementCost,'data-val-reinstatement',canEdit&&!notDraft)
+    +valuationMoneyField('Other explicit terminal cash flow','Signed: positive is an inflow at the committed end when terminal flows are enabled.',v.otherTerminalCashFlow,'data-val-other-terminal',canEdit&&!notDraft)
+    +`</div>`
+    +`<div class="fm-note"><b>No property or fit-out sale value is assumed.</b> Terminal items move to the new end date when the term shortens.</div>`
+    +statusNotes
+    +`</div></div>`;
+  }
+
+  function valuationMethodFields(v,enabled){
+    const dis=enabled?'':'disabled';
+    if(v.methodology==='manual'){
+      return `<label class="fm-assumption"><span>Annual discount rate<small>The default for new models is 15%. Stored rates are never overwritten by the default.</small></span><span class="fm-number-wrap"><input type="number" min="0" max="1000" step="0.01" value="${num(Number(v.manualAnnualRate)*100,2).replaceAll(',','')}" data-val-manual-rate aria-label="Annual discount rate" ${dis}><em>% p.a.</em></span></label>`;
+    }
+    if(v.methodology==='risk'){
+      return `<div class="fm-lease-grid">`
+      +valuationRateField('Base return',v.baseReturn,'data-val-risk="baseReturn"',dis)
+      +valuationRateField('Business risk',v.businessRisk,'data-val-risk="businessRisk"',dis)
+      +valuationRateField('Lease risk',v.leaseRisk,'data-val-risk="leaseRisk"',dis)
+      +valuationRateField('Execution risk',v.executionRisk,'data-val-risk="executionRisk"',dis)
+      +`</div><div class="fm-note"><b>Effective annual rate is the sum of the four components.</b></div>`;
+    }
+    const w=(val)=>val==null?'':num(Number(val)*100,2).replaceAll(',','');
+    return `<div class="fm-lease-grid">`
+    +valuationWaccField('Cost of equity',v.costEquity,'data-val-wacc="costEquity"',dis)
+    +valuationWaccField('Cost of debt',v.costDebt,'data-val-wacc="costDebt"',dis)
+    +valuationWaccField('Equity weight',v.equityWeight,'data-val-wacc="equityWeight"',dis)
+    +valuationWaccField('Debt weight',v.debtWeight,'data-val-wacc="debtWeight"',dis)
+    +valuationWaccField('Tax rate',v.taxRate,'data-val-wacc="taxRate"',dis)
+    +`</div><div class="fm-note"><b>WACC is available only when the financing inputs are complete.</b> ${VALUATION_COPY.waccIncomplete}</div>`;
+  }
+  function valuationRateField(label,val,attr,dis){
+    return `<label class="fm-assumption"><span>${label}<small>Decimal component of the risk-adjusted rate.</small></span><span class="fm-number-wrap"><input type="number" min="0" max="1000" step="0.01" value="${num(Number(val)*100,2).replaceAll(',','')}" ${attr} ${dis}><em>%</em></span></label>`;
+  }
+  function valuationWaccField(label,val,attr,dis){
+    return `<label class="fm-assumption"><span>${label}<small>${/weight/i.test(label)?'Share of capital, as a percentage (weights must sum to 100%).':'Financing input, as a percentage.'}</small></span><span class="fm-number-wrap"><input type="number" min="0" step="0.01" value="${val==null?'':num(Number(val)*100,2).replaceAll(',','')}" placeholder="—" ${attr} ${dis}><em>%</em></span></label>`;
+  }
+  function valuationMoneyField(label,note,val,attr,enabled){
+    return `<label class="fm-assumption"><span>${label}<small>${note}</small></span><span class="fm-number-wrap"><input type="number" step="0.01" value="${Number(val).toFixed(2)}" ${attr} aria-label="${label}" ${enabled?'':'disabled'}><em>SGD</em></span></label>`;
+  }
+
+  function paintValuationDirty(){
+    const card=document.querySelector('[data-model-section="valuation"]');if(!card||!srv.lease)return;
+    const dirty=valuationDirty(),edit=valuationCanEdit(),notDraft=srv.model&&srv.model.status!=='DRAFT';
+    card.querySelector('.fm-unsaved')?.classList.toggle('show',!!dirty);
+    const undo=card.querySelector('[data-val-undo]'),update=card.querySelector('[data-val-update]');
+    if(undo){if(dirty&&edit.ok&&!notDraft&&!srv.valuationBusy)undo.removeAttribute('disabled');else undo.setAttribute('disabled','')}
+    if(update){if(dirty&&edit.ok&&!notDraft&&!srv.valuationBusy)update.removeAttribute('disabled');else update.setAttribute('disabled','')}
+  }
+
+  function bindValuationSection(){
+    const card=document.querySelector('[data-model-section="valuation"]');if(!card)return;
+    card.querySelectorAll('[data-lh-jump]').forEach(b=>{if(b.dataset.bound)return;b.dataset.bound='1';b.addEventListener('click',e=>{e.preventDefault();e.stopPropagation();jumpToLeaseSection()})});
+    // P8: the collapsed summary and the expanded header both carry the toggle.
+    card.querySelectorAll('[data-val-toggle]').forEach(b=>{if(b.dataset.bound)return;b.dataset.bound='1';b.addEventListener('click',e=>{e.preventDefault();e.stopPropagation();srv.valSettingsOpen=!srv.valSettingsOpen;renderModelControlled()})});
+    if(!srv.lease||srv.leaseRollout==='off')return;
+    const rerender=()=>renderModelControlled();
+    // P8: methodology is a select, not three buttons.
+    card.querySelector('[data-val-method]')?.addEventListener('change',e=>{const d=ensureValuationDraft();if(!d)return;d.methodology=e.target.value;paintValuationDirty();rerender()});
+    card.querySelector('[data-val-manual-rate]')?.addEventListener('input',e=>{const d=ensureValuationDraft();if(!d)return;d.manualAnnualRate=Math.max(0,Number(e.target.value)||0)/100;paintValuationDirty()});
+    card.querySelector('[data-val-manual-rate]')?.addEventListener('change',rerender);
+    card.querySelectorAll('[data-val-risk]').forEach(input=>{input.addEventListener('input',()=>{const d=ensureValuationDraft();if(!d)return;d[input.dataset.valRisk]=Math.max(0,Number(input.value)||0)/100;paintValuationDirty()});input.addEventListener('change',rerender)});
+    card.querySelectorAll('[data-val-wacc]').forEach(input=>{input.addEventListener('input',()=>{const d=ensureValuationDraft();if(!d)return;const raw=input.value;const key=input.dataset.valWacc;d[key]=(raw===''||raw==null)?null:Math.max(0,Number(raw)||0)/100;paintValuationDirty()});input.addEventListener('change',rerender)});
+    card.querySelector('[data-val-renewal-enabled]')?.addEventListener('change',e=>{const d=ensureValuationDraft();if(!d)return;d.renewalEnabled=e.target.checked;if(d.renewalEnabled&&!(d.renewalMonths>=1))d.renewalMonths=24;paintValuationDirty();rerender()});
+    card.querySelector('[data-val-renewal-months]')?.addEventListener('input',e=>{const d=ensureValuationDraft();if(!d)return;d.renewalMonths=Math.trunc(Number(e.target.value)||0);paintValuationDirty()});
+    card.querySelector('[data-val-renewal-months]')?.addEventListener('change',rerender);
+    card.querySelector('[data-val-terminal-enabled]')?.addEventListener('change',e=>{const d=ensureValuationDraft();if(!d)return;d.includeTerminalCashFlows=e.target.checked;paintValuationDirty();rerender()});
+    const moneyKeys=[['[data-val-deposit]','refundableDeposit'],['[data-val-reinstatement]','reinstatementCost'],['[data-val-other-terminal]','otherTerminalCashFlow']];
+    moneyKeys.forEach(([sel,key])=>{card.querySelector(sel)?.addEventListener('input',e=>{const d=ensureValuationDraft();if(!d)return;d[key]=Math.round((Number(e.target.value)||0)*100)/100;paintValuationDirty()});card.querySelector(sel)?.addEventListener('change',rerender)});
+    card.querySelector('[data-val-update]')?.addEventListener('click',()=>valuationUpdateClicked());
+    card.querySelector('[data-val-undo]')?.addEventListener('click',()=>valuationUndoClicked());
+    card.querySelector('[data-val-retry]')?.addEventListener('click',e=>{e.preventDefault();leaseRetryClicked(e.target)});
+    card.querySelector('[data-val-reload]')?.addEventListener('click',()=>valuationReloadClicked());
+  }
+
+  function valuationUndoClicked(){
+    if(!valuationDirty())return;
+    valuationDraft=null;srv.valuationConflict=false;
+    renderModelControlled();
+    notify(VALUATION_COPY.undone);
+  }
+
+  function valuationPayload(){
+    const d=ensureValuationDraft();
+    const body={version:srv.lease.rowVersion,methodology:d.methodology,renewalEnabled:!!d.renewalEnabled,includeTerminalCashFlows:!!d.includeTerminalCashFlows,refundableDeposit:d.refundableDeposit,reinstatementCost:d.reinstatementCost,otherTerminalCashFlow:d.otherTerminalCashFlow};
+    if(d.methodology==='manual')body.manualAnnualRate=d.manualAnnualRate;
+    if(d.methodology==='risk'){body.baseReturn=d.baseReturn;body.businessRisk=d.businessRisk;body.leaseRisk=d.leaseRisk;body.executionRisk=d.executionRisk}
+    if(d.methodology==='wacc'){body.costEquity=d.costEquity;body.costDebt=d.costDebt;body.equityWeight=d.equityWeight;body.debtWeight=d.debtWeight;body.taxRate=d.taxRate}
+    if(d.renewalEnabled)body.renewalMonths=d.renewalMonths;
+    return body;
+  }
+
+  function valuationUpdateClicked(){
+    if(!valuationDirty()||srv.valuationBusy)return;
+    const edit=valuationCanEdit();
+    if(!edit.ok){
+      notify(edit.why==='admins'?LEASE_FORBIDDEN:'You can view this section but your role cannot update it.');
+      return;
+    }
+    if(srv.model&&srv.model.status!=='DRAFT'){notify(VALUATION_COPY.notDraft);return}
+    void valuationCommit();
+  }
+
+  async function valuationCommit(){
+    const id=srv.model?.id;if(!id||!srv.lease)return;
+    const key=crypto.randomUUID();
+    srv.valuationBusy=true;srv.valuationConflict=false;srv.valuationStaleMsg=null;paintValuationDirty();
+    const card=document.querySelector('[data-model-section="valuation"]');
+    card?.querySelector('[data-val-update]')?.setAttribute('disabled','');
+    card?.querySelector('[data-val-undo]')?.setAttribute('disabled','');
+    if(!card?.querySelector('.fm-lease-status'))card?.querySelector('.card-body')?.insertAdjacentHTML('beforeend',`<div class="fm-note fm-lease-status" role="status"><b>${VALUATION_COPY.recalculating}</b></div>`);
+    try{
+      const d=await request(`/finance/models/${encodeURIComponent(id)}/valuation`,{method:'PUT',body:JSON.stringify(valuationPayload()),headers:{'Idempotency-Key':key}}).then(b=>b.data);
+      await applyValuationResult(d);
+    }catch(err){valuationHandleError(err)}
+    finally{srv.valuationBusy=false;paintValuationDirty()}
+  }
+
+  async function applyValuationResult(d){
+    valuationDraft=null;srv.valuationBusy=false;srv.valuationConflict=false;
+    try{
+      const detail=await get(`/finance/models/${encodeURIComponent(d.model.id)}`);
+      hydrate(detail,true);
+    }catch{}
+    srv.leaseModelId=null;await refreshLease();
+    srv.returnsModelId=null;await refreshReturns();
+    srv.agree=compareWithServer();
+    await refreshModelList();
+    renderActive();
+    notify(d.replayed?'Idempotent replay — the first result is returned without re-projecting.':(VALUATION_COPY.success(d.model.version)));
+    if(d.warning){srv.valuationStaleMsg=d.warning;srv.leaseStaleMsg=d.warning;notify(d.warning);if(isActive('bill-models'))renderActive()}
+  }
+
+  function valuationHandleError(err){
+    srv.valuationBusy=false;
+    const msg=err instanceof Error?err.message:String(err);
+    if(err&&err.status===409&&err.details&&err.details.policy==='finance.leaseHorizon.rollout'){
+      srv.leaseRollout='off';renderActive();notify(msg);return;
+    }
+    if(err&&err.status===409){
+      srv.valuationConflict=true;renderModelControlled();
+      notify(VALUATION_COPY.conflict);
+      return;
+    }
+    if(err&&err.status===422){notify(msg||'Investment valuation assumptions are invalid.');return}
+    notify(msg&&typeof msg==='string'?msg:describeError(err));
+  }
+
+  async function valuationReloadClicked(){
+    srv.valuationConflict=false;srv.leaseModelId=null;valuationDraft=null;
+    try{const detail=await get(`/finance/models/${encodeURIComponent(srv.model.id)}`);hydrate(detail,true)}catch{}
+    await refreshLease();
+    renderActive();
+  }
+
+  // ===================================================================
+  // D5A: read-only audit-history view (P7, owner D5A).
+  // Kept OUT of the primary Model Library table: it opens from the model
+  // details (loaded-model banner) or the header overflow action as a modal.
+  // Field-level before/after + user + timestamp + source version + resulting
+  // version + calculation status. No restore function in v1 — history is
+  // evidence only and the modal offers no restore action.
+  // ===================================================================
+  function historyFieldValue(v){
+    if(v===undefined||v===null||v==='')return '—';
+    const s=typeof v==='string'?v:JSON.stringify(v);
+    return s.length>200?s.slice(0,197)+'…':s;
+  }
+
+  async function openModelHistory(modelId,label){
+    let rows=[];
+    try{rows=await get(`/finance/library/${encodeURIComponent(modelId)}/audit`)}catch(err){notify(describeError(err));return}
+    const fieldRows=[];
+    for(const ev of rows){
+      const before=(ev.before&&typeof ev.before==='object'&&!Array.isArray(ev.before))?ev.before:{};
+      const after=(ev.after&&typeof ev.after==='object'&&!Array.isArray(ev.after))?ev.after:{};
+      const keys=[...new Set([...Object.keys(before),...Object.keys(after)])];
+      const srcVer=before.version??ev.version??'—';
+      const resVer=after.version??'—';
+      const calc=after.calculationStatus??'—';
+      const when=(()=>{try{return new Date(ev.occurredAt||ev.createdAt).toLocaleString('en-SG')}catch{return '—'}})();
+      if(!keys.length){
+        fieldRows.push({when,actor:ev.actor||'—',action:ev.action||ev.eventType||'',field:'—',b:historyFieldValue(Array.isArray(ev.before)?`[${ev.before.length} items]`:ev.before),a:historyFieldValue(Array.isArray(ev.after)?`[${ev.after.length} items]`:ev.after),srcVer,resVer,calc,reason:ev.reason||''});
+      }else for(const k of keys){
+        fieldRows.push({when,actor:ev.actor||'—',action:ev.action||ev.eventType||'',field:k,b:historyFieldValue(before[k]),a:historyFieldValue(after[k]),srcVer,resVer,calc,reason:ev.reason||''});
+      }
+    }
+    showModal('Audit history — '+(label||'model'),'Read-only evidence of who changed what, when, why and in which version. There is no restore function in v1.',
+      `<div class="table-wrap"><table class="fm-table fm-audit-table"><thead><tr><th>Time</th><th>User</th><th>Action</th><th>Field</th><th>Before</th><th>After</th><th>Source version</th><th>Resulting version</th><th>Calculation status</th><th>Reason</th></tr></thead><tbody>${fieldRows.map(x=>`<tr><td>${escapeHtml(x.when)}</td><td>${escapeHtml(x.actor)}</td><td>${escapeHtml(x.action)}</td><td>${escapeHtml(x.field)}</td><td class="fm-note-cell">${escapeHtml(String(x.b))}</td><td class="fm-note-cell">${escapeHtml(String(x.a))}</td><td>v${escapeHtml(String(x.srcVer))}</td><td>v${escapeHtml(String(x.resVer))}</td><td>${escapeHtml(String(x.calc))}</td><td class="fm-note-cell">${escapeHtml(x.reason)}</td></tr>`).join('')||'<tr><td colspan="10" style="text-align:center">No audit events yet.</td></tr>'}</tbody></table></div><div class="fm-note" style="margin-top:12px"><b>Audit history is read-only.</b> Field-level before/after values with the acting user, timestamp, source and resulting versions and the calculation status. History is never rewritten and there is no restore in v1.</div>`,'Close');
+  }
+
+  async function refreshReturns(){
+    const id=srv.model?.id;
+    if(!id){srv.returns=null;srv.returnsModelId=null;return}
+    if(srv.returnsModelId===id&&(srv.returns||srv.returnsError))return;
+    if(srv.returnsBusy)return;
+    srv.returnsBusy=true;
+    try{
+      srv.returns=await get(`/finance/returns?modelId=${encodeURIComponent(id)}`);
+      srv.returnsError=null;srv.returnsModelId=id;valuationDraft=null;
+    }catch(err){srv.returns=null;srv.returnsError=err instanceof Error?err.message:String(err)}
+    finally{srv.returnsBusy=false}
+    if(isActive('bill-returns'))renderActive();
+  }
+
+  /** Committed server months → forecast-table rows. Falls back to null (preview engine) when absent. */
+  function committedRows(){
+    const months=srv.model?.projection?.months;
+    if(!months||!months.length)return null;
+    // P10: the server ships capped move-ins only — recover the uncapped plan
+    // per row so the "capped" tag matches the preview engine. Integer date
+    // math on server ISO strings only (no Date): v2 rows mirror the engine's
+    // operational-day factor, v1 rows scale month 1 only.
+    const occ=srv.model?.inputs?.occupancy||{};
+    const early=Number(occ.rampFirst6)||0,late=Number(occ.rampFrom7)||0;
+    const dayNum=iso=>{const y=+iso.slice(0,4),m=+iso.slice(5,7),d=+iso.slice(8,10);const a=Math.floor((14-m)/12),y2=y+4800-a,mm=m+12*a-3;return d+Math.floor((153*mm+2)/5)+365*y2+Math.floor(y2/4)-Math.floor(y2/100)+Math.floor(y2/400)-32045};
+    const dimOf=iso=>{const y=+iso.slice(0,4),m=+iso.slice(5,7);return m===2?(y%4===0&&y%100!==0||y%400===0?29:28):[4,6,9,11].includes(m)?30:31};
+    const opsStart=srv.model?.inputs?.startDate||'',leaseStart=srv.lease?.leaseStartDate||opsStart;
+    const revStart=opsStart&&leaseStart?(opsStart>leaseStart?opsStart:leaseStart):(opsStart||leaseStart||'');
+    return months.map(m=>{
+      const pf=m.periodFactor??1,t=m.t??0,ramp=t<=6?early:late;
+      let planned=ramp*(t===1?pf:1);
+      if(m.periodStart&&m.periodEnd&&revStart){
+        // v2 calendar row: planned uses operational days, like the engine.
+        const eff=m.periodStart>revStart?m.periodStart:revStart;
+        const opDays=eff>m.periodEnd?0:dayNum(m.periodEnd)-dayNum(eff)+1;
+        planned=ramp*opDays/dimOf(m.periodEnd);
+      }
+      const moveIn=m.moveInSqft??0;
+      // round2 dust: an uncapped row differs from its plan by at most 0.005.
+      const capped=planned-moveIn>0.011;
+      return {month:m.t,periodFactor:pf,
+        opening:m.openingSqft??0,plannedMoveIn:capped?planned:moveIn,moveIn,moveOut:m.moveOutSqft??0,netMoveIn:m.netMoveInSqft??0,
+        occupied:m.closingSqft??0,occupancy:(m.occupancyPct??0)/100,rate:m.psf??0,
+        netRevenue:m.revenue??0,lease:m.opexLease??0,opex:m.opexNonLease??0,operatingCosts:m.operatingCost??0,
+        noi:m.noi??0,cumulative:m.cash??0,_srv:m};
+    });
+  }
+  function forecastHasStagedEdits(){
+    return !!(leaseDraft||modelDrafts.occupancy||modelDrafts.capital||modelDrafts.pricing||mixDraft||budgetDraft||srv.dirty.size);
+  }
+
+  /** §4.6 linked display: read-only committed horizon with a jump back to Section 4. */
+  function leaseHorizonBanner(){
+    const c=srv.lease;if(!c)return '';
+    const calcStatus=srv.model?.calculationStatus||c.calculationStatus||'CURRENT';
+    return `<div class="fm-note fm-horizon-banner"><div><b>Committed valuation horizon</b><strong>${c.committedTermMonths} months</strong><button type="button" class="fm-tip" aria-label="About Committed valuation horizon" title="The signed landlord lease term. Edit it in Section 4 Landlord lease. Renewal is kept separate and is never silently included." data-tip="The signed landlord lease term. Edit it in Section 4 Landlord lease. Renewal is kept separate and is never silently included.">?</button><button class="btn" data-lh-jump>Edit in Landlord lease</button></div>`
+    +`<div class="fm-horizon-row"><span><b>Committed lease term</b><small>Managed in Section 4 because it comes from the signed landlord lease.</small></span><b>${c.committedTermMonths} months</b><button class="btn" data-lh-jump>Edit lease term</button></div>`
+    +`${calcStatus!=='CURRENT'?`<div class="fm-lease-status ${calcStatus==='FAILED'?'warn':''}" role="alert"><b>${calcStatus==='FAILED'?'Returns are out of date — investment returns have not been recalculated for the latest lease term.':'Updating from the latest model revision...'}</b>${calcStatus==='FAILED'&&can('bill-lease:update')?'<button class="btn" data-lh-retry>Retry calculation</button>':''}</div>`:''}</div>`;
+  }
 
   // ----- Forecast vs actuals: budget = CURRENT model, actual = posted months only -----
   async function loadActuals(){
@@ -627,14 +1851,27 @@ export function initFinanceWorkspace() {
   // ----- Model library -----
   // Header action for the loaded model: Publish (approvers) / Request publish
   // (editors) on a draft; a status pill otherwise. Replaces "Save new version".
-  function fillPublishSlot(){const m=srv.model;let html='';if(m){if(m.status==='DRAFT'||m.status==='PENDING'){if(can('bill-library:approve'))html=`<button class="primary" data-fm-action="publish-model" data-draft-id="${m.id}">Publish</button>`;else if(m.status==='DRAFT'&&can('bill-library:update'))html=`<button class="primary" data-fm-action="request-publish" data-draft-id="${m.id}">Request publish</button>`;else html='<span class="pill amber">Waiting to publish</span>'}}document.querySelectorAll('[data-fm-publish-slot]').forEach(el=>{el.innerHTML=html})}
+  // Handoff §8.5 (WP-4): approval actions that require current figures stay
+  // disabled while recalculation is pending or failed. The server 409s them
+  // too (`assertFiguresCurrent` in library.ts) — this keeps the button from
+  // looking actionable.
+  const STALE_APPROVAL_TITLE='Returns are out of date — retry the calculation before submitting or approving.';
+  const STALE_APPROVAL_MSG='Returns are out of date — investment returns have not been recalculated for the latest lease term. Retry calculation before submitting or approving.';
+  function calcStale(m){return !!m&&(m.calculationStatus||'CURRENT')!=='CURRENT'}
+  function staleDis(m){return calcStale(m)?`disabled title="${STALE_APPROVAL_TITLE}"`:''}
+  // Freshest known copy for the staleness gate: the loaded model when it is
+  // the target, else the library list row (both carry calculationStatus).
+  function staleTarget(mm){const id=mm&&mm.id;if(id&&srv.model&&srv.model.id===id)return srv.model;return (srv.models||[]).find(x=>x.id===id)||mm}
+  function fillPublishSlot(){const m=srv.model;let html='';if(m){if(m.status==='DRAFT'||m.status==='PENDING'){if(can('bill-library:approve'))html=`<button class="primary" data-fm-action="publish-model" data-draft-id="${m.id}" ${staleDis(m)}>Publish</button>`;else if(m.status==='DRAFT'&&can('bill-library:update'))html=`<button class="primary" data-fm-action="request-publish" data-draft-id="${m.id}" ${staleDis(m)}>Request publish</button>`;else html='<span class="pill amber">Waiting to publish</span>'}}document.querySelectorAll('[data-fm-publish-slot]').forEach(el=>{el.innerHTML=html})}
   function libraryCard(mm){const loaded=srv.model?.id===mm.id,approver=can('bill-library:approve'),editor=can('bill-library:update'),st=mm.status,pill=STATUS_PILL[st]||['grey',st];
     const acts=[`<button class="${loaded?'btn':'primary'}" data-fm-action="load-draft" data-draft-id="${mm.id}" data-load-view="model">${loaded?'Open':'Load'}</button>`];
-    if((st==='DRAFT'||st==='PENDING')&&approver)acts.push(`<button class="primary" data-fm-action="publish-model" data-draft-id="${mm.id}">Publish</button>`);
-    else if(st==='DRAFT'&&editor)acts.push(`<button class="btn" data-fm-action="request-publish" data-draft-id="${mm.id}">Request publish</button>`);
+    if((st==='DRAFT'||st==='PENDING')&&approver)acts.push(`<button class="primary" data-fm-action="publish-model" data-draft-id="${mm.id}" ${staleDis(mm)}>Publish</button>`);
+    else if(st==='DRAFT'&&editor)acts.push(`<button class="btn" data-fm-action="request-publish" data-draft-id="${mm.id}" ${staleDis(mm)}>Request publish</button>`);
     if(st==='PENDING'&&approver)acts.push(`<button class="btn" data-fm-action="send-back" data-draft-id="${mm.id}">Send back to draft</button>`);
     if(st==='DRAFT'&&can('bill-models:delete'))acts.push(`<button class="btn" data-fm-action="delete-model" data-draft-id="${mm.id}">Delete</button>`);
     else if((st==='DRAFT'||st==='PENDING')&&editor)acts.push(`<button class="btn" data-fm-action="archive-model" data-draft-id="${mm.id}">Archive</button>`);
+    // P12 / D5A: read-only field-level audit history, reachable from every card.
+    acts.push(`<button class="btn" data-fm-action="model-history" data-model-id="${mm.id}" title="Field-level audit history (read-only, no restore)">Audit history</button>`);
     const sub=st==='CURRENT'?'In use for forecasts and reports':st==='PENDING'?'Waiting for an approver to publish':'Draft · not used until published';
     return `<div class="fm-library-card ${loaded?'is-loaded':''} ${st==='CURRENT'?'is-published':''}"><header><div><h3>${escapeHtml(mm.name)}</h3><p>${escapeHtml(state.facility)} · ${sub}</p></div><div class="fm-card-pills"><span class="pill ${pill[0]}">${pill[1]}</span>${loaded?'<span class="pill fm-pill-loaded">Loaded</span>':''}</div></header><div class="fm-library-meta"><div><small>Updated by</small><b>${escapeHtml(mm.updatedBy||mm.createdBy||'—')}</b></div><div><small>Updated</small><b>${new Date(mm.updatedAt).toLocaleDateString('en-SG',{day:'numeric',month:'short',year:'numeric'})}</b></div></div><div class="fm-card-actions">${acts.join('')}</div></div>`}
   function renderLibraryV2(){
@@ -642,7 +1879,7 @@ export function initFinanceWorkspace() {
     const order={CURRENT:0,PENDING:1,DRAFT:2};
     const cards=srv.models.filter(m=>m.status!=='ARCHIVED').sort((a,b)=>(order[a.status]??9)-(order[b.status]??9)||new Date(b.updatedAt)-new Date(a.updatedAt));
     const pub=cards.find(m=>m.status==='CURRENT');
-    host.innerHTML=financeJourney('governance')+`<div class="fm-toolbar">${can('bill-models:create')?'<button class="primary" data-fm-action="new-model">＋ Create new model</button>':''}<label class="fm-select-wrap"><small>Facility</small><select class="fm-select" data-fm-select="facility">${facilityOpts()}</select></label><span class="spacer"></span></div>
+    host.innerHTML=financeJourney('governance')+`<div class="fm-toolbar">${can('bill-models:create')?'<button class="primary" data-fm-action="new-model">＋ Create new model</button>':''}<label class="fm-select-wrap"><small>Facility</small><select class="fm-select" data-fm-select="facility">${facilityOpts()}</select></label><span class="spacer"></span>${srv.model?'<button class="btn" data-fm-action="model-history" title="Field-level audit history for the loaded model (read-only, no restore)">Audit history</button>':''}</div>
       <div class="fm-note" style="margin-bottom:12px"><b>How it works:</b> create a new model (a draft) · edit its sections and click Update to save the draft · load any draft to see its forecast · Publish to make it the model used for forecasts and reports${pub?` (replaces “${escapeHtml(pub.name)}”)`:''}. Editing a published model saves your change to a new draft automatically.</div>
       ${srv.model?`<div class="fm-loaded-model-banner"><div><small>Currently loaded</small><b>${escapeHtml(state.modelName)} · ${STATUS_WORD[srv.model.status]||''}</b><span>${srv.model.status==='CURRENT'?'This is the published model used by Forecast vs Actual, charts, cash flow and Investment Returns.':'You are viewing a draft. Forecast vs Actual and reports keep using the published model until you publish this one.'}</span></div><button class="btn" data-fm-action="load-draft" data-draft-id="${srv.model.id}" data-load-view="model">Open inputs</button></div>`:''}
       <div class="fm-library-grid">${cards.map(libraryCard).join('')||'<div class="section-empty">No models yet for this facility. Click “Create new model”.</div>'}</div>`;
@@ -762,18 +1999,19 @@ export function initFinanceWorkspace() {
       'new-model':()=>{if(!srv.branchId)return;showModal('Create and name financial model','Every new model starts as a complete named draft from the StoreLah launch template.',`<div class="form-grid"><label class="field full"><span>Model name *</span><input id="fmNewName" placeholder="e.g. ${escapeHtml(state.facility)} launch plan"></label></div>`,'Create draft',()=>{const name=document.getElementById('fmNewName').value.trim();if(!name){notify('Name the model first.');return false}act(async()=>{const d=await post('/finance/models',{name,branchId:srv.branchId});await refreshModelList();hydrate(d);srv.booted=true;showPanel('bill-models')},name+' created as a working draft')})},
       'duplicate':()=>{if(!mm)return;showModal('Duplicate model','Creates an independent draft. The source is unchanged.',`<div class="form-grid"><label class="field full"><span>New name *</span><input id="fmDupName" value="${escapeHtml(mm.name)} (copy)"></label><label class="field full"><span>Reason *</span><textarea id="fmDupReason" rows="2"></textarea></label></div>`,'Duplicate',()=>{const name=document.getElementById('fmDupName').value.trim(),reason=document.getElementById('fmDupReason').value.trim();if(!name||!reason){notify('Name and reason are required.');return false}act(async()=>{const d=await post(`/finance/library/${mm.id}/duplicate`,{name,reason});await reloadLib(d.id||d.model?.id)},'Draft duplicated and loaded')})},
       'restore':()=>{const version=Number(b.dataset.version);if(!srv.model||!Number.isFinite(version))return;showModal('Restore v'+version+' as a new draft','History is never overwritten — the restore creates a new draft version.',`<label class="field"><span>Reason *</span><textarea id="fmRestoreReason" rows="2"></textarea></label>`,'Restore as draft',()=>{const reason=document.getElementById('fmRestoreReason').value.trim();if(!reason){notify('A reason is required.');return false}act(async()=>{await post(`/finance/library/${srv.model.id}/restore`,{version,reason});await reloadLib()},'v'+version+' restored as a draft')})},
-      'submit-approval':()=>mm&&act(async()=>{await post(`/finance/library/${mm.id}/submit`,{version:mm.version,changeSummary:'Submitted for approval'});await reloadLib(srv.model?.id)},mm.name+' submitted for approval'),
-      'approve-budget':()=>mm&&act(async()=>{await flush();await post(`/finance/library/${srv.model.id}/submit`,{version:srv.model.version,changeSummary:'Revised operating budget'});await reloadLib()},'Revised budget sent for approval'),
-      'approve-model':()=>mm&&act(async()=>{await post(`/finance/library/${mm.id}/approve`,{version:mm.version});await reloadLib(srv.model?.id)},mm.name+' approved'),
+      'submit-approval':()=>mm&&act(async()=>{if(calcStale(staleTarget(mm))){notify(STALE_APPROVAL_MSG);return}await post(`/finance/library/${mm.id}/submit`,{version:mm.version,changeSummary:'Submitted for approval'});await reloadLib(srv.model?.id)},mm.name+' submitted for approval'),
+      'approve-budget':()=>mm&&act(async()=>{if(calcStale(staleTarget(srv.model))){notify(STALE_APPROVAL_MSG);return}await flush();await post(`/finance/library/${srv.model.id}/submit`,{version:srv.model.version,changeSummary:'Revised operating budget'});await reloadLib()},'Revised budget sent for approval'),
+      'approve-model':()=>mm&&act(async()=>{if(calcStale(staleTarget(mm))){notify(STALE_APPROVAL_MSG);return}await post(`/finance/library/${mm.id}/approve`,{version:mm.version});await reloadLib(srv.model?.id)},mm.name+' approved'),
       'reject-model':()=>{if(!mm)return;showModal('Reject '+mm.name,'The model returns to draft with your comment.',`<label class="field"><span>Comment *</span><textarea id="fmRejectNote" rows="3"></textarea></label>`,'Reject',()=>{const comment=document.getElementById('fmRejectNote').value.trim();if(!comment){notify('A comment is required.');return false}act(async()=>{await post(`/finance/library/${mm.id}/reject`,{version:mm.version,comment});await reloadLib(srv.model?.id)},mm.name+' returned to draft')})},
-      'publish-model':()=>{if(!mm)return;const pub=srv.models.find(x=>x.status==='CURRENT'&&x.id!==mm.id);showModal('Publish '+mm.name,pub?`It replaces “${pub.name}” as the published model for ${state.facility}. Forecasts and reports switch to it straight away.`:`It becomes the published model for ${state.facility}. Forecasts and reports use it straight away.`,'<div class="fm-note">Published models are read-only. To change it later, edit any section — your change is saved to a new draft automatically.</div>','Publish',()=>{act(async()=>{if(srv.model?.id===mm.id&&srv.dirty.size){srv.chain=srv.chain.then(flush);await srv.chain}const target=srv.models.find(x=>x.id===mm.id)||mm;await post(`/finance/library/${target.id}/publish`,{version:target.id===srv.model?.id?srv.model.version:target.version});srv.series=null;srv.currentDetail=null;await reloadLib(target.id)},mm.name+' published')})},
-      'request-publish':()=>mm&&act(async()=>{if(srv.model?.id===mm.id&&srv.dirty.size){srv.chain=srv.chain.then(flush);await srv.chain}const target=srv.models.find(x=>x.id===mm.id)||mm;await post(`/finance/library/${target.id}/submit`,{version:target.id===srv.model?.id?srv.model.version:target.version,changeSummary:'Publish requested'});await reloadLib(srv.model?.id)},'Publish requested — an approver can now publish '+(mm?.name||'it')),
+      'publish-model':()=>{if(!mm)return;const target=staleTarget(mm);if(calcStale(target)){notify(STALE_APPROVAL_MSG);return}const pub=srv.models.find(x=>x.status==='CURRENT'&&x.id!==mm.id);showModal('Publish '+mm.name,pub?`It replaces “${pub.name}” as the published model for ${state.facility}. Forecasts and reports switch to it straight away.`:`It becomes the published model for ${state.facility}. Forecasts and reports use it straight away.`,'<div class="fm-note">Published models are read-only. To change it later, edit any section — your change is saved to a new draft automatically.</div>','Publish',()=>{act(async()=>{if(srv.model?.id===mm.id&&srv.dirty.size){srv.chain=srv.chain.then(flush);await srv.chain}const latest=staleTarget(mm);await post(`/finance/library/${latest.id}/publish`,{version:latest.id===srv.model?.id?srv.model.version:latest.version});srv.series=null;srv.currentDetail=null;await reloadLib(latest.id)},mm.name+' published')})},
+      'request-publish':()=>mm&&act(async()=>{const target=staleTarget(mm);if(calcStale(target)){notify(STALE_APPROVAL_MSG);return}if(srv.model?.id===mm.id&&srv.dirty.size){srv.chain=srv.chain.then(flush);await srv.chain}await post(`/finance/library/${target.id}/submit`,{version:target.id===srv.model?.id?srv.model.version:target.version,changeSummary:'Publish requested'});await reloadLib(srv.model?.id)},'Publish requested — an approver can now publish '+(mm?.name||'it')),
       'send-back':()=>mm&&act(async()=>{await post(`/finance/library/${mm.id}/reject`,{version:mm.version,comment:'Sent back to draft'});await reloadLib(srv.model?.id)},(mm?.name||'Model')+' sent back to draft'),
       'delete-model':()=>{if(!mm)return;showModal('Delete '+mm.name+'?','This draft is removed permanently. Published models are not affected.','<div class="fm-note">This cannot be undone.</div>','Delete draft',()=>{act(async()=>{await del(`/finance/models/${mm.id}`);if(srv.model?.id===mm.id){srv.model=null;srv.booted=false;srv.series=null;srv.currentDetail=null;await refreshModelList();renderActive()}else await reloadLib(srv.model?.id)},mm.name+' deleted')})},
       'set-current':()=>mm&&act(async()=>{await post(`/finance/library/${mm.id}/set-current`,{version:mm.version});srv.series=null;await reloadLib(srv.model?.id)},mm.name+' is now the current baseline'),
       'archive-model':()=>mm&&act(async()=>{await post(`/finance/library/${mm.id}/archive`,{version:mm.version});await reloadLib(srv.model?.id===mm.id?null:srv.model?.id)},mm.name+' archived'),
-      'audit':async()=>{if(!srv.model)return;let rows=[];try{rows=await get(`/finance/library/${srv.model.id}/audit`)}catch(err){notify(describeError(err));return}showModal('Financial model audit history','Read-only evidence of who changed what, when, why and in which version.',`<div class="table-wrap"><table class="fm-table fm-audit-table"><thead><tr><th>Time</th><th>User</th><th>Action</th><th>Before</th><th>After</th><th>Reason</th><th>Correlation</th></tr></thead><tbody>${rows.map(x=>`<tr><td>${new Date(x.occurredAt||x.createdAt).toLocaleString('en-SG')}</td><td>${escapeHtml(x.actor||'—')}</td><td>${escapeHtml(x.action||x.eventType||'')}</td><td class="fm-note-cell">${escapeHtml(JSON.stringify(x.before??''))}</td><td class="fm-note-cell">${escapeHtml(JSON.stringify(x.after??''))}</td><td class="fm-note-cell">${escapeHtml(x.reason||'')}</td><td>${escapeHtml((x.correlationId||'').slice(0,8))}</td></tr>`).join('')||'<tr><td colspan="7" style="text-align:center">No audit events yet.</td></tr>'}</tbody></table></div><div class="fm-note" style="margin-top:12px"><b>Audit history is read-only.</b> Saves, section updates, approvals, restores and inventory syncs are recorded with before/after values.</div>`,'')},
-      'audit-export':async()=>{if(!srv.model)return;try{const rows=await get(`/finance/library/${srv.model.id}/audit`);downloadCsv('StoreLah_Model_Audit.csv',[['Time','User','Action','Before','After','Reason','Correlation ID'],...rows.map(x=>[x.occurredAt||x.createdAt,x.actor,x.action||x.eventType,JSON.stringify(x.before??''),JSON.stringify(x.after??''),x.reason||'',x.correlationId||''])]);notify('Audit log downloaded')}catch(err){notify(describeError(err))}},
+      'audit':async()=>{if(!srv.model)return;openModelHistory(srv.model.id,srv.model.name)},
+      'model-history':async()=>{const id=b.dataset.modelId||srv.model?.id;if(!id){notify('Load a financial model first.');return}const label=srv.models.find(x=>x.id===id)?.name||srv.model?.name||'model';openModelHistory(id,label)},
+      'audit-export':async()=>{if(!srv.model)return;try{const rows=await get(`/finance/library/${srv.model.id}/audit`);const ver=r=>(r.before&&typeof r.before==='object'&&!Array.isArray(r.before)&&r.before.version!=null)?('v'+r.before.version):'';const res=r=>(r.after&&typeof r.after==='object'&&!Array.isArray(r.after)&&r.after.version!=null)?('v'+r.after.version):'';const calc=r=>(r.after&&typeof r.after==='object'&&!Array.isArray(r.after)&&r.after.calculationStatus!=null)?String(r.after.calculationStatus):'';downloadCsv('StoreLah_Model_Audit.csv',[['Time','User','Action','Before','After','Source version','Resulting version','Calculation status','Reason','Correlation ID'],...rows.map(x=>[x.occurredAt||x.createdAt,x.actor,x.action||x.eventType,JSON.stringify(x.before??''),JSON.stringify(x.after??''),ver(x),res(x),calc(x),x.reason||'',x.correlationId||''])]);notify('Audit log downloaded')}catch(err){notify(describeError(err))}},
       'add-transaction':()=>{if(!srv.branchId)return;showModal('Add individual expenditure','Enter an invoice, receipt, purchase order, recurring charge or one-off expense. Saved immediately to the ledger.',expenseForm(null),'Save expenditure',()=>{const p=expensePayload();if(!p.incurredAt||!p.category||!(p.amount>0)){notify('Date, category and a positive amount are required.');return false}act(async()=>{await post('/finance/expenses',{branchId:srv.branchId,...p});await loadExpenses();renderBudgets()},'Expenditure saved')})},
       'edit-transaction':()=>{const x=state.expenses.find(r=>r.id===b.dataset.expenseId);if(!x)return;showModal('Edit '+x.id,'Update the individual expenditure line. Lines in a closed month are locked.',expenseForm(x),'Save changes',()=>{const p=expensePayload();act(async()=>{await put(`/finance/expenses/${x._id}`,p);await loadExpenses();renderBudgets()},x.id+' updated')})},
       'add-expense':()=>{showModal('Add non-lease expense category','Create a recurring operating-expense line. Landlord rent is linked separately from the Financial Model.',`<div class="form-grid"><label class="field"><span>Category *</span><input id="fmCatName" placeholder="e.g. Security monitoring"></label><label class="field"><span>Monthly budget</span><input id="fmCatBudget" type="number" min="0" value="0"></label><label class="field"><span>Owner</span><input id="fmCatOwner" value="Operations"></label><label class="field full"><span>Note</span><input id="fmCatNote"></label></div>`,'Add category',()=>{const name=document.getElementById('fmCatName').value.trim();if(!name){notify('Name the category.');return false}if(/lease|landlord|premises rent|property rent/i.test(name)){notify('Lease and landlord rent are linked from the Financial Model and cannot be an expense category.');return false}state.opex.push({name,budget:Math.max(0,Number(document.getElementById('fmCatBudget').value)||0),owner:document.getElementById('fmCatOwner').value,note:document.getElementById('fmCatNote').value});markDirty('opex');persistFinanceState();renderBudgets();notify(name+' added to the operating budget')})},
@@ -836,8 +2074,9 @@ export function initFinanceWorkspace() {
   document.addEventListener('click',e=>{
     const mixUpdateBtn=e.target.closest('[data-mix-update]');if(mixUpdateBtn){e.preventDefault();e.stopPropagation();applyMixUpdate(mixUpdateBtn);return}
     const mixUndoBtn=e.target.closest('[data-mix-undo]');if(mixUndoBtn){e.preventDefault();e.stopPropagation();mixDraft=null;renderMix();notify('Size mix changes undone');return}
-    const modelUpdate=e.target.closest('[data-model-update]');if(modelUpdate){e.preventDefault();e.stopPropagation();const section=modelUpdate.dataset.modelUpdate;commitModelSection(section);renderModelControlled();notify(section==='lease'?'Landlord lease updated. Monthly lease, budgets, forecast, cash flow and Investment Returns are synced.':sectionLabel(section)+' updated. Main forecast and Investment Returns are synced.');return}
-    const modelUndo=e.target.closest('[data-model-undo]');if(modelUndo){e.preventDefault();e.stopPropagation();const section=modelUndo.dataset.modelUndo;modelDrafts[section]=null;renderModelControlled();notify(sectionLabel(section)+' changes undone');return}
+    const modelUpdate=e.target.closest('[data-model-update]');if(modelUpdate){e.preventDefault();e.stopPropagation();const section=modelUpdate.dataset.modelUpdate;if(section==='lease'&&srv.leaseRollout!=='off'){leaseUpdateClicked();return}commitModelSection(section);renderModelControlled();notify(section==='lease'?'Landlord lease updated. Monthly lease, budgets, forecast, cash flow and Investment Returns are synced.':sectionLabel(section)+' updated. Main forecast and Investment Returns are synced.');return}
+    const modelUndo=e.target.closest('[data-model-undo]');if(modelUndo){e.preventDefault();e.stopPropagation();const section=modelUndo.dataset.modelUndo;if(section==='lease'&&srv.leaseRollout!=='off'){leaseUndoClicked();return}modelDrafts[section]=null;renderModelControlled();notify(sectionLabel(section)+' changes undone');return}
+    const lhJump=e.target.closest('[data-lh-jump]');if(lhJump){e.preventDefault();e.stopPropagation();jumpToLeaseSection();return}
     const budgetUpdate=e.target.closest('[data-budget-update]');if(budgetUpdate){e.preventDefault();e.stopPropagation();markDirty('opex');const draft=budgetDraft;if(draft?.month===state.budgetMonth){const modelBefore=calculate(),selectedIndex=Math.max(0,modelBefore.rows.findIndex(r=>modelMonthValue(r.date)===draft.month)),selectedRow=modelBefore.rows[selectedIndex],applyFuture=state.budgetApplyScope!=='month';if(applyFuture){const prior=selectedIndex?modelBefore.rows.slice(0,selectedIndex).map(r=>({month:modelMonthValue(r.date),lines:budgetLinesForMonth(modelMonthValue(r.date))})):[],factor=selectedRow?.periodFactor||1,recurring=clone(draft.lines).map(x=>({...x,budget:Number((x.budget/Math.max(factor,.0001)).toFixed(2))}));state.opex=recurring;modelBefore.rows.slice(selectedIndex).forEach(r=>delete state.opexOverrides[modelMonthValue(r.date)]);prior.forEach(x=>state.opexOverrides[x.month]=clone(x.lines));if(factor<.999)state.opexOverrides[draft.month]=clone(draft.lines)}else state.opexOverrides[draft.month]=clone(draft.lines);persistFinanceState();clearBudgetDraft();renderBudgets();notify(monthName(state.budgetMonth)+' operating budget saved'+(applyFuture?' and carried into future forecast months.':' for this month only.')+' Forecast, NOI, cash flow and Investment Returns are recalculated.')}return}
     const budgetUndo=e.target.closest('[data-budget-undo]');if(budgetUndo){e.preventDefault();e.stopPropagation();clearBudgetDraft();renderBudgets();notify(monthName(state.budgetMonth)+' budget changes undone');return}
     const modelReset=e.target.closest('[data-model-reset]');if(modelReset){e.preventDefault();e.stopPropagation();modelDrafts.occupancy=clone(state.baseOccupancy||occupancySnapshot());renderModelControlled();notify('Your last saved Base occupancy plan is loaded. Click Update only if you make further changes.');return}

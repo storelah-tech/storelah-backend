@@ -8,6 +8,11 @@
 // endpoints, which are documented under the "Operator CMS" tag as a reference
 // for the dashboard editor (they are intentionally additive to this file).
 //
+// Lease-horizon P4 NO-ENTRY DECISION (explicit, per lane precedent): the
+// operator CMS API (`/api/v1/cms`, incl. the finance landlord-lease /
+// valuation / recalculate routes and Investment Returns) is intentionally
+// NOT documented in this booking-only spec. Finance CMS routes have no
+// entries here — same as every other CMS finance route before them.
 // Contract notes (matches src/lib/http.ts and the route files exactly):
 //  - Success:     200/201 → { data, meta? }   (meta is present only where the
 //                 route passes it to ok(); created() has no meta).

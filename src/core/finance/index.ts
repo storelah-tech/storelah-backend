@@ -28,7 +28,8 @@ export {
 } from './budgets';
 export { getPricing, overridePricing, bucketForSize, CANONICAL_BUCKETS } from './pricing';
 export type { PricingRow } from './pricing';
-export { getReturns, DEFAULT_DISCOUNT_RATE_PCT } from './returns';
+export { getReturns, DEFAULT_DISCOUNT_RATE_PCT, isCommittedValued, committedDcfCsv } from './returns';
+export type { CommittedValuation, CommittedValuationOk, CommittedValuationError } from './returns';
 export {
   listFinanceInvoices, getInvoiceDetail, createInvoice, approveInvoice, issueInvoice,
   voidInvoice, runBilling, serializeInvoice, INVOICE_LINE_KINDS,
@@ -62,5 +63,21 @@ export type { SettlementRow, SettlementLineInput, ImportSettlementInput, Reconci
 export {
   isMonthClosed, computeActuals, closeChecklist, getMonthClose, closeMonth, postCloseAdjustment,
   getPerformance, addVarianceNote, parseFiscalMonth, ACTUAL_METRICS, getPerformanceSeries,
+  latestClosedFiscalMonth,
 } from './monthClose';
 export type { ActualLine, CloseCheck, MonthCloseRow, PerformanceView, PerformanceRow } from './monthClose';
+export {
+  getLandlordLease, updateLandlordLease, updateValuation, recalculateModel, requireCurrentCalculation,
+  requireLeaseWriteRollout,
+} from './landlordLease';
+export type {
+  LandlordLeaseSection, LandlordLeaseUpdateBody, LeaseUpdateResult,
+  ValuationUpdateBody, ValuationUpdateResult, RecalculateResult,
+} from './landlordLease';
+export {
+  effectiveAnnualRate, methodologyInputsOf, seriesInputsOf, solveIrr, analyse,
+  buildCashFlowSeries, dcfRows, DEFAULT_MANUAL_RATE, DEFAULT_VALUATION_ASSUMPTIONS,
+} from './valuation';
+export type { ValuationAssumptions } from './valuation';
+export { committedLeaseForMonth, committedScheduleOf } from './leaseExpense';
+export type { CommittedScheduleRow } from './leaseExpense';

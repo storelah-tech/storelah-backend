@@ -171,6 +171,16 @@ export const ROUTE_PERMISSIONS: Record<string, PermissionSpec> = {
   // Scenario/sensitivity are non-mutating computes over the saved base.
   'POST /finance/models/:id/scenarios': 'bill-models:view',
   'POST /finance/models/:id/sensitivity': 'bill-models:view',
+  // Lease horizon P4 (owner D9B): governed lease-term write path. The API
+  // enforces the same grants the UI hides: Manager view/update by default,
+  // Finance Operator view-only, Viewer hidden-by-default but grantable.
+  // (`/:id` routes stay after literal siblings — none of these collide with
+  // a literal, but the more-specific three-segment paths must never be
+  // shadowed by the two-segment `:id` routes above.)
+  'GET /finance/models/:id/landlord-lease': 'bill-lease:view',
+  'PUT /finance/models/:id/landlord-lease': 'bill-lease:update',
+  'PUT /finance/models/:id/valuation': 'bill-lease:update',
+  'POST /finance/models/:id/recalculate': 'bill-lease:update',
   'GET /finance/models/:id/export.csv': 'bill-models:view',
   'GET /finance/models/:id/report.pdf': 'bill-models:view',
   'DELETE /finance/models/:id': 'bill-models:delete',

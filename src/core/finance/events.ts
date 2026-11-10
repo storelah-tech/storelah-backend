@@ -52,6 +52,8 @@ export const FINANCE_EVENT_TYPES = [
   'arrears.access.restricted',
   'arrears.case.resolved',
   'export.generated',
+  // Lease-horizon P4: committed lease term updated (handoff §6.1).
+  'financial_model.lease_horizon.updated',
 ] as const;
 
 export type FinanceEventType = (typeof FINANCE_EVENT_TYPES)[number];

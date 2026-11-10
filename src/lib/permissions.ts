@@ -82,6 +82,10 @@ export const RESOURCES: readonly ResourceDef[] = [
   { group: 'Finance', key: 'bill-transactions', label: 'Transactions, documents & approvals', actions: ['view', 'create', 'update', 'approve'] },
   // Models: drafts deletable; CURRENT/ARCHIVED not deletable (service code).
   { group: 'Finance', key: 'bill-models', label: 'Financial Models', actions: CRUDA },
+  // Landlord lease (lease horizon P4, owner D9B): the governed lease-term
+  // write path. Manager holds view+update by default; Finance Operator views
+  // only (no lease edits); Viewer hidden by default but grantable.
+  { group: 'Finance', key: 'bill-lease', label: 'Landlord Lease', actions: RU },
   // Performance: update = variance notes, approve = month close.
   { group: 'Finance', key: 'bill-performance', label: 'Forecast vs Actuals', actions: RUA },
   // Budgets: lease line protected — update denied in code unless protected override.
@@ -161,7 +165,11 @@ const MANAGER_DENY: Record<string, readonly Action[]> = {
   'bill-budgets': ['view', 'create', 'update', 'delete', 'approve'],
   'bill-pricing': ['view', 'update', 'approve'],
   'bill-returns': ['view'],
-  'bill-library': ['view', 'update', 'approve'],
+  // Lease horizon P4 (owner D9B): Manager submits via the library (submit =
+  // bill-library:update); approval stays explicitly granted only.
+  // bill-models stays denied — Manager edits leases through the governed
+  // Landlord Lease path (bill-lease:update), never the legacy section writes.
+  'bill-library': ['approve'],
   'bill-credits': ['view', 'create', 'update', 'delete', 'approve'],
   'bill-reconciliation': ['view', 'create', 'update', 'delete', 'approve'],
   // Investor Summary is a separate masked surface — operators keep their
@@ -169,7 +177,7 @@ const MANAGER_DENY: Record<string, readonly Action[]> = {
   'bill-investor': ['view'],
 };
 const VIEWER_HIDDEN = new Set([
-  'bill-overview', 'bill-invoices', 'bill-arrears', 'bill-transactions', 'bill-models', 'bill-performance',
+  'bill-overview', 'bill-invoices', 'bill-arrears', 'bill-transactions', 'bill-models', 'bill-lease', 'bill-performance',
   'bill-budgets', 'bill-pricing', 'bill-returns', 'bill-library', 'bill-credits', 'bill-reconciliation',
   'bill-investor',
 ]);
@@ -179,6 +187,7 @@ const VIEWER_HIDDEN = new Set([
 // models, and Operator/Approver can enter variance/actual notes.
 const FINANCE_VIEW_ALL = [
   'bill-overview:view', 'bill-invoices:view', 'bill-arrears:view', 'bill-transactions:view', 'bill-models:view',
+  'bill-lease:view',
   'bill-performance:view', 'bill-budgets:view', 'bill-pricing:view', 'bill-returns:view', 'bill-library:view',
   'bill-credits:view', 'bill-reconciliation:view', 'bill-investor:view',
 ] as const;
@@ -190,6 +199,9 @@ const FINANCE_OPERATOR_PERMS = [
   // customer-paid-at-counter); charging stays approver-only.
   'bill-transactions:create', 'bill-transactions:update',
   'bill-models:create', 'bill-models:update',
+  // Lease horizon P4 (owner D9B): Finance Operator keeps model reads and the
+  // legacy section writes, but has NO landlord-lease edits — view only (the
+  // bill-lease:view grant rides in FINANCE_VIEW_ALL above).
   'bill-performance:update',
   'bill-budgets:create', 'bill-budgets:update',
   'bill-pricing:update',
@@ -206,6 +218,9 @@ const FINANCE_APPROVER_PERMS = [
   'bill-arrears:approve',
   'bill-transactions:approve',
   'bill-models:approve',
+  // Lease horizon P4 (owner D9B): the Finance Approver (≈ Finance Admin) holds
+  // the full lease path alongside the model approve grant.
+  'bill-lease:update',
   'bill-budgets:approve',
   'bill-performance:approve',
   'bill-credits:approve',
@@ -224,7 +239,7 @@ export const SYSTEM_ROLES: ReadonlyArray<{ key: string; name: string; descriptio
   {
     key: 'MANAGER',
     name: 'Manager',
-    description: 'Day-to-day operations. No settings edits, approvals or lead/tenant deletes.',
+    description: 'Day-to-day operations. No settings edits, approvals or lead/tenant deletes. Views, edits and submits financial models via the governed Landlord Lease path (approval only if granted).',
     locked: false,
     permissions: RESOURCES.flatMap((r) =>
       r.actions.filter((a) => !(MANAGER_DENY[r.key] || []).includes(a)).map((a) => permissionKey(r.key, a)),
@@ -243,7 +258,7 @@ export const SYSTEM_ROLES: ReadonlyArray<{ key: string; name: string; descriptio
   {
     key: 'FINANCE_OPERATOR',
     name: 'Finance Operator',
-    description: 'Day-to-day finance work. Cannot approve anything or touch the protected lease line.',
+    description: 'Day-to-day finance work. Landlord Lease is view-only (no lease edits). Cannot approve anything or touch the protected lease line.',
     locked: false,
     permissions: [...FINANCE_OPERATOR_PERMS],
   },

@@ -27,6 +27,8 @@ import { toNum } from '../../lib/format';
 import { writeAuditEvent } from './audit';
 import { publishFinanceEvent } from './events';
 import { isProtectedCategory } from './budgets';
+import { getFinancePolicies } from './policies';
+import { DEFAULT_VALUATION_ASSUMPTIONS } from './valuation';
 import { assertFreshVersion, nextVersion, newCorrelationId } from './idempotency';
 import {
   effectiveNla,
@@ -139,6 +141,8 @@ export interface ModelSummary {
   engineVersion: string;
   inputHash: string;
   version: number;
+  // Lease-horizon P4 recalculation state (CURRENT | PENDING | FAILED).
+  calculationStatus: string;
   createdBy: string;
   updatedBy: string | null;
   createdAt: Date;
@@ -154,9 +158,12 @@ export interface ModelDetail extends ModelSummary {
 function serializeModel(m: {
   id: string; branchId: string | null; name: string; status: string;
   engineVersion: string; inputHash: string; version: number;
+  calculationStatus?: string;
   createdBy: string; updatedBy: string | null; createdAt: Date; updatedAt: Date;
 }): ModelSummary {
-  return { ...m };
+  // Rows predating the P4 migration carry no column — read them as CURRENT.
+  const { calculationStatus, ...rest } = m as typeof m & { calculationStatus?: string };
+  return { ...rest, calculationStatus: calculationStatus ?? 'CURRENT' };
 }
 
 /** Computes the live projection for a stored model (pure engine, §8). */
@@ -202,6 +209,10 @@ export async function createModel(opts: {
   // An explicit capitalTotal without items wins over the template's items.
   if (opts.inputs && 'capitalTotal' in opts.inputs && !('capitalItems' in opts.inputs)) delete seeded.capitalItems;
   const inputs = normaliseInputs(seeded);
+  // Lease-horizon P4 (owner D7A): NEW models default to a 15% manual discount
+  // rate. This stamps CREATION only — reads never substitute a default for a
+  // stored rate (an explicit valuation block, including a saved 8%, is kept).
+  if (inputs.valuation === undefined) inputs.valuation = { ...DEFAULT_VALUATION_ASSUMPTIONS };
   // Full-engine validation before anything is stored (§11.8).
   const preview = projectModel(inputs);
   const correlationId = opts.correlationId ?? newCorrelationId();
@@ -270,6 +281,32 @@ export async function updateModelSection(opts: {
   if (!stored) throw new AppError(404, 'NOT_FOUND', `Financial model ${opts.id} not found.`);
   if (stored.status !== 'DRAFT') {
     throw new AppError(403, 'LOCKED', `Model "${stored.name}" is ${stored.status} — section edits apply to DRAFT models only. Duplicate or restore it to a new draft to continue.`);
+  }
+  // Lease-horizon P4 closed write paths: while the rollout is on, the
+  // committed term travels ONLY through the governed landlord-lease route —
+  // the legacy generic sections reject it with a pointer instead of silently
+  // dropping it. (Rollout off = legacy pass-through, preserving P1–P3 tests.)
+  if (opts.section === 'inputs' && 'horizonMonths' in opts.patch) {
+    const { leaseHorizonRollout } = await getFinancePolicies();
+    if (leaseHorizonRollout !== 'off') {
+      throw new AppError(
+        422,
+        'VALIDATION',
+        'Committed lease term is managed in Section 4 Landlord lease — use PUT /finance/models/:id/landlord-lease to change the horizon.',
+        { fieldErrors: { horizonMonths: ['Use the Landlord lease section to change the committed term.'] }, field: 'horizonMonths' },
+      );
+    }
+  }
+  if (opts.section === 'opex' && 'lease' in opts.patch) {
+    const { leaseHorizonRollout } = await getFinancePolicies();
+    if (leaseHorizonRollout !== 'off') {
+      throw new AppError(
+        422,
+        'VALIDATION',
+        'Landlord lease is managed in Section 4 Landlord lease — use PUT /finance/models/:id/landlord-lease. The opex lease is never edited here.',
+        { fieldErrors: { lease: ['Use the Landlord lease section to edit the lease.'] }, field: 'lease' },
+      );
+    }
   }
   assertFreshVersion(stored.version, opts.expectedVersion, 'FinancialModel');
   const allowed = SECTION_FIELDS[opts.section];
@@ -354,7 +391,10 @@ export async function deleteModel(id: string, actor: string) {
   return { id };
 }
 
-/** Month-table CSV export (audited at the route layer, like the Overview). */
+/** Month-table CSV export (audited at the route layer, like the Overview).
+ * P5: period start/end dates are appended at the END of the row shape (LH
+ * consumers + mid-month stubs need exact date ranges; existing columns are
+ * untouched). v1 rows without dates synthesise month-start/month-end. */
 export function modelExportCsv(detail: ModelDetail): string {
   const esc = (v: string | number | null): string => {
     const s = v === null || v === undefined ? '' : String(v);
@@ -363,17 +403,25 @@ export function modelExportCsv(detail: ModelDetail): string {
   const head = [
     'month', 'opening_sqft', 'move_in_sqft', 'move_out_sqft', 'net_move_in_sqft',
     'closing_sqft', 'occupancy_pct', 'psf', 'revenue', 'opex_lease', 'opex_non_lease',
-    'operating_cost', 'noi', 'noi_margin_pct', 'cash',
+    'operating_cost', 'noi', 'noi_margin_pct', 'cash', 'period_start', 'period_end',
   ];
   const lines = [head.join(',')];
   for (const m of detail.projection.months) {
     lines.push(
       [m.month, m.openingSqft, m.moveInSqft, m.moveOutSqft, m.netMoveInSqft,
         m.closingSqft, m.occupancyPct, m.psf, m.revenue, m.opexLease, m.opexNonLease,
-        m.operatingCost, m.noi, m.noiMarginPct ?? '', m.cash].map(esc).join(','),
+        m.operatingCost, m.noi, m.noiMarginPct ?? '', m.cash,
+        m.periodStart ?? `${m.month}-01`, m.periodEnd ?? lastDayOf(m.month)].map(esc).join(','),
     );
   }
   return lines.join('\n') + '\n';
+}
+
+function lastDayOf(month: string): string {
+  const m = /^(\d{4})-(\d{2})$/.exec(month);
+  if (!m) return month;
+  const dim = new Date(Date.UTC(Number(m[1]), Number(m[2]), 0)).getUTCDate();
+  return `${month}-${String(dim).padStart(2, '0')}`;
 }
 
 export function serializeMoney(n: number): number {

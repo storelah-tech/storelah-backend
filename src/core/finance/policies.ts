@@ -35,7 +35,14 @@ export const FINANCE_KEYS = {
   accessRestrictAfterDays: 'finance.accessRestrictAfterDays',
   // Decided in words (Q4 v1.2: every-refund two-step + super-admin bypass) but
   // with no SettingDef until Phase 4 code lands — reads as UNDECIDED.
-  refundTwoStep: 'finance.refundTwoStep',
+    refundTwoStep: 'finance.refundTwoStep',
+  // Lease horizon term bounds (owner D10; P1 SettingDefs, code-only — the
+  // 12–120 policy check itself lives in the lease command in P4).
+  leaseHorizonMinTermMonths: 'finance.leaseHorizon.minTermMonths',
+  leaseHorizonMaxTermMonths: 'finance.leaseHorizon.maxTermMonths',
+  // Lease-horizon P4 rollout gates (owner D11A; both default off).
+  leaseHorizonRollout: 'finance.leaseHorizon.rollout',
+  leaseHorizonReturns: 'finance.leaseHorizon.returns',
 } as const;
 
 export interface FinancePolicies {
@@ -47,6 +54,10 @@ export interface FinancePolicies {
   lateFeeAfterDays: number;
   accessRestrictAfterDays: number;
   refundTwoStep: string;
+  leaseHorizonMinTermMonths: number;
+  leaseHorizonMaxTermMonths: number;
+  leaseHorizonRollout: 'off' | 'admins' | 'all';
+  leaseHorizonReturns: 'off' | 'on';
 }
 
 export async function getFinancePolicies(): Promise<FinancePolicies> {
@@ -65,6 +76,19 @@ export async function getFinancePolicies(): Promise<FinancePolicies> {
     // Phase 4 decided value (SettingDef default); anything else (including a
     // stored UNDECIDED) keeps refund actions BLOCKED via requireDecided.
     refundTwoStep: typeof twoStep === 'string' && twoStep ? (twoStep as string) : 'UNDECIDED',
+    leaseHorizonMinTermMonths:
+      typeof s[FINANCE_KEYS.leaseHorizonMinTermMonths] === 'number'
+        ? (s[FINANCE_KEYS.leaseHorizonMinTermMonths] as number)
+        : 12,
+    leaseHorizonMaxTermMonths:
+      typeof s[FINANCE_KEYS.leaseHorizonMaxTermMonths] === 'number'
+        ? (s[FINANCE_KEYS.leaseHorizonMaxTermMonths] as number)
+        : 120,
+    leaseHorizonRollout:
+      s[FINANCE_KEYS.leaseHorizonRollout] === 'admins' || s[FINANCE_KEYS.leaseHorizonRollout] === 'all'
+        ? (s[FINANCE_KEYS.leaseHorizonRollout] as 'admins' | 'all')
+        : 'off',
+    leaseHorizonReturns: s[FINANCE_KEYS.leaseHorizonReturns] === 'on' ? 'on' : 'off',
   };
 }
 

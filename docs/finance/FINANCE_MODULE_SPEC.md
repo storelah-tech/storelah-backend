@@ -1486,3 +1486,17 @@ Claude must not guess these production policies. Record decisions in configurati
 
 The finance module is complete when an authorised StoreLah user can begin with a facility and unit inventory, build and approve a model, issue monthly invoices, approve each payment, receive and allocate results, record expenses, reconcile money, close a month, compare actuals with the approved budget/current forecast, explain variances, process a controlled refund and give an investor a clear approved view—while every number remains traceable to its source, formula, version and event history.
 
+---
+
+## Amendment 2026-11-09 — Q8 IRR scope (lease-horizon P0; append-only, no rewrite above)
+
+**Why:** `src/core/finance/projection.ts` (Q8 CONFLICT NOTE) records that the owner-decided IRR scope goes beyond spec §§5.1/8.8/15 and that, per §1 priority, the SPEC wins until amended. IMPLEMENTATION_PLAN §§9–10 Q8 records the owner's FINAL Q8 answer (no further input coming) and defers the spec amendment as D-7. This note IS that amendment: the engine may only implement the scope below (target `finance-projection/2`, phased capex / working-capital / XIRR inputs) once this text is countersigned; until then the engine stays on the spec formulas and the projection.ts TODO stays open.
+
+**Amended §5.1 (additive — existing exclusions otherwise stand):** the base project valuation stays unlevered with no terminal value: EXCLUDE debt drawdowns, interest, loan repayments and equity distributions; INCLUDE operating cash flows after rent and other opex, initial setup costs, working-capital movements, capex, and taxes if the model supports them. Do NOT deduct depreciation as a cash outflow (effect via tax only). Terminal value is EXCLUDED from the base case (renewal unsecured); an optional separate renewal/exit scenario carries its own disclosed terminal-value assumption. Residual = equipment + working capital + refundable deposits, or a realistic business sale — NOT property appreciation. Equity IRR is calculated separately from equity contributions/distributions timing + amounts (debt flows included where applicable) and is always labelled "Equity IRR".
+
+**Amended §8.8 (replaces the fixed-period formula for the lease-horizon engine):** cash flows are DATED (XIRR-style): `CF_0` at commencement (upfront capex + opening working capital + refundable deposit) and monthly project free cash flows at their fractional periods `period_t` (running sum of period factors; see Lease Horizon handoff §7.5). Solve the rate `r` over the same dated series for NPV and IRR — one identical series for both. Display: lease term + renewal assumptions shown; NPV + payback alongside IRR; 3 rent-free months + refundable deposit land in-month as they occur. Sign-change rules and "no sale value" disclosure are unchanged.
+
+**Amended §15 (layout):** Investment Returns shows Project NPV (committed-term, dated discounting) alongside Project IRR, simple + discounted payback, cumulative FCF and PI from the single series; Equity IRR appears only when equity timing exists, separately labelled; a 1/3/5-year selector may show supplementary performance but Project NPV remains the full committed-term valuation (label truncated views "NPV through Year X").
+
+**Engine consequence:** `annualisedIrr` (integer-period, `(1+r)^12 − 1`) is superseded on the v2 path by the dated-series solver with `{none|valid|multiple}` status; `kpis.paybackMonth` (integer) is RETAINED for golden fixtures and PDFs.
+

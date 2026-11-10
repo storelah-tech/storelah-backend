@@ -67,3 +67,73 @@
 .fm-library-card.is-loaded:before{content:none;display:none}
 .fm-library-card.is-published:before{content:'IN USE FOR FORECASTS';display:block;width:max-content;margin-bottom:-3px;padding:3px 7px;border-radius:99px;background:#e4eee0;color:var(--olive2);font-size:8px;font-weight:900;letter-spacing:.07em}
 [data-fm-publish-slot]{display:contents}
+/* Section 4 Landlord lease — governed write path (lease horizon P6). Tokens only. */
+.fm-lease-grid{display:grid;gap:9px}
+.fm-date-pair{display:flex;gap:6px;align-items:center;min-width:0}
+.fm-date-pair input{flex:1;min-width:0;border:1px solid #d7cfc4;border-radius:9px;background:#fffaf2;padding:9px 8px;color:#2662a8;font-weight:800;font-size:12px}
+.fm-date-pair i{font-style:normal;color:var(--muted)}
+.fm-readonly-date{display:flex;align-items:center;border:1px dashed #b9b0a5;border-radius:9px;background:#f5f1ea;padding:9px 10px;color:var(--ink);font-weight:800;font-size:12px}
+.fm-proration{border:1px solid var(--line);border-radius:11px;padding:10px 11px;margin:12px 0 0;background:#fff}
+.fm-proration legend{font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);padding:0 6px}
+.fm-proration small{display:block;margin-top:7px;font-size:9px;color:var(--muted)}
+.fm-proration .fm-scenario{display:inline-flex;flex-wrap:wrap}
+.fm-est-row td{background:#fff8f2}
+.fm-est-tag{display:inline-block;margin-left:6px;padding:2px 7px;border-radius:99px;background:#faebcf;color:#7d5719;font-size:8px;font-weight:800;white-space:nowrap}
+.fm-confirm{display:flex;gap:6px;align-items:center;margin-top:5px;font-size:9px;color:var(--muted);white-space:nowrap}
+.fm-confirm input{accent-color:var(--terra)}
+.fm-excluded-row td{color:var(--muted);font-style:italic}
+.fm-ack{display:flex;gap:9px;align-items:flex-start;margin-top:12px;padding:11px;border:1px solid #e6c3b2;border-radius:10px;background:#fff8f2;font-size:11px;font-weight:700}
+.fm-ack input{margin-top:2px;accent-color:var(--terra)}
+.fm-fork{border-color:#cfd9c7;background:#f2f6ef}
+.fm-fork small{display:block;margin-top:3px;font-weight:500}
+.fm-lease-status{margin-top:10px}
+.fm-lease-status.warn{border-color:#e4aa8f;background:#fff7f2}
+.fm-horizon-banner{display:grid;gap:10px;margin-bottom:12px;border-color:#d4dfcf;background:linear-gradient(135deg,#f2f6ef,#fffaf5)}
+.fm-horizon-banner>div:first-child{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.fm-horizon-banner b{font-size:11px}
+.fm-horizon-banner strong{font-size:15px;color:var(--olive2)}
+.fm-horizon-row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;border-top:1px solid var(--line);padding-top:10px}
+.fm-horizon-row small{display:block;font-weight:500}
+/* P8 collapsed Section 5 summary: methodology + annual, then effective
+ * monthly + committed months, with an Expand settings button. */
+.fm-val-summary{display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap;padding:10px 11px;border-radius:9px;background:#f2f6ef;border:1px solid #dce6d8}
+.fm-val-summary>div{display:grid;gap:2px}
+.fm-val-summary b{font-size:12px;color:var(--olive2)}
+.fm-val-summary span{font-size:10px;color:var(--muted)}
+@media(max-width:760px){.fm-val-summary{align-items:flex-start;flex-direction:column}}
+.fm-tip.open:after{display:block}
+@media(max-width:760px){.fm-date-pair{flex-direction:column;align-items:stretch}.fm-date-pair i{display:none}.fm-proration .fm-scenario{width:100%}.fm-proration .fm-scenario button{flex:1 1 auto}.fm-horizon-row{align-items:flex-start;flex-direction:column}}
+/* Section 5 Investment valuation assumptions + server-backed Returns (P7). Tokens only. */
+.fm-valuation-horizon{margin-bottom:2px}
+.fm-horizon-actions{display:flex;gap:8px;flex-wrap:wrap;grid-column:1/-1}
+.fm-method{border:1px solid var(--line);border-radius:11px;padding:10px 11px;margin:12px 0 0;background:#fff}
+.fm-method legend{font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);padding:0 6px}
+.fm-method small{display:block;margin-top:7px;font-size:9px;color:var(--muted)}
+.fm-method .fm-scenario{display:inline-flex;flex-wrap:wrap}
+.fm-check-inline{display:inline-flex;align-items:center;gap:8px;font-size:11px;font-weight:700}
+.fm-check-inline input{accent-color:var(--terra)}
+.fm-note.warn{border-color:#e4aa8f;background:#fff7f2}
+.fm-dcf-table{min-width:1500px}
+.fm-dcf-table td:nth-child(2){font-weight:800}
+.fm-kpis-returns{grid-template-columns:repeat(3,minmax(0,1fr))}
+.fm-returns-head .actions{display:flex;gap:8px;flex-wrap:wrap}
+.fm-banner-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center;justify-content:flex-end}
+@media(max-width:760px){.fm-kpis-returns{grid-template-columns:1fr 1fr}.fm-method .fm-scenario{width:100%}.fm-method .fm-scenario button{flex:1 1 auto}}
+.fm-sens-chart svg{display:block;width:100%;height:auto;background:#fff}
+.fm-sens-controls{display:flex;align-items:flex-end;gap:10px;flex-wrap:wrap;margin-top:10px}
+.fm-sens-controls .fm-note{margin-left:auto}
+details.fm-details summary{cursor:pointer;font-size:11px;color:var(--ink)}
+/* Lease Horizon round 2 — Investment returns blocks, matched to prototype v36 */
+.fm-npv-status{display:flex;align-items:center;justify-content:space-between;gap:20px;margin-bottom:14px;padding:16px 18px;border:1px solid var(--line);border-left:5px solid var(--olive);border-radius:13px;background:linear-gradient(135deg,#f2f6ef,#fff)}
+.fm-npv-status.negative{border-left-color:#b95d54;background:linear-gradient(135deg,#fff1ef,#fff)}
+.fm-npv-status.neutral{border-left-color:#d1a451;background:linear-gradient(135deg,#fff8e9,#fff)}
+.fm-npv-status>div{display:grid;gap:3px}.fm-npv-status .eyebrow{font-size:9px;font-weight:900;letter-spacing:.08em;color:var(--muted)}.fm-npv-status b{font-size:16px}.fm-npv-status p{max-width:780px;margin:0;color:var(--muted);font-size:11px;line-height:1.5}.fm-npv-status>strong{font-size:30px;white-space:nowrap;letter-spacing:-.04em}
+.fm-breakeven-card .card-body{display:grid;gap:9px}.fm-breakeven-number{font-size:35px;font-weight:900;letter-spacing:-.05em;color:var(--terra2)}.fm-breakeven-card b{font-size:12px}.fm-breakeven-card p{margin:0;color:var(--muted);font-size:10px;line-height:1.5}
+.fm-breakeven-rule{display:grid;gap:6px;padding:10px;border-radius:9px;background:#f2f6ef}.fm-breakeven-rule span{font-size:10px;color:#4b5549}
+.fm-breakeven-alert{display:grid;gap:4px;padding:11px;border:1px solid #e3b174;border-radius:9px;background:#fff6e8}.fm-breakeven-alert b{color:#8b571d}.fm-breakeven-alert span{font-size:10px;line-height:1.45;color:#6d5436}.fm-breakeven-review{border-color:#e3b174}
+.fm-renewal-result{display:grid;gap:3px;margin-top:6px;padding:11px;border-radius:9px;background:#f2f6ef}.fm-renewal-result small,.fm-renewal-result span{font-size:9px;color:var(--muted)}.fm-renewal-result b{font-size:15px}
+.fm-npv-guide{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-bottom:8px}.fm-npv-guide>div{display:grid;gap:3px;padding:10px 11px;border:1px solid #ded8cf;border-radius:9px;background:#faf7f1}.fm-npv-guide b{font-size:11px}.fm-npv-guide span{font-size:10px;line-height:1.45;color:var(--muted)}
+.fm-rate-slider{display:grid;grid-template-columns:minmax(190px,1fr) minmax(180px,2fr);align-items:center;gap:12px;margin:8px 0 10px;padding:11px 13px;border:1px solid #d9e2d5;border-radius:10px;background:#f2f6ef}.fm-rate-slider>span{display:grid;gap:2px}.fm-rate-slider b{font-size:11px}.fm-rate-slider small{font-size:9px;color:var(--muted)}.fm-rate-slider input{width:100%;accent-color:var(--terra)}
+.fm-chart-readonly-note{margin-top:9px;padding:10px 12px;border-left:4px solid var(--olive);border-radius:8px;background:#f6f3ed;color:#53504b;font-size:10px;line-height:1.5}
+.fm-val-tiles{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-bottom:12px}.fm-val-tiles>div{display:grid;gap:3px;padding:10px 11px;border:1px solid var(--line);border-radius:9px;background:#faf7f1;min-width:0}.fm-val-tiles small{font-size:9px;color:var(--muted);font-weight:800;text-transform:uppercase;letter-spacing:.05em}.fm-val-tiles b{font-size:14px;overflow-wrap:anywhere}
+@media(max-width:760px){.fm-npv-status{align-items:flex-start;flex-direction:column}.fm-npv-status>strong{font-size:25px}.fm-npv-guide,.fm-rate-slider{grid-template-columns:1fr}.fm-val-tiles{grid-template-columns:1fr 1fr}}

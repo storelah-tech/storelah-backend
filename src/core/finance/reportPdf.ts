@@ -57,6 +57,29 @@ export interface Col {
   align?: 'left' | 'right';
 }
 
+/** Light terra used for "Lah" on dark backgrounds (landing footer wordmark, #efa98c). */
+export const TERRA_LIGHT = rgb(0.937, 0.663, 0.549);
+
+/**
+ * StoreLah logo (the site wordmark: "Store" + terra "Lah" with a letter-spaced
+ * "SELF STORAGE" line), drawn as text so the PDF stays Lambda-safe with no
+ * image assets. `y` is the wordmark baseline; returns the tagline baseline.
+ */
+export function drawWordmark(page: PDFPage, bold: PDFFont, x: number, y: number, size = 26, onDark = true): number {
+  const store = 'Store';
+  page.drawText(store, { x, y, size, font: bold, color: onDark ? rgb(1, 1, 1) : INK });
+  page.drawText('Lah', { x: x + bold.widthOfTextAtSize(store, size), y, size, font: bold, color: onDark ? TERRA_LIGHT : TERRA });
+  const tagSize = size * 0.27;
+  const spacing = tagSize * 0.38;
+  const tagY = y - size * 0.5;
+  let cx = x + 1;
+  for (const ch of 'SELF STORAGE') {
+    page.drawText(ch, { x: cx, y: tagY, size: tagSize, font: bold, color: onDark ? rgb(0.9, 0.9, 0.88) : MUTED });
+    cx += bold.widthOfTextAtSize(ch, tagSize) + spacing;
+  }
+  return tagY;
+}
+
 export class Writer {
   page!: PDFPage;
   y = 0;
@@ -202,8 +225,8 @@ export async function buildFinanceReportPdf(r: FinanceReport): Promise<Buffer> {
   w.page = doc.addPage([W, H]);
   w.pages.push(w.page);
   w.page.drawRectangle({ x: 0, y: H - 150, width: W, height: 150, color: OLIVE });
-  w.text('StoreLah', M, H - 58, 24, bold, rgb(1, 1, 1));
-  w.text('FINANCIAL REPORT', M, H - 82, 11, bold, rgb(0.93, 0.85, 0.78));
+  drawWordmark(w.page, bold, M, H - 50);
+  w.text('FINANCIAL REPORT', M, H - 86, 11, bold, rgb(0.93, 0.85, 0.78));
   w.text(period, M, H - 106, 14, regular, rgb(1, 1, 1));
   w.text(`${r.meta.facility}  |  ${basisLabel}`, M, H - 126, 10, regular, rgb(0.9, 0.9, 0.88));
   w.y = H - 178;

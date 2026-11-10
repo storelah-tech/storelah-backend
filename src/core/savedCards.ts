@@ -19,7 +19,7 @@ import type { Customer } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { AppError } from '../lib/http';
 import type { CustomerJwtPayload } from '../middleware/auth';
-import { getStripe } from './checkout';
+import { getStripe, isMissingStripeCustomer } from './checkout';
 import { loadCustomer } from './customers';
 
 export interface SavedCard {
@@ -83,14 +83,29 @@ function defaultIdOf(sc: Stripe.Customer | Stripe.DeletedCustomer): string | nul
  * conditional on the column still being NULL (the loser re-reads the winner).
  */
 export async function ensureStripeCustomer(customer: Customer): Promise<string> {
-  if (customer.stripeCustomerId) return customer.stripeCustomerId;
+  let stale: string | null = null;
+  if (customer.stripeCustomerId) {
+    try {
+      const sc = await getStripe().customers.retrieve(customer.stripeCustomerId);
+      if (!('deleted' in sc && sc.deleted)) return customer.stripeCustomerId;
+    } catch (e) {
+      if (!isMissingStripeCustomer(e)) throw e;
+    }
+    // Stored id is dead in this Stripe account (key/mode switch or deleted).
+    stale = customer.stripeCustomerId;
+    await unlinkStaleStripeCustomer(customer.id, stale);
+  }
   const created = await getStripe().customers.create(
     {
       email: customer.email,
       name: customer.name || undefined,
       metadata: { portalCustomerId: customer.id },
     },
-    { idempotencyKey: `portal-customer-${customer.id}` },
+    {
+      idempotencyKey: stale
+        ? `portal-customer-${customer.id}-relink-${stale}`
+        : `portal-customer-${customer.id}`,
+    },
   );
   const won = await prisma.customer.updateMany({
     where: { id: customer.id, stripeCustomerId: null },
@@ -100,6 +115,14 @@ export async function ensureStripeCustomer(customer: Customer): Promise<string> 
   const fresh = await prisma.customer.findUnique({ where: { id: customer.id } });
   if (!fresh?.stripeCustomerId) throw new AppError(500, 'INTERNAL', 'Could not link the payment wallet');
   return fresh.stripeCustomerId;
+}
+
+async function unlinkStaleStripeCustomer(customerId: string, stale: string): Promise<void> {
+  await prisma.customer.updateMany({
+    where: { id: customerId, stripeCustomerId: stale },
+    data: { stripeCustomerId: null },
+  });
+  console.warn(`[savedCards] customer=${customerId} stale Stripe customer unlinked`);
 }
 
 async function readWallet(stripeCustomerId: string): Promise<Wallet> {
@@ -126,8 +149,15 @@ async function readWallet(stripeCustomerId: string): Promise<Wallet> {
 /** GET /payment-methods — never creates a Stripe Customer. */
 export async function listSavedCards(caller: CustomerJwtPayload): Promise<Wallet & { publishableKey: string | null }> {
   const customer = await loadCustomer(caller);
-  if (!customer.stripeCustomerId) return { cards: [], defaultId: null, publishableKey: publishableKeyOrNull() };
-  return { ...(await readWallet(customer.stripeCustomerId)), publishableKey: publishableKeyOrNull() };
+  const empty = { cards: [], defaultId: null, publishableKey: publishableKeyOrNull() };
+  if (!customer.stripeCustomerId) return empty;
+  try {
+    return { ...(await readWallet(customer.stripeCustomerId)), publishableKey: publishableKeyOrNull() };
+  } catch (e) {
+    if (!isMissingStripeCustomer(e)) throw e;
+    await unlinkStaleStripeCustomer(customer.id, customer.stripeCustomerId);
+    return empty;
+  }
 }
 
 function publishableKeyOrNull(): string | null {

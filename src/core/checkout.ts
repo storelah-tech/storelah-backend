@@ -116,6 +116,17 @@ export function buildFacilityUnitLabel(unitCode: string, branchCode?: string | n
 }
 
 /**
+ * True when Stripe says the customer id does not exist (or was deleted) in the
+ * account the current secret key belongs to.
+ */
+export function isMissingStripeCustomer(e: unknown): boolean {
+  const err = e as { code?: string; statusCode?: number; message?: string } | null;
+  if (!err) return false;
+  if (err.code === 'resource_missing') return true;
+  return /no such customer/i.test(err.message ?? '') || /deleted customer/i.test(err.message ?? '');
+}
+
+/**
  * Stripe Customer for the booking pay path, carrying name + email (mirrors
  * ensureStripeCustomer in core/savedCards.ts). Name priority:
  * booking.tenant.name → Customer.name. Returns null when Stripe/DB is
@@ -137,16 +148,27 @@ async function resolveBookingStripeCustomer(
         })
       : null;
     const name = tenantName || customer?.name || undefined;
+    let staleStripeCustomerId: string | null = null;
     if (customer?.stripeCustomerId) {
       try {
         await stripeApi.customers.update(customer.stripeCustomerId, {
           ...(normalizedEmail ? { email: normalizedEmail } : {}),
           ...(name ? { name } : {}),
         });
-      } catch {
-        // Best-effort name/email sync — the stored customer id is still usable.
+        return customer.stripeCustomerId;
+      } catch (e) {
+        // Best-effort name/email sync — unless the stored id no longer exists
+        // in this Stripe account (key/account/mode switched, or the customer
+        // was deleted). Sending it to Checkout would fail with "No such
+        // customer", so unlink it and create a fresh one below.
+        if (!isMissingStripeCustomer(e)) return customer.stripeCustomerId;
+        staleStripeCustomerId = customer.stripeCustomerId;
+        await prisma.customer.updateMany({
+          where: { id: customer.id, stripeCustomerId: staleStripeCustomerId },
+          data: { stripeCustomerId: null },
+        });
+        console.warn(`[checkout] customer=${customer.id} stale Stripe customer unlinked — relinking`);
       }
-      return customer.stripeCustomerId;
     }
     if (customer) {
       const created = await stripeApi.customers.create(
@@ -155,7 +177,12 @@ async function resolveBookingStripeCustomer(
           ...(name ? { name } : {}),
           metadata: { portalCustomerId: customer.id },
         },
-        { idempotencyKey: `portal-customer-${customer.id}` },
+        // A relink needs a new key: the original one may replay the dead id.
+        {
+          idempotencyKey: staleStripeCustomerId
+            ? `portal-customer-${customer.id}-relink-${staleStripeCustomerId}`
+            : `portal-customer-${customer.id}`,
+        },
       );
       const won = await prisma.customer.updateMany({
         where: { id: customer.id, stripeCustomerId: null },

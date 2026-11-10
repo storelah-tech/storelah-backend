@@ -1785,6 +1785,16 @@ const SETTINGS_GROUPS = [
     ],
   },
   {
+    // Lease-horizon rollout gates (src/core/settings.ts, both default off;
+    // runbook docs/finance/LEASE_HORIZON_ROLLOUT.md §6–7). Without this card
+    // the flags existed server-side but had no control in Global Settings.
+    title: 'Finance — lease horizon', icon: SET_ICON_BANKNOTES, tab: 'booking', sub: 'Landlord lease editing and committed Investment returns. Turn returns on, then save each model’s valuation assumptions.',
+    keys: [
+      { key: 'finance.leaseHorizon.rollout', kind: 'select', label: 'Lease horizon rollout', desc: 'Landlord lease, valuation and recalculate. off = blocked; admins = Owners only; all = every operator with the lease permission.', options: ['off', 'admins', 'all'] },
+      { key: 'finance.leaseHorizon.returns', kind: 'select', label: 'Committed returns block', desc: 'Investment returns full-term NPV / IRR / paybacks at the model’s stored rate. off = no committed figures.', options: ['off', 'on'] },
+    ],
+  },
+  {
     title: 'Display', icon: SET_ICON_PAINT, tab: 'general', sub: 'Currency and formats shown across the CMS.',
     keys: [
       { key: 'display.currency', kind: 'select', label: 'Currency', desc: 'Currency shown across the CMS and invoices.', options: ['SGD', 'USD', 'MYR'] },

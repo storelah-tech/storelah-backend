@@ -141,6 +141,8 @@ export const ROUTE_PERMISSIONS: Record<string, PermissionSpec> = {
   'GET /quotes': v('quotes'),
   'POST /quotes': 'quotes:create',
   'GET /quotes/quotable-leads': v('quotes'),
+  'GET /quotes/promo-options': v('quotes'),
+  'POST /quotes/promo-validate': v('quotes'),
   'GET /quotes/:id/pdf': v('quotes', 'leads'),
   'GET /quotes/:id': v('quotes', 'leads'),
 

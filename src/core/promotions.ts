@@ -308,3 +308,58 @@ export async function validatePromotion(code: string, rate: number, months: numb
     durationScope: scope,
   };
 }
+
+export interface QuotationPromoOption {
+  code: string;
+  name: string;
+  description: string | null;
+  discountType: PromotionDiscountType;
+  discountValue: number;
+  minMonths: number | null;
+  type: string;
+  appliesTo: string;
+  durationScope: string;
+  valid: boolean;
+  discountAmt: number;
+  monthlyAfterPromo: number;
+}
+
+// Quotation-module helper: every active in-window promotion, each scored by
+// validatePromotion() against the quotation context (rate/months/unitCode).
+// Valid options sort first (largest discount first); invalid ones ride along
+// (valid: false, discountAmt: 0) so the operator sees why a code can't apply.
+// The CMS quotation modal pre-selects `best` — no manual typing for the
+// standard case — while POST /quotes re-validates server-side (client hint
+// only). DISCOUNT_MATRIX / FREE_MONTHS auto-apply stays in checkout
+// (computeServerDueToday) — untouched here; one rent promotion per agreement.
+export async function listQuotationPromoOptions(opts?: {
+  rate?: number;
+  months?: number;
+  unitCode?: string;
+}): Promise<{ options: QuotationPromoOption[]; best: QuotationPromoOption | null }> {
+  const rate = typeof opts?.rate === 'number' && opts.rate >= 0 ? opts.rate : 0;
+  const months = typeof opts?.months === 'number' && opts.months >= 1 ? Math.floor(opts.months) : 1;
+  const unitCode = opts?.unitCode?.trim() ? opts.unitCode.trim() : undefined;
+
+  const actives = await listActivePromotions();
+  const options: QuotationPromoOption[] = [];
+  for (const p of actives) {
+    const v = await validatePromotion(p.code, rate, months, unitCode);
+    options.push({
+      code: p.code,
+      name: p.name,
+      description: p.description,
+      discountType: p.discountType,
+      discountValue: p.discountValue,
+      minMonths: p.minMonths,
+      type: v.type,
+      appliesTo: v.appliesTo,
+      durationScope: v.durationScope,
+      valid: v.valid,
+      discountAmt: v.discountAmt,
+      monthlyAfterPromo: v.monthlyAfterPromo,
+    });
+  }
+  options.sort((a, b) => Number(b.valid) - Number(a.valid) || b.discountAmt - a.discountAmt);
+  return { options, best: options.find((o) => o.valid) ?? null };
+}

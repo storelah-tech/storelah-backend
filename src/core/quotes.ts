@@ -323,6 +323,39 @@ async function assertNoOpenQuotation(input: Pick<CreateQuotationInput, 'email' |
   }
 }
 
+// Server-side promo re-validation (checkout computeServerDueToday pattern:
+// the client value is a hint only). A supplied promoCode must resolve via
+// validatePromotion() against the quotation's own rate/months/unit — an
+// unknown, inactive, out-of-window or below-minMonths code is a 400 (operator
+// typo feedback), never a silently saved bad code. A blank promoDiscountAmt
+// is auto-filled from the validated promotion so the standard case needs no
+// manual typing. An operator-supplied amount is kept as-is (negotiated
+// manual discounts without a code keep working); plans (DISCOUNT_MATRIX /
+// FREE_MONTHS no-code auto-apply) live in checkout and are untouched here.
+async function resolveQuotationPromo(input: {
+  promoCode?: string | null;
+  promoDiscountAmt?: number | null;
+  monthlyRate?: number | null;
+  durationMonths?: number | null;
+  unitCode?: string | null;
+}): Promise<{ promoCode: string | null; promoDiscountAmt: number | null }> {
+  const code = input.promoCode?.trim() ? input.promoCode.trim() : null;
+  if (!code) return { promoCode: input.promoCode ?? null, promoDiscountAmt: input.promoDiscountAmt ?? null };
+  const { validatePromotion } = await import('./promotions');
+  const rate = typeof input.monthlyRate === 'number' && input.monthlyRate >= 0 ? input.monthlyRate : 0;
+  const months = typeof input.durationMonths === 'number' && input.durationMonths >= 1 ? Math.floor(input.durationMonths) : 1;
+  const result = await validatePromotion(code, rate, months, input.unitCode?.trim() ? input.unitCode.trim() : undefined);
+  if (!result.valid) {
+    throw new AppError(400, 'VALIDATION', `Promo code ${code} is not valid for this quotation (inactive, expired, or below minimum commitment)`, {
+      promoCode: code,
+    });
+  }
+  return {
+    promoCode: code,
+    promoDiscountAmt: input.promoDiscountAmt ?? result.discountAmt,
+  };
+}
+
 // Create a quotation (CMS operator action). Two shapes, one outcome — a
 // PROPOSAL_SENT lead returned with its live unit options (same payload as
 // GET /quotes/:id) PLUS the issued quotation document metadata:
@@ -369,6 +402,21 @@ export async function createQuotation(input: CreateQuotationInput, opts?: { crea
             nextQuoteMobile !== undefined ? nextQuoteMobile : lead.mobile,
           )
         : null;
+    // Server re-validation: the operator's promo hint is authoritative only
+    // when it resolves — effective values fall back to the stored lead row.
+    const quotePromo = await resolveQuotationPromo({
+      promoCode: overrides.promoCode !== undefined ? overrides.promoCode : lead.promoCode,
+      promoDiscountAmt:
+        overrides.promoDiscountAmt !== undefined
+          ? overrides.promoDiscountAmt
+          : lead.promoDiscountAmt != null
+            ? toNumOrNull(lead.promoDiscountAmt)
+            : null,
+      monthlyRate:
+        overrides.monthlyRate !== undefined ? overrides.monthlyRate : toNumOrNull(lead.monthlyRate),
+      durationMonths: overrides.durationMonths !== undefined ? overrides.durationMonths : lead.durationMonths,
+      unitCode: overrides.unitCode !== undefined ? overrides.unitCode : lead.unitCode,
+    });
     await prisma.lead.update({
       where: { id: lead.id },
       data: {
@@ -398,8 +446,9 @@ export async function createQuotation(input: CreateQuotationInput, opts?: { crea
         ...(overrides.addons !== undefined
           ? { addons: overrides.addons === null ? Prisma.DbNull : (overrides.addons as Prisma.InputJsonValue) }
           : {}),
-        ...(overrides.promoCode !== undefined ? { promoCode: overrides.promoCode } : {}),
-        ...(overrides.promoDiscountAmt !== undefined ? { promoDiscountAmt: overrides.promoDiscountAmt } : {}),
+        ...(overrides.promoCode !== undefined || overrides.promoDiscountAmt !== undefined
+          ? { promoCode: quotePromo.promoCode, promoDiscountAmt: quotePromo.promoDiscountAmt }
+          : {}),
         ...(overrides.movingService !== undefined ? { movingService: overrides.movingService } : {}),
         ...(overrides.totalDueToday !== undefined ? { totalDueToday: overrides.totalDueToday } : {}),
       },
@@ -412,6 +461,13 @@ export async function createQuotation(input: CreateQuotationInput, opts?: { crea
   }
   await assertQuotationRefs(input);
   await assertNoOpenQuotation(input);
+  const newQuotePromo = await resolveQuotationPromo({
+    promoCode: input.promoCode,
+    promoDiscountAmt: input.promoDiscountAmt,
+    monthlyRate: input.monthlyRate,
+    durationMonths: input.durationMonths,
+    unitCode: input.unitCode,
+  });
   const createdLead = await createLead({
     name: input.name.trim(),
     type: input.type ?? 'PERSONAL',
@@ -436,8 +492,8 @@ export async function createQuotation(input: CreateQuotationInput, opts?: { crea
     protectionTier: input.protectionTier ?? null,
     protectionCost: input.protectionCost ?? null,
     addons: input.addons ?? null,
-    promoCode: input.promoCode ?? null,
-    promoDiscountAmt: input.promoDiscountAmt ?? null,
+    promoCode: newQuotePromo.promoCode,
+    promoDiscountAmt: newQuotePromo.promoDiscountAmt,
     movingService: input.movingService ?? null,
     totalDueToday: input.totalDueToday ?? null,
   });

@@ -1206,6 +1206,58 @@ export const openapiSpec = {
         },
       },
     },
+    '/cms/quotes/promo-options': {
+      get: {
+        tags: ['Operator CMS'],
+        summary: 'Rank active promotions for a quotation (auto-fill)',
+        description: [
+          'Every active in-window promotion scored by validatePromotion() against the quotation context ',
+          '(`?rate=&months=&unitCode=`, `{ data, meta: { count, best } }`). Valid options sort first, largest ',
+          'discount first; `meta.best` is what the quotation modal pre-selects so the standard case needs no ',
+          'manual typing. POST /quotes re-validates server-side (client hint only).',
+          '',
+          'Operator CMS endpoints are documented here for reference only; they are served on the CMS host under ',
+          '`/api/v1/cms` and require a Bearer JWT issued by `/api/v1/cms/login` (operator sign-in; each route also requires a role permission).',
+        ].join('\n'),
+        operationId: 'listQuotationPromoOptions',
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          { name: 'rate', in: 'query', required: false, description: 'Quoted monthly rate (defaults 0 — validity never depends on rate).', schema: { type: 'number' } },
+          { name: 'months', in: 'query', required: false, description: 'Quoted duration in months (defaults 1).', schema: { type: 'integer' } },
+          { name: 'unitCode', in: 'query', required: false, description: 'Specific unit — plan-scoped codes check facility/floor/size cover.', schema: { type: 'string' } },
+        ],
+        responses: {
+          '200': openapiResponse({
+            type: 'array',
+            items: { type: 'object' },
+          }),
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+    },
+    '/cms/quotes/promo-validate': {
+      post: {
+        tags: ['Operator CMS'],
+        summary: 'Validate one promo code for a quotation (override field)',
+        description: [
+          'Checks an operator-typed code via validatePromotion() (`{ code, rate?, months?, unitCode? }`). ',
+          'The separate promo-code field alongside the auto-filled promotion; a code that does not resolve is ',
+          'rejected by POST /quotes with 400 VALIDATION (server re-validation, client hint only).',
+          '',
+          'Operator CMS endpoints are documented here for reference only; they are served on the CMS host under ',
+          '`/api/v1/cms` and require a Bearer JWT issued by `/api/v1/cms/login` (operator sign-in; each route also requires a role permission).',
+        ].join('\n'),
+        operationId: 'validateQuotationPromo',
+        security: [{ bearerAuth: [] }],
+        responses: {
+          '200': openapiResponse({ type: 'object' }),
+          '400': openapiErrorResponse('Invalid promo-validate payload (code required).'),
+          '401': openapiErrorResponse('Missing/invalid bearer token.'),
+          '500': openapiErrorResponse('Unexpected server error'),
+        },
+      },
+    },
     '/cms/quotes/{id}/pdf': {
       get: {
         tags: ['Operator CMS'],

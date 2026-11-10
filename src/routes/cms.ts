@@ -102,6 +102,8 @@ import {
   createPromotion,
   updatePromotion,
   deletePromotion,
+  validatePromotion,
+  listQuotationPromoOptions,
 } from '../core/promotions';
 import {
   listPlans,
@@ -3254,6 +3256,58 @@ router.post('/quotes', requireAuth, async (req: Request, res: Response) => {
         moveInDate: moveInDate === undefined ? undefined : moveInDate ? new Date(moveInDate) : null,
       },
       { createdBy: user?.name || user?.email || null },
+    ),
+  );
+});
+
+// Quotation promotion auto-fill (no manual typing for the standard case) +
+// operator promo-code validation. NOTE: registered BEFORE GET /quotes/:id so
+// "promo-options" / "promo-validate" are never parsed as a lead id.
+// GET /quotes/promo-options ranks every active in-window promotion against
+// the quotation context (?rate=&months=&unitCode=) — the modal pre-selects
+// `meta.best`. POST /quotes/promo-validate checks one operator-typed code
+// via validatePromotion(). POST /quotes re-validates server-side (client hint
+// only) — see resolveQuotationPromo in core/quotes.ts.
+router.get('/quotes/promo-options', requireAuth, async (req: Request, res: Response) => {
+  const q = z
+    .object({
+      rate: z.coerce.number().nonnegative().optional(),
+      months: z.coerce.number().int().positive().optional(),
+      unitCode: z.string().trim().max(40).optional(),
+    })
+    .safeParse(req.query);
+  if (!q.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid promo-options filters', q.error.flatten());
+    return;
+  }
+  const { options, best } = await listQuotationPromoOptions({
+    rate: q.data.rate,
+    months: q.data.months,
+    unitCode: q.data.unitCode,
+  });
+  ok(res, options, { count: options.length, best });
+});
+
+router.post('/quotes/promo-validate', requireAuth, async (req: Request, res: Response) => {
+  const parsed = z
+    .object({
+      code: z.string().trim().min(1).max(40),
+      rate: z.number().nonnegative().optional(),
+      months: z.number().int().positive().optional(),
+      unitCode: z.string().trim().max(40).optional(),
+    })
+    .safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid promo-validate payload (code required)', parsed.error.flatten());
+    return;
+  }
+  ok(
+    res,
+    await validatePromotion(
+      parsed.data.code.trim(),
+      parsed.data.rate ?? 0,
+      parsed.data.months ?? 1,
+      parsed.data.unitCode,
     ),
   );
 });

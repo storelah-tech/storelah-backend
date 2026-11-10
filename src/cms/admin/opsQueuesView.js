@@ -283,13 +283,20 @@ export function wireOpsQueues() {
     if (id === 'qf-branch' || id === 'qf-size') refreshQuoteUnitOptions().catch(() => {});
     if (id === 'qf-unit') fillRateFromUnit(e.target.value);
     if (id === 'qf-protectionTier') fillProtectionCost(e.target.value);
+    if (id === 'qf-promotion') applyQuotePromotion(e.target.value);
+    if (id === 'qf-rate' || id === 'qf-duration' || id === 'qf-unit' || id === 'qf-branch' || id === 'qf-size') scheduleQuotePromoRefresh();
     if (e.target.closest && e.target.closest('.qm-addon')) onAddonRowEdit(e.target);
     refreshQuoteTotalPreview();
+  });
+  $('#quoteForm')?.addEventListener('focusout', (e) => {
+    if (e.target && e.target.id === 'qf-promoCode') validateQuotePromoField().catch(() => {});
   });
   $('#quoteForm')?.addEventListener('input', (e) => {
     const id = e.target && e.target.id;
     const inAddon = !!(e.target.closest && e.target.closest('.qm-addon'));
     if (inAddon) onAddonRowEdit(e.target);
+    if (id === 'qf-promoCode' || id === 'qf-promoDiscount') markQuotePromoTouched();
+    if (id === 'qf-rate' || id === 'qf-duration') scheduleQuotePromoRefresh();
     if (inAddon || ['qf-rate', 'qf-duration', 'qf-protectionCost', 'qf-promoDiscount', 'qf-promoCode', 'qf-total', 'qf-name'].includes(id)) refreshQuoteTotalPreview();
   });
   $('#qfAddonAdd')?.addEventListener('click', () => { addAddonRow(); refreshQuoteTotalPreview(); });
@@ -533,6 +540,186 @@ function fillProtectionCost(planId) {
   const el = $('#qf-protectionCost');
   if (!el) return;
   el.value = pl ? Number(pl.price).toFixed(2) : '';
+}
+
+// ---------- promotion auto-fill + promo-code override ----------
+// The quotation modal never requires manual promotion typing for the
+// standard case: a "Promotion (auto)" select (injected here in JS —
+// dashboard.html stays frozen) lists active system promotions from
+// GET /quotes/promo-options, pre-selects the best valid one, and fills
+// #qf-promoCode + #qf-promoDiscount. The existing #qf-promoCode text input
+// stays as the separate promo-code (override) field: an operator-typed code
+// is validated via POST /quotes/promo-validate (blur + pre-submit), and
+// POST /quotes re-validates server-side (resolveQuotationPromo — client hint
+// only). Manual edits set quotePromoTouched so later context refreshes never
+// clobber operator intent; system-owned values keep following the context.
+let quotePromoOptions = [];
+let quotePromoTouched = false;
+let quotePromoSeq = 0;
+let quotePromoTimer = null;
+
+function quotePromoCtx() {
+  const num = (id) => {
+    const raw = $(id)?.value.trim() || '';
+    if (!raw) return undefined;
+    const n = Number(raw);
+    return Number.isFinite(n) && n >= 0 ? n : undefined;
+  };
+  const durRaw = $('#qf-duration')?.value.trim() || '';
+  const months = durRaw === '' ? undefined : Number(durRaw);
+  return {
+    rate: num('#qf-rate'),
+    months: Number.isInteger(months) && months >= 1 ? months : undefined,
+    unitCode: $('#qf-unit')?.value || undefined,
+  };
+}
+
+function ensureQuotePromotionSelect() {
+  if ($('#qf-promotion')) return;
+  const codeInput = $('#qf-promoCode');
+  const host = codeInput?.closest('.field');
+  if (!codeInput || !host || !host.parentNode) return;
+  // The text input stays as the separate promo-code (override) field.
+  const label = host.querySelector('label');
+  if (label) label.textContent = 'Promo code (override)';
+  codeInput.placeholder = 'Type a code, or pick a promotion';
+  const wrap = document.createElement('div');
+  wrap.className = 'field';
+  wrap.innerHTML = '<label for="qf-promotion">Promotion (auto)</label>' +
+    '<select id="qf-promotion" aria-label="Promotion auto-filled from system promotions"></select>' +
+    '<div class="t-type" id="qf-promotionHint" style="margin-top:4px"></div>';
+  host.parentNode.insertBefore(wrap, host);
+}
+
+function paintQuotePromotionOptions() {
+  const sel = $('#qf-promotion');
+  if (!sel) return;
+  sel.innerHTML = '<option value="">— No promotion —</option>' + quotePromoOptions.map((o) =>
+    `<option value="${escapeHtml(o.code)}"${o.valid ? '' : ' disabled'}>${escapeHtml(o.code)} · ${escapeHtml(o.name)}${o.valid ? ` (−$${Number(o.discountAmt).toFixed(2)})` : ' (not applicable)'}</option>`,
+  ).join('');
+}
+
+function paintQuotePromotionHint() {
+  const hint = $('#qf-promotionHint');
+  if (!hint) return;
+  const sel = $('#qf-promotion');
+  const typed = $('#qf-promoCode')?.value.trim() || '';
+  const selected = quotePromoOptions.find((x) => x.code === (sel?.value || ''));
+  if (selected && selected.valid) hint.textContent = `Auto: ${selected.code} −$${Number(selected.discountAmt).toFixed(2)} (re-validated on create)`;
+  else if (typed) hint.textContent = 'Custom code in the promo-code field — validated on create.';
+  else if (quotePromoOptions.length && !quotePromoOptions.some((x) => x.valid)) hint.textContent = 'No active promotion applies to this rate / duration / unit.';
+  else hint.textContent = 'Auto-filled from active system promotions.';
+}
+
+function clearQuotePromoCodeError() {
+  const errEl = $('#qe-promoCode');
+  if (errEl) errEl.textContent = '';
+  const input = $('#qf-promoCode');
+  if (input) input.classList.remove('err');
+}
+
+function markQuotePromoTouched() {
+  quotePromoTouched = true;
+  const sel = $('#qf-promotion');
+  const typed = $('#qf-promoCode')?.value.trim() || '';
+  if (sel && sel.value && sel.value !== typed) sel.value = '';
+  paintQuotePromotionHint();
+}
+
+function applyQuotePromotion(code) {
+  if (!code) {
+    quotePromoTouched = true;
+    if ($('#qf-promoCode')) $('#qf-promoCode').value = '';
+    if ($('#qf-promoDiscount')) $('#qf-promoDiscount').value = '';
+    clearQuotePromoCodeError();
+    paintQuotePromotionHint();
+    refreshQuoteTotalPreview();
+    return;
+  }
+  const o = quotePromoOptions.find((x) => x.code === code);
+  if (!o || !o.valid) { paintQuotePromotionHint(); return; }
+  quotePromoTouched = false;
+  if ($('#qf-promoCode')) $('#qf-promoCode').value = o.code;
+  if ($('#qf-promoDiscount')) $('#qf-promoDiscount').value = Number(o.discountAmt).toFixed(2);
+  clearQuotePromoCodeError();
+  const sel = $('#qf-promotion');
+  if (sel) sel.value = o.code;
+  paintQuotePromotionHint();
+  refreshQuoteTotalPreview();
+}
+
+function scheduleQuotePromoRefresh() {
+  if (quotePromoTimer) clearTimeout(quotePromoTimer);
+  quotePromoTimer = setTimeout(() => { refreshQuotePromotions().catch(() => {}); }, 450);
+}
+
+async function refreshQuotePromotions() {
+  const seq = ++quotePromoSeq;
+  const sel = $('#qf-promotion');
+  if (!sel) return;
+  let options = null;
+  try {
+    const ctx = quotePromoCtx();
+    const qs = new URLSearchParams();
+    if (ctx.rate !== undefined) qs.set('rate', String(ctx.rate));
+    if (ctx.months !== undefined) qs.set('months', String(ctx.months));
+    if (ctx.unitCode) qs.set('unitCode', ctx.unitCode);
+    const q = qs.toString();
+    options = await get(`/quotes/promo-options${q ? `?${q}` : ''}`);
+  } catch {
+    return; // best-effort: keep existing options; POST /quotes re-validates.
+  }
+  if (seq !== quotePromoSeq) return;
+  quotePromoOptions = Array.isArray(options) ? options : [];
+  paintQuotePromotionOptions();
+  if (quotePromoTouched) { paintQuotePromotionHint(); return; }
+  const best = quotePromoOptions.find((o) => o.valid) || null;
+  const current = $('#qf-promoCode')?.value.trim() || '';
+  const currentOpt = quotePromoOptions.find((o) => o.code === current);
+  if (currentOpt && currentOpt.valid) {
+    // System-owned value follows a changed context (amount re-resolves).
+    sel.value = current;
+    if ($('#qf-promoDiscount')) $('#qf-promoDiscount').value = Number(currentOpt.discountAmt).toFixed(2);
+  } else if (best) {
+    applyQuotePromotion(best.code);
+    return;
+  } else if (!current) {
+    sel.value = '';
+  }
+  paintQuotePromotionHint();
+  refreshQuoteTotalPreview();
+}
+
+// Blur / pre-submit validation for the separate promo-code (override) field.
+// A blank amount is filled from the validated promotion (system auto-fill).
+// Network/permission failures resolve true — POST /quotes re-validates.
+async function validateQuotePromoField() {
+  const code = $('#qf-promoCode')?.value.trim() || '';
+  clearQuotePromoCodeError();
+  if (!code) { paintQuotePromotionHint(); return true; }
+  const ctx = quotePromoCtx();
+  try {
+    const r = await post('/quotes/promo-validate', {
+      code,
+      ...(ctx.rate !== undefined ? { rate: ctx.rate } : {}),
+      ...(ctx.months !== undefined ? { months: ctx.months } : {}),
+      ...(ctx.unitCode ? { unitCode: ctx.unitCode } : {}),
+    });
+    if (!r || !r.valid) {
+      quoteFieldError('promoCode', `Code ${code} does not apply here (inactive, expired, or minimum stay not met)`);
+      paintQuotePromotionHint();
+      return false;
+    }
+    const amtEl = $('#qf-promoDiscount');
+    if (amtEl && !amtEl.value.trim() && typeof r.discountAmt === 'number') amtEl.value = Number(r.discountAmt).toFixed(2);
+    const sel = $('#qf-promotion');
+    if (sel && quotePromoOptions.some((o) => o.code === code)) sel.value = code;
+    paintQuotePromotionHint();
+    refreshQuoteTotalPreview();
+    return true;
+  } catch {
+    return true;
+  }
 }
 
 // ---------- add-on rows → hidden #qf-addons JSON ----------
@@ -906,6 +1093,9 @@ export async function openQuoteModal() {
   syncAddonsJson();
   clearQuoteFieldErrors();
   await refreshQuoteUnitOptions();
+  ensureQuotePromotionSelect();
+  quotePromoTouched = false;
+  await refreshQuotePromotions();
   refreshQuoteTotalPreview();
   const modal = $('#quoteModal');
   if (modal) modal.hidden = false;
@@ -998,6 +1188,9 @@ export async function submitQuoteForm(e) {
     quoteFieldError('nextAction', 'Next action must be a valid date');
     return;
   }
+  // Operator-typed promo code re-checks against the system before submit
+  // (POST /quotes re-validates authoritatively — see resolveQuotationPromo).
+  if (($('#qf-promoCode')?.value.trim() || '') && !(await validateQuotePromoField())) return;
   const body = {};
   if (leadId) body.leadId = leadId;
   if (name) body.name = name;

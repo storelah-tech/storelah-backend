@@ -1,6 +1,7 @@
 -- Data-only: the client's final size list (2026-11-11), in this order:
---   LOCKER "Locker" 8–15 (NEW) · XS "XS" 10–19 · SMALL 20–39 ·
---   MEDIUM 40–69 · LARGE 70–99 · XLBIZ "Extra large" 100–150 sq ft
+--   LOCKER "Locker" 8–15 (NEW) · XS "XS" 10–19 · SMALL "S" 20–39 ·
+--   MEDIUM "M" 40–69 · LARGE "L" 70–99 · XLBIZ "XL" 100–150 sq ft
+-- (codes unchanged; display names per owner "Short: S/M/L/XL")
 -- XS..XL follow booking Step 1 (storelah-booking SizeSelector SIZE_TABS).
 --
 -- Code move: the existing LOCKER row IS booking's XS (10–19), so it is
@@ -47,12 +48,12 @@ SELECT 'unitsize_locker_8_15', 'LOCKER', 'Locker', 8, 15, 3, 4, 1, NOW(), NOW()
 WHERE NOT EXISTS (SELECT 1 FROM "UnitSize" WHERE "code" = 'LOCKER');
 
 INSERT INTO "UnitSize" ("id", "code", "name", "sqftFrom", "sqftTo", "widthFt", "heightFt", "sortOrder", "createdAt", "updatedAt")
-SELECT 'unitsize_xlbiz', 'XLBIZ', 'Extra large', 100, 150, 10, 12, 6, NOW(), NOW()
+SELECT 'unitsize_xlbiz', 'XLBIZ', 'XL', 100, 150, 10, 12, 6, NOW(), NOW()
 WHERE NOT EXISTS (SELECT 1 FROM "UnitSize" WHERE "code" = 'XLBIZ');
 
 UPDATE "UnitSize" SET "name" = 'Locker',      "sqftFrom" = 8,   "sqftTo" = 15,  "sortOrder" = 1, "updatedAt" = NOW() WHERE "code" = 'LOCKER';
 UPDATE "UnitSize" SET "name" = 'XS', "sqftFrom" = 10,  "sqftTo" = 19,  "sortOrder" = 2, "updatedAt" = NOW() WHERE "code" = 'XS';
-UPDATE "UnitSize" SET                         "sqftFrom" = 20,  "sqftTo" = 39,  "sortOrder" = 3, "updatedAt" = NOW() WHERE "code" = 'SMALL';
-UPDATE "UnitSize" SET                         "sqftFrom" = 40,  "sqftTo" = 69,  "sortOrder" = 4, "updatedAt" = NOW() WHERE "code" = 'MEDIUM';
-UPDATE "UnitSize" SET                         "sqftFrom" = 70,  "sqftTo" = 99,  "sortOrder" = 5, "updatedAt" = NOW() WHERE "code" = 'LARGE';
-UPDATE "UnitSize" SET "name" = 'Extra large', "sqftFrom" = 100, "sqftTo" = 150, "sortOrder" = 6, "updatedAt" = NOW() WHERE "code" = 'XLBIZ';
+UPDATE "UnitSize" SET "name" = 'S',           "sqftFrom" = 20,  "sqftTo" = 39,  "sortOrder" = 3, "updatedAt" = NOW() WHERE "code" = 'SMALL';
+UPDATE "UnitSize" SET "name" = 'M',           "sqftFrom" = 40,  "sqftTo" = 69,  "sortOrder" = 4, "updatedAt" = NOW() WHERE "code" = 'MEDIUM';
+UPDATE "UnitSize" SET "name" = 'L',           "sqftFrom" = 70,  "sqftTo" = 99,  "sortOrder" = 5, "updatedAt" = NOW() WHERE "code" = 'LARGE';
+UPDATE "UnitSize" SET "name" = 'XL',          "sqftFrom" = 100, "sqftTo" = 150, "sortOrder" = 6, "updatedAt" = NOW() WHERE "code" = 'XLBIZ';

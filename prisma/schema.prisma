@@ -1127,7 +1127,7 @@ model UnitAreaChange {
   newSizeId   String
   widthFt     Float?
   heightFt    Float?
-  source      String // FLOOR_PLAN_PUBLISH | RECONCILE | MANUAL
+  source      String // FLOOR_PLAN_PUBLISH | RECONCILE | MANUAL | SIZE_RETAG (scripts/retier-units.ts)
   floorPlanId String?
   appliedBy   String
   createdAt   DateTime @default(now())

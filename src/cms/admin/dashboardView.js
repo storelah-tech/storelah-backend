@@ -78,7 +78,7 @@ export function renderFloorTabs() {
 // ?size= composes by narrowing within columns. Size display names prefer
 // map.sizes (same visible set), then the unit payload, then the labels below.
 const MAP_SIZE_ORDER = ['LOCKER', 'XS', 'SMALL', 'MEDIUM', 'LARGE']; // XLBIZ renders as a trailing column only when present
-const MAP_SIZE_NAME = { LOCKER: 'Locker', XS: 'XS', SMALL: 'Small', MEDIUM: 'Medium', LARGE: 'Large', XLBIZ: 'Extra large' };
+const MAP_SIZE_NAME = { LOCKER: 'Locker', XS: 'XS', SMALL: 'S', MEDIUM: 'M', LARGE: 'L', XLBIZ: 'XL' };
 
 // Single-unit cell markup (unchanged visuals + wiring: status fill/dot via
 // MAP_TONE, size ribbon/chip via SIZE_CLASS, tooltip, inline selectUnit() so

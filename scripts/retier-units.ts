@@ -1,5 +1,5 @@
 /**
- * Size re-tag DRY RUN — READ-ONLY, writes nothing.
+ * Size re-tag — DRY RUN by default (read-only); `--apply` writes.
  *
  * Lists which live units would move to which size category if every unit
  * were re-tiered by its Unit.sqft against the current UnitSize bands
@@ -11,12 +11,21 @@
  * then lowest sortOrder. So a unit already inside its own band never moves,
  * and overlaps (LOCKER/XS at 10–15) keep the current size.
  *
- * Owner decision 2026-11-11: dry run only — nothing is re-tagged. A real
- * re-tag would be a separate, explicitly authorised change.
+ * Owner decision 2026-11-11: "Move all" — every live unit outside its size
+ * band moves to the matching size. On prod this runs as its own step AFTER
+ * migration 20261111000000_unit_size_ranges, only with the owner's OK.
  *
- *   pnpm db:retier-units-dry-run            # summary + up to 50 sample rows
- *   pnpm db:retier-units-dry-run --all      # every unit that would move
- *   pnpm db:retier-units-dry-run --csv      # CSV of every move to stdout
+ * What --apply changes (one transaction): Unit.sizeId only, plus one
+ * UnitAreaChange history row per unit (source SIZE_RETAG, sqft unchanged,
+ * prev/new size ids). It does NOT touch Unit.monthlyRate — every unit keeps
+ * its own rate; size-linked rules (FacilityFee / SizePriceRule by sizeId)
+ * apply from the new size going forward. Placements, tenants and bookings
+ * are untouched (they reference the unit, not the size). Re-runs are a no-op.
+ *
+ *   pnpm db:retier-units            # summary + up to 50 sample rows
+ *   pnpm db:retier-units --all      # every unit that would move
+ *   pnpm db:retier-units --csv      # CSV of every move to stdout
+ *   pnpm db:retier-units --apply    # WRITE the moves (owner-approved runs only)
  */
 import 'dotenv/config';
 import { PrismaClient } from '@prisma/client';
@@ -37,6 +46,7 @@ async function main() {
     await prisma.unit.findMany({
       where: { deletedAt: null },
       select: {
+        id: true,
         unitCode: true,
         name: true,
         sqft: true,
@@ -49,7 +59,7 @@ async function main() {
     })
   ).filter((u) => u.status !== 'DRAFT');
 
-  type Move = { unitCode: string; unitNo: string; branch: string; level: number; sqft: number; status: string; from: string; to: string; inBand: boolean };
+  type Move = { id: string; prevSizeId: string; newSizeId: string; unitCode: string; unitNo: string; branch: string; level: number; sqft: number; status: string; from: string; to: string; inBand: boolean };
   const moves: Move[] = [];
   const outOfBandStay: Move[] = [];
   for (const u of units) {
@@ -57,6 +67,9 @@ async function main() {
     const tier = resolveSizeTier(sizes, u.sizeId, u.sqft);
     if (!cur || !tier) continue;
     const row: Move = {
+      id: u.id,
+      prevSizeId: cur.id,
+      newSizeId: tier.size.id,
       unitCode: u.unitCode,
       unitNo: u.name ?? u.unitCode,
       branch: u.branch.code,
@@ -77,7 +90,8 @@ async function main() {
     return;
   }
 
-  console.log('Size re-tag DRY RUN — nothing is written.');
+  const apply = args.has('--apply');
+  console.log(apply ? 'Size re-tag — APPLYING (writes Unit.sizeId + history).' : 'Size re-tag DRY RUN — nothing is written.');
   console.log('Bands: ' + sizes.map((s) => `${s.code} ${s.sqftFrom}–${s.sqftTo}`).join(' · '));
   console.log(`Live units checked: ${units.length}; would move: ${moves.length}; out of band but nearest is current: ${outOfBandStay.length}`);
   const pairs = new Map<string, { n: number; min: number; max: number; contracted: number }>();
@@ -98,6 +112,26 @@ async function main() {
     console.log(`\n${args.has('--all') ? 'All' : 'Sample'} moves (unit no. · facility L# · sqft · status · from → to):`);
     for (const m of list) console.log(`  ${m.unitNo} · ${m.branch} L${m.level} · ${m.sqft} · ${m.status} · ${m.from} → ${m.to}${m.inBand ? '' : ' (nearest, not in band)'}`);
     if (!args.has('--all') && moves.length > list.length) console.log(`  … ${moves.length - list.length} more (use --all or --csv)`);
+  }
+
+  if (apply && moves.length) {
+    await prisma.$transaction(async (tx) => {
+      for (const m of moves) {
+        await tx.unit.update({ where: { id: m.id }, data: { sizeId: m.newSizeId } });
+        await tx.unitAreaChange.create({
+          data: {
+            unitId: m.id,
+            previous: m.sqft,
+            current: m.sqft,
+            prevSizeId: m.prevSizeId,
+            newSizeId: m.newSizeId,
+            source: 'SIZE_RETAG',
+            appliedBy: 'retier-units script (owner-approved 2026-11-11)',
+          },
+        });
+      }
+    }, { timeout: 120_000 });
+    console.log(`\nApplied: ${moves.length} unit(s) re-tagged; monthly rates unchanged.`);
   }
 }
 

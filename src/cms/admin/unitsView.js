@@ -340,7 +340,8 @@ export async function showUnitDetail(code) {
     setVal('#udBranch', u.branchName || '—');
     setVal('#udLevel', u.level ? 'Level ' + u.level : '—');
     setVal('#udSize', u.sizeName || '—');
-    const lastSize = u.areaHistory[0];
+    // Latest real area change (size re-tags keep sqft and only move the category).
+    const lastSize = u.areaHistory.find((a) => a.previous !== a.current);
     const fmtD = (d) => new Date(d).toLocaleDateString('en-SG', { day: '2-digit', month: 'short', year: 'numeric' });
     setVal(
       '#udSizeSub',
@@ -356,7 +357,7 @@ export async function showUnitDetail(code) {
     const sizeEl = $('#udSize');
     if (sizeEl) {
       sizeEl.title = u.areaHistory.length
-        ? 'Size history:\n' + u.areaHistory.map((a) => `${fmtD(a.date)}: ${a.previous} → ${a.current} sq ft (${a.source === 'FLOOR_PLAN_PUBLISH' ? 'floor plan' : String(a.source).toLowerCase()}, ${a.by})`).join('\n')
+        ? 'Size history:\n' + u.areaHistory.map((a) => `${fmtD(a.date)}: ${a.previous} → ${a.current} sq ft (${a.source === 'FLOOR_PLAN_PUBLISH' ? 'floor plan' : a.source === 'SIZE_RETAG' ? 'size re-tag' : String(a.source).toLowerCase()}, ${a.by})`).join('\n')
         : '';
     }
     setVal('#udPsf', u.psf != null ? '$' + Number(u.psf).toFixed(2) : '—');

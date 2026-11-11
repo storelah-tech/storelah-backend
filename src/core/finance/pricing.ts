@@ -26,6 +26,7 @@ export const CANONICAL_BUCKETS = ['LOCKER', 'SMALL', 'MEDIUM', 'LARGE', 'XL', 'X
 export function bucketForSize(code: string, sqftTo: number): string | null {
   const c = code.trim().toUpperCase();
   if (c === 'XS') return 'LOCKER'; // legacy XS reads as LOCKER
+  if (c === 'XLBIZ') return 'XL'; // booking's XL tab code
   if ((CANONICAL_BUCKETS as readonly string[]).includes(c)) return c;
   // Fallback by footprint so a renamed taxonomy still maps explicitly.
   if (sqftTo <= 0) return null;

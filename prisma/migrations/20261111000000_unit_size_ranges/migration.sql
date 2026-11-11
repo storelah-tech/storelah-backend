@@ -1,15 +1,19 @@
--- Data-only: owner-defined size-category ranges (2026-11-11). Ranges may
--- overlap or leave gaps (owner: "Locker can overlap, its fine") — tier
--- resolution picks the NEAREST band (resolveSizeTier), so neither blocks.
---   LOCKER 8–15 · SMALL 20–40 · MEDIUM 50–80 · LARGE 100–150 sq ft
--- Codes are unchanged (booking/landing key on them). Footprint dims
--- (widthFt/heightFt) are untouched and already fall inside the new bands.
-UPDATE "UnitSize" SET "sqftFrom" = 8,   "sqftTo" = 15,  "updatedAt" = NOW() WHERE "code" = 'LOCKER';
-UPDATE "UnitSize" SET "sqftFrom" = 20,  "sqftTo" = 40,  "updatedAt" = NOW() WHERE "code" = 'SMALL';
-UPDATE "UnitSize" SET "sqftFrom" = 50,  "sqftTo" = 80,  "updatedAt" = NOW() WHERE "code" = 'MEDIUM';
-UPDATE "UnitSize" SET "sqftFrom" = 100, "sqftTo" = 150, "updatedAt" = NOW() WHERE "code" = 'LARGE';
+-- Data-only: size-category ranges aligned with booking Step 1 (owner
+-- 2026-11-11: "sizes should be the same across booking, cms and everything.
+-- Booking has correct data" — storelah-booking SizeSelector.tsx SIZE_TABS).
+--   LOCKER (booking tab XS) 10–19 · SMALL 20–39 · MEDIUM 40–69 ·
+--   LARGE 70–99 · XLBIZ (booking tab XL) 100–150 sq ft
+-- Codes and names are unchanged (booking keys on the codes and shows
+-- size.name). Bands may overlap or leave gaps — tier resolution picks the
+-- NEAREST band (resolveSizeTier). Existing units are NOT re-tiered here.
+UPDATE "UnitSize" SET "sqftFrom" = 10, "sqftTo" = 19,  "updatedAt" = NOW() WHERE "code" = 'LOCKER';
+UPDATE "UnitSize" SET "sqftFrom" = 20, "sqftTo" = 39,  "updatedAt" = NOW() WHERE "code" = 'SMALL';
+UPDATE "UnitSize" SET "sqftFrom" = 40, "sqftTo" = 69,  "updatedAt" = NOW() WHERE "code" = 'MEDIUM';
+UPDATE "UnitSize" SET "sqftFrom" = 70, "sqftTo" = 99,  "updatedAt" = NOW() WHERE "code" = 'LARGE';
 
--- Locker category: create it where a database never had one.
+-- XLBIZ already exists in booking (tab XL, "Extra large"); create the row where
+-- missing so the CMS can assign it. Footprint 10×12 ft (120 sq ft, in band).
 INSERT INTO "UnitSize" ("id", "code", "name", "sqftFrom", "sqftTo", "widthFt", "heightFt", "sortOrder", "createdAt", "updatedAt")
-SELECT 'unitsize_locker', 'LOCKER', 'Locker', 8, 15, 3, 4, 1, NOW(), NOW()
-WHERE NOT EXISTS (SELECT 1 FROM "UnitSize" WHERE "code" = 'LOCKER');
+SELECT 'unitsize_xlbiz', 'XLBIZ', 'Extra large', 100, 150, 10, 12, 5, NOW(), NOW()
+WHERE NOT EXISTS (SELECT 1 FROM "UnitSize" WHERE "code" = 'XLBIZ');
+UPDATE "UnitSize" SET "sqftFrom" = 100, "sqftTo" = 150, "updatedAt" = NOW() WHERE "code" = 'XLBIZ';

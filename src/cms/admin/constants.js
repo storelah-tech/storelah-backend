@@ -41,6 +41,7 @@ export const SIZE_COLOR = {
   SMALL: '#526557',
   MEDIUM: '#334437',
   LARGE: '#e5a84b',
+  XLBIZ: '#8a6420',
 };
 
 export const SIZE_CLASS = {
@@ -48,6 +49,7 @@ export const SIZE_CLASS = {
   SMALL: 'size-SMALL',
   MEDIUM: 'size-MEDIUM',
   LARGE: 'size-LARGE',
+  XLBIZ: 'size-XLBIZ',
 };
 
 export const TENANT_STATUS_TONE = {

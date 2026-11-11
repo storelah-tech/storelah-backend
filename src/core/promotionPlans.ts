@@ -31,7 +31,7 @@ const LEGACY_SIZE_ALIASES: Record<string, string> = {
   S: 'SMALL', SMALL: 'SMALL',
   M: 'MEDIUM', MEDIUM: 'MEDIUM',
   L: 'LARGE', LARGE: 'LARGE',
-  XL: 'XL', XXL: 'XXL',
+  XL: 'XL', XLBIZ: 'XL', XXL: 'XXL',
 };
 
 // Lenient read-path mapping: known codes (incl. legacy XS / S / M / L) map

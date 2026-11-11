@@ -2841,7 +2841,7 @@ function initPromoScopeControls() {
 // canonical so pre-unification plans still populate the right row.
 function canonicalSizeCat(raw) {
   var k = String(raw == null ? '' : raw).trim().toUpperCase();
-  var alias = { XS: 'LOCKER', S: 'SMALL', M: 'MEDIUM', L: 'LARGE' };
+  var alias = { XS: 'LOCKER', S: 'SMALL', M: 'MEDIUM', L: 'LARGE', XLBIZ: 'XL' };
   return alias[k] || k || raw;
 }
 

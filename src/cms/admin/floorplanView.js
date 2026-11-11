@@ -148,18 +148,19 @@ function fpBlockFill(blk) {
 // docs/FLOOR_PLAN_MODEL.md + migration `add_unit_size_footprint`): LOCKER
 // 12 sqft → 3×4 ft, SMALL 30 → 5×6, MEDIUM 60 → 6×10, LARGE 120 → 10×12.
 // Resolution order for a unit: live /sizes dims (widthFt/heightFt) → these
-// constants → the per-size aspect fallback below. NOTE: the old XLBIZ key was
-// dead (no such size exists in the DB or seed) and has been dropped — unknown
-// size codes fall through to the aspect formula instead of a hardcoded guess.
+// constants → the per-size aspect fallback below. XLBIZ (booking's XL tab,
+// 100–150 sq ft) was re-added 2026-11-11 with migration unit_size_ranges;
+// unknown size codes fall through to the aspect formula.
 const FP_SIZE_DIMS = {
   LOCKER: { w: 3, h: 4 },
   SMALL: { w: 5, h: 6 },
   MEDIUM: { w: 6, h: 10 },
   LARGE: { w: 10, h: 12 },
+  XLBIZ: { w: 10, h: 12 },
 };
 // Per-size width/height aspects (w/h) for the fallback; chosen to reproduce
 // the catalogue footprints exactly. Mirrors SIZE_ASPECT in src/core/floorPlans.ts.
-const FP_SIZE_ASPECT = { LOCKER: 3 / 4, SMALL: 5 / 6, MEDIUM: 6 / 10, LARGE: 10 / 12 };
+const FP_SIZE_ASPECT = { LOCKER: 3 / 4, SMALL: 5 / 6, MEDIUM: 6 / 10, LARGE: 10 / 12, XLBIZ: 10 / 12 };
 const FP_DEFAULT_ASPECT = 3 / 4;
 
 // Decimal-foot footprint for a unit (fitSqftFootprint, shared with the API's

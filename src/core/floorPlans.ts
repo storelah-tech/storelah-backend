@@ -89,6 +89,7 @@ const SIZE_ASPECT: Record<string, number> = {
   SMALL: 5 / 6,
   MEDIUM: 6 / 10,
   LARGE: 10 / 12,
+  XLBIZ: 10 / 12,
 };
 const DEFAULT_ASPECT = 3 / 4;
 

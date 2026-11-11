@@ -43,6 +43,45 @@ WHERE jsonb_typeof(f."publishedSnapshot"->'placements') = 'array'
   AND EXISTS (SELECT 1 FROM jsonb_array_elements(f."publishedSnapshot"->'placements') e WHERE e #>> '{unit,size,code}' = 'LOCKER')
   AND NOT EXISTS (SELECT 1 FROM "UnitSize" WHERE "code" = 'LOCKER');
 
+-- 4) Promotions — Locker and XS are SEPARATE discount rows (owner
+--    "Separate row"). Existing LOCKER cells priced today's LOCKER units, i.e.
+--    the new XS, so they become XS unchanged; the new LOCKER row starts as a
+--    copy of XS (owner edits it later). Same guard as above (runs once, before
+--    the new LOCKER size exists).
+--    a) legacy XS-variant cells that already have a LOCKER twin are the losing
+--       duplicate under the old XS→LOCKER read rule — drop them;
+DELETE FROM "DiscountMatrixCell" x
+WHERE upper(x."sizeCategory") = 'XS'
+  AND EXISTS (SELECT 1 FROM "DiscountMatrixCell" l WHERE l."planId" = x."planId" AND upper(l."sizeCategory") = 'LOCKER'
+              AND l."accessType" = x."accessType" AND l."commitmentMonths" = x."commitmentMonths")
+  AND NOT EXISTS (SELECT 1 FROM "UnitSize" WHERE "code" = 'LOCKER');
+--    b) remaining XS-variant cells → canonical 'XS';
+UPDATE "DiscountMatrixCell" SET "sizeCategory" = 'XS'
+WHERE upper("sizeCategory") = 'XS' AND "sizeCategory" <> 'XS'
+  AND NOT EXISTS (SELECT 1 FROM "UnitSize" WHERE "code" = 'LOCKER');
+--    c) LOCKER cells → XS (their meaning: the 10–19 units);
+UPDATE "DiscountMatrixCell" SET "sizeCategory" = 'XS'
+WHERE upper("sizeCategory") = 'LOCKER'
+  AND NOT EXISTS (SELECT 1 FROM "UnitSize" WHERE "code" = 'LOCKER');
+--    d) seed the new LOCKER row as a copy of every XS cell;
+INSERT INTO "DiscountMatrixCell" ("id", "planId", "sizeCategory", "accessType", "commitmentMonths", "discountPct")
+SELECT 'dmc_lk_' || md5(c."id"), c."planId", 'LOCKER', c."accessType", c."commitmentMonths", c."discountPct"
+FROM "DiscountMatrixCell" c
+WHERE c."sizeCategory" = 'XS'
+  AND NOT EXISTS (SELECT 1 FROM "UnitSize" WHERE "code" = 'LOCKER')
+ON CONFLICT DO NOTHING;
+--    e) plan size scopes naming LOCKER (or XS) cover both rows: same units as
+--       before (XS) plus the new Locker that copies XS.
+UPDATE "PromotionPlan" p SET "sizeScope" = (
+  SELECT COALESCE(jsonb_agg(e), '[]'::jsonb) || '["LOCKER","XS"]'::jsonb
+  FROM jsonb_array_elements(p."sizeScope") e
+  WHERE upper(e #>> '{}') NOT IN ('LOCKER', 'XS')
+)
+WHERE jsonb_typeof(p."sizeScope") = 'array'
+  AND EXISTS (SELECT 1 FROM jsonb_array_elements(p."sizeScope") e WHERE upper(e #>> '{}') IN ('LOCKER', 'XS'))
+  AND NOT EXISTS (SELECT 1 FROM "UnitSize" WHERE "code" = 'LOCKER');
+-- PromotionVersion snapshots are audit history and are left as written.
+
 INSERT INTO "UnitSize" ("id", "code", "name", "sqftFrom", "sqftTo", "widthFt", "heightFt", "sortOrder", "createdAt", "updatedAt")
 SELECT 'unitsize_locker_8_15', 'LOCKER', 'Locker', 8, 15, 3, 4, 1, NOW(), NOW()
 WHERE NOT EXISTS (SELECT 1 FROM "UnitSize" WHERE "code" = 'LOCKER');

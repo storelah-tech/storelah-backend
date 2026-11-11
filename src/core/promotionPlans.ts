@@ -23,13 +23,15 @@ export const EDITABLE_PLAN_STATUSES: readonly PlanStatus[] = ['DRAFT', 'VALIDATE
 // the SINGLE canonical mapping layer — so XS is retired (LOCKER canonical)
 // without breaking stored rows. The builder UI + public surface always emit
 // canonical codes.
-export const CANONICAL_SIZE_CATEGORIES = ['LOCKER', 'SMALL', 'MEDIUM', 'LARGE', 'XL', 'XXL'] as const;
+// LOCKER = Locker 8–15 and XS = XS 10–19 are SEPARATE discount rows (owner
+// 2026-11-11 "Separate row"); migration 20261111000000_unit_size_ranges moved
+// the pre-existing LOCKER cells (which priced today's XS units) to XS and
+// seeded LOCKER as a copy. Category = unit size code, except XLBIZ → XL.
+export const CANONICAL_SIZE_CATEGORIES = ['LOCKER', 'XS', 'SMALL', 'MEDIUM', 'LARGE', 'XL', 'XXL'] as const;
 export type CanonicalSizeCategory = (typeof CANONICAL_SIZE_CATEGORIES)[number];
 
 const LEGACY_SIZE_ALIASES: Record<string, string> = {
-  // XS (10–19) and LOCKER (8–15) share the LOCKER discount row (XS units were
-  // the LOCKER code before 2026-11-11, so existing plans keep applying).
-  XS: 'LOCKER', LOCKER: 'LOCKER',
+  XS: 'XS', LOCKER: 'LOCKER',
   S: 'SMALL', SMALL: 'SMALL',
   M: 'MEDIUM', MEDIUM: 'MEDIUM',
   L: 'LARGE', LARGE: 'LARGE',
@@ -51,7 +53,7 @@ export function assertCanonicalSizeCategory(raw: unknown): string {
     throw new AppError(
       400,
       'VALIDATION',
-      `Unknown size category "${String(raw)}" — expected one of ${CANONICAL_SIZE_CATEGORIES.join(' / ')} (legacy XS / S / M / L also accepted)`,
+      `Unknown size category "${String(raw)}" — expected one of ${CANONICAL_SIZE_CATEGORIES.join(' / ')} (legacy S / M / L also accepted)`,
     );
   }
   return v;
@@ -1332,7 +1334,7 @@ export async function listActivePublicPromotionPlans() {
       : {}),
     cells: p.matrixCells
       .map((c) => ({
-        // Canonical on the wire; legacy XS rows read as LOCKER.
+        // Canonical on the wire (legacy S / M / L rows read as SMALL / MEDIUM / LARGE).
         sizeCategory: toCanonicalSizeCategory(c.sizeCategory),
         commitmentMonths: c.commitmentMonths,
         discountPct: toNum(c.discountPct),

@@ -2841,7 +2841,7 @@ function initPromoScopeControls() {
 // canonical so pre-unification plans still populate the right row.
 function canonicalSizeCat(raw) {
   var k = String(raw == null ? '' : raw).trim().toUpperCase();
-  var alias = { XS: 'LOCKER', S: 'SMALL', M: 'MEDIUM', L: 'LARGE', XLBIZ: 'XL' };
+  var alias = { S: 'SMALL', M: 'MEDIUM', L: 'LARGE', XLBIZ: 'XL' }; // XS is its own row since 2026-11-11
   return alias[k] || k || raw;
 }
 
@@ -2870,11 +2870,11 @@ async function populateDiscountPanel(plan) {
   }
   const lookup = {};
   (plan.matrixCells || []).forEach(function (c) {
-    // Legacy XS / S / M / L rows (pre-unification) read as canonical LOCKER /
-    // SMALL / MEDIUM / LARGE so old plans populate the LOCKER row.
+    // Legacy S / M / L rows (pre-unification) read as canonical SMALL /
+    // MEDIUM / LARGE. XS is its own row (Locker and XS are separate).
     lookup[canonicalSizeCat(c.sizeCategory) + '|' + c.accessType + '|' + c.commitmentMonths] = c.discountPct;
   });
-  const sizeCategories = ['LOCKER', 'SMALL', 'MEDIUM', 'LARGE', 'XL', 'XXL'];
+  const sizeCategories = ['LOCKER', 'XS', 'SMALL', 'MEDIUM', 'LARGE', 'XL', 'XXL'];
   const commitmentLabels = [1, 3, 6, 12];
   document.querySelectorAll('#promo-discount-matrix .discount-matrix tbody tr').forEach(function (row, ri) {
     if (ri >= sizeCategories.length) return;
@@ -3780,7 +3780,7 @@ function bootPromotions() {
     // Collect matrix cells from the DOM
     var matrixCells = [];
     var matrixRows = document.querySelectorAll('#promo-discount-matrix .discount-matrix tbody tr');
-    var sizeCategories = ['LOCKER', 'SMALL', 'MEDIUM', 'LARGE', 'XL', 'XXL'];
+    var sizeCategories = ['LOCKER', 'XS', 'SMALL', 'MEDIUM', 'LARGE', 'XL', 'XXL'];
     // Discount tiers: 1 / 3 / 6 / 12 months, Standard only = 4 inputs/row.
     var commitmentLabels = [1, 3, 6, 12];
     if (matrixRows.length) {

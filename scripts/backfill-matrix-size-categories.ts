@@ -1,4 +1,9 @@
 /**
+ * RETIRED 2026-11-11 — DO NOT RUN. XS is now its own discount row (Locker
+ * 8–15 = LOCKER, XS 10–19 = XS; migration 20261111000000_unit_size_ranges).
+ * Merging XS cells into LOCKER would erase the separate row, so main() exits
+ * without writing unless --i-know-this-is-retired is passed (kept for history).
+ *
  * Backfill XS → LOCKER size references — idempotent, NO re-seed, NO wipes.
  *
  * Context: the discount-matrix builder used XS/S/M/L/XL/XXL size categories
@@ -33,6 +38,10 @@ const prisma = new PrismaClient();
 const XS_VARIANTS = ['XS', 'xs', 'Xs', 'xS'];
 
 async function main() {
+  if (!process.argv.includes('--i-know-this-is-retired')) {
+    console.log('backfill-matrix-size-categories is retired (XS is a real discount row since 2026-11-11) — nothing written.');
+    return;
+  }
   // --- 1. DiscountMatrixCell XS → LOCKER ---
   const xsCells = await prisma.discountMatrixCell.findMany({
     where: { sizeCategory: { in: XS_VARIANTS } },

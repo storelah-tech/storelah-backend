@@ -132,9 +132,10 @@ describe('size codes — LOCKER (8–15) + XS (10–19, the former LOCKER row)',
     expect(isLockerSize('SMALL')).toBe(false);
   });
 
-  it('promotions read XS and LOCKER as the LOCKER discount row; XLBIZ as XL', async () => {
-    const { toCanonicalSizeCategory } = await import('../../src/core/promotionPlans');
-    expect(toCanonicalSizeCategory('XS')).toBe('LOCKER');
+  it('promotions: LOCKER and XS are separate discount rows; XLBIZ reads as XL', async () => {
+    const { toCanonicalSizeCategory, CANONICAL_SIZE_CATEGORIES } = await import('../../src/core/promotionPlans');
+    expect(CANONICAL_SIZE_CATEGORIES.slice(0, 2)).toEqual(['LOCKER', 'XS']);
+    expect(toCanonicalSizeCategory('xs')).toBe('XS');
     expect(toCanonicalSizeCategory('LOCKER')).toBe('LOCKER');
     expect(toCanonicalSizeCategory('XLBIZ')).toBe('XL');
   });

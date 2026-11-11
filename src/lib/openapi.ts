@@ -30,7 +30,7 @@ export const openapiSpec = {
   openapi: '3.0.3',
   info: {
     title: 'StoreLah Booking API',
-    version: '1.12.0',
+    version: '1.13.0',
     description: [
       'Customer-facing booking API for the StoreLah self-storage business.',
       '',
@@ -394,6 +394,12 @@ export const openapiSpec = {
         '`PUT /cms/site/settings/draft` (`{ doc, rev }`, 409 when stale); publish takes `settings` ' +
         '(default true when `pageIds` is omitted; `{ pageIds: [], settings: true }` = settings only); ' +
         'the bundle gains `settings` + `settingsVersion`, publishes gain `settingsVersion`.',
+      'v1.13.0 is ADDITIVE: unit floor + size are editable. `POST /cms/units` takes `floorId` OR ' +
+        '`floorLevel` (1..8 — a level with no floor on that branch is created as "Level N"); `PUT /cms/units/{code}` ' +
+        'accepts `floorId` / `floorLevel` (same branch) and `sizeId`. Moving a unit that is placed on a floor plan ' +
+        '→ 409 `UNIT_ON_PLAN` (remove it from the plan first). CMS floor-plan reads (`GET /cms/floor-plans/{floorId}` ' +
+        'placements + `unplacedUnits`) gain each unit\'s `lengthFt` / `widthFt`; publishing a resized drawing now ' +
+        'also writes `lengthFt` (drawn y-extent) / `widthFt` (x-extent) onto the unit. Public shapes unchanged.',
     ].join('\n'),
   },
   servers: [

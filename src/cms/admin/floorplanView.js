@@ -9,6 +9,7 @@ import { confirmDialog } from './confirmDialog.js';
 import { get, request, describeError } from './api.js';
 import { state, branchByCode, branchFloors, selectedFacilityName } from './state.js';
 import { notifyMetricsFloorChanged } from './metricsView.js';
+import { sizeRangeLabel } from './constants.js';
 // Shared decimal-feet geometry (generated from src/core/planGeometry.ts — the
 // API runs the same code; regenerate with `pnpm build:admin-geometry`).
 import {
@@ -181,9 +182,16 @@ function sizeFootprint(sizeCode, sqft) {
 }
 
 function unitFootprint(u) {
-  const fp = sizeFootprint(u.sizeCode, u.sqft);
+  const fp = unitBaseFootprint(u);
   // Palette orientation toggle for rectangular footprints (placement-time only).
   return state.fp.ghostRotated ? { w: fp.h, h: fp.w } : fp;
+}
+
+function unitBaseFootprint(u) {
+  // The unit's own L × W (Units module) wins: width = x-extent, length =
+  // y-extent (same convention as the new-unit popover and the publish sync).
+  // Legacy rows without dims fall back to the size-tier estimate.
+  return u.lengthFt > 0 && u.widthFt > 0 ? { w: u.widthFt, h: u.lengthFt } : sizeFootprint(u.sizeCode, u.sqft);
 }
 
 // Overlap policy: REJECT. Client pre-check mirroring the server's 409
@@ -525,10 +533,18 @@ function fpNormalizeUnit(u) {
     sizeCode: u.size && u.size.code,
     sizeName: u.size && u.size.name,
     sqft: u.sqft,
+    lengthFt: Number(u.lengthFt) > 0 ? Number(u.lengthFt) : null,
+    widthFt: Number(u.widthFt) > 0 ? Number(u.widthFt) : null,
     status: String(u.status || '').toUpperCase(),
     hasAC: u.hasAC === true,
     hasPillar: u.hasPillar === true,
   };
+}
+
+// Operator-facing unit number: the display name (server already falls back
+// to unitCode). unitCode stays the internal key for lookups and map cells.
+function fpUnitNo(u) {
+  return (u && (u.name || u.unitCode)) || '';
 }
 
 function fpNormalizePlacements(plan) {
@@ -1127,8 +1143,11 @@ function fpRenderPalette() {
     ? (visible.length
       ? visible
         .map((u) => {
-          const fp = unitFootprint(u);
-          return `<div class="fp-unit-chip" data-unit-id="${escapeHtml(u.id)}" title="${escapeHtml(u.unitCode)} · ${u.sqft} sqft — drag onto the canvas">${escapeHtml(u.unitCode)}<div class="t-type">${escapeHtml(u.sizeName)} · ${u.sqft} sqft · ${fp.w}×${fp.h} ft</div></div>`;
+          const fp = unitBaseFootprint(u);
+          const no = fpUnitNo(u);
+          // L × W = length (y-extent) × width (x-extent), as entered in Units.
+          const lw = `L ${formatFt(fp.h)} × W ${formatFt(fp.w)} ft`;
+          return `<div class="fp-unit-chip" data-unit-id="${escapeHtml(u.id)}" title="Unit ${escapeHtml(no)} · ${u.sqft} sqft · ${lw} — drag onto the canvas">Unit ${escapeHtml(no)}<div class="t-type">${escapeHtml(u.sizeName)} · ${u.sqft} sqft · ${lw}</div></div>`;
         })
         .join('')
       : '<div class="fp-hint">No unplaced units match this AC filter.</div>')
@@ -7136,7 +7155,7 @@ function fpOpenNewUnitForm(r) {
   const opts = (state.sizes || [])
     .slice()
     .sort((x, y) => (x.sortOrder || 0) - (y.sortOrder || 0))
-    .map((sz) => `<option value="${escapeHtml(sz.id)}"${sz.id === tier.size.id ? ' selected' : ''}>${escapeHtml(sz.name)} (${sz.sqftFrom === sz.sqftTo ? sz.sqftFrom : `${sz.sqftFrom}–${sz.sqftTo}`} sqft)</option>`)
+    .map((sz) => `<option value="${escapeHtml(sz.id)}"${sz.id === tier.size.id ? ' selected' : ''}>${escapeHtml(sizeRangeLabel(sz))}</option>`)
     .join('');
   const pop = document.createElement('form');
   pop.id = 'fpNewUnitPop';

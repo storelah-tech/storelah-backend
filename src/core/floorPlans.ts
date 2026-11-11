@@ -154,12 +154,15 @@ type PlacementUnit = {
   status: string;
   hasAC?: boolean | null;
   hasPillar?: boolean | null;
+  // Physical dims (decimal ft) from the Units module; null on legacy rows.
+  lengthFt?: number | null;
+  widthFt?: number | null;
   size: { code: string; name: string };
 };
 
 // ---------- serializers ----------
 
-function serializeUnitSummary(u: PlacementUnit) {
+function serializeUnitSummary(u: PlacementUnit, opts: { publicView?: boolean } = {}) {
   return {
     id: u.id,
     unitCode: u.unitCode,
@@ -172,7 +175,26 @@ function serializeUnitSummary(u: PlacementUnit) {
     hasAC: u.hasAC ?? false,
     hasPillar: u.hasPillar ?? false,
     size: { code: u.size.code, name: u.size.name },
+    // CMS-only: the unit's own length × width (decimal ft) so the designer
+    // shows / places the real footprint instead of a size-tier estimate.
+    // Public reads keep the pre-existing shape (booking output unchanged).
+    ...(opts.publicView ? {} : { lengthFt: u.lengthFt ?? null, widthFt: u.widthFt ?? null }),
   };
+}
+
+/**
+ * Footprint (decimal ft, w = x-extent, h = y-extent) for placing a unit: its
+ * own widthFt × lengthFt when both are recorded, else the sqft/size-tier
+ * estimate (sqftFootprint). Mirrors unitFootprint in the CMS editor.
+ */
+export function unitDimsFootprint(u: {
+  sqft: number;
+  lengthFt?: number | null;
+  widthFt?: number | null;
+  size: { code: string; widthFt?: number | null; heightFt?: number | null };
+}): { w: number; h: number } {
+  if (u.lengthFt && u.lengthFt > 0 && u.widthFt && u.widthFt > 0) return { w: u.widthFt, h: u.lengthFt };
+  return sqftFootprint(u.sqft, u.size.code, u.size.widthFt, u.size.heightFt);
 }
 
 function serializePlacement(
@@ -196,7 +218,7 @@ function serializePlacement(
     ...(opts.publicView ? {} : { doorOffsets: doorOffsetsToObject(p.doorOffsets) }),
     // Floor-plan unit sync: drawn area differs from Unit.sqft and will sync on publish.
     areaDirty: p.areaDirty === true,
-    unit: serializeUnitSummary(p.unit),
+    unit: serializeUnitSummary(p.unit, opts),
   };
 }
 
@@ -1049,7 +1071,7 @@ export async function getFloorPlan(floorId: string) {
     canvasDefaults: CANVAS_DEFAULTS,
     floor: { id: floor.id, level: floor.level, name: floor.name },
     branch: { id: floor.branchId, code: floor.branch.code, name: floor.branch.name },
-    unplacedUnits: unplacedUnits.map(serializeUnitSummary),
+    unplacedUnits: unplacedUnits.map((u) => serializeUnitSummary(u)),
   };
 }
 
@@ -1198,7 +1220,7 @@ async function refreshSnapshotUnits(
   const placements = (snap.placements || []).flatMap((pl) => {
     const u = live.get(pl.unit.id);
     if (!u || u.deletedAt || u.floorId !== floor.id || u.status === 'INACTIVE' || u.status === 'DRAFT') return [];
-    return [{ ...pl, unit: serializeUnitSummary(u as unknown as PlacementUnit) }];
+    return [{ ...pl, unit: serializeUnitSummary(u as unknown as PlacementUnit, { publicView: true }) }];
   });
   return {
     ...snap,
@@ -1402,7 +1424,7 @@ export async function reconcileUnitSizes(floorId: string, items: ReadonlyArray<{
       await markDraft(plan.id);
     } else {
       const u = row.unit;
-      const fp = sqftFootprint(u.sqft, u.size.code, u.size.widthFt, u.size.heightFt);
+      const fp = unitDimsFootprint(u);
       const landscape = row.width >= row.height;
       const [w, h] = landscape === fp.w >= fp.h ? [fp.w, fp.h] : [fp.h, fp.w];
       await setUnitPlacement(floorId, item.unitId, { x: row.x, y: row.y, width: w, height: h });
@@ -1724,11 +1746,18 @@ function draftResize(
   unit: { id: string; sqft: number; sizeId: string; monthlyRate: Prisma.Decimal | number },
   geom: { width: number; height: number },
   sizes: readonly SizeTierRow[],
-): { id: string; sqft: number; sizeId: string; monthlyRate: number } | null {
+): { id: string; sqft: number; sizeId: string; monthlyRate: number; lengthFt: number; widthFt: number } | null {
   const sqft = sqftForRect(geom);
   if (sameSqft(sqft, unit.sqft)) return null;
   const tier = resolveSizeTier(sizes, unit.sizeId, sqft);
-  return { id: unit.id, sqft, sizeId: tier?.size.id ?? unit.sizeId, monthlyRate: keepPsfRate(toNum(unit.monthlyRate), unit.sqft, sqft) };
+  return {
+    id: unit.id,
+    sqft,
+    sizeId: tier?.size.id ?? unit.sizeId,
+    monthlyRate: keepPsfRate(toNum(unit.monthlyRate), unit.sqft, sqft),
+    lengthFt: geom.height,
+    widthFt: geom.width,
+  };
 }
 
 export interface BlockInput {
@@ -2297,7 +2326,7 @@ export async function applyFloorPlanBatch(floorId: string, input: FloorPlanBatch
   const creates = input.create?.units ?? [];
   const needSizes = creates.length > 0 || (up.placements ?? []).length > 0;
   const sizes = needSizes ? await loadSizeTiers() : [];
-  const draftUpdates: Array<{ id: string; sqft: number; sizeId: string; monthlyRate: number }> = [];
+  const draftUpdates: Array<{ id: string; sqft: number; sizeId: string; monthlyRate: number; lengthFt: number; widthFt: number }> = [];
   // areaDirty undefined = leave the stored flag (demoted uppers keep their rect).
   const placementWrites: Array<{ unitId: string; x: number; y: number; width: number; height: number; stackTier: 0 | 1; doorEdges: string | null | undefined; doorOffsets: DoorOffsets | null | undefined; areaDirty?: boolean }> = [];
   const upUnitIds = (up.placements ?? []).map((p) => p.unitId);
@@ -2499,6 +2528,9 @@ export async function applyFloorPlanBatch(floorId: string, input: FloorPlanBatch
             unitCode: String(next++),
             name: r.name,
             sqft: r.sqft,
+            // Drawn rect → recorded L × W (length = y-extent, width = x-extent).
+            lengthFt: r.geom.height,
+            widthFt: r.geom.width,
             monthlyRate: r.monthlyRate,
             status: 'DRAFT',
             hasAC: r.hasAC,

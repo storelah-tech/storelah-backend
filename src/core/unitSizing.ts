@@ -128,9 +128,9 @@ export type SizeTierRow = { id: string; code: string; name: string; sqftFrom: nu
 /**
  * Size tier for `sqft` (D4, revised in Phase 2): the tier whose sqft band is
  * NEAREST to the new area (distance 0 = inside the band); ties keep the
- * current tier, then lowest sortOrder. Bands are often single points in
- * practice (prisma/seed.ts seeds sqftFrom = sqftTo, and no CMS screen edits
- * them), so "no band covers it" is the norm and must not block — `inBand`
+ * current tier, then lowest sortOrder. Owner bands (2026-11-11: LOCKER 8–15,
+ * SMALL 20–40, MEDIUM 50–80, LARGE 100–150) leave gaps and may overlap, so
+ * "no band covers it" is normal and must not block — `inBand`
  * tells the review UI to flag the pick as "nearest". null only when no
  * size tiers exist at all.
  */

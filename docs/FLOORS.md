@@ -97,3 +97,15 @@ colours mirror the psf-chart size series):
   counts (hover = by-status breakdown). The existing size filter (`All sizes` +
   each size, populated from `GET /sizes`) now shows live counts per option and
   composes with the branch/level tabs (server-side `?size=`).
+
+
+## Units form floor choices (2026-11-11)
+
+The Add / Edit Unit form offers **Level 1 – Level 8** for the unit's facility
+(`UNIT_FLOOR_LEVELS` in `src/core/units.ts`). A level that already has a Floor
+row submits its `floorId`; a level without one submits `floorLevel` and
+`POST|PUT /cms/units` creates it on demand (active, name `Level N`). Inactive
+floors are listed but disabled (still refused server-side), except a unit's
+own floor on edit. Floor moves stay within the unit's facility; a unit that is
+placed on a floor plan must be removed from the plan first
+(409 `UNIT_ON_PLAN`). Size category is editable on edit too.

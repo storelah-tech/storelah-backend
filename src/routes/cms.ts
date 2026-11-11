@@ -22,6 +22,7 @@ import {
   getUnitActivity,
   unitImportTemplateCsv,
   importUnits,
+  UNIT_FLOOR_LEVELS,
 } from '../core/units';
 import {
   listFloors,
@@ -306,9 +307,15 @@ const adjustRateSchema = z.object({
 
 const unitDimSchema = z.number().positive().max(1000);
 
+// Floor level choices offered by the Units form (Level 1..8); see
+// UNIT_FLOOR_LEVELS / resolveUnitFloor in src/core/units.ts.
+const unitFloorLevelSchema = z.number().int().min(1).max(UNIT_FLOOR_LEVELS);
+
 const createUnitSchema = z.object({
   branchId: z.string().min(1),
-  floorId: z.string().min(1),
+  // One of floorId (existing floor) or floorLevel (1..8; created on demand).
+  floorId: z.string().min(1).optional(),
+  floorLevel: unitFloorLevelSchema.optional(),
   sizeId: z.string().min(1),
   // Dimensions in decimal feet: when lengthFt + widthFt are both given the
   // server derives sqft = length × width and sqft may be omitted.
@@ -325,12 +332,19 @@ const createUnitSchema = z.object({
   hasPillar: z.boolean().optional(),
   name: z.string().trim().max(80).optional(),
 }).superRefine((v, ctx) => {
+  if (v.floorId === undefined && v.floorLevel === undefined) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['floorId'], message: 'Required (or send floorLevel)' });
+  }
   if (v.sqft !== undefined) return;
   if (v.lengthFt === undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['lengthFt'], message: 'Required (or send sqft)' });
   if (v.widthFt === undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['widthFt'], message: 'Required (or send sqft)' });
 });
 
 const updateUnitSchema = z.object({
+  // Floor (same facility) and size category are editable after create.
+  floorId: z.string().min(1).optional(),
+  floorLevel: unitFloorLevelSchema.optional(),
+  sizeId: z.string().min(1).optional(),
   sqft: z.number().positive().optional(),
   lengthFt: unitDimSchema.nullable().optional(),
   widthFt: unitDimSchema.nullable().optional(),

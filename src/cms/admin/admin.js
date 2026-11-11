@@ -18,7 +18,7 @@ import {
 } from './tenantsView.js';
 import {
   setRefreshAll as unitsSetRefreshAll, setRefsLoader as unitsSetRefsLoader,
-  fetchUnitsPage, showUnitDetail, getSelectedUnitCode, gotoUnitHistory, onUnitSizeChange, onUnitDimsInput,
+  fetchUnitsPage, showUnitDetail, getSelectedUnitCode, gotoUnitHistory, onUnitSizeChange, onUnitDimsInput, markUnitDimsEdited,
   populateFloorSelect, populateUnitLevelFilter, openCreateForm, openEditForm, closeUnitModal,
   submitUnitForm, deleteUnit, importUnitsFile, openRateForm, closeRateModal, submitRateForm,
 } from './unitsView.js';
@@ -4436,6 +4436,7 @@ function wireEvents() {
   $('#deleteUnitBtn')?.addEventListener('click', () => { const code = getSelectedUnitCode(); if (code) deleteUnit(code); });
   $('#f-branch')?.addEventListener('change', (e) => populateFloorSelect(e.target.value));
   $('#f-size')?.addEventListener('change', onUnitSizeChange);
+  ['#f-length', '#f-width'].forEach((sel) => $(sel)?.addEventListener('input', markUnitDimsEdited));
   ['#f-length', '#f-width', '#f-height'].forEach((sel) => $(sel)?.addEventListener('input', onUnitDimsInput));
   $('#unitsTable')?.addEventListener('click', (e) => {
     const btn = e.target.closest('button[data-act]');

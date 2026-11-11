@@ -5,7 +5,7 @@
 // target; the entry registers refreshAll()/loadRefs() via the setters below
 // because views must never import the entry module.
 
-import { STATUS_TONE, STATUS_LABEL, fmtMoney, fmtDay, fmtDateTime, BOOKING_TONE, INVOICE_TONE, HIST_STAGE_TONE, HIST_STAGE_LABEL, HISTORY_EMPTY_TEXT } from './constants.js';
+import { STATUS_TONE, STATUS_LABEL, sizeRangeLabel, fmtMoney, fmtDay, fmtDateTime, BOOKING_TONE, INVOICE_TONE, HIST_STAGE_TONE, HIST_STAGE_LABEL, HISTORY_EMPTY_TEXT } from './constants.js';
 import { $, $$, escapeHtml, timeAgo, showBanner } from './dom.js';
 import { confirmDialog } from './confirmDialog.js';
 import { ApiError, request, get, post, del, describeError } from './api.js';
@@ -28,6 +28,7 @@ export function setRefsLoader(fn) {
 // ---------- unit/rate form state (create vs edit) ----------
 let mode = 'create'; // 'create' | 'edit'
 let currentEditCode = null;
+let editOrig = null; // edit mode: { floorId, sizeId, unitNo } as loaded
 let rateTargetCode = null;
 
 // ---------- normalization (list vs detail collapse) ----------
@@ -82,8 +83,7 @@ function renderUnitsTable() {
       const blocked = u.status === 'INACTIVE';
       const guarded = u.status === 'OCCUPIED' || u.status === 'OVERDUE' || u.status === 'RESERVED';
       return `<tr data-code="${u.code}" class="${blocked ? 'row-blocked' : ''}">
-        <td><strong>${u.code}</strong></td>
-        <td>${escapeHtml(u.name)}</td>
+        <td><strong>${escapeHtml(u.name)}</strong></td>
         <td>${u.sizeName || '—'}${u.sizeCode ? `<div class="t-type">${u.sizeCode}</div>` : ''}</td>
         <td>${u.branchCode || '—'}</td>
         <td>${u.level ? 'Level ' + u.level : '—'}</td>
@@ -149,7 +149,7 @@ export function populateUnitSizeFilter() {
   if (!sel) return;
   const current = state.unitSizeFilter || '';
   sel.innerHTML = '<option value="">All sizes</option>' +
-    state.sizes.map((s) => `<option value="${escapeHtml(s.code)}">${escapeHtml(s.name)}</option>`).join('');
+    state.sizes.map((s) => `<option value="${escapeHtml(s.code)}">${escapeHtml(sizeRangeLabel(s))}</option>`).join('');
   sel.value = [...sel.options].some((o) => o.value === current) ? current : '';
   state.unitSizeFilter = sel.value;
 }
@@ -317,7 +317,6 @@ export async function showUnitDetail(code) {
     if (badges) {
       badges.innerHTML = `
         <span class="badge ${STATUS_TONE[u.status] || 'neutral'}">● ${STATUS_LABEL[u.status] || u.status}</span>
-        ${u.name !== u.code ? `<span class="badge neutral">${escapeHtml(u.code)}</span>` : ''}
         ${u.sqft ? `<span class="badge terra">${u.sqft} sq ft</span>` : ''}
         ${u.branchName && u.level ? `<span class="badge neutral">Level ${u.level} · ${u.branchName}</span>` : ''}
         <span class="badge neutral">${u.hasAC ? 'AC' : 'Non-AC'}</span>
@@ -349,7 +348,8 @@ export async function showUnitDetail(code) {
         ? u.sizeCode +
             (u.sqft ? ' · ' + u.sqft + ' sq ft' : '') +
             (u.lengthFt && u.widthFt ? ` · ${u.lengthFt}×${u.widthFt}${u.heightFt ? '×' + u.heightFt : ''} ft` : '') +
-            (u.placement ? ` · drawn ${u.placement.widthFt}×${u.placement.heightFt}${u.placement.areaDirty ? ' (Δ on publish)' : ''}` : '') +
+            // L × W everywhere: drawn length = plan y-extent (heightFt), width = x-extent.
+            (u.placement ? ` · drawn ${u.placement.heightFt}×${u.placement.widthFt}${u.placement.areaDirty ? ' (Δ on publish)' : ''}` : '') +
             (lastSize ? ` · was ${lastSize.previous}` : '')
         : '—',
     );
@@ -907,32 +907,51 @@ function populateBranchSelect(selected) {
   if (selected) sel.value = selected;
 }
 
+// Floor choices: Level 1..UNIT_FLOOR_LEVELS for the chosen facility. Option
+// values are a Floor id when the level exists, else `level:N` (the API
+// creates "Level N" on demand — floorLevel in POST/PUT /units). Inactive
+// floors are listed but disabled (POST /units refuses them; reactivate via
+// Floors) — except the unit's own floor in edit mode, which stays selectable
+// so the form never strands an existing unit.
+const UNIT_FLOOR_LEVELS = 8;
 export function populateFloorSelect(branchId, selected) {
   const sel = $('#f-floor');
   if (!sel) return;
-  // Level selectors show ACTIVE floors only: inactive (hidden) floors are not
-  // selectable here (POST /units refuses them) and are reactivated via the
-  // Floors management list, which keeps showing all rows.
-  const floors = state.floors
-    .filter((f) => f.branchId === branchId && f.isActive !== false)
-    .sort((a, c) => a.level - c.level);
-  // Edit mode: the unit's own floor stays selectable (labelled) even if it
-  // was deactivated after the unit was created — the form never strands an
-  // existing unit. Create mode (no `selected`) lists active floors only.
-  const current = selected ? state.floors.find((f) => f.id === selected) : null;
-  const rows = current && current.isActive === false && !floors.some((f) => f.id === current.id)
-    ? [...floors, current].sort((a, c) => a.level - c.level)
-    : floors;
-  sel.innerHTML = rows.length
-    ? rows.map((f) => `<option value="${f.id}">Level ${f.level} (${f.branch.code})${f.isActive === false ? ' — inactive' : ''}</option>`).join('')
-    : '<option value="">No active floors — reactivate one in Floors</option>';
-  if (selected && rows.some((f) => f.id === selected)) sel.value = selected;
+  const floors = state.floors.filter((f) => f.branchId === branchId);
+  const maxLevel = Math.max(UNIT_FLOOR_LEVELS, ...floors.map((f) => f.level));
+  const opts = [];
+  for (let level = 1; level <= maxLevel; level++) {
+    const f = floors.find((x) => x.level === level);
+    if (!f) {
+      if (level <= UNIT_FLOOR_LEVELS) opts.push(`<option value="level:${level}">Level ${level}</option>`);
+      continue;
+    }
+    const inactive = f.isActive === false;
+    const own = selected && f.id === selected;
+    opts.push(
+      `<option value="${f.id}"${inactive && !own ? ' disabled' : ''}>Level ${f.level}${inactive ? ' — inactive (activate in Floors)' : ''}</option>`,
+    );
+  }
+  sel.innerHTML = opts.join('');
+  if (selected && floors.some((f) => f.id === selected)) sel.value = selected;
+  else {
+    const first = [...sel.options].find((o) => !o.disabled);
+    if (first) sel.value = first.value;
+  }
+}
+
+// #f-floor value → API fields (floorId for an existing floor, floorLevel for
+// a level that has no Floor row yet).
+function floorFieldFromSelect() {
+  const v = $('#f-floor').value;
+  if (!v) return {};
+  return v.startsWith('level:') ? { floorLevel: Number(v.slice(6)) } : { floorId: v };
 }
 
 function populateSizeSelect(selected) {
   const sel = $('#f-size');
   sel.innerHTML = state.sizes
-    .map((s) => `<option value="${s.id}">${s.name} (${s.code}) · ${s.sqftFrom}–${s.sqftTo} sqft</option>`)
+    .map((s) => `<option value="${s.id}">${sizeRangeLabel(s)}</option>`)
     .join('');
   if (selected) sel.value = selected;
 }
@@ -950,7 +969,7 @@ function populateStatusSelect(mode, selected) {
 // length × width, so a manual tier pick only stops the area → tier auto-pick.
 let sizeTouched = false;
 export function onUnitSizeChange() {
-  if (mode === 'create') sizeTouched = true;
+  sizeTouched = true;
 }
 
 // ---------- dimensions → area ----------
@@ -966,6 +985,12 @@ function readDim(sel) {
 }
 
 let legacySqft = null; // edit mode: stored sqft for a unit without dimensions
+// Edit mode: the size tier auto-follows length × width only once the operator
+// edits a dimension (opening the form never re-tiers an existing unit).
+let dimsEdited = false;
+export function markUnitDimsEdited() {
+  dimsEdited = true;
+}
 let planOwned = false;
 
 // Bound by the entry on input of #f-length / #f-width / #f-height.
@@ -976,9 +1001,12 @@ export function onUnitDimsInput() {
   const hint = $('#f-dimsHint');
   const area = l > 0 && w > 0 ? round2(l * w) : null;
   $('#f-sqft').value = area != null ? String(area) : legacySqft != null ? String(legacySqft) : '';
-  if (area != null && mode === 'create' && !sizeTouched) {
-    // Auto-pick the size tier whose sqft band covers the area.
-    const tier = state.sizes.find((s) => area >= s.sqftFrom && area <= s.sqftTo);
+  if (area != null && !sizeTouched && (mode === 'create' || dimsEdited)) {
+    // Auto-pick the size tier NEAREST the area (inside a band = distance 0).
+    // Owner bands leave gaps and may overlap — same rule as the server's
+    // resolveSizeTier (ties: lowest sortOrder).
+    const dist = (s) => (area < s.sqftFrom ? s.sqftFrom - area : area > s.sqftTo ? area - s.sqftTo : 0);
+    const tier = state.sizes.slice().sort((a, b) => dist(a) - dist(b) || (a.sortOrder || 0) - (b.sortOrder || 0))[0];
     if (tier) $('#f-size').value = tier.id;
   }
   if (!hint) return;
@@ -1017,6 +1045,7 @@ function showFormAlert(msg) {
 const FIELD_ID = {
   branchId: 'branch',
   floorId: 'floor',
+  floorLevel: 'floor',
   sizeId: 'size',
   sqft: 'sqft',
   lengthFt: 'length',
@@ -1055,6 +1084,7 @@ export async function openCreateForm() {
   populateSizeSelect();
   populateStatusSelect('create');
   sizeTouched = false;
+  dimsEdited = false;
   legacySqft = null;
   planOwned = false;
   setDimInputs(null);
@@ -1075,7 +1105,9 @@ export async function openEditForm(code) {
     const u = normalizeUnit(d);
     mode = 'edit';
     currentEditCode = u.code;
-    $('#unitModalTitle').textContent = `Edit Unit — ${u.code}`;
+    sizeTouched = false;
+    dimsEdited = false;
+    $('#unitModalTitle').textContent = `Edit Unit — ${u.name}`;
     $('#unitModalHint').hidden = false;
     populateBranchSelect(u.branchId);
     populateFloorSelect(u.branchId, u.floorId);
@@ -1094,10 +1126,10 @@ export async function openEditForm(code) {
     $('#f-monthlyRate').value = u.rate ?? '';
     $('#f-hasAC').value = u.hasAC ? 'yes' : 'no';
     $('#f-hasPillar').value = u.hasPillar ? 'yes' : 'no';
-    $('#f-name').value = u.name && u.name !== u.code ? u.name : '';
+    // Unit no. = the display name (falls back to the auto-assigned number).
+    $('#f-name').value = u.name || u.code;
+    editOrig = { floorId: u.floorId, sizeId: u.sizeId, unitNo: u.name || u.code };
     $('#f-branch').disabled = true;
-    $('#f-floor').disabled = true;
-    $('#f-size').disabled = true;
     $('#unitFormSubmit').textContent = 'Save Changes';
     clearFieldErrors();
     $('#unitModal').hidden = false;
@@ -1109,22 +1141,22 @@ export async function openEditForm(code) {
 export function closeUnitModal() {
   $('#unitModal').hidden = true;
   $('#f-branch').disabled = false;
-  $('#f-floor').disabled = false;
-  $('#f-size').disabled = false;
   $('#f-length').disabled = false;
   $('#f-width').disabled = false;
   $('#f-length').title = '';
   $('#f-width').title = '';
   planOwned = false;
+  editOrig = null;
   clearFieldErrors();
 }
 
 export async function submitUnitForm(e) {
   e.preventDefault();
   clearFieldErrors();
+  const floorField = floorFieldFromSelect();
   const body = {
     branchId: $('#f-branch').value,
-    floorId: $('#f-floor').value,
+    ...floorField,
     sizeId: $('#f-size').value,
     sqft: Number($('#f-sqft').value),
     lengthFt: readDim('#f-length'),
@@ -1139,7 +1171,7 @@ export async function submitUnitForm(e) {
   if (nm) body.name = nm;
 
   // client-side pre-checks (mirror zod)
-  if (!body.branchId || !body.floorId || !body.sizeId) {
+  if (!body.branchId || !(body.floorId || body.floorLevel) || !body.sizeId) {
     showFormAlert('Branch, floor and size are required.');
     return;
   }
@@ -1177,13 +1209,17 @@ export async function submitUnitForm(e) {
     if (mode === 'create') {
       const { sqft: _area, ...createBody } = body; // server derives sqft = length × width
       const res = await request('/units', { method: 'POST', body: JSON.stringify(createBody) });
-      showBanner(`Created ${res.data.code}`, true);
+      showBanner(`Created unit ${res.data.name || res.data.code}`, true);
     } else {
       // PUT /units/:code accepts sqft / monthlyRate / status / hasAC / hasPillar / name.
       // Name: non-empty → set it; empty → name: null (clears back to the unit code).
       // Dimensions: length/width (when present and not plan-owned) re-derive
       // sqft server-side; otherwise the stored sqft is re-sent (a no-op).
       const patch = {
+        // Floor / size only when changed (a placed unit's floor move is
+        // refused server-side with UNIT_ON_PLAN until it leaves the plan).
+        ...(editOrig && (body.floorLevel || body.floorId !== editOrig.floorId) ? floorField : {}),
+        ...(editOrig && body.sizeId !== editOrig.sizeId ? { sizeId: body.sizeId } : {}),
         sqft: planOwned && legacySqft != null ? legacySqft : body.sqft,
         ...(!planOwned && body.lengthFt != null ? { lengthFt: body.lengthFt, widthFt: body.widthFt } : {}),
         heightFt: body.heightFt,
@@ -1191,12 +1227,17 @@ export async function submitUnitForm(e) {
         status: body.status,
         hasAC: body.hasAC,
         hasPillar: body.hasPillar,
-        name: nm ? nm : null,
+        // Unit no.: blank or the auto number → clear the label (falls back to
+        // the auto number); anything else is stored as the unit number.
+        name: nm && nm !== currentEditCode ? nm : null,
       };
       await request(`/units/${encodeURIComponent(currentEditCode)}`, { method: 'PUT', body: JSON.stringify(patch) });
-      showBanner(`Updated ${currentEditCode}`, true);
+      showBanner(`Updated unit ${nm || currentEditCode}`, true);
     }
     closeUnitModal();
+    // A Level N picked without a Floor row was created server-side — reload
+    // the floor refs so the new level shows up everywhere (Floors, designer).
+    if (body.floorLevel && loadRefs) await loadRefs().catch(() => {});
     await refreshAll();
   } catch (err) {
     renderFieldErrors(err);

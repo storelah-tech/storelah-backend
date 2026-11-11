@@ -12,7 +12,10 @@ type UnitWithRelations = Prisma.UnitGetPayload<{
 
 export interface CreateUnitInput {
   branchId: string;
-  floorId: string;
+  // Floor: an existing Floor id, or a level number (1..UNIT_FLOOR_LEVELS) —
+  // a level with no Floor row yet on that branch is created ("Level N").
+  floorId?: string;
+  floorLevel?: number;
   sizeId: string;
   // Optional when lengthFt AND widthFt are given (sqft is then derived).
   sqft?: number;
@@ -31,6 +34,11 @@ export interface CreateUnitInput {
 }
 
 export interface UpdateUnitInput {
+  // Floor / size are editable after create (owner 2026-11-11). Floor moves
+  // stay within the unit's branch; a placed unit must leave its plan first.
+  floorId?: string;
+  floorLevel?: number;
+  sizeId?: string;
   sqft?: number;
   // null clears a dimension; length/width changes re-derive sqft.
   lengthFt?: number | null;
@@ -342,24 +350,65 @@ export async function listPublicUnits(query: PublicUnitsQuery = {}) {
   };
 }
 
-export async function createUnit(input: CreateUnitInput) {
-  const [branch, floor, size] = await Promise.all([
-    prisma.branch.findUnique({ where: { id: input.branchId } }),
-    prisma.floor.findUnique({ where: { id: input.floorId } }),
-    prisma.unitSize.findUnique({ where: { id: input.sizeId } }),
-  ]);
-  if (!branch) throw new AppError(400, 'VALIDATION', `Branch ${input.branchId} not found`);
-  if (!floor) throw new AppError(400, 'VALIDATION', `Floor ${input.floorId} not found`);
-  if (!size) throw new AppError(400, 'VALIDATION', `Unit size ${input.sizeId} not found`);
+// ---------- floor resolution (create / edit) ----------
+//
+// The Units form offers Level 1..UNIT_FLOOR_LEVELS for the unit's facility.
+// A level that has no Floor row yet is created on demand (active, "Level N")
+// so operators never have to visit Floors first; an existing inactive floor
+// is still refused (units on it would be invisible — docs/FLOORS.md) unless
+// it is the unit's current floor.
+export const UNIT_FLOOR_LEVELS = 8;
+
+async function resolveUnitFloor(
+  branchId: string,
+  sel: { floorId?: string; floorLevel?: number },
+  opts: { currentFloorId?: string } = {},
+) {
+  let floor;
+  if (sel.floorId !== undefined) {
+    floor = await prisma.floor.findUnique({ where: { id: sel.floorId } });
+    if (!floor) throw new AppError(400, 'VALIDATION', `Floor ${sel.floorId} not found`);
+  } else if (sel.floorLevel !== undefined) {
+    const level = sel.floorLevel;
+    if (!Number.isInteger(level) || level < 1 || level > UNIT_FLOOR_LEVELS) {
+      throw new AppError(400, 'VALIDATION', `floorLevel must be an integer 1..${UNIT_FLOOR_LEVELS}`);
+    }
+    floor =
+      (await prisma.floor.findUnique({ where: { branchId_level: { branchId, level } } })) ??
+      (await prisma.floor
+        .create({ data: { branchId, level, name: `Level ${level}` } })
+        .catch(async (err) => {
+          // Concurrent create of the same (branch, level) — re-read the winner.
+          const again = await prisma.floor.findUnique({ where: { branchId_level: { branchId, level } } });
+          if (again) return again;
+          throw err;
+        }));
+  } else {
+    throw new AppError(400, 'VALIDATION', 'Provide floorId or floorLevel');
+  }
+  if (floor.branchId !== branchId) {
+    throw new AppError(400, 'VALIDATION', `Floor ${floor.name} belongs to another facility`);
+  }
   // Units on an inactive floor would be invisible to the frontend — refuse so
   // operators activate the floor first (see docs/FLOORS.md).
-  if (!floor.isActive) {
+  if (!floor.isActive && floor.id !== opts.currentFloorId) {
     throw new AppError(
       400,
       'VALIDATION',
-      `Floor ${input.floorId} is inactive — activate it before adding units`,
+      `Floor ${floor.name} is inactive — activate it before adding units`,
     );
   }
+  return floor;
+}
+
+export async function createUnit(input: CreateUnitInput) {
+  const [branch, size] = await Promise.all([
+    prisma.branch.findUnique({ where: { id: input.branchId } }),
+    prisma.unitSize.findUnique({ where: { id: input.sizeId } }),
+  ]);
+  if (!branch) throw new AppError(400, 'VALIDATION', `Branch ${input.branchId} not found`);
+  if (!size) throw new AppError(400, 'VALIDATION', `Unit size ${input.sizeId} not found`);
+  const floor = await resolveUnitFloor(input.branchId, { floorId: input.floorId, floorLevel: input.floorLevel });
 
   // 4-digit codegen: next free code above the MAX 4-digit code across ALL
   // rows (deliberately no deletedAt filter — codes of soft-deleted units are
@@ -396,7 +445,7 @@ export async function createUnit(input: CreateUnitInput) {
   const unit = await prisma.unit.create({
     data: {
       branchId: input.branchId,
-      floorId: input.floorId,
+      floorId: floor.id,
       sizeId: input.sizeId,
       unitCode,
       name: input.name?.trim() || null,
@@ -440,12 +489,42 @@ export async function updateUnit(code: string, input: UpdateUnitInput) {
     );
   }
 
+  // Floor move (same facility). A placed unit belongs to its floor's plan —
+  // moving it would strand the drawing, so it must be removed from the plan
+  // first. Re-sending the current floor is a no-op.
+  let nextFloorId: string | undefined;
+  if (input.floorId !== undefined || input.floorLevel !== undefined) {
+    const floor = await resolveUnitFloor(
+      unit.branchId,
+      { floorId: input.floorId, floorLevel: input.floorLevel },
+      { currentFloorId: unit.floorId },
+    );
+    if (floor.id !== unit.floorId) {
+      if (unit.placement) {
+        throw new AppError(
+          409,
+          'UNIT_ON_PLAN',
+          `Unit ${code} is placed on its current floor's plan — remove it from the Floor Plan Designer before moving it to ${floor.name}.`,
+        );
+      }
+      nextFloorId = floor.id;
+    }
+  }
+  // Size category: an explicit operator choice (any tier). Publishing a floor
+  // plan may re-tier a resized unit by its drawn sqft (unitSizeSync).
+  if (input.sizeId !== undefined && input.sizeId !== unit.sizeId) {
+    const size = await prisma.unitSize.findUnique({ where: { id: input.sizeId }, select: { id: true } });
+    if (!size) throw new AppError(400, 'VALIDATION', `Unit size ${input.sizeId} not found`);
+  }
+
   // name is optional display label only: undefined = not provided (leave unchanged),
   // null or empty string = explicit clear (display name falls back to unitCode).
   // climateControl is legacy accept-but-map: still stored for backwards compat,
   // and mapped onto hasAC when the caller doesn't set hasAC explicitly.
   const mappedAC = climateControlToHasAC(input.climateControl ?? undefined);
   const data: Prisma.UnitUpdateInput = {
+    ...(nextFloorId ? { floor: { connect: { id: nextFloorId } } } : {}),
+    ...(input.sizeId !== undefined && input.sizeId !== unit.sizeId ? { size: { connect: { id: input.sizeId } } } : {}),
     sqft: nextSqft,
     ...(input.lengthFt !== undefined ? { lengthFt: nextLength } : {}),
     ...(input.widthFt !== undefined ? { widthFt: nextWidth } : {}),

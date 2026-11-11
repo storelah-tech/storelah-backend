@@ -60,6 +60,17 @@ All endpoints are under `/api/v1/cms` (admin, Bearer JWT) unless noted.
 
 ## UI behavior (admin dashboard)
 
+> **2026-11-11 (owner): one "Unit no." in the UI.** Operators see a single
+> **Unit no.** — the display name (`name ?? unitCode`). The separate Code
+> column/badge is gone from the Units table and detail panel, and the Floor
+> Plan Designer's drag-and-drop list shows `Unit <no.>`. `unitCode` is
+> unchanged underneath: still the immutable 4-digit key for URLs, lookups,
+> booking (`Lead.unitCode`, `/public/units`) and map cells (rule 2). The form
+> field `#f-name` is labelled **Unit no.**; on edit it is pre-filled with the
+> current unit no., and saving it blank or equal to the code clears the label
+> back to the code fallback. The bullets below describe the pre-2026-11-11 UI
+> and remain true for the API.
+
 - **Add Unit form** — a `Name (optional)` text input (`#f-name`) with placeholder
   "Defaults to unit code". On create the trimmed value is sent **only when
   non-empty**; otherwise the unit is created unnamed and displays its code.

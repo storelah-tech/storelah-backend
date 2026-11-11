@@ -127,3 +127,15 @@ export function fmtDateTime(iso) {
   if (isNaN(d.getTime())) return '—';
   return d.toLocaleString('en-SG', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
+
+// One label for a size category everywhere the CMS lists sizes:
+// "Locker · 8–15 sq ft" (a single-value range reads "· 12 sq ft"). The range
+// comes from UnitSize.sqftFrom/sqftTo (GET /sizes), so editing the catalogue
+// updates every picker at once.
+export function sizeRangeLabel(s) {
+  if (!s) return '';
+  const from = Number(s.sqftFrom);
+  const to = Number(s.sqftTo);
+  const range = Number.isFinite(from) && Number.isFinite(to) ? (from === to ? `${from}` : `${from}–${to}`) : '';
+  return `${s.name}${range ? ` · ${range} sq ft` : ''}`;
+}

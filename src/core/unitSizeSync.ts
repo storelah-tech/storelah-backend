@@ -61,7 +61,7 @@ export interface SizeSyncPlan {
   token: string;
   changes: SizeSyncChange[];
   /** Dirty placements whose drawn sqft already matches Unit.sqft (< SQFT_EPSILON) — flag is just cleared. */
-  unchanged: Array<{ unitId: string; unitCode: string }>;
+  unchanged: Array<{ unitId: string; unitCode: string; widthFt?: number; heightFt?: number }>;
   /** DRAFT units on this floor's plan — promoted to AVAILABLE on publish. */
   newUnits: Array<{ unitId: string; unitCode: string; sqft: number; size: { code: string; name: string }; rate: number }>;
   blockers: SizeSyncBlocker[];
@@ -131,7 +131,7 @@ export async function buildSizeSyncPlan(
     }
     const newSqft = sqftForRect(p);
     if (sameSqft(newSqft, u.sqft)) {
-      out.unchanged.push({ unitId: u.id, unitCode: u.unitCode });
+      out.unchanged.push({ unitId: u.id, unitCode: u.unitCode, widthFt: p.width, heightFt: p.height });
       continue;
     }
     const reason = contracted.get(u.id);
@@ -236,7 +236,12 @@ export async function applySizeSync(
   for (const c of plan.changes) {
     const newSize = c.newSize!; // no blockers ⇒ every change has a tier
     const newRate = rateFor(c, choiceBy.get(c.unitId));
-    await tx.unit.update({ where: { id: c.unitId }, data: { sqft: c.newSqft, sizeId: newSize.id, monthlyRate: newRate } });
+    // L × W follow the drawing too (length = plan y-extent, width = x-extent),
+    // so the Units module never shows dimensions that disagree with sqft.
+    await tx.unit.update({
+      where: { id: c.unitId },
+      data: { sqft: c.newSqft, sizeId: newSize.id, monthlyRate: newRate, lengthFt: c.heightFt, widthFt: c.widthFt },
+    });
     await tx.unitAreaChange.create({
       data: {
         unitId: c.unitId,
@@ -273,6 +278,19 @@ export async function applySizeSync(
       oldRate: c.oldRate,
       newRate,
     });
+  }
+  // Same-area reshapes (e.g. 8×5 redrawn as 10×4): sqft is unchanged but the
+  // recorded L × W must still follow the drawing. A pure rotation (same pair,
+  // swapped) keeps the operator's stored orientation.
+  for (const u of plan.unchanged) {
+    if (u.widthFt == null || u.heightFt == null) continue;
+    const row = await tx.unit.findUnique({ where: { id: u.unitId }, select: { lengthFt: true, widthFt: true } });
+    if (!row) continue;
+    const same = (a: number | null, b: number) => a != null && Math.abs(a - b) < 0.005;
+    const matches =
+      (same(row.lengthFt, u.heightFt) && same(row.widthFt, u.widthFt)) ||
+      (same(row.lengthFt, u.widthFt) && same(row.widthFt, u.heightFt));
+    if (!matches) await tx.unit.update({ where: { id: u.unitId }, data: { lengthFt: u.heightFt, widthFt: u.widthFt } });
   }
   const touched = [...plan.changes.map((c) => c.unitId), ...plan.unchanged.map((u) => u.unitId)];
   if (touched.length) await tx.unitPlacement.updateMany({ where: { unitId: { in: touched } }, data: { areaDirty: false } });

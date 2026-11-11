@@ -8,6 +8,7 @@ import { $, escapeHtml, showBanner } from './dom.js';
 import { get, post, put, patch, del, describeError, getMe } from './api.js';
 import { confirmDialog } from './confirmDialog.js';
 import { state } from './state.js';
+import { sizeRangeLabel } from './constants.js';
 
 const fmtMoney = (n) => '$' + Number(n || 0).toLocaleString('en-SG', { maximumFractionDigits: 2 });
 
@@ -41,9 +42,9 @@ export async function bindFeesSection() {
   const body = $('#feesBody');
   if (!body) return;
   fillSelect($('#ff-branch'), state.branches, (b) => `${b.name} (${b.code})`);
-  fillSelect($('#ff-size'), state.sizes, (s) => `${s.name} (${s.code})`);
+  fillSelect($('#ff-size'), state.sizes, (s) => sizeRangeLabel(s));
   fillSelect($('#fr-branch'), state.branches, (b) => `${b.name} (${b.code})`);
-  fillSelect($('#fr-size'), state.sizes, (s) => `${s.name} (${s.code})`);
+  fillSelect($('#fr-size'), state.sizes, (s) => sizeRangeLabel(s));
   fillSelect($('#ff-tenant'), await getTenantsCache(), (t) => `${t.name}${t.unit ? ' · ' + t.unit : ''}`);
   try {
     const rows = (await get('/fees')) || [];

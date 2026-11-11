@@ -7,6 +7,7 @@
 import { $, $$, escapeHtml, showBanner } from './dom.js';
 import { ApiError, get, post, patch, downloadFile, describeError } from './api.js';
 import { state } from './state.js';
+import { sizeRangeLabel } from './constants.js';
 import { confirmDialog } from './confirmDialog.js';
 
 const fmtMoney = (n) => n == null ? '—' : '$' + Number(n).toLocaleString('en-SG', { maximumFractionDigits: 2 });
@@ -548,7 +549,7 @@ async function loadQuoteCatalogs() {
   const sizeSel = $('#qf-size');
   if (sizeSel) {
     sizeSel.innerHTML = '<option value="">— Any size —</option>' + (state.sizes || [])
-      .map((z) => `<option value="${escapeHtml(z.code)}">${escapeHtml(z.name)} · ${z.sqftFrom === z.sqftTo ? z.sqftFrom : z.sqftFrom + '–' + z.sqftTo} sqft</option>`)
+      .map((z) => `<option value="${escapeHtml(z.code)}">${escapeHtml(sizeRangeLabel(z))}</option>`)
       .join('');
   }
   const planSel = $('#qf-protectionTier');

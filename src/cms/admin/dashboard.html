@@ -498,6 +498,7 @@ main{min-width:0;display:flex;flex-direction:column;min-height:100vh}
    ribbon + tinted size chip carry the size. Unknown sizes fall back to grey. */
 .u-cell[class*="size-"]::after{content:"";position:absolute;top:-1.5px;left:10px;right:10px;height:4px;border-radius:0 0 3px 3px;background:var(--size-ribbon,#8a8478)}
 .u-cell.size-LOCKER{--size-ribbon:#c97952;--size-soft:#f7e8dd;--size-ink:#9a5a34}
+.u-cell.size-XS{--size-ribbon:#d99a73;--size-soft:#f9ede4;--size-ink:#9a5a34}
 .u-cell.size-SMALL{--size-ribbon:#526557;--size-soft:#e3e9e4;--size-ink:#3c4c40}
 .u-cell.size-MEDIUM{--size-ribbon:#334437;--size-soft:#dde4dd;--size-ink:#26332a}
 .u-cell.size-LARGE{--size-ribbon:#e5a84b;--size-soft:#faf0da;--size-ink:#8a6420}
@@ -511,7 +512,7 @@ main{min-width:0;display:flex;flex-direction:column;min-height:100vh}
    which beats the flat .unit-grid rules above — including the max-width:760
    5-col rule — so no !important is used anywhere in this block. Inner cells
    reuse .u-cell markup/classes untouched (status fill/dot + size ribbon). */
-.unit-grid.map-grouped{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;width:100%}
+.unit-grid.map-grouped{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;width:100%}
 .map-col{min-width:0;background:var(--cream);border:1px solid var(--line);border-radius:10px;padding:10px;display:flex;flex-direction:column;gap:8px}
 .map-col-hdr{display:flex;align-items:center;gap:6px;font-size:11px;font-weight:800;color:var(--ink);white-space:nowrap}
 .map-col-count{margin-left:auto;font-size:10px;font-weight:800;color:var(--muted);background:var(--white);border:1px solid var(--line);border-radius:20px;padding:1px 8px}
@@ -1742,7 +1743,7 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
                   <tr><th>1 month</th><th>3 months</th><th>6 months</th><th>12 months</th></tr>
                 </thead>
                 <tbody>
-                  <tr><td class="rowhead">LOCKER · 10–19 sqft</td><td><input value="15%"></td><td><input class="mid" value="20%"></td><td><input class="hot" value="40%"></td><td><input class="hot" value="45%"></td></tr>
+                  <tr><td class="rowhead">LOCKER + XS · 8–19 sqft</td><td><input value="15%"></td><td><input class="mid" value="20%"></td><td><input class="hot" value="40%"></td><td><input class="hot" value="45%"></td></tr>
                   <tr><td class="rowhead">SMALL · 20–39 sqft</td><td><input value="15%"></td><td><input class="mid" value="20%"></td><td><input class="hot" value="40%"></td><td><input class="hot" value="45%"></td></tr>
                   <tr><td class="rowhead">MEDIUM · 40–69 sqft</td><td><input value="10%"></td><td><input value="15%"></td><td><input class="mid" value="20%"></td><td><input class="mid" value="30%"></td></tr>
                   <tr><td class="rowhead">LARGE · 70–99 sqft</td><td><input value="8%"></td><td><input value="10%"></td><td><input value="15%"></td><td><input class="mid" value="20%"></td></tr>

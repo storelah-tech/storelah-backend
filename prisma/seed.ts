@@ -19,11 +19,12 @@ const SIZES = {
   // backfill so fresh seeds and migrated DBs agree. Area == sqft exactly.
   // from/to = booking Step-1 ranges (migration 20261111000000_unit_size_ranges);
   // sqft = the typical unit seeded in that category.
-  LOCKER: { name: 'Locker', sqft: 12, from: 10, to: 19, psf: 5.2, sort: 1, w: 3, h: 4 },
-  SMALL: { name: 'Small', sqft: 30, from: 20, to: 39, psf: 4.8, sort: 2, w: 5, h: 6 },
-  MEDIUM: { name: 'Medium', sqft: 60, from: 40, to: 69, psf: 4.4, sort: 3, w: 6, h: 10 },
-  LARGE: { name: 'Large', sqft: 120, from: 70, to: 99, psf: 3.8, sort: 4, w: 10, h: 12 },
-  XLBIZ: { name: 'Extra large', sqft: 120, from: 100, to: 150, psf: 3.8, sort: 5, w: 10, h: 12 },
+  LOCKER: { name: 'Locker', sqft: 12, from: 8, to: 15, psf: 5.2, sort: 1, w: 3, h: 4 },
+  XS: { name: 'XS', sqft: 12, from: 10, to: 19, psf: 5.2, sort: 2, w: 3, h: 4 },
+  SMALL: { name: 'Small', sqft: 30, from: 20, to: 39, psf: 4.8, sort: 3, w: 5, h: 6 },
+  MEDIUM: { name: 'Medium', sqft: 60, from: 40, to: 69, psf: 4.4, sort: 4, w: 6, h: 10 },
+  LARGE: { name: 'Large', sqft: 80, from: 70, to: 99, psf: 3.8, sort: 5, w: 8, h: 10 },
+  XLBIZ: { name: 'Extra large', sqft: 120, from: 100, to: 150, psf: 3.8, sort: 6, w: 10, h: 12 },
 } as const;
 type SizeKey = keyof typeof SIZES;
 
@@ -55,7 +56,7 @@ function genSeeds(_branch: string): Record<number, U[]> {
     const level = Number(lv);
     const arr: U[] = [];
     for (let i = 0; i < 60; i++) {
-      const sizeOrder: SizeKey[] = ['SMALL', 'MEDIUM', 'SMALL', 'LOCKER', 'LARGE', 'MEDIUM', 'SMALL', 'LOCKER', 'MEDIUM', 'SMALL'];
+      const sizeOrder: SizeKey[] = ['SMALL', 'MEDIUM', 'SMALL', 'XS', 'LARGE', 'MEDIUM', 'SMALL', 'LOCKER', 'MEDIUM', 'XLBIZ'];
       const size = sizeOrder[i % sizeOrder.length];
       const psf = Math.round((SIZES[size].psf + 0.08 * Math.sin(i * 1.5)) * 100) / 100;
       // Status distribution: ~60% AVAILABLE, ~20% RESERVED, ~20% OCCUPIED

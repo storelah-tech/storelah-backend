@@ -123,3 +123,19 @@ describe('floor plan — L × W', () => {
     expect(await prisma.unit.findUniqueOrThrow({ where: { id } })).toMatchObject({ lengthFt: 12.5, widthFt: 4, sqft: 50 });
   });
 });
+
+describe('size codes — LOCKER (8–15) + XS (10–19, the former LOCKER row)', () => {
+  it('both LOCKER and XS are locker-class for stacking', async () => {
+    const { isLockerSize } = await import('../../src/core/floorPlans');
+    expect(isLockerSize('LOCKER')).toBe(true);
+    expect(isLockerSize('xs')).toBe(true);
+    expect(isLockerSize('SMALL')).toBe(false);
+  });
+
+  it('promotions read XS and LOCKER as the LOCKER discount row; XLBIZ as XL', async () => {
+    const { toCanonicalSizeCategory } = await import('../../src/core/promotionPlans');
+    expect(toCanonicalSizeCategory('XS')).toBe('LOCKER');
+    expect(toCanonicalSizeCategory('LOCKER')).toBe('LOCKER');
+    expect(toCanonicalSizeCategory('XLBIZ')).toBe('XL');
+  });
+});

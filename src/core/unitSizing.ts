@@ -170,7 +170,8 @@ export async function loadSizeTiers(): Promise<SizeTierRow[]> {
 export function assertStackedLockerTier(unitCode: string, currentSizeId: string, geom: Rect, sizes: readonly SizeTierRow[]): void {
   const sqft = sqftForRect(geom);
   const tier = resolveSizeTier(sizes, currentSizeId, sqft);
-  if (tier && tier.size.code.toUpperCase() !== 'LOCKER') {
+  const code = tier ? tier.size.code.toUpperCase() : '';
+  if (tier && code !== 'LOCKER' && code !== 'XS') {
     throw new AppError(
       400,
       'VALIDATION',

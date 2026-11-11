@@ -124,7 +124,7 @@ function renderKpis(r) {
     statCard('GFA to UFA Efficiency (%)', pct(g.gfaToUfaEfficiencyPct), 'UFA / GFA'),
     statCard('UFA to NLA Efficiency (%)', pct(g.ufaToNlaEfficiencyPct), 'NLA / UFA'),
     statCard('Overall Units', groupVal(ug.overall), 'all sizes · nominal sqft'),
-    statCard('Locker Units', groupVal(groupByKey('locker')), 'LOCKER'),
+    statCard('Locker + XS Units', groupVal(groupByKey('locker')), 'LOCKER · XS'),
     statCard('XS units', groupVal(groupByKey('xs')), 'SMALL'),
     statCard('M Units', groupVal(groupByKey('m')), 'MEDIUM'),
     statCard('L Units', groupVal(groupByKey('l')), 'LARGE'),

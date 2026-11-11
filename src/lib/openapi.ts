@@ -399,7 +399,10 @@ export const openapiSpec = {
         'accepts `floorId` / `floorLevel` (same branch) and `sizeId`. Moving a unit that is placed on a floor plan ' +
         '→ 409 `UNIT_ON_PLAN` (remove it from the plan first). CMS floor-plan reads (`GET /cms/floor-plans/{floorId}` ' +
         'placements + `unplacedUnits`) gain each unit\'s `lengthFt` / `widthFt`; publishing a resized drawing now ' +
-        'also writes `lengthFt` (drawn y-extent) / `widthFt` (x-extent) onto the unit. Public shapes unchanged.',
+        'also writes `lengthFt` (drawn y-extent) / `widthFt` (x-extent) onto the unit. Size catalogue (data): ' +
+        'LOCKER "Locker" 8–15 (new meaning), XS "XS" 10–19 (the former LOCKER row, re-coded), SMALL 20–39, ' +
+        'MEDIUM 40–69, LARGE 70–99, XLBIZ "Extra large" 100–150; promotions read XS as LOCKER and XLBIZ as XL; ' +
+        'stacking accepts LOCKER and XS. Public shapes unchanged.',
     ].join('\n'),
   },
   servers: [
@@ -5388,7 +5391,7 @@ export const openapiSpec = {
         properties: {
           sizeCategory: {
             type: 'string',
-            description: 'Size category (LOCKER / SMALL / MEDIUM / LARGE / XL / XXL; legacy XS reads as LOCKER).',
+            description: 'Size category (LOCKER / SMALL / MEDIUM / LARGE / XL / XXL; XS reads as LOCKER, XLBIZ as XL).',
           },
           commitmentMonths: {
             type: 'integer',

@@ -27,6 +27,8 @@ export const CANONICAL_SIZE_CATEGORIES = ['LOCKER', 'SMALL', 'MEDIUM', 'LARGE', 
 export type CanonicalSizeCategory = (typeof CANONICAL_SIZE_CATEGORIES)[number];
 
 const LEGACY_SIZE_ALIASES: Record<string, string> = {
+  // XS (10–19) and LOCKER (8–15) share the LOCKER discount row (XS units were
+  // the LOCKER code before 2026-11-11, so existing plans keep applying).
   XS: 'LOCKER', LOCKER: 'LOCKER',
   S: 'SMALL', SMALL: 'SMALL',
   M: 'MEDIUM', MEDIUM: 'MEDIUM',

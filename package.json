@@ -26,6 +26,7 @@
     "db:backfill-blocks": "tsx scripts/backfill-floor-plan-blocks.ts",
     "db:backfill-footprints": "tsx scripts/backfill-placement-footprints.ts",
     "db:backfill-matrix-sizes": "tsx scripts/backfill-matrix-size-categories.ts",
+    "db:retier-units-dry-run": "tsx scripts/retier-units-dry-run.ts",
     "db:studio": "prisma studio",
     "build:admin-geometry": "tsx scripts/build-admin-geometry.ts",
     "singpass:keys": "tsx scripts/singpass-generate-keys.ts"

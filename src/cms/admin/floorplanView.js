@@ -153,6 +153,7 @@ function fpBlockFill(blk) {
 // unknown size codes fall through to the aspect formula.
 const FP_SIZE_DIMS = {
   LOCKER: { w: 3, h: 4 },
+  XS: { w: 3, h: 4 },
   SMALL: { w: 5, h: 6 },
   MEDIUM: { w: 6, h: 10 },
   LARGE: { w: 10, h: 12 },
@@ -160,7 +161,7 @@ const FP_SIZE_DIMS = {
 };
 // Per-size width/height aspects (w/h) for the fallback; chosen to reproduce
 // the catalogue footprints exactly. Mirrors SIZE_ASPECT in src/core/floorPlans.ts.
-const FP_SIZE_ASPECT = { LOCKER: 3 / 4, SMALL: 5 / 6, MEDIUM: 6 / 10, LARGE: 10 / 12, XLBIZ: 10 / 12 };
+const FP_SIZE_ASPECT = { LOCKER: 3 / 4, XS: 3 / 4, SMALL: 5 / 6, MEDIUM: 6 / 10, LARGE: 10 / 12, XLBIZ: 10 / 12 };
 const FP_DEFAULT_ASPECT = 3 / 4;
 
 // Decimal-foot footprint for a unit (fitSqftFootprint, shared with the API's
@@ -225,7 +226,7 @@ function fpSameRect(a, b) {
 }
 
 function fpIsLockerPlacement(p) {
-  return String(p.sizeCode || '').toUpperCase() === 'LOCKER';
+  return ['LOCKER', 'XS'].includes(String(p.sizeCode || '').toUpperCase());
 }
 
 // The other tier on the same rect, if any (a rect holds at most one pair).
@@ -393,7 +394,7 @@ function fpSameSqft(a, b) {
 // Mirrors of the server rules so the new-unit form can preview what the API
 // will create: MARKET_PSF (src/core/market.ts), defaultRateFor and the
 // nearest-tier rule resolveSizeTier (src/core/unitSizing.ts).
-const FP_MARKET_PSF = { LOCKER: 5.2, SMALL: 4.8, MEDIUM: 4.4, LARGE: 3.8 };
+const FP_MARKET_PSF = { LOCKER: 5.2, XS: 5.2, SMALL: 4.8, MEDIUM: 4.4, LARGE: 3.8 };
 function fpDefaultRate(sizeCode, sqft) {
   const psf = FP_MARKET_PSF[String(sizeCode || '').toUpperCase()] ?? Math.min(...Object.values(FP_MARKET_PSF));
   return Math.round(psf * sqft * 100) / 100;
@@ -3834,7 +3835,7 @@ function fpSetDoorMoveMode(on) {
 // selected block's rect — i.e. units that could stack onto it as upper tier.
 function fpStackCandidates(pl) {
   return state.fp.unplaced.filter((u) => {
-    if (String(u.sizeCode || '').toUpperCase() !== 'LOCKER') return false;
+    if (!['LOCKER', 'XS'].includes(String(u.sizeCode || '').toUpperCase())) return false;
     const fp = sizeFootprint(u.sizeCode, u.sqft);
     return (ftEquals(fp.w, pl.width) && ftEquals(fp.h, pl.height)) || (ftEquals(fp.w, pl.height) && ftEquals(fp.h, pl.width));
   });
@@ -4879,7 +4880,7 @@ async function fpPlaceUnit(unit, footprint, gx, gy) {
   }
   let x = clampFt(gx, 0, cw - footprint.w);
   let y = clampFt(gy, 0, ch - footprint.h);
-  const unitIsLocker = String(unit.sizeCode || '').toUpperCase() === 'LOCKER';
+  const unitIsLocker = ['LOCKER', 'XS'].includes(String(unit.sizeCode || '').toUpperCase());
   // Snap-to-stack: a dropped locker overlapping a lone ground locker of the
   // identical footprint snaps onto its exact rect so the Stack offer is precise.
   if (unitIsLocker) {

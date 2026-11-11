@@ -38,6 +38,7 @@ export const MAP_TONE = {
 // (Locker terracotta, Small green, Medium dark green, Large gold).
 export const SIZE_COLOR = {
   LOCKER: '#c97952',
+  XS: '#d99a73',
   SMALL: '#526557',
   MEDIUM: '#334437',
   LARGE: '#e5a84b',
@@ -46,6 +47,7 @@ export const SIZE_COLOR = {
 
 export const SIZE_CLASS = {
   LOCKER: 'size-LOCKER',
+  XS: 'size-XS',
   SMALL: 'size-SMALL',
   MEDIUM: 'size-MEDIUM',
   LARGE: 'size-LARGE',

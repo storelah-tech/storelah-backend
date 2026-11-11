@@ -111,11 +111,12 @@ export interface FacilitySizeGroupDef {
 }
 
 export const FACILITY_SIZE_GROUPS: readonly FacilitySizeGroupDef[] = [
-  { key: 'locker', label: 'Locker', sizeCodes: ['LOCKER'] },
+  // LOCKER = new 8–15 Locker; XS = the pre-2026-11-11 LOCKER row (10–19).
+  { key: 'locker', label: 'Locker + XS', sizeCodes: ['LOCKER', 'XS'] },
   { key: 'xs', label: 'XS', sizeCodes: ['SMALL'] },
   { key: 'm', label: 'M', sizeCodes: ['MEDIUM'] },
   { key: 'l', label: 'L', sizeCodes: ['LARGE'] },
-  { key: 'xl', label: 'XL (Extra Large)', sizeCodes: [] },
+  { key: 'xl', label: 'XL (Extra Large)', sizeCodes: ['XLBIZ'] },
 ] as const;
 
 export const XL_MISSING_CODE_NOTE =
@@ -209,7 +210,7 @@ export function buildUnitGroups(units: Array<{ sizeCode: string | null | undefin
       areaSharePct: overallArea > 0 ? round1((groupArea / overallArea) * 100) : 0,
     };
   });
-  return { overall: { units: overallUnits, areaSqft: overallArea }, groups, notes: [XL_MISSING_CODE_NOTE] };
+  return { overall: { units: overallUnits, areaSqft: overallArea }, groups, notes: FACILITY_SIZE_GROUPS.some((g) => g.key === 'xl' && g.sizeCodes.length) ? [] : [XL_MISSING_CODE_NOTE] };
 }
 
 function decimalToCents(v: Prisma.Decimal | number | null | undefined): bigint {
@@ -535,7 +536,7 @@ export async function getFloorMetrics(floorId: string): Promise<FloorMetricsRepo
     ...placed.map((p) => ({
       id: `u-${p.unit.id}`,
       label: p.unit.unitCode,
-      kind: (String(p.unit.size.code).toUpperCase() === 'LOCKER' ? 'LOCKER' : 'UNIT_STORAGE') as RegionKind,
+      kind: (['LOCKER', 'XS'].includes(String(p.unit.size.code).toUpperCase()) ? 'LOCKER' : 'UNIT_STORAGE') as RegionKind,
       xFeet: p.x,
       yFeet: p.y,
       wFeet: p.width,

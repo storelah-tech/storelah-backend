@@ -12,11 +12,11 @@
  *      LOCKER. If a LOCKER counterpart already exists for the same
  *      (planId, accessType, commitmentMonths) unique key, the XS duplicate is
  *      deleted (canonical LOCKER wins); otherwise the row is updated.
- *   2. UnitSize rows with code XS (any case): renamed to LOCKER (expected to
- *      be zero rows — catalogue seeds are already LOCKER/SMALL/MEDIUM/LARGE;
- *      a collision with an existing LOCKER row aborts with a manual note).
- *   3. Asserts zero XS size references remain (case-insensitive) and exits
- *      non-zero otherwise.
+ *   2. (Removed 2026-11-11 — UnitSize code XS is now a real size, see
+ *      migration 20261111000000_unit_size_ranges. UnitSize rows are never
+ *      touched.)
+ *   3. Asserts zero XS discount-matrix cells remain and exits non-zero
+ *      otherwise.
  *
  * PromotionVersion snapshots are audit history and are intentionally left
  * untouched — restore paths re-canonicalize on write.
@@ -64,30 +64,18 @@ async function main() {
     }
   }
 
-  // --- 2. UnitSize code XS → LOCKER (expected: none) ---
-  const xsSizes = await prisma.unitSize.findMany({
-    where: { code: { in: XS_VARIANTS } },
-    select: { id: true, code: true },
-  });
-  let sizesRenamed = 0;
-  for (const s of xsSizes) {
-    const locker = await prisma.unitSize.findUnique({ where: { code: 'LOCKER' } });
-    if (locker) {
-      throw new Error(
-        `UnitSize ${s.id} still uses code "${s.code}" and a LOCKER row already exists — repoint its units manually, then re-run.`,
-      );
-    }
-    await prisma.unitSize.update({ where: { id: s.id }, data: { code: 'LOCKER' } });
-    sizesRenamed++;
-  }
+  // --- 2. (removed 2026-11-11) UnitSize XS is now a REAL size code — the
+  // former LOCKER row re-coded by migration 20261111000000_unit_size_ranges
+  // (XS 10–19; LOCKER = the new 8–15 Locker). This script must never rename
+  // UnitSize rows; only discount-matrix cells are canonicalized (XS → LOCKER
+  // discount row, which still covers XS units).
+  const sizesRenamed = 0;
 
   // --- 3. Orphan assertion ---
   const orphanCells = await prisma.discountMatrixCell.count({
     where: { sizeCategory: { in: XS_VARIANTS } },
   });
-  const orphanSizes = await prisma.unitSize.count({
-    where: { code: { in: XS_VARIANTS } },
-  });
+  const orphanSizes = 0; // UnitSize XS is legitimate since 2026-11-11
   console.log(
     `matrix-size backfill: cells updated=${updated} deduped=${deduped} sizes renamed=${sizesRenamed} orphanXS(cells=${orphanCells}, sizes=${orphanSizes})`,
   );

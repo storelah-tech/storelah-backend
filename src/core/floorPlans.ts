@@ -86,6 +86,7 @@ export { AREA_TOLERANCE };
 // footprints' proportions: LOCKER 3/4, SMALL 5/6, MEDIUM 6/10, LARGE 10/12.
 const SIZE_ASPECT: Record<string, number> = {
   LOCKER: 3 / 4,
+  XS: 3 / 4,
   SMALL: 5 / 6,
   MEDIUM: 6 / 10,
   LARGE: 10 / 12,
@@ -1098,9 +1099,11 @@ export interface PlacementGeometry {
 // Only tiers 0 and 1 exist — lockers stack at most 2 high (upper + lower).
 
 // Stacking is lockers-only (per owner): both units sharing a rect must be
-// LOCKER size. Compared case-insensitively against the UnitSize code.
-function isLockerSize(sizeCode: string | null | undefined): boolean {
-  return String(sizeCode || '').toUpperCase() === 'LOCKER';
+// locker-class — LOCKER (8–15 sq ft) or XS (10–19; the pre-2026-11-11 LOCKER
+// row, whose stacked pairs must keep working). Case-insensitive on the code.
+export function isLockerSize(sizeCode: string | null | undefined): boolean {
+  const c = String(sizeCode || '').toUpperCase();
+  return c === 'LOCKER' || c === 'XS';
 }
 
 function checkStackTier(tier: number): 0 | 1 {
@@ -1532,7 +1535,7 @@ export async function setUnitPlacement(floorId: string, unitId: string, input: P
       throw new AppError(
         400,
         'VALIDATION',
-        `Cannot stack ${unit.unitCode} with ${ground.unit.unitCode} at ${rectLabel} — stacking is lockers-only (both units must be LOCKER size)`,
+        `Cannot stack ${unit.unitCode} with ${ground.unit.unitCode} at ${rectLabel} — stacking is lockers-only (both units must be Locker or XS size)`,
       );
     }
   } else {
@@ -1549,7 +1552,7 @@ export async function setUnitPlacement(floorId: string, unitId: string, input: P
       throw new AppError(
         400,
         'VALIDATION',
-        `Cannot share rect ${rectLabel} with ${upper.unit.unitCode} — stacking is lockers-only (both units must be LOCKER size)`,
+        `Cannot share rect ${rectLabel} with ${upper.unit.unitCode} — stacking is lockers-only (both units must be Locker or XS size)`,
       );
     }
     if (sameRect.length > 1) {

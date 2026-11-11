@@ -77,9 +77,15 @@ export async function listBranches() {
 }
 
 // P1 item 1: portfolio rollup across facilities + the per-facility cards in
-// one fetch for the admin portfolio view. Computed only.
+// one fetch for the admin portfolio view. Computed only. Only ACTIVE
+// facilities list here: an INACTIVE branch is retired (hidden from every
+// public read — see listPublicBranches) and must not inflate portfolio
+// totals. GET /branches (listBranches above, unfiltered) remains the
+// management surface where INACTIVE facilities stay visible. meta reports
+// how many were excluded so the UI can say so honestly.
 export async function getPortfolio() {
-  const facilities = await listBranches();
+  const all = await listBranches();
+  const facilities = all.filter((f) => f.status === 'ACTIVE');
   const totalUnits = facilities.reduce((s, f) => s + f.totalUnits, 0);
   const leasedUnits = facilities.reduce((s, f) => s + f.leasedUnits, 0);
   const totalSqft = facilities.reduce((s, f) => s + f.totalSqft, 0);
@@ -98,6 +104,7 @@ export async function getPortfolio() {
       mrr,
     },
     facilities,
+    meta: { excludedInactive: all.length - facilities.length },
   };
 }
 

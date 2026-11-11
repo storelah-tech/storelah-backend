@@ -332,7 +332,7 @@ async function assertNoOpenQuotation(input: Pick<CreateQuotationInput, 'email' |
 // manual typing. An operator-supplied amount is kept as-is (negotiated
 // manual discounts without a code keep working); plans (DISCOUNT_MATRIX /
 // FREE_MONTHS no-code auto-apply) live in checkout and are untouched here.
-async function resolveQuotationPromo(input: {
+export async function resolveQuotationPromo(input: {
   promoCode?: string | null;
   promoDiscountAmt?: number | null;
   monthlyRate?: number | null;

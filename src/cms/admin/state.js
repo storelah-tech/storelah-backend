@@ -59,6 +59,13 @@ export const state = {
   commandPeriod: 'all',
   analyticsDate: { from: null, to: null },
   analyticsPeriod: 'all',
+  // Forecast-vs-actuals + promotions performance presets (same contract:
+  // { from, to } as YYYY-MM-DD or null; 'all' default = unfiltered, so the
+  // default view's requests/read model are unchanged).
+  financePerfDate: { from: null, to: null },
+  financePerfPeriod: 'all',
+  promoPerfDate: { from: null, to: null },
+  promoPerfPeriod: 'all',
   // pipeline-view state
   pipelineFilter: '', // '' = all pipelines, otherwise a branch code
   // inbox-view state (real conversation threads from GET /conversations)

@@ -32,6 +32,7 @@ small,.pill,.tag,.badge,.trend,.metric-note,.mention-hint,.v2-field>span,.v2-car
 .v29-field textarea{min-height:92px;resize:vertical}
 .v29-field input:focus,.v29-field select:focus,.v29-field textarea:focus{border-color:var(--terra);box-shadow:0 0 0 3px #c9795220}
 .v29-field input[readonly]{background:#f1eee8;color:#555b54}
+.v29-field>small.v29-hint{font-size:12px;color:var(--muted);min-height:0}.v29-field>small.v29-hint:empty{display:none}
 .v29-help{font-size:13px;color:var(--muted);line-height:1.45}
 .v29-callout{display:flex;gap:11px;align-items:flex-start;padding:13px 15px;border-radius:12px;background:#edf2eb;border:1px solid #cfddcc;margin-bottom:15px}
 .v29-callout.warn{background:#fff4e3;border-color:#efd7ac}

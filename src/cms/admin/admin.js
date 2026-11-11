@@ -7,6 +7,7 @@ import { applySidebar, applyUser, pageAllowed, firstAllowedPage, canView, watchA
 import { confirmDialog } from './confirmDialog.js';
 import { state, ensureActiveLevel, isAllFacilities } from './state.js';
 import { createDateFilter, withDateQuery, isRangeActive, rangeLabel, rangeEmptyText } from './dateFilter.js';
+import { REPORTING_PERIODS, reportingRange } from './financePeriods.js';
 import { refreshBookingsView, bindBookingsTable, refreshMoveinsView } from './bookingsView.js';
 import {
   initCharts, bindKpis, bindCharts, renderFloorTabs, fetchUnitMap, syncFacilityDashboard, ensureMapSizeFilter,
@@ -431,17 +432,69 @@ async function importLeadsCsv(file) {
   else toast('Imported ' + okCount + ' lead(s)');
 }
 
+// Reporting-period preset control (finance pattern — REPORTING_PERIODS +
+// reportingRange from financePeriods.js). Mounted into existing placeholders
+// by JS so dashboard.html is untouched: the funnel card's #funnelPeriod div
+// (command) and the analytics header actions (performance). Values resolve to
+// { from, to } as YYYY-MM-DD (never ISO timestamps — F-7 regression) and ride
+// withDateQuery() onto the range-capable endpoints. Default 'all' sends no
+// query, so existing links/views behave exactly as before.
+function periodSelectHtml(current) {
+  return '<select class="filter" data-period-select aria-label="Reporting period">' +
+    REPORTING_PERIODS.map(([v, label]) =>
+      '<option value="' + escapeHtml(v) + '"' + (v === current ? ' selected' : '') + '>' + escapeHtml(label) + '</option>',
+    ).join('') + '</select>';
+}
+
+function ensureCommandPeriod() {
+  const host = $('#funnelPeriod');
+  if (!host || host.dataset.periodMounted) return;
+  host.dataset.periodMounted = '1';
+  host.innerHTML = periodSelectHtml(state.commandPeriod || 'all');
+  host.querySelector('[data-period-select]')?.addEventListener('change', (e) => {
+    state.commandPeriod = e.target.value || 'all';
+    state.commandDate = reportingRange(state.commandPeriod);
+    refreshCommandPage().catch(() => {});
+  });
+}
+
+function ensureAnalyticsPeriod() {
+  const actions = document.querySelector('#analytics .head .actions');
+  if (!actions || actions.dataset.periodMounted) return;
+  actions.dataset.periodMounted = '1';
+  const wrap = document.createElement('span');
+  wrap.innerHTML = periodSelectHtml(state.analyticsPeriod || 'all');
+  const sel = wrap.firstChild;
+  actions.insertBefore(sel, actions.firstChild);
+  sel?.addEventListener('change', (e) => {
+    state.analyticsPeriod = e.target.value || 'all';
+    state.analyticsDate = reportingRange(state.analyticsPeriod);
+    bindAnalytics().catch(() => {});
+  });
+}
+
 async function refreshCommandPage() {
   try {
+    ensureCommandPeriod();
+    // Range-scoped reads: /leads honours ?from=&to= (YYYY-MM-DD, UTC bounds);
+    // /summary + /action-items are live snapshots and stay unfiltered by
+    // design. Default 'all' sends no query (requests identical to before).
+    const rangeActive = isRangeActive(state.commandDate);
     const [summary, leadsData, actions] = await Promise.all([
       get('/summary').catch(() => null),
-      get('/leads').catch(() => []),
+      get(withDateQuery('/leads', state.commandDate)).catch(() => []),
       get('/action-items').catch(() => []),
     ]);
     const stats = leadsData ? getLeadStats(leadsData) : { newToday: 0, total: 0, awaitingFirstContact: 0 };
     // Command stats
     const setCmd = (id, val) => { const el = $(id); if (el) el.textContent = val; };
-    setCmd('#cmdNewLeads', stats.newToday);
+    // New-leads tile follows the range (in-range count + honest label);
+    // unfiltered it stays "today" exactly as before.
+    const newLabel = $('#cmdNewLeads')?.closest('.stat')?.querySelector('.label');
+    if (newLabel) newLabel.textContent = rangeActive ? 'New leads · ' + rangeLabel(state.commandDate) : 'New leads today';
+    setCmd('#cmdNewLeads', rangeActive ? stats.total : stats.newToday);
+    const newTrend = $('#cmdNewLeadsTrend');
+    if (newTrend) newTrend.textContent = rangeActive ? rangeLabel(state.commandDate) : '';
     setCmd('#cmdAwaiting', stats.awaitingFirstContact);
     const kpi = summary?.kpis;
     if (kpi) {
@@ -449,13 +502,19 @@ async function refreshCommandPage() {
       setCmd('#cmdMrr', '$' + (kpi.mrr || 0).toLocaleString());
     }
     setCmd('#cmdActions', (actions || []).length);
+    // Sign-ups today (Tenant.createdAt, UTC day) + move-ins today
+    // (Booking.moveInDate, UTC day) — live counts from GET /summary `today`.
+    // '—' when the payload predates the field; 0 is a real zero, never blanked.
+    const today = summary?.today;
+    setCmd('#cmdSignups', today ? today.signups : '—');
+    setCmd('#cmdMoveins', today ? today.moveIns : '—');
     // Funnel
     const funnel = $('#funnelSteps');
     if (funnel && leadsData) {
       const stages = leadsData;
-      funnel.innerHTML = stages.map((s) =>
+      funnel.innerHTML = stages.length ? stages.map((s) =>
         '<div class="fstep"><b>' + s.count + '</b><span>' + (stageLabel[s.stage] || s.stage) + (s.leads.length && s.stage !== 'WON' && s.stage !== 'LOST' ? ' · ' + Math.round(s.count / (stages[0]?.count || 1) * 100) + '%' : '') + '</span></div>'
-      ).join('');
+      ).join('') : '<div class="section-empty">' + escapeHtml(rangeEmptyText('leads', state.commandDate, 'No leads yet.')) + '</div>';
     }
     // Priority queue
     const queue = $('#priorityQueue');
@@ -471,9 +530,10 @@ async function refreshCommandPage() {
       flattenLeads(leadsData).forEach((l) => { const s = (l.source || 'website').toLowerCase(); srcCount[s] = (srcCount[s] || 0) + 1; });
       const max = Math.max(1, ...Object.values(srcCount));
       const srcLabels = { website: 'Google/Web', whatsapp: 'WhatsApp', referral: 'Referral', google: 'Google Ads' };
-      sources.innerHTML = Object.entries(srcCount).map(([k, v]) =>
+      const entries = Object.entries(srcCount);
+      sources.innerHTML = entries.length ? entries.map(([k, v]) =>
         '<div class="source-row"><b>' + (srcLabels[k] || k) + '</b><div class="bar"><i style="width:' + (v / max * 100) + '%"></i></div><span>' + v + '</span></div>'
-      ).join('');
+      ).join('') : '<div class="section-empty">' + escapeHtml(rangeEmptyText('leads', state.commandDate, 'No enquiries yet.')) + '</div>';
     }
     // Team pulse placeholder
     const team = $('#teamPulse');
@@ -859,8 +919,9 @@ function renderAnaChart(weekly) {
   // Mini-tabs toggle (injected once, no HTML restructure).
   if (head && !head.querySelector('[data-ana-mode]')) {
     const tabs = document.createElement('div');
-    tabs.style.cssText = 'display:flex;gap:6px;';
+    tabs.style.cssText = 'display:flex;gap:6px;align-items:center;';
     tabs.innerHTML =
+      '<span class="t-type" data-ana-range></span>' +
       '<button class="btn" data-ana-mode="volume" type="button">Volume</button>' +
       '<button class="btn" data-ana-mode="value" type="button">Value</button>';
     head.appendChild(tabs);
@@ -873,8 +934,14 @@ function renderAnaChart(weekly) {
     });
   }
   paintAnaTabs();
+  // Honest range label next to the tabs ('All time' default, range when filtered).
+  const rangeEl = head?.querySelector('[data-ana-range]');
+  if (rangeEl) {
+    const r = state.analyticsCache?.range;
+    rangeEl.textContent = isRangeActive(r) ? rangeLabel(r) : 'All time';
+  }
   if (!weeks.length) {
-    chart.innerHTML = '<div class="section-empty">No enquiries yet — data appears here weekly.</div>';
+    chart.innerHTML = '<div class="section-empty">' + escapeHtml(rangeEmptyText('enquiries', state.analyticsDate, 'No enquiries yet — data appears here weekly.')) + '</div>';
     return;
   }
   const isValue = anaMode === 'value';
@@ -892,7 +959,7 @@ function renderAnaChart(weekly) {
     return '<div class="group" data-label="' + escapeHtml(w.label) + '" title="' + escapeHtml(tip) + '" style="height:100%">' +
       '<div class="b" style="height:' + pa + '%;opacity:.55" title="Enquiries: ' + a + '"></div>' +
       '<div class="b" style="height:' + pb + '%" title="Bookings: ' + b + '"></div></div>';
-  }).join('') + (allZero ? '<div class="section-empty">No data in these weeks yet.</div>' : '');
+  }).join('') + (allZero ? '<div class="section-empty">' + escapeHtml(rangeEmptyText('enquiries or bookings', state.analyticsDate, 'No data in these weeks yet.')) + '</div>' : '');
 }
 
 function paintAnaTabs() {
@@ -1686,13 +1753,18 @@ function pickLossReason() {
 
 async function bindAnalytics() {
   try {
+    ensureAnalyticsPeriod();
+    // Range-scoped reads (YYYY-MM-DD via withDateQuery; F-7): /leads,
+    // /leads/stats and /analytics/weekly all honour ?from=&to=. /summary is a
+    // live snapshot and stays unfiltered. Default 'all' sends no query
+    // (requests identical to before).
     const [summary, leadsData, leadStats, weekly] = await Promise.all([
       get('/summary').catch(() => null),
-      get('/leads').catch(() => []),
-      get('/leads/stats').catch(() => null),
-      get('/analytics/weekly?weeks=8').catch(() => null),
+      get(withDateQuery('/leads', state.analyticsDate)).catch(() => []),
+      get(withDateQuery('/leads/stats', state.analyticsDate)).catch(() => null),
+      get(withDateQuery('/analytics/weekly?weeks=8', state.analyticsDate)).catch(() => null),
     ]);
-    state.analyticsCache = { summary, leadsData, stats: leadStats, weekly };
+    state.analyticsCache = { summary, leadsData, stats: leadStats, weekly, range: { ...state.analyticsDate } };
     // Stat tiles: keep the 5 existing KPI tiles, then append the 5 new ones.
     const stats = $('#analyticsStats');
     if (stats) {
@@ -3191,20 +3263,85 @@ function ensurePromoHistoryDateFilter(current) {
 // ---- Performance panel + overview cards: live aggregation ----
 // Revenue/retention need invoice + tenant-tenure joins (follow-up) — rendered
 // as honest "—", never fabricated. Eligible-bookings likewise.
+// Reporting-period preset (finance YYYY-MM-DD pattern, same as
+// ensureCommandPeriod/ensureAnalyticsPeriod): mounted by JS into the panel's
+// own card heads so dashboard.html is untouched. The static "Last 90 days"
+// button in the first card head is a non-functional placeholder — it is
+// swapped for the working preset select (same .filter class, no restyle).
+function ensurePromoPerfPeriod() {
+  const panel = document.getElementById('promo-performance');
+  if (!panel) return;
+  const heads = panel.querySelectorAll('.card-head');
+  const firstHead = heads[0];
+  if (firstHead && !firstHead.dataset.periodMounted) {
+    firstHead.dataset.periodMounted = '1';
+    const wrap = document.createElement('span');
+    wrap.innerHTML = periodSelectHtml(state.promoPerfPeriod || 'all');
+    const sel = wrap.firstChild;
+    const dead = firstHead.querySelector('button.filter');
+    if (dead) dead.replaceWith(sel);
+    else firstHead.appendChild(sel);
+    sel?.addEventListener('change', (e) => {
+      state.promoPerfPeriod = e.target.value || 'all';
+      state.promoPerfDate = reportingRange(state.promoPerfPeriod);
+      bindPromoPerformance().catch(() => {});
+    });
+  }
+  const tableHead = heads[2];
+  if (tableHead && !tableHead.querySelector('[data-promo-range]')) {
+    const tag = document.createElement('span');
+    tag.setAttribute('data-promo-range', '1');
+    tag.style.cssText = 'color:var(--muted);font-size:12px';
+    tableHead.appendChild(tag);
+  }
+  paintPromoPerfRange();
+}
+
+function paintPromoPerfRange() {
+  const tag = document.querySelector('#promo-performance [data-promo-range]');
+  if (tag) tag.textContent = isRangeActive(state.promoPerfDate) ? rangeLabel(state.promoPerfDate) : 'All time';
+}
+
 async function bindPromoPerformance() {
   const panel = document.getElementById('promo-performance');
   if (!panel) return;
+  ensurePromoPerfPeriod();
+  // Range reads: GET /promotion-plans/performance honours no ?from=&to=
+  // (unlike GET /promotion-plans and per-plan /redemptions, which do), so the
+  // preset is applied client-side and no new route was added. The base
+  // aggregate loads exactly as before ('all' sends no query); when a range is
+  // active each plan's in-range redemptions are re-aggregated from the
+  // range-capable per-plan /redemptions endpoint via withDateQuery().
+  // Overview tiles + attention queue stay live snapshots by design.
   let perf = null;
   try { perf = await get('/promotion-plans/performance'); } catch (e) { perf = null; }
+  const rangeActive = isRangeActive(state.promoPerfDate);
+  let plans = (perf && perf.plans) || [];
+  if (perf && rangeActive) {
+    const per = await Promise.all(plans.map((p) =>
+      get(withDateQuery('/promotion-plans/' + encodeURIComponent(p.planId) + '/redemptions', state.promoPerfDate)).catch(() => null)));
+    plans = plans.map((p, i) => {
+      const reds = per[i];
+      if (!Array.isArray(reds)) return p;
+      const applied = reds.length;
+      const discountCost = reds.reduce((s, r) => s + (Number(r.amount) || 0), 0);
+      return {
+        ...p, applied, discountCost,
+        capUsedPct: p.redemptionCap ? Math.round((applied / p.redemptionCap) * 100) : null,
+        budgetUsedPct: p.budgetCap ? Math.round((discountCost / Number(p.budgetCap)) * 100) : null,
+      };
+    });
+  }
+  paintPromoPerfRange();
   const cards = panel.querySelectorAll('.card');
   const tableCard = cards[2];
   if (tableCard && perf) {
     const body = tableCard.querySelector('.card-body');
     if (body) {
-      body.innerHTML = perf.plans.length ? '<table class="staff"><tr><th>Plan</th><th>Applied</th><th>Discount cost</th><th>Cap used</th><th>Budget used</th><th>Revenue</th><th>Retention</th></tr>' +
-        perf.plans.map((p) => '<tr><td><b>' + escapeHtml(p.planName) + '</b><br><small>' + p.kind + ' · ' + p.status + '</small></td><td>' + p.applied + '</td><td>$' + p.discountCost.toLocaleString() + '</td><td>' + (p.capUsedPct != null ? p.capUsedPct + '%' : '—') + '</td><td>' + (p.budgetUsedPct != null ? p.budgetUsedPct + '%' : '—') + '</td><td>—</td><td>—</td></tr>').join('') +
+      body.innerHTML = plans.length ? '<table class="staff"><tr><th>Plan</th><th>Applied</th><th>Discount cost</th><th>Cap used</th><th>Budget used</th><th>Revenue</th><th>Retention</th></tr>' +
+        plans.map((p) => '<tr><td><b>' + escapeHtml(p.planName) + '</b><br><small>' + p.kind + ' · ' + p.status + '</small></td><td>' + p.applied + '</td><td>$' + p.discountCost.toLocaleString() + '</td><td>' + (p.capUsedPct != null ? p.capUsedPct + '%' : '—') + '</td><td>' + (p.budgetUsedPct != null ? p.budgetUsedPct + '%' : '—') + '</td><td>—</td><td>—</td></tr>').join('') +
         '</table><div class="rulebox" style="margin-top:10px"><b>Note:</b> revenue and retention need invoice/tenure joins (follow-up). Bookings priced by a plan (discount %, free months or plan promo code) record a redemption automatically; manual entries via POST /promotion-plans/:id/redemptions are still possible.</div>'
-        : '<div class="section-empty">No plans yet — performance appears once plans and redemptions exist.</div>';
+        : '<div class="section-empty">' + escapeHtml(rangeEmptyText('plans', state.promoPerfDate, 'No plans yet — performance appears once plans and redemptions exist.')) + '</div>';
     }
   }
   // Overview cards: live where computable, honest "—" otherwise.

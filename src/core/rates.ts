@@ -57,7 +57,10 @@ export async function adjustRate(code: string, input: AdjustRateInput) {
 // (OCCUPIED + OVERDUE, mirroring getSummary's avgPsf). MARKET_PSF stays as a
 // read-only reference (per size) alongside the per-size actuals.
 export async function getNetPsf() {
+  // ACTIVE facilities only — matches GET /portfolio (an INACTIVE branch is
+  // retired and must not appear on the portfolio page's net-rate table).
   const branches = await prisma.branch.findMany({
+    where: { status: 'ACTIVE' },
     include: {
       units: {
         // DRAFT = unpublished floor-plan unit — excluded in JS below, NOT in

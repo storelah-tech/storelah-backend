@@ -101,4 +101,39 @@ describe('quotation promotions', () => {
     const lead = await api.get(`${CMS}/leads/${res.body.data.quote.id}`).set('Authorization', auth);
     expect(lead.body.data).toMatchObject({ promoCode: null, promoDiscountAmt: 7 });
   });
+
+  it('POST /quotations takes a library promoCode: server sets promoPct and keeps the code on the lead', async () => {
+    const lead = await prisma.lead.create({ data: { name: 'Quote promo lead' } });
+    const res = await api
+      .post(`${CMS}/quotations`)
+      .set('Authorization', auth)
+      .send({ leadId: lead.id, grossRate: 200, promoPct: 99, promoCode: 'Q10', commitmentMonths: 6 });
+    expect(res.status).toBe(201);
+    const q = await prisma.quotation.findFirst({ where: { leadId: lead.id } });
+    expect(Number(q?.promoPct)).toBe(10);
+    const after = await prisma.lead.findUnique({ where: { id: lead.id } });
+    expect(after).toMatchObject({ promoCode: 'Q10' });
+    expect(Number(after?.promoDiscountAmt)).toBe(20);
+  });
+
+  it('POST /quotations rejects a promoCode that does not apply to the term', async () => {
+    const lead = await prisma.lead.create({ data: { name: 'Short term lead' } });
+    const res = await api
+      .post(`${CMS}/quotations`)
+      .set('Authorization', auth)
+      .send({ leadId: lead.id, grossRate: 200, promoCode: 'Q12M', commitmentMonths: 6 });
+    expect(res.status).toBe(400);
+    expect(await prisma.quotation.count({ where: { leadId: lead.id } })).toBe(0);
+  });
+
+  it('POST /quotations without a promoCode keeps the typed promoPct', async () => {
+    const lead = await prisma.lead.create({ data: { name: 'Manual pct lead' } });
+    const res = await api
+      .post(`${CMS}/quotations`)
+      .set('Authorization', auth)
+      .send({ leadId: lead.id, grossRate: 200, promoPct: 5, commitmentMonths: 6 });
+    expect(res.status).toBe(201);
+    const q = await prisma.quotation.findFirst({ where: { leadId: lead.id } });
+    expect(Number(q?.promoPct)).toBe(5);
+  });
 });

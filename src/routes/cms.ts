@@ -75,7 +75,7 @@ import { listBranches, getMoveIns, getPortfolio, createBranch, updateBranch, del
 import { getSettings, upsertSettings } from '../core/settings';
 import { listSiteContent, getSiteContentByKey, upsertSiteContent } from '../core/siteContent';
 import { adjustRate, getNetPsf } from '../core/rates';
-import { listQuotes, getQuote, createQuotation, listQuotableLeads, getQuotationPdf, finalizeQuotation } from '../core/quotes';
+import { listQuotes, getQuote, createQuotation, listQuotableLeads, getQuotationPdf, finalizeQuotation, resolveQuotationPromo } from '../core/quotes';
 import { listFees, createFee, updateFee, deleteFee, resolveFee } from '../core/fees';
 import { listBusinessRules, upsertBusinessRules } from '../core/businessRules';
 import {
@@ -1275,6 +1275,9 @@ const issueQuoteSchema = z.object({
   unitCode: z.string().trim().max(40).nullable().optional(),
   grossRate: z.number().nonnegative(),
   promoPct: z.number().min(0).max(100).nullable().optional(),
+  // Promotion attached from the library (or an operator override code).
+  // Re-validated server-side; when valid it is authoritative for promoPct.
+  promoCode: z.string().trim().max(40).nullable().optional(),
   protectionMonthly: z.number().nonnegative().nullable().optional(),
   commitmentMonths: z.number().int().positive().nullable().optional(),
   expiresAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
@@ -1296,11 +1299,29 @@ router.post('/quotations', requireAuth, async (req: Request, res: Response) => {
     fail(res, 409, 'CONFLICT', 'Converted or lost leads cannot be quoted. Add a new enquiry first.');
     return;
   }
+  // Library promotion: validatePromotion() against this quote's rent, term
+  // and unit (400 on an invalid code). The validated discount drives promoPct
+  // so the register, net rent and PDF agree; the code is kept on the lead.
+  let promoPct = d.promoPct ?? null;
+  let promoFields: { promoCode: string; promoDiscountAmt: number } | null = null;
+  if (d.promoCode) {
+    const promo = await resolveQuotationPromo({
+      promoCode: d.promoCode,
+      monthlyRate: d.grossRate,
+      durationMonths: d.commitmentMonths ?? null,
+      unitCode: d.unitCode ?? null,
+    });
+    if (promo.promoCode && promo.promoDiscountAmt != null) {
+      promoFields = { promoCode: promo.promoCode, promoDiscountAmt: promo.promoDiscountAmt };
+      promoPct = d.grossRate > 0 ? Math.round((promo.promoDiscountAmt / d.grossRate) * 10000) / 100 : 0;
+    }
+  }
   const quotedStages = ['PROPOSAL_SENT', 'PENDING_PAYMENT', 'PAID_BOOKING'];
   await prisma.lead.update({
     where: { id: lead.id },
     data: {
       monthlyRate: d.grossRate,
+      ...(promoFields ?? {}),
       ...(d.unitCode !== undefined ? { unitCode: d.unitCode } : {}),
       ...(d.protectionMonthly !== undefined ? { protectionCost: d.protectionMonthly } : {}),
       ...(d.commitmentMonths !== undefined ? { durationMonths: d.commitmentMonths } : {}),
@@ -1309,7 +1330,7 @@ router.post('/quotations', requireAuth, async (req: Request, res: Response) => {
   });
   const issued = await finalizeQuotation(lead.id, {
     createdBy: actorName(req),
-    promoPct: d.promoPct ?? null,
+    promoPct,
     expiresAt: d.expiresAt ? new Date(`${d.expiresAt}T15:59:59.000Z`) : null, // end of that day in Singapore
   });
   if (!issued) {

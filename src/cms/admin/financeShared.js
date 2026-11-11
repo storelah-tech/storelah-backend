@@ -163,14 +163,14 @@ export function getPanelMount(panelId) {
 }
 
 /** F-4: facility guard — returns the selected branchId, defaulting to the
- * first facility (Sembawang/SW first when present, matching the prototype).
+ * first facility (Sembawang/SS first when present, matching the prototype).
  * Returns '' when no facilities exist (caller renders a "choose" state). */
 export function ensureFacility(defaultable = true) {
   if (finState.branchId) return finState.branchId;
   const rows = (typeof window !== 'undefined' && window.__branches) || [];
   const list = Array.isArray(rows) && rows.length ? rows : (typeof state !== 'undefined' && Array.isArray(state.branches) ? state.branches : []);
   if (!list.length || !defaultable) return '';
-  const sw = list.find((b) => (b.code || '').toUpperCase() === 'SW' || /sembawang/i.test(b.name || ''));
+  const sw = list.find((b) => (b.code || '').toUpperCase() === 'SS' || /sembawang/i.test(b.name || ''));
   const pick = sw || list[0];
   const id = pick.id || pick.branchId || '';
   if (id) finState.branchId = id;

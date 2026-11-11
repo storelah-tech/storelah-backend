@@ -66,11 +66,14 @@ export function defaultModelInputs(overrides: Partial<ProjectionInput> = {}): Pr
     horizonMonths: 60,
     nlaSqft: 2274,
     sizeMix: [
-      { name: 'XS', range: '10–20 sq ft', nlaSqft: 455, units: 31, psf: 6.8 },
-      { name: 'S', range: '21–30 sq ft', nlaSqft: 500, units: 20, psf: 6.2 },
-      { name: 'M', range: '31–50 sq ft', nlaSqft: 650, units: 16, psf: 5.5 },
-      { name: 'L', range: '51–80 sq ft', nlaSqft: 405, units: 7, psf: 4.8 },
-      { name: 'XL', range: '81+ sq ft', nlaSqft: 264, units: 2, psf: 4.2 },
+      // Size catalogue (sizeMixCatalogue.ts): Locker starts empty so the
+      // launch template's figures are unchanged from the pre-catalogue mix.
+      { name: 'Locker', range: '8–15 sq ft', nlaSqft: 0, units: 0, psf: 6.8 },
+      { name: 'XS', range: '10–19 sq ft', nlaSqft: 455, units: 31, psf: 6.8 },
+      { name: 'S', range: '20–39 sq ft', nlaSqft: 500, units: 20, psf: 6.2 },
+      { name: 'M', range: '40–69 sq ft', nlaSqft: 650, units: 16, psf: 5.5 },
+      { name: 'L', range: '70–99 sq ft', nlaSqft: 405, units: 7, psf: 4.8 },
+      { name: 'XL', range: '100–150 sq ft', nlaSqft: 264, units: 2, psf: 4.2 },
     ],
     occupancy: {
       rampFirst6: 180,

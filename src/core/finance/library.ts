@@ -13,6 +13,7 @@
 // never viewing).
 
 import { Prisma } from '@prisma/client';
+import { upgradeSizeMix } from './sizeMixCatalogue';
 import { prisma } from '../../lib/prisma';
 import { AppError } from '../../lib/http';
 import { writeAuditEvent } from './audit';
@@ -172,7 +173,8 @@ export function validateSubmittable(inputs: ProjectionInput): string[] {
 }
 
 /** Inventory-mapping gate (§14.2): every size category must map to live sizes. */
-const SIZE_LABEL_ALIAS: Record<string, string> = { XS: 'LOCKER', S: 'SMALL', M: 'MEDIUM', L: 'LARGE' };
+// Short planning labels → live UnitSize codes (Locker and XS are separate rows).
+const SIZE_LABEL_ALIAS: Record<string, string> = { S: 'SMALL', M: 'MEDIUM', L: 'LARGE', XL: 'XLBIZ' };
 
 export async function inventoryMappingProblems(modelId: string): Promise<string[]> {
   const m = await prisma.financialModel.findUnique({ where: { id: modelId } });
@@ -182,13 +184,15 @@ export async function inventoryMappingProblems(modelId: string): Promise<string[
   // A synced size mix is labelled with the live size names (Units module).
   const live = new Set(sizes.flatMap((s) => [s.code.trim().toUpperCase(), s.name.trim().toUpperCase()]));
   const missing = inputs.sizeMix
+    // An empty planning row (0 units, 0 NLA — e.g. the catalogue's Locker row
+    // before any Locker is planned) carries no inventory and needs no mapping.
+    .filter((c) => (Number(c.units) || 0) > 0 || (Number(c.nlaSqft) || 0) > 0)
     .map((c) => c.name)
     .filter((name) => {
       const n = name.trim().toUpperCase();
       if (live.has(n)) return false;
-      // Short planning labels read as the canonical live buckets (XS was the
-      // legacy LOCKER alias, IMPLEMENTATION_PLAN §6 Q9; S/M/L are the
-      // prototype's size-mix labels).
+      // Short planning labels read as the live codes (S/M/L/XL are the
+      // catalogue's short names; Locker / XS match by name directly).
       const alias = SIZE_LABEL_ALIAS[n];
       if (alias && live.has(alias)) return false;
       return true;
@@ -417,21 +421,24 @@ export async function restoreVersion(opts: { modelId: string; version: number; r
     where: { modelId_version: { modelId: opts.modelId, version: opts.version } },
   });
   if (!snap) throw new AppError(404, 'NOT_FOUND', `Version ${opts.version} of model ${opts.modelId} not found.`);
-  const inputs = toInputs(snap.snapshot);
+  // A pre-catalogue snapshot is restored onto the current size catalogue
+  // (Locker/XS split, no figure changes — see sizeMixCatalogue.ts); the
+  // historical version row itself is never rewritten.
+  const inputs = { ...toInputs(snap.snapshot), sizeMix: upgradeSizeMix(toInputs(snap.snapshot).sizeMix) };
   project(inputs); // must still project
   const correlationId = newCorrelationId();
   const created = await prisma.$transaction(async (tx) => {
     const dup = await tx.financialModel.create({
       data: {
         branchId: m.branchId, name: `${m.name} (restore v${snap.version})`, status: 'DRAFT',
-        inputs: snap.snapshot as unknown as Prisma.InputJsonValue, engineVersion: m.engineVersion,
+        inputs: inputs as unknown as Prisma.InputJsonValue, engineVersion: m.engineVersion,
         inputHash: (await import('./projection')).hashInput(inputs),
         createdBy: opts.actor, updatedBy: opts.actor, version: 0,
       },
     });
     await tx.financialModelVersion.create({
       data: {
-        modelId: dup.id, version: 0, snapshot: snap.snapshot as unknown as Prisma.InputJsonValue,
+        modelId: dup.id, version: 0, snapshot: inputs as unknown as Prisma.InputJsonValue,
         changeSummary: `Restored from "${m.name}" v${snap.version} — ${opts.reason.trim()}`,
         status: 'DRAFT', createdBy: opts.actor,
       },

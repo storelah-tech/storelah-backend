@@ -7,8 +7,8 @@
 // is still OPEN with the owner, so overrides NEVER write back to live Unit
 // rows; the response + UI flag this prominently).
 //
-// Canonical buckets: LOCKER / SMALL / MEDIUM / LARGE / XL / XXL. Legacy XS
-// reads as LOCKER. A changed size taxonomy requires explicit mapping: sizes
+// Canonical buckets: LOCKER / XS / SMALL / MEDIUM / LARGE / XL / XXL —
+// Locker (8–15) and XS (10–19) are separate (2026-11-11); XLBIZ reads as XL. A changed size taxonomy requires explicit mapping: sizes
 // that match no bucket surface as UNMAPPED with a mismatch warning instead
 // of silently joining a bucket.
 
@@ -20,21 +20,22 @@ import { writeAuditEvent } from './audit';
 import { publishFinanceEvent } from './events';
 import { assertFreshVersion, nextVersion, newCorrelationId } from './idempotency';
 
-export const CANONICAL_BUCKETS = ['LOCKER', 'SMALL', 'MEDIUM', 'LARGE', 'XL', 'XXL'] as const;
+export const CANONICAL_BUCKETS = ['LOCKER', 'XS', 'SMALL', 'MEDIUM', 'LARGE', 'XL', 'XXL'] as const;
 
 /** Maps a live UnitSize code to a canonical planning bucket (or null). */
 export function bucketForSize(code: string, sqftTo: number): string | null {
   const c = code.trim().toUpperCase();
-  if (c === 'XS') return 'LOCKER'; // legacy XS reads as LOCKER
   if (c === 'XLBIZ') return 'XL'; // booking's XL tab code
   if ((CANONICAL_BUCKETS as readonly string[]).includes(c)) return c;
   // Fallback by footprint so a renamed taxonomy still maps explicitly.
   if (sqftTo <= 0) return null;
-  if (sqftTo <= 25) return 'LOCKER';
-  if (sqftTo <= 60) return 'SMALL';
-  if (sqftTo <= 110) return 'MEDIUM';
-  if (sqftTo <= 180) return 'LARGE';
-  if (sqftTo <= 320) return 'XL';
+  // Catalogue bands (migration 20261111000000_unit_size_ranges).
+  if (sqftTo <= 15) return 'LOCKER';
+  if (sqftTo <= 19) return 'XS';
+  if (sqftTo <= 39) return 'SMALL';
+  if (sqftTo <= 69) return 'MEDIUM';
+  if (sqftTo <= 99) return 'LARGE';
+  if (sqftTo <= 150) return 'XL';
   return 'XXL';
 }
 

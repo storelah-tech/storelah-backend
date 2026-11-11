@@ -24,6 +24,7 @@ async function seedPricingWorld() {
   // Full taxonomy present (no units) so the inventory-mapping gate passes;
   // live NLA/unit counts still come only from the two units below.
   for (const [code, name, from, to, sort] of [
+    ['XS', 'XS', 10, 19, 1],
     ['MEDIUM', 'Medium', 61, 110, 3],
     ['LARGE', 'Large', 111, 180, 4],
     ['XL', 'XL', 181, 320, 5],

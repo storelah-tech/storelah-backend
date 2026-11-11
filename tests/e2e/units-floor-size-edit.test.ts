@@ -140,3 +140,40 @@ describe('size codes — LOCKER (8–15) + XS (10–19, the former LOCKER row)',
     expect(toCanonicalSizeCategory('XLBIZ')).toBe('XL');
   });
 });
+
+describe('finance — size catalogue (Locker / XS split)', () => {
+  it('bucketForSize: LOCKER and XS are separate buckets, XLBIZ → XL, fallback follows the catalogue', async () => {
+    const { bucketForSize, CANONICAL_BUCKETS } = await import('../../src/core/finance/pricing');
+    expect(CANONICAL_BUCKETS.slice(0, 2)).toEqual(['LOCKER', 'XS']);
+    expect(bucketForSize('LOCKER', 15)).toBe('LOCKER');
+    expect(bucketForSize('XS', 19)).toBe('XS');
+    expect(bucketForSize('XLBIZ', 150)).toBe('XL');
+    expect(bucketForSize('CUSTOM', 12)).toBe('LOCKER');
+    expect(bucketForSize('CUSTOM', 18)).toBe('XS');
+    expect(bucketForSize('CUSTOM', 39)).toBe('SMALL');
+    expect(bucketForSize('CUSTOM', 150)).toBe('XL');
+  });
+
+  it('upgradeSizeMix: old rows become XS…XL with values unchanged, empty Locker added, figures identical, idempotent', async () => {
+    const { upgradeSizeMix } = await import('../../src/core/finance/sizeMixCatalogue');
+    const { defaultModelInputs } = await import('../../src/core/finance/models');
+    const { project, stableStringify } = await import('../../src/core/finance/projection');
+    const old = [
+      { name: 'Locker', range: '11–16 sq ft', nlaSqft: 455, units: 31, psf: 6.8 }, // old live LOCKER = today's XS
+      { name: 'Small', range: '21–30 sq ft', nlaSqft: 500, units: 20, psf: 6.2 },
+      { name: 'M', range: '31–50 sq ft', nlaSqft: 650, units: 16, psf: 5.5 },
+      { name: 'L', range: '51–80 sq ft', nlaSqft: 405, units: 7, psf: 4.8 },
+      { name: 'XL', range: '81+ sq ft', nlaSqft: 264, units: 2, psf: 4.2 },
+    ];
+    const up = upgradeSizeMix(old);
+    expect(up.map((c) => c.name)).toEqual(['Locker', 'XS', 'S', 'M', 'L', 'XL']);
+    expect(up[0]).toMatchObject({ nlaSqft: 0, units: 0, range: '8–15 sq ft' });
+    expect(up[1]).toMatchObject({ nlaSqft: 455, units: 31, psf: 6.8, range: '10–19 sq ft' });
+    expect(upgradeSizeMix(up)).toEqual(up);
+    const base = defaultModelInputs();
+    const a = project({ ...base, sizeMix: old });
+    const b = project({ ...base, sizeMix: up });
+    expect(stableStringify({ m: a.months, k: a.kpis })).toBe(stableStringify({ m: b.months, k: b.kpis }));
+    expect(base.sizeMix.map((c) => c.name)).toEqual(['Locker', 'XS', 'S', 'M', 'L', 'XL']);
+  });
+});

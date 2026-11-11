@@ -120,7 +120,7 @@ export const FACILITY_SIZE_GROUPS: readonly FacilitySizeGroupDef[] = [
 ] as const;
 
 export const XL_MISSING_CODE_NOTE =
-  'No Extra Large UnitSize code exists in the DB (codes are LOCKER / SMALL / MEDIUM / LARGE) — the XL bucket reports 0 units / 0 sqft until such a size is added via migration + seed.';
+  'No Extra Large UnitSize code exists in the DB (codes are LOCKER / XS / SMALL / MEDIUM / LARGE) — the XL bucket reports 0 units / 0 sqft until such a size is added via migration + seed.';
 
 export interface UnitGroupsReport {
   /** Overall units = all non-deleted units in scope (equals the bucket sum
@@ -743,7 +743,7 @@ export async function getFloorMetrics(floorId: string): Promise<FloorMetricsRepo
         ...(unplacedUnits.length > 0
           ? [`${unplacedUnits.length} floor unit(s) have no placement and are excluded from measured areas (see coverage.unplacedCodes).`]
           : []),
-        'unitGroups carries the owner-confirmed per-size buckets over nominal Unit.sqft (Locker=LOCKER, XS=SMALL, M=MEDIUM, L=LARGE, overall = sum); the XL (Extra Large) bucket is 0/0 — no such UnitSize code exists in the DB (see unitGroups.notes).',
+        'unitGroups carries the owner-confirmed per-size buckets over nominal Unit.sqft (Locker + XS = LOCKER + XS, XS=SMALL, M=MEDIUM, L=LARGE, XL = XLBIZ, overall = sum).',
       ],
     },
     geometry: {
@@ -1113,7 +1113,7 @@ export async function getFacilityMetrics(branchRef: string): Promise<FacilityMet
           ]
         : []),
       'Occupied = Unit.status OCCUPIED + OVERDUE (RESERVED excluded, per the revenue convention); reads filter deletedAt null.',
-      'unitGroups areas are nominal Unit.sqft sums (overall = sum of all buckets); XL (Extra Large) is 0/0 — no such UnitSize code exists in the DB (see unitGroups.notes).',
+      'unitGroups areas are nominal Unit.sqft sums (overall = sum of all buckets); XL counts XLBIZ units.',
     ],
   };
 }

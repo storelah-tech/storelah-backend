@@ -51,11 +51,12 @@ export function initFinanceWorkspace() {
   const state={
     scenario:'base',facility:'StoreLah Sembawang',modelName:'Sembawang Launch Plan',start:'2026-12-01',horizon:60,ufa:3068,nla:2274,units:76,...clone(scenarios.base),rentFree:0,opexGrowth:0,
     mix:[
-      {size:'XS',range:'10–20 sq ft',area:455,units:31,rate:6.80},
-      {size:'S',range:'21–30 sq ft',area:500,units:20,rate:6.20},
-      {size:'M',range:'31–50 sq ft',area:650,units:16,rate:5.50},
-      {size:'L',range:'51–80 sq ft',area:405,units:7,rate:4.80},
-      {size:'XL',range:'81+ sq ft',area:264,units:2,rate:4.20}
+      {size:'Locker',range:'8–15 sq ft',area:0,units:0,rate:6.80},
+      {size:'XS',range:'10–19 sq ft',area:455,units:31,rate:6.80},
+      {size:'S',range:'20–39 sq ft',area:500,units:20,rate:6.20},
+      {size:'M',range:'40–69 sq ft',area:650,units:16,rate:5.50},
+      {size:'L',range:'70–99 sq ft',area:405,units:7,rate:4.80},
+      {size:'XL',range:'100–150 sq ft',area:264,units:2,rate:4.20}
     ],
     opex:[
       {name:'Payroll & contractor',budget:0,owner:'Operations',note:'Includes the Thailand technology contractor retainer.'},
@@ -74,7 +75,7 @@ export function initFinanceWorkspace() {
       {name:'Professional and pre-opening',amount:7000},
       {name:'Opening working capital',amount:20000}
     ],
-    inventory:{facility:'StoreLah Sembawang',updated:'22 Oct 2026 · 2:45 PM',items:[{size:'XS',area:455,units:31},{size:'S',area:500,units:20},{size:'M',area:650,units:16},{size:'L',area:405,units:7},{size:'XL',area:264,units:2}]},
+    inventory:{facility:'StoreLah Sembawang',updated:'22 Oct 2026 · 2:45 PM',items:[{size:'Locker',area:0,units:0},{size:'XS',area:455,units:31},{size:'S',area:500,units:20},{size:'M',area:650,units:16},{size:'L',area:405,units:7},{size:'XL',area:264,units:2}]},
     expenses:[],
     inventorySynced:true,periodView:'monthly',monthsShown:12,chartMonths:24,returnYear:5,budgetMonth:'2026-12',actualYear:'2026',actualMonths:12,financePeriod:'mtd',financeBasis:'accrual',projectionYears:3,leaseScheduleYears:'3',demoActuals:true,opexOverrides:{},churnInputMode:'percent',budgetApplyScope:'future',activeDraftId:null,
     leaseYearlyRents:[5000,5000,5000,5000,5000,5000,5000],
@@ -827,7 +828,7 @@ export function initFinanceWorkspace() {
   const LEASE_FORBIDDEN='Lease-horizon editing is limited to Owners while the rollout is admins-only.';
   const r6=n=>Math.round(Number(n)*1e6)/1e6;
   const r2=n=>Math.round(Number(n)*100)/100;
-  const SIZE_FROM_BUCKET={LOCKER:'XS',SMALL:'S',MEDIUM:'M',LARGE:'L',XL:'XL',XXL:'XXL'};
+  const SIZE_FROM_BUCKET={LOCKER:'Locker',XS:'XS',SMALL:'S',MEDIUM:'M',LARGE:'L',XL:'XL',XXL:'XXL'};
   const STATUS_PILL={DRAFT:['amber','Draft'],PENDING:['amber','Waiting to publish'],CURRENT:['green','Published'],ARCHIVED:['grey','Archived']};
   const STATUS_WORD={DRAFT:'draft',PENDING:'waiting to publish',CURRENT:'published',ARCHIVED:'archived'};
   function markDirty(section){srv.dirty.add(section)}
@@ -938,7 +939,9 @@ export function initFinanceWorkspace() {
   async function refreshModelList(){try{srv.models=await get(`/finance/models?branchId=${encodeURIComponent(srv.branchId)}`)}catch{}}
   // Live Units inventory for the selected facility, one row per UnitSize that
   // has units here, labelled as the Units module labels it.
-  const MIX_ALIAS={XS:'LOCKER',S:'SMALL',M:'MEDIUM',L:'LARGE'};
+  // Locker and XS are separate rows (XS no longer aliases LOCKER); short
+  // S/M/L/XL labels still match their live codes.
+  const MIX_ALIAS={S:'SMALL',M:'MEDIUM',L:'LARGE',XL:'XLBIZ'};
   const sqftText=n=>Number(n).toLocaleString('en-SG',{maximumFractionDigits:2});
   function sizeRange(r){if(r.minSqft==null)return '';return r.minSqft===r.maxSqft?`${sqftText(r.minSqft)} sq ft`:`${sqftText(r.minSqft)}–${sqftText(r.maxSqft)} sq ft`}
   function mixMatches(row,it){const n=String(row.size||'').trim().toUpperCase();return n===it.size.toUpperCase()||n===it.code.toUpperCase()||(!!MIX_ALIAS[n]&&(MIX_ALIAS[n]===it.code.toUpperCase()||MIX_ALIAS[n]===it.bucket))}

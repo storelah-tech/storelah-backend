@@ -27,6 +27,7 @@
     "db:backfill-footprints": "tsx scripts/backfill-placement-footprints.ts",
     "db:backfill-matrix-sizes": "tsx scripts/backfill-matrix-size-categories.ts",
     "db:retier-units": "tsx scripts/retier-units.ts",
+    "db:finance-size-mix": "tsx scripts/finance-size-mix-catalogue.ts",
     "db:studio": "prisma studio",
     "build:admin-geometry": "tsx scripts/build-admin-geometry.ts",
     "singpass:keys": "tsx scripts/singpass-generate-keys.ts"

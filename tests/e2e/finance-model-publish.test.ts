@@ -11,7 +11,7 @@ const CMS = '/api/v1/cms';
 async function seedWorld() {
   // Full size taxonomy so the inventory-mapping gate passes.
   for (const [code, name, from, to, sort] of [
-    ['LOCKER', 'Locker', 5, 25, 1], ['SMALL', 'Small', 26, 60, 2], ['MEDIUM', 'Medium', 61, 110, 3],
+    ['LOCKER', 'Locker', 5, 25, 1], ['XS', 'XS', 10, 19, 1], ['SMALL', 'Small', 26, 60, 2], ['MEDIUM', 'Medium', 61, 110, 3],
     ['LARGE', 'Large', 111, 180, 4], ['XL', 'XL', 181, 320, 5],
   ] as const) {
     await prisma.unitSize.create({ data: { code, name, sqftFrom: from, sqftTo: to, sortOrder: sort } });

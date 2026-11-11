@@ -48,7 +48,7 @@ async function seedInvestorWorld() {
     data: { code: 'LOCKER', name: 'Locker', sqftFrom: 5, sqftTo: 25, sortOrder: 1 },
   });
   for (const [code, name, from, to, sort] of [
-    ['SMALL', 'Small', 26, 60, 2], ['MEDIUM', 'Medium', 61, 110, 3],
+    ['XS', 'XS', 10, 19, 1], ['SMALL', 'Small', 26, 60, 2], ['MEDIUM', 'Medium', 61, 110, 3],
     ['LARGE', 'Large', 111, 180, 4], ['XL', 'XL', 181, 320, 5],
   ] as const) {
     await prisma.unitSize.create({ data: { code, name, sqftFrom: from, sqftTo: to, sortOrder: sort } });

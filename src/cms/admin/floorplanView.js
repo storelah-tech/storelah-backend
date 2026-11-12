@@ -234,6 +234,26 @@ function fpStackMate(pl) {
   return state.fp.placements.find((o) => o.unitId !== pl.unitId && fpSameRect(o, pl)) || null;
 }
 
+// Door host: a stacked pair shares one footprint and one set of doors. The
+// LOWER tier holds the doors the editor shows and edits; every door write
+// mirrors the same edges + offsets onto the upper tier (fpSaveDoors), so the
+// metrics door union (own + ground partner) matches what is drawn. Singles
+// host their own doors.
+function fpDoorHost(pl) {
+  const mate = fpStackMate(pl);
+  if (!mate) return pl;
+  return (pl.stackTier || 0) === 1 ? mate : pl;
+}
+
+// Door state to copy onto a new upper tier so the pair starts with the
+// lower tier's doors (an unauthored upper would otherwise count as all edges).
+function fpDoorCopy(lower) {
+  return {
+    doorEdges: Array.isArray(lower.doorEdges) && lower.doorEdges.length ? lower.doorEdges.slice() : null,
+    doorOffsets: lower.doorOffsets ? { ...lower.doorOffsets } : null,
+  };
+}
+
 // Locker stack-drop guard: a lone ground-tier locker moved EXACTLY onto a
 // lone ground-tier locker's rect may stack as the upper tier (tiers 0 + 1)
 // instead of reverting. Mirrors the server's same-rect rules in
@@ -277,8 +297,9 @@ async function fpStackMovedOn(pl, hit, orig) {
   try {
     await fpMutate(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/units/${encodeURIComponent(pl.unitId)}`, {
       method: 'PUT',
-      body: JSON.stringify({ x: hit.x, y: hit.y, width: hit.width, height: hit.height, stackTier: 1 }),
+      body: JSON.stringify({ x: hit.x, y: hit.y, width: hit.width, height: hit.height, stackTier: 1, ...fpDoorCopy(hit) }),
     });
+    Object.assign(pl, fpDoorCopy(hit));
     pl.x = hit.x;
     pl.y = hit.y;
     pl.width = hit.width;
@@ -1562,7 +1583,7 @@ function fpRenderCanvas() {
       el.style.height = r.height * u + 'px';
       el.title = (fpIsOccupiedLocked(lower) || fpIsOccupiedLocked(upper))
         ? `Stacked pair — upper ${fpUnitNo(upper)} (${upper.status}) / lower ${fpUnitNo(lower)} (${lower.status}) — Occupied — uneditable when live`
-        : `Stacked pair — upper ${fpUnitNo(upper)} (${upper.status}) / lower ${fpUnitNo(lower)} (${lower.status}) · doors auto (stacked pairs stay AUTO)`;
+        : `Stacked pair — upper ${fpUnitNo(upper)} (${upper.status}) / lower ${fpUnitNo(lower)} (${lower.status}) · shared doors ${fpEffectiveDoors(lower).edges.join('')}${fpEffectiveDoors(lower).authored ? '' : ' (auto)'}`;
       el.innerHTML =
         `<div class="fp-status" style="background:${fpStatusColor(lower.status)};"></div>` +
         `<div class="fp-code fp-stack-upper">${escapeHtml(fpUnitNo(upper))}</div>` +
@@ -1571,7 +1592,7 @@ function fpRenderCanvas() {
         `<div class="fp-code fp-stack-lower">${escapeHtml(fpUnitNo(lower))}</div>` +
         `<div class="fp-sqft">${fpFmtArea(lower.sqft)} sqft</div>` +
         fpUnitTagsHTML(lower, upper) +
-        fpDoorMarkersHTML({ doorEdges: null }, u) +
+        fpDoorMarkersHTML(lower, u) +
         ((fpIsOccupiedLocked(lower) || fpIsOccupiedLocked(upper)) ? '' : `<div class="fp-resize" title="Drag to resize"></div>`);
       canvas.appendChild(el);
       continue;
@@ -3582,7 +3603,7 @@ function fpRenderSelInfoInner() {
       `<span class="t-type">⧉ Stacked pair · ${escapeHtml(fpUnitNo(upper))} (upper) over ${escapeHtml(fpUnitNo(lower))} (lower)${lockNote}</span>` +
       fpNumFieldsHTML(pl) +
       fpAreaNoteHTML(pl, lower.sqft, lower) +
-      `<span class="t-type">doors auto (ghost ticks = all edges)</span>` +
+      fpDoorControlsHTML(lower, true) +
       `<button class="act-btn" id="fpRotateBtn" style="padding:2px 9px;font-size:10px;" title="Swap width/height (90° rotation) for both tiers">⟳ Rotate</button>` +
       `<button class="act-btn" id="fpUnstackBtn" style="padding:2px 9px;font-size:10px;" title="Remove the upper tier — the lower tier stays as a single">Unstack</button>` +
       `<button class="act-btn danger" id="fpRemoveBtn" style="padding:2px 9px;font-size:10px;">${fpIsDraftUnit(pl) ? 'Discard new unit' : 'Remove from floor'}</button>`;
@@ -3594,11 +3615,6 @@ function fpRenderSelInfoInner() {
   // Door authoring (Phase 3): N/S/E/W toggles persisted per placement via the
   // existing PUT units endpoint (additive doorEdges). Null = unauthored (AUTO
   // all edges in metrics); toggling one edge off authors the rest.
-  const authored = Array.isArray(pl.doorEdges) ? pl.doorEdges : null;
-  const effDoors = authored && authored.length ? authored : ['N', 'S', 'E', 'W'];
-  const doorBtns = ['N', 'S', 'E', 'W']
-    .map((e) => `<button class="act-btn${effDoors.includes(e) ? ' primary' : ''}" data-door="${e}" style="padding:2px 8px;font-size:10px;" title="Toggle ${e} door edge">${e}</button>`)
-    .join('');
   info.innerHTML =
     `<span class="t-type">${escapeHtml(fpUnitNo(pl))} · ${pl.sqft} sqft${lockNote}</span>` +
     fpNumFieldsHTML(pl) +
@@ -3609,24 +3625,65 @@ function fpRenderSelInfoInner() {
       : fpIsLockerPlacement(pl) && !stackable.length
         ? `<button class="act-btn" id="fpStackNewBtn" style="padding:2px 9px;font-size:10px;" title="Create a new locker unit stacked on top of this one (draft until you publish)">⧉ Stack new locker</button>`
         : '') +
-    `<span class="t-type">Doors${authored ? ' · terra ticks = authored' : ' (auto · ghost ticks = all edges)'}:</span>` + doorBtns +
-    (authored ? `<button class="act-btn" id="fpDoorsAutoBtn" style="padding:2px 9px;font-size:10px;" title="Clear authored doors — fall back to all edges">Auto</button>` : '') +
+    fpDoorControlsHTML(pl, false) +
     (state.fp.arrayOpen
       ? fpArrayFormHTML()
       : `<button class="act-btn" id="fpArrayBtn" style="padding:2px 9px;font-size:10px;" title="Array — place the next unplaced units of this size in a row from here">⇶ Array</button>`) +
     `<button class="act-btn danger" id="fpRemoveBtn" style="padding:2px 9px;font-size:10px;">${fpIsDraftUnit(pl) ? 'Discard new unit' : 'Remove from floor'}</button>`;
 }
 
+// N/S/E/W door toggles (+ Auto) for a single or a stacked pair's door host.
+// Null doorEdges = unauthored (AUTO all edges in metrics); toggling one edge
+// off authors the rest.
+function fpDoorControlsHTML(host, pair) {
+  const authored = Array.isArray(host.doorEdges) && host.doorEdges.length ? host.doorEdges : null;
+  const effDoors = authored || ['N', 'S', 'E', 'W'];
+  const doorBtns = ['N', 'S', 'E', 'W']
+    .map((e) => `<button class="act-btn${effDoors.includes(e) ? ' primary' : ''}" data-door="${e}" style="padding:2px 8px;font-size:10px;" title="Toggle ${e} door edge${pair ? ' (both tiers)' : ''}">${e}</button>`)
+    .join('');
+  return (
+    `<span class="t-type">${pair ? 'Shared doors' : 'Doors'}${authored ? ' · terra ticks = authored' : ' (auto · ghost ticks = all edges)'}:</span>` + doorBtns +
+    (authored ? `<button class="act-btn" id="fpDoorsAutoBtn" style="padding:2px 9px;font-size:10px;" title="Clear authored doors — fall back to all edges">Auto</button>` : '')
+  );
+}
+
 // Persist one placement's authored door edges (null clears back to AUTO) plus
-// its door-centre offsets (door-move tool fractions). Stacked pairs share one
-// rect and keep AUTO (their server-side door union is already all edges), so
-// toggles and moves are singles-only. `offsets` undefined = keep the current
-// offsets pruned to the new edges (toggling an edge off drops its offset);
-// null clears back to centred; an object replaces.
-async function fpSaveDoors(pl, edges, offsets) {
-  const doorsPrev = Array.isArray(pl.doorEdges) ? pl.doorEdges.slice() : null;
-  const offsetsPrev = pl.doorOffsets ? { ...pl.doorOffsets } : null;
+// its door-centre offsets (door-move tool fractions). A stacked pair shares
+// one rect and one set of doors: `pl` is its door host (lower tier) and the
+// same edges + offsets are written to both tiers in one batch (one undo step).
+// `offsets` undefined = keep the current offsets pruned to the new edges
+// (toggling an edge off drops its offset); null clears back to centred; an
+// object replaces. `prevDoors` = the pre-edit { doorEdges, doorOffsets } when
+// the caller already mutated `pl` locally (door drag), so undo restores it.
+async function fpSaveDoors(pl, edges, offsets, prevDoors) {
+  const doorsPrev = prevDoors ? prevDoors.doorEdges : Array.isArray(pl.doorEdges) ? pl.doorEdges.slice() : null;
+  const offsetsPrev = prevDoors ? prevDoors.doorOffsets : pl.doorOffsets ? { ...pl.doorOffsets } : null;
   const nextOffsets = offsets === undefined ? fpNormalizeDoorOffsets(pl.doorOffsets, edges) : offsets;
+  const mate = fpStackMate(pl);
+  if (mate) {
+    const members = [pl, mate];
+    const before = members.map((m) => {
+      const st = fpElemState('placement', m.unitId);
+      return { type: 'placement', id: m.unitId, state: m === pl ? { ...st, doorEdges: doorsPrev, doorOffsets: offsetsPrev } : st };
+    });
+    const targets = members.map((m) => ({
+      type: 'placement',
+      id: m.unitId,
+      state: { ...fpElemState('placement', m.unitId), doorEdges: edges, doorOffsets: nextOffsets },
+    }));
+    const upper = (pl.stackTier || 0) === 1 ? pl : mate;
+    const lower = upper === pl ? mate : pl;
+    const who = `${fpUnitNo(upper)} / ${fpUnitNo(lower)}`;
+    delete pl._doorDragEdge;
+    const ok = await fpCommitBatch(targets, edges ? `Doors ${who} → ${edges.join('')} (both tiers)` : `Doors ${who} → auto (all edges)`, before);
+    if (!ok) {
+      pl.doorEdges = doorsPrev;
+      pl.doorOffsets = offsetsPrev;
+    }
+    fpRenderSelInfo();
+    fpRenderCanvas();
+    return;
+  }
   try {
     const res = await fpMutate(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/units/${encodeURIComponent(pl.unitId)}`, {
       method: 'PUT',
@@ -3655,10 +3712,18 @@ async function fpSaveDoors(pl, edges, offsets) {
   }
 }
 
+// Occupied-lock guard over a placement and its stack mate (a pair's doors are
+// shared, so either tier being live-occupied freezes them).
+function fpGuardDoorsLocked(pl) {
+  const mate = fpStackMate(pl);
+  return fpGuardLocked(pl) || (mate ? fpGuardLocked(mate) : false);
+}
+
 async function fpToggleDoor(edge) {
-  const pl = state.fp.placements.find((p) => p.unitId === state.fp.selected);
-  if (!pl || fpStackMate(pl)) return;
-  if (fpGuardLocked(pl)) return; // live occupied placement: doors frozen
+  const sel = state.fp.placements.find((p) => p.unitId === state.fp.selected);
+  if (!sel) return;
+  if (fpGuardDoorsLocked(sel)) return; // live occupied placement: doors frozen
+  const pl = fpDoorHost(sel);
   const authored = Array.isArray(pl.doorEdges) ? pl.doorEdges.slice() : null;
   let next;
   if (!authored) {
@@ -3676,10 +3741,10 @@ async function fpToggleDoor(edge) {
 }
 
 async function fpResetDoors() {
-  const pl = state.fp.placements.find((p) => p.unitId === state.fp.selected);
-  if (!pl || fpStackMate(pl)) return;
-  if (fpGuardLocked(pl)) return; // live occupied placement: doors frozen
-  await fpSaveDoors(pl, null);
+  const sel = state.fp.placements.find((p) => p.unitId === state.fp.selected);
+  if (!sel) return;
+  if (fpGuardDoorsLocked(sel)) return; // live occupied placement: doors frozen
+  await fpSaveDoors(fpDoorHost(sel), null);
 }
 
 // ---------- move-door tool (reposition a door along its wall edge) ----------
@@ -3688,8 +3753,9 @@ async function fpResetDoors() {
 // tool arms via the toolbar (D): the next press on a door starts an
 // edge-constrained drag with a live ghost; release persists through the same
 // placement PUT the N/S/E/W toggles use (fpSaveDoors); Esc cancels the drag
-// (or disarms the tool). Stacked pairs keep AUTO doors (singles only) and
-// occupied-locked placements stay frozen — same guards as the toggles.
+// (or disarms the tool). A stacked pair's shared doors drag on its lower tier
+// (the door host) and save to both tiers; occupied-locked placements stay
+// frozen — same guards as the toggles.
 let fpDoorDrag = null; // { pl, edge, authored, prev, move, up } while dragging
 
 // Door under the pointer (feet-space, ~10 px tolerance), or null. Corners
@@ -3708,7 +3774,7 @@ function fpDoorHitAt(clientX, clientY) {
   };
   let best = null;
   for (const pl of state.fp.placements || []) {
-    if (fpStackMate(pl)) continue; // stacked pairs stay AUTO — not draggable
+    if (fpDoorHost(pl) !== pl) continue; // upper tier: the pair's doors live on the lower tier
     const { edges } = fpEffectiveDoors(pl);
     const x0 = pl.x;
     const y0 = pl.y;
@@ -3738,7 +3804,7 @@ function fpDoorFraction(pl, edge, raw) {
 // caller swallows the press); locked placements toast and swallow.
 function fpDoorStartDrag(e, hit) {
   const pl = hit.pl;
-  if (fpGuardLocked(pl)) return true;
+  if (fpGuardDoorsLocked(pl)) return true;
   e.preventDefault();
   const authored = Array.isArray(pl.doorEdges) && pl.doorEdges.length ? pl.doorEdges.slice() : ['N', 'S', 'E', 'W'];
   const prev = {
@@ -3781,7 +3847,7 @@ function fpDoorStartDrag(e, hit) {
       fpRenderSelInfo();
       return;
     }
-    fpSaveDoors(pl, drag.authored, pl.doorOffsets ? { ...pl.doorOffsets } : null);
+    fpSaveDoors(pl, drag.authored, pl.doorOffsets ? { ...pl.doorOffsets } : null, { doorEdges: drag.prev.doorEdges, doorOffsets: drag.prev.doorOffsets });
   };
   fpDoorDrag.move = move;
   fpDoorDrag.up = up;
@@ -3869,7 +3935,7 @@ async function fpStackSelected() {
   try {
     await fpMutate(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/units/${encodeURIComponent(cand.id)}`, {
       method: 'PUT',
-      body: JSON.stringify({ x: pl.x, y: pl.y, width: pl.width, height: pl.height, stackTier: 1 }),
+      body: JSON.stringify({ x: pl.x, y: pl.y, width: pl.width, height: pl.height, stackTier: 1, ...fpDoorCopy(pl) }),
     });
     state.fp.unplaced = state.fp.unplaced.filter((u) => u.id !== cand.id);
     state.fp.placements.push({
@@ -3886,6 +3952,7 @@ async function fpStackSelected() {
       width: pl.width,
       height: pl.height,
       stackTier: 1,
+      ...fpDoorCopy(pl),
       hasPillar: cand.hasPillar === true,
     });
     fpPushUndo({ kind: 'placement', unitId: cand.id, prev: null }); // undo = DELETE the stacked upper tier
@@ -4863,10 +4930,21 @@ async function fpPersistPair(lower, upper, verb) {
       fpAdoptPlacement(p, res && res.data);
     }
     fpRefreshAfterSave();
+    // ONE undo step for both tiers: undo goes through the batch endpoint, which
+    // validates the final layout, so both tiers move back together. (Two
+    // single-placement steps restored one tier at a time and the server
+    // rejected the half-moved pair as an overlap.)
+    // Usually only the grabbed tier recorded its pre-drag rect; the pair
+    // shared that rect, so the mate's prev is the same rect at its own tier.
+    const shared = undoPrevs.get(lower.unitId) || undoPrevs.get(upper.unitId);
+    const items = [];
     for (const p of [lower, upper]) {
-      const prev = undoPrevs.get(p.unitId);
-      if (prev) fpPushUndo({ kind: 'placement', unitId: p.unitId, prev: { ...prev, doorEdges: p.doorEdges || null, doorOffsets: p.doorOffsets ? { ...p.doorOffsets } : null } });
+      const prev = undoPrevs.get(p.unitId) || shared;
+      if (!prev) continue;
+      const after = fpElemState('placement', p.unitId);
+      items.push({ type: 'placement', id: p.unitId, before: { ...after, ...prev, unitId: p.unitId, stackTier: p.stackTier || 0 }, after });
     }
+    if (items.length) fpPushUndo({ kind: 'batch', items });
     fpToast(`${verb} stack ${fpUnitNo(upper)}/${fpUnitNo(lower)} → ${lower.x},${lower.y} · ${lower.width}×${lower.height} ft`, true);
     notifyMetricsFloorChanged();
   } catch (err) {
@@ -7291,7 +7369,7 @@ async function fpCreateUnits(items, verbOverride) {
     return {
       type: 'placement',
       id,
-      state: { unitId: id, x: rect.x, y: rect.y, width: rect.width, height: rect.height, stackTier: rect.stackTier || 0, doorEdges: null },
+      state: { unitId: id, x: rect.x, y: rect.y, width: rect.width, height: rect.height, stackTier: rect.stackTier || 0, doorEdges: rect.doorEdges || null },
       createSpec: spec,
     };
   });
@@ -7473,7 +7551,7 @@ async function fpStackNewLocker() {
   const spec = fpDraftSpec(pl);
   delete spec.monthlyRate;
   spec.name = null;
-  await fpCreateUnits([{ rect: { x: pl.x, y: pl.y, width: pl.width, height: pl.height, stackTier: 1 }, spec }]);
+  await fpCreateUnits([{ rect: { x: pl.x, y: pl.y, width: pl.width, height: pl.height, stackTier: 1, doorEdges: fpDoorCopy(pl).doorEdges }, spec }]);
 }
 
 async function fpRemovePlacement() {
@@ -7644,7 +7722,7 @@ function fpViewRender() {
       el.style.height = r.height * u + 'px';
       el.title = (fpIsOccupiedLocked(lower) || fpIsOccupiedLocked(upper))
         ? `Stacked pair — upper ${fpUnitNo(upper)} (${upper.status}) / lower ${fpUnitNo(lower)} (${lower.status}) — Occupied — uneditable when live`
-        : `Stacked pair — upper ${fpUnitNo(upper)} (${upper.status}) / lower ${fpUnitNo(lower)} (${lower.status}) · doors auto (stacked pairs stay AUTO)`;
+        : `Stacked pair — upper ${fpUnitNo(upper)} (${upper.status}) / lower ${fpUnitNo(lower)} (${lower.status}) · shared doors ${fpEffectiveDoors(lower).edges.join('')}${fpEffectiveDoors(lower).authored ? '' : ' (auto)'}`;
       el.innerHTML =
         `<div class="fp-status" style="background:${fpStatusColor(lower.status)};"></div>` +
         `<div class="fp-code fp-stack-upper">${escapeHtml(fpUnitNo(upper))}</div>` +
@@ -7652,7 +7730,7 @@ function fpViewRender() {
         `<div class="fp-stack-divider"></div>` +
         `<div class="fp-code fp-stack-lower">${escapeHtml(fpUnitNo(lower))}</div>` +
         `<div class="fp-sqft">${fpFmtArea(lower.sqft)} sqft</div>` +
-        fpDoorMarkersHTML({ doorEdges: null }, u);
+        fpDoorMarkersHTML(lower, u);
       canvas.appendChild(el);
       continue;
     }

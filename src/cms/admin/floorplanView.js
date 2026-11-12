@@ -1566,8 +1566,10 @@ function fpRenderCanvas() {
       el.innerHTML =
         `<div class="fp-status" style="background:${fpStatusColor(lower.status)};"></div>` +
         `<div class="fp-code fp-stack-upper">${escapeHtml(fpUnitNo(upper))}</div>` +
+        `<div class="fp-sqft">${fpFmtArea(upper.sqft)} sqft</div>` +
         `<div class="fp-stack-divider"></div>` +
         `<div class="fp-code fp-stack-lower">${escapeHtml(fpUnitNo(lower))}</div>` +
+        `<div class="fp-sqft">${fpFmtArea(lower.sqft)} sqft</div>` +
         fpUnitTagsHTML(lower, upper) +
         fpDoorMarkersHTML({ doorEdges: null }, u) +
         ((fpIsOccupiedLocked(lower) || fpIsOccupiedLocked(upper)) ? '' : `<div class="fp-resize" title="Drag to resize"></div>`);
@@ -1587,6 +1589,7 @@ function fpRenderCanvas() {
     el.innerHTML =
       `<div class="fp-status" style="background:${fpStatusColor(pl.status)};"></div>` +
       `<div class="fp-code">${escapeHtml(fpUnitNo(pl))}</div>` +
+      `<div class="fp-sqft">${fpFmtArea(pl.sqft)} sqft</div>` +
       (pl.height * u > 34 ? `<div class="fp-size">${escapeHtml(pl.sizeName)}</div>` : '') +
       fpUnitTagsHTML(pl) +
       fpDoorMarkersHTML(pl, u) +
@@ -7645,8 +7648,10 @@ function fpViewRender() {
       el.innerHTML =
         `<div class="fp-status" style="background:${fpStatusColor(lower.status)};"></div>` +
         `<div class="fp-code fp-stack-upper">${escapeHtml(fpUnitNo(upper))}</div>` +
+        `<div class="fp-sqft">${fpFmtArea(upper.sqft)} sqft</div>` +
         `<div class="fp-stack-divider"></div>` +
         `<div class="fp-code fp-stack-lower">${escapeHtml(fpUnitNo(lower))}</div>` +
+        `<div class="fp-sqft">${fpFmtArea(lower.sqft)} sqft</div>` +
         fpDoorMarkersHTML({ doorEdges: null }, u);
       canvas.appendChild(el);
       continue;
@@ -7663,6 +7668,7 @@ function fpViewRender() {
     el.innerHTML =
       `<div class="fp-status" style="background:${fpStatusColor(pl.status)};"></div>` +
       `<div class="fp-code">${escapeHtml(fpUnitNo(pl))}</div>` +
+      `<div class="fp-sqft">${fpFmtArea(pl.sqft)} sqft</div>` +
       (pl.height * u > 34 ? `<div class="fp-size">${escapeHtml(pl.sizeName)}</div>` : '') +
       fpUnitTagsHTML(pl) +
       fpDoorMarkersHTML(pl, u) +

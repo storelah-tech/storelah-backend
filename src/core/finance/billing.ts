@@ -533,6 +533,75 @@ export async function writeOffInvoice(id: string, opts: { expectedVersion?: numb
   return serializeInvoice(row);
 }
 
+/** SGT calendar (year, month 1-12) of an instant — the product bills in SGT. */
+function sgtYearMonth(d: Date): { year: number; month: number } {
+  const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Singapore', year: 'numeric', month: '2-digit' }).formatToParts(d);
+  return {
+    year: Number(parts.find((p) => p.type === 'year')?.value),
+    month: Number(parts.find((p) => p.type === 'month')?.value),
+  };
+}
+
+/**
+ * Which agreement month `ym` is for the tenant's latest live booking of the
+ * unit, and whether it is rent-free. Agreement month N is the (N−1)th SGT
+ * calendar month after the move-in month — the model the booking app shows
+ * ("Months 6 & 11 free · Apr & Sep"). Free months come from the
+ * redemption's snapshot; rows from before the snapshot existed fall back to
+ * the plan's months within the booked duration. null = no booking (manual /
+ * legacy tenants).
+ */
+export async function agreementMonthFor(
+  tenantId: string,
+  unitId: string,
+  ym: { year: number; month: number },
+): Promise<{ n: number; durationMonths: number; free: boolean; planName: string | null } | null> {
+  const booking = await prisma.booking.findFirst({
+    where: { tenantId, unitId, status: { in: ['CONFIRMED', 'ACTIVE'] } },
+    orderBy: { moveInDate: 'desc' },
+  });
+  if (!booking) return null;
+  const moveIn = sgtYearMonth(booking.moveInDate);
+  const n = (ym.year - moveIn.year) * 12 + (ym.month - moveIn.month) + 1;
+  const durationMonths = Number(/(\d+)/.exec(booking.duration)?.[1] ?? 0);
+  const redemption = await prisma.promotionRedemption.findFirst({
+    where: { bookingId: booking.id, plan: { kind: 'FREE_MONTHS' } },
+    include: { plan: { include: { freeMonths: true } } },
+    orderBy: { createdAt: 'desc' },
+  });
+  if (!redemption) return { n, durationMonths, free: false, planName: null };
+  const months = redemption.freeMonths.length
+    ? redemption.freeMonths
+    : redemption.plan.freeMonths
+        .filter((f) => f.free && f.monthIndex >= 0 && (!durationMonths || f.monthIndex < durationMonths))
+        .map((f) => f.monthIndex + 1);
+  return { n, durationMonths, free: months.includes(n), planName: redemption.plan.name };
+}
+
+/** True when the agreement month containing `date` (SGT) is rent-free. */
+export async function isFreeAgreementMonth(tenantId: string, unitId: string, date: Date): Promise<boolean> {
+  return (await agreementMonthFor(tenantId, unitId, sgtYearMonth(date)))?.free ?? false;
+}
+
+/**
+ * Why the run must NOT bill this tenant for `billingMonth` (null = bill as
+ * usual): months before move-in; the move-in month itself (agreement month 1
+ * is the prorated first month, charged at checkout by the booking's own DUE
+ * invoice — billing it here would charge it twice); and FREE_MONTHS months.
+ */
+export async function billingRunExemption(
+  tenantId: string,
+  unitId: string,
+  billingMonth: { year: number; month: number },
+): Promise<string | null> {
+  const a = await agreementMonthFor(tenantId, unitId, billingMonth);
+  if (!a) return null;
+  if (a.n < 1) return 'Before the move-in month — nothing to bill yet';
+  if (a.n === 1) return 'Move-in month — the first (prorated) month is charged at checkout';
+  if (!a.free) return null;
+  return `Free month ${a.n}${a.durationMonths ? ` of ${a.durationMonths}` : ''} (${a.planName}) — rent waived, no invoice`;
+}
+
 export interface BillingRunInput {
   branchId: string;
   billingMonth: string;
@@ -579,6 +648,15 @@ export async function runBilling(input: BillingRunInput): Promise<BillingRunResu
     const rate = toNum(t.monthlyRate);
     if (!(rate > 0)) {
       result.skipped.push({ tenant: t.name, unit: t.unit?.unitCode ?? '—', reason: 'monthlyRate is zero' });
+      continue;
+    }
+    // Free months / move-in month: SKIP rather than issue a $0 invoice — a
+    // zero-balance invoice can never be issued (no payment instruction for a
+    // $0 balance) and would sit in DRAFT forever; the skip carries the reason
+    // so the operator sees why the tenant has no invoice this month.
+    const exemption = await billingRunExemption(t.id, t.unitId!, { year: Number(m[1]), month: Number(m[2]) });
+    if (exemption) {
+      result.skipped.push({ tenant: t.name, unit: t.unit?.unitCode ?? '—', reason: exemption });
       continue;
     }
     const key = `billing-run:${branch.id}:${input.billingMonth}:${t.id}`;

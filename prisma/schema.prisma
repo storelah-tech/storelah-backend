@@ -1325,6 +1325,10 @@ model PromotionRedemption {
   bookingId  String?
   code       String? // promo code entered at booking time (if any)
   amount     Decimal       @db.Decimal(10, 2) // discount value granted (SGD)
+  // FREE_MONTHS plans: the 1-based agreement months made rent-free at booking
+  // time (the billing run skips them). Snapshot, so later plan edits never
+  // change an existing customer's bills. [] for other plan kinds.
+  freeMonths Int[]         @default([])
   redeemedAt DateTime      @default(now())
   createdAt  DateTime      @default(now())
 

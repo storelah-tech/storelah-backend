@@ -71,7 +71,7 @@ describe('WP-A F-2 arrears route order', () => {
   it('literal /waivers is not shadowed by /:id', async () => {
     await seedMoveInWorld();
     const op = await createOperator('FINANCE_OPERATOR');
-    const branch = await prisma.branch.findUniqueOrThrow({ where: { code: 'SW' } });
+    const branch = await prisma.branch.findUniqueOrThrow({ where: { code: 'SS' } });
     const size = await prisma.unitSize.findFirstOrThrow();
     const floor = await prisma.floor.findFirstOrThrow({ where: { branchId: branch.id } });
     const unit = await prisma.unit.create({
@@ -98,7 +98,7 @@ describe('WP-A F-3 billing run', () => {
   it('bills by unit.branchId and explains an empty run', async () => {
     await seedMoveInWorld();
     const op = await createOperator('FINANCE_OPERATOR');
-    const branch = await prisma.branch.findUniqueOrThrow({ where: { code: 'SW' } });
+    const branch = await prisma.branch.findUniqueOrThrow({ where: { code: 'SS' } });
     const run = await api.post(`${CMS}/finance/billing-run`).set('Authorization', op.auth).send({ branchId: branch.id, billingMonth: '2026-10' });
     expect(run.status).toBe(200);
     expect(run.body.data.created).toBeGreaterThanOrEqual(0);

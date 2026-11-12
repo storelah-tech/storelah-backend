@@ -744,8 +744,8 @@ export async function getCustomerPortal(payload: CustomerJwtPayload) {
 // DISCOUNT MATRIX exact (sizeCategory, commitmentMonths) cell discounts the
 // rent (largest pct across eligible plans); a FREE_MONTHS plan whose
 // commitment the booking meets makes its listed months rent-free (month 1 →
-// waived today). If both apply the larger total saving wins — one rent
-// promotion per agreement. Only when no plan applies does the promo-code path
+// waived today). If both apply the free-months plan wins (owner decision
+// 2026-10-26) — one rent promotion per agreement. Only when no plan applies does the promo-code path
 // below run (plan-linked codes also need their plan live/in scope/under cap) — its
 // validation mirrors validatePromotion() in core/promotions.ts (active + date
 // window + minMonths), and its scope is classified by
@@ -957,11 +957,12 @@ async function computeServerDueToday(
       const idx = p.freeMonths.filter((f) => f.free && f.monthIndex >= 0 && f.monthIndex < months).map((f) => f.monthIndex).sort((a, b) => a - b);
       if (idx.length && (!bestFree || idx.length > bestFree.idx.length)) bestFree = { planId: p.id, idx };
     }
-    // One rent promotion per agreement: the larger total saving over the
-    // booked duration wins (ties → matrix, the established path).
+    // One rent promotion per agreement: an eligible FREE_MONTHS plan always
+    // wins over the matrix (owner decision 2026-10-26 — a published
+    // free-months offer must be what the customer sees, even when the
+    // matrix % would save more); the matrix prices everything else.
     const matrixValue = bestPct != null && bestPct > 0 ? (base * bestPct / 100) * months : 0;
-    const freeValue = bestFree ? base * bestFree.idx.length : 0;
-    if (freeValue > matrixValue && bestFree) {
+    if (bestFree) {
       planApplied = true;
       applied = { planId: bestFree.planId, kind: 'FREE_MONTHS', code: null, freeMonths: bestFree.idx.map((i) => i + 1) };
       // Month 1 free → the whole first (prorated) month is waived today; later
@@ -1275,7 +1276,10 @@ export async function createCustomerBooking(customer: Customer, input: CreateBoo
           ? toNum(quote.base * (a.freeMonths?.length ?? 0))
           : toNum(quote.promoDiscount + quote.firstMonthDiscount);
       await tx.promotionRedemption.create({
-        data: { planId: a.planId, bookingId: booking.id, code: a.code, amount },
+        data: {
+          planId: a.planId, bookingId: booking.id, code: a.code, amount,
+          freeMonths: a.kind === 'FREE_MONTHS' ? (a.freeMonths ?? []) : [],
+        },
       });
     }
 

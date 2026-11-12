@@ -18,6 +18,7 @@ import { prisma } from '../lib/prisma';
 import { AppError } from '../lib/http';
 import { toNum } from '../lib/format';
 import { normalizeEmail } from './customers';
+import { isFreeAgreementMonth } from './finance/billing';
 
 const r2 = (n: number) => Math.round(n * 100) / 100;
 const ymd = (d: Date | null | undefined) => (d ? d.toISOString().slice(0, 10) : null);
@@ -277,13 +278,16 @@ async function buildSettlement(tenantId: string, req: SettlementRequest) {
   if (!t) throw new AppError(404, 'NOT_FOUND', `Customer ${tenantId} not found`);
   if (!t.unitId || !t.unit) throw new AppError(409, 'CONFLICT', 'This customer has no active unit.');
   const rent = toNum(t.monthlyRate);
+  // Unused-rent credits only refund rent that was charged: a free agreement
+  // month (FREE_MONTHS plan) was never billed, so it credits nothing.
+  const paidRentOn = async (d: Date) => ((await isFreeAgreementMonth(t.id, t.unitId!, d)) ? 0 : rent);
   if (req.kind === 'TRANSFER') {
     const dest = await prisma.unit.findUnique({ where: { id: req.toUnitId }, include: { branch: true, size: true } });
     if (!dest || dest.deletedAt) throw new AppError(404, 'NOT_FOUND', 'Choose a destination unit.');
     if (dest.id === t.unitId) throw new AppError(400, 'VALIDATION', 'The destination must be a different unit.');
     if (dest.status !== 'AVAILABLE') throw new AppError(409, 'CONFLICT', `${dest.unitCode} is not available.`);
     const calc = calculateTransfer({
-      date: dateOf(req.date), currentRent: rent, currentDeposit: 0,
+      date: dateOf(req.date), currentRent: await paidRentOn(dateOf(req.date)), currentDeposit: 0,
       destGross: toNum(dest.monthlyRate), destPromoPct: req.destPromoPct ?? 0, destDeposit: req.destDeposit ?? 0,
       destProtection: req.destProtection ?? 0, adjustment: req.adjustment,
     });
@@ -297,7 +301,7 @@ async function buildSettlement(tenantId: string, req: SettlementRequest) {
   const notice = await prisma.notice.findFirst({ where: { tenantId: t.id }, orderBy: { createdAt: 'desc' } });
   const lastDay = notice ? notice.lastDay : req.lastDay ? dateOf(req.lastDay) : null;
   if (!lastDay) throw new AppError(400, 'VALIDATION', 'Enter the customer’s last day of access. The system will then calculate unused rent and the closing balance.');
-  const calc = calculateMoveOut({ lastDay, rent, deposit: 0, adjustment: req.adjustment });
+  const calc = calculateMoveOut({ lastDay, rent: await paidRentOn(lastDay), deposit: 0, adjustment: req.adjustment });
   return {
     tenant: t, kind: req.kind, docType: calc.outcome === 'REFUND' ? 'Refund' : 'Charge', prefix: calc.outcome === 'REFUND' ? 'RF' : 'CH',
     unitId: t.unitId, toUnitId: null, effectiveDate: lastDay,

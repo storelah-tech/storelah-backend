@@ -256,13 +256,31 @@ describe('checkout — free months and CMS promo codes', () => {
     expect((await book(PIN.rentableUnit, 6)).breakdown.appliedPromotion).toBeNull();
   });
 
-  it('free months vs matrix: the larger total saving wins, never both', async () => {
+  it('free months vs matrix: an eligible free-months plan wins, never both', async () => {
     const m = await createPlan({ kind: 'DISCOUNT_MATRIX', name: 'E2E 12m', effectiveFrom: today, facilityScope: ['ALL'], matrixCells: [{ sizeCategory: 'SMALL', accessType: 'Standard', commitmentMonths: 12, discountPct: 10 }] } as any);
     await walkActive(m.id); // 10% × 12 months = 1.2 months of rent
-    const f = await freePlan([5, 11]); // 2 months of rent → wins
+    const f = await freePlan([5, 11]); // 2 months of rent
     const b = await book(PIN.rentableUnit, 12);
     expect(b.breakdown.appliedPromotion).toMatchObject({ planId: f.id, kind: 'FREE_MONTHS' });
     expect(b.breakdown.discountPct).toBe(0);
+  });
+
+  it('free months win even when the matrix saves more (owner decision 2026-10-26)', async () => {
+    const m = await createPlan({ kind: 'DISCOUNT_MATRIX', name: 'E2E 12m 30', effectiveFrom: today, facilityScope: ['ALL'], matrixCells: [{ sizeCategory: 'SMALL', accessType: 'Standard', commitmentMonths: 12, discountPct: 30 }] } as any);
+    await walkActive(m.id); // 30% × 12 months = 3.6 months of rent
+    const f = await freePlan([5, 11]); // 2 months of rent — still wins
+    const b = await book(PIN.rentableUnit, 12);
+    expect(b.breakdown.appliedPromotion).toMatchObject({ planId: f.id, kind: 'FREE_MONTHS', freeMonths: [6, 12] });
+    expect(b.breakdown.discountPct).toBe(0);
+  });
+
+  it('the matrix still prices bookings the free-months plan does not cover', async () => {
+    const m = await createPlan({ kind: 'DISCOUNT_MATRIX', name: 'E2E 6m', effectiveFrom: today, facilityScope: ['ALL'], matrixCells: [{ sizeCategory: 'SMALL', accessType: 'Standard', commitmentMonths: 6, discountPct: 10 }] } as any);
+    await walkActive(m.id);
+    await freePlan([5, 11]); // 12-month commitment → not met by 6 months
+    const b = await book(PIN.rentableUnit, 6);
+    expect(b.breakdown.appliedPromotion).toMatchObject({ planId: m.id, kind: 'DISCOUNT_MATRIX' });
+    expect(b.breakdown.discountPct).toBe(10);
   });
 
   it('a CMS promo code is redeemable once its plan is ACTIVE, honours caps, and records redemptions', async () => {

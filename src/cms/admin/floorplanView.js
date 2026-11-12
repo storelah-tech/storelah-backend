@@ -266,8 +266,8 @@ async function fpStackMovedOn(pl, hit, orig) {
     fpRenderCanvas();
   };
   const stackOk = await confirmDialog({
-    title: `Stack ${pl.unitCode} on ${hit.unitCode}?`,
-    message: `${pl.unitCode} becomes the UPPER tier and ${hit.unitCode} stays the LOWER tier — one block split by a divider line.`,
+    title: `Stack ${fpUnitNo(pl)} on ${fpUnitNo(hit)}?`,
+    message: `${fpUnitNo(pl)} becomes the UPPER tier and ${fpUnitNo(hit)} stays the LOWER tier — one block split by a divider line.`,
     confirmLabel: 'Stack',
   });
   if (!stackOk) {
@@ -285,12 +285,12 @@ async function fpStackMovedOn(pl, hit, orig) {
     pl.height = hit.height;
     pl.stackTier = 1;
     fpPushUndo({ kind: 'placement', unitId: pl.unitId, prev: null }); // undo = DELETE the stacked upper tier
-    fpToast(`Stacked ${pl.unitCode} (upper) over ${hit.unitCode} (lower)`, true);
+    fpToast(`Stacked ${fpUnitNo(pl)} (upper) over ${fpUnitNo(hit)} (lower)`, true);
     fpRender();
     notifyMetricsFloorChanged();
   } catch (err) {
     restore();
-    fpToast(`Stack ${pl.unitCode}: ${describeError(err)}`, false);
+    fpToast(`Stack ${fpUnitNo(pl)}: ${describeError(err)}`, false);
     await fpFetch(); // revert local state to what the server has
   }
 }
@@ -452,8 +452,8 @@ function fpOnCanvasHover(e) {
     if (hit) {
       fpSetReadout(
         fpIsOccupiedLocked(hit.pl)
-          ? `Door ${hit.edge} of ${hit.pl.unitCode} — Occupied — uneditable when live`
-          : `Door ${hit.edge} of ${hit.pl.unitCode} — drag along the edge to reposition · Esc cancels`,
+          ? `Door ${hit.edge} of ${fpUnitNo(hit.pl)} — Occupied — uneditable when live`
+          : `Door ${hit.edge} of ${fpUnitNo(hit.pl)} — drag along the edge to reposition · Esc cancels`,
       );
       return;
     }
@@ -1149,7 +1149,7 @@ function fpRenderPalette() {
           const no = fpUnitNo(u);
           // L × W = length (y-extent) × width (x-extent), as entered in Units.
           const lw = `L ${formatFt(fp.h)} × W ${formatFt(fp.w)} ft`;
-          return `<div class="fp-unit-chip" data-unit-id="${escapeHtml(u.id)}" title="Unit ${escapeHtml(no)} · ${u.sqft} sqft · ${lw} — drag onto the canvas">Unit ${escapeHtml(no)}<div class="t-type">${escapeHtml(u.sizeName)} · ${u.sqft} sqft · ${lw}</div></div>`;
+          return `<div class="fp-unit-chip" data-unit-id="${escapeHtml(u.id)}" title="${escapeHtml(no)} · ${u.sqft} sqft · ${lw} — drag onto the canvas">${escapeHtml(no)}<div class="t-type">${escapeHtml(u.sizeName)} · ${u.sqft} sqft · ${lw}</div></div>`;
         })
         .join('')
       : '<div class="fp-hint">No unplaced units match this AC filter.</div>')
@@ -1224,11 +1224,11 @@ function fpIsOccupiedLocked(pl) {
   return st === 'OCCUPIED' || st === 'OVERDUE';
 }
 function fpLockedTooltip(pl) {
-  return `${pl.unitCode} · ${pl.status} — Occupied — uneditable when live`;
+  return `${fpUnitNo(pl)} · ${pl.status} — Occupied — uneditable when live`;
 }
 function fpGuardLocked(pl) {
   if (fpIsOccupiedLocked(pl)) {
-    fpToast(`${pl.unitCode}: Occupied — uneditable when live.`, false);
+    fpToast(`${fpUnitNo(pl)}: Occupied — uneditable when live.`, false);
     return true;
   }
   return false;
@@ -1316,7 +1316,7 @@ async function fpAutoDoors() {
       fpPushUndo({ kind: 'placement', unitId: pl.unitId, prev: { x: pl.x, y: pl.y, width: pl.width, height: pl.height, stackTier: pl.stackTier || 0, doorEdges: null, doorOffsets: null } });
       applied += 1;
     } catch (err) {
-      fpToast(`Auto-doors ${pl.unitCode}: ${describeError(err)}`, false);
+      fpToast(`Auto-doors ${fpUnitNo(pl)}: ${describeError(err)}`, false);
     }
   }
   fpRender();
@@ -1485,7 +1485,7 @@ function fpUnitTagsHTML(...units) {
   if (draft) html += '<div class="fp-tag fp-tag-new" title="New unit — not published yet; publish the plan to make it available">NEW</div>';
   if (dirty.length) {
     const d = dirty[0];
-    html += `<div class="fp-tag fp-tag-dirty" title="${escapeHtml(d.unitCode)}: drawn ${fpFmtArea(fpSqftForRect(d))} sqft, unit ${fpFmtArea(d.sqft)} sqft — updates on publish">Δ</div>`;
+    html += `<div class="fp-tag fp-tag-dirty" title="${escapeHtml(fpUnitNo(d))}: drawn ${fpFmtArea(fpSqftForRect(d))} sqft, unit ${fpFmtArea(d.sqft)} sqft — updates on publish">Δ</div>`;
   }
   return html;
 }
@@ -1561,13 +1561,13 @@ function fpRenderCanvas() {
       el.style.width = r.width * u + 'px';
       el.style.height = r.height * u + 'px';
       el.title = (fpIsOccupiedLocked(lower) || fpIsOccupiedLocked(upper))
-        ? `Stacked pair — upper ${upper.unitCode} (${upper.status}) / lower ${lower.unitCode} (${lower.status}) — Occupied — uneditable when live`
-        : `Stacked pair — upper ${upper.unitCode} (${upper.status}) / lower ${lower.unitCode} (${lower.status}) · doors auto (stacked pairs stay AUTO)`;
+        ? `Stacked pair — upper ${fpUnitNo(upper)} (${upper.status}) / lower ${fpUnitNo(lower)} (${lower.status}) — Occupied — uneditable when live`
+        : `Stacked pair — upper ${fpUnitNo(upper)} (${upper.status}) / lower ${fpUnitNo(lower)} (${lower.status}) · doors auto (stacked pairs stay AUTO)`;
       el.innerHTML =
         `<div class="fp-status" style="background:${fpStatusColor(lower.status)};"></div>` +
-        `<div class="fp-code fp-stack-upper">${escapeHtml(upper.unitCode)}</div>` +
+        `<div class="fp-code fp-stack-upper">${escapeHtml(fpUnitNo(upper))}</div>` +
         `<div class="fp-stack-divider"></div>` +
-        `<div class="fp-code fp-stack-lower">${escapeHtml(lower.unitCode)}</div>` +
+        `<div class="fp-code fp-stack-lower">${escapeHtml(fpUnitNo(lower))}</div>` +
         fpUnitTagsHTML(lower, upper) +
         fpDoorMarkersHTML({ doorEdges: null }, u) +
         ((fpIsOccupiedLocked(lower) || fpIsOccupiedLocked(upper)) ? '' : `<div class="fp-resize" title="Drag to resize"></div>`);
@@ -1586,7 +1586,7 @@ function fpRenderCanvas() {
     if (fpIsOccupiedLocked(pl)) el.title = fpLockedTooltip(pl);
     el.innerHTML =
       `<div class="fp-status" style="background:${fpStatusColor(pl.status)};"></div>` +
-      `<div class="fp-code">${escapeHtml(pl.unitCode)}</div>` +
+      `<div class="fp-code">${escapeHtml(fpUnitNo(pl))}</div>` +
       (pl.height * u > 34 ? `<div class="fp-size">${escapeHtml(pl.sizeName)}</div>` : '') +
       fpUnitTagsHTML(pl) +
       fpDoorMarkersHTML(pl, u) +
@@ -2129,7 +2129,7 @@ function fpBuildExportSVG(opts) {
     const [fill, ink] = fpExportFill(lower.status);
     out.push(`<rect x="${X(r.x)}" y="${Y(r.y)}" width="${(r.width * k).toFixed(3)}" height="${(r.height * k).toFixed(3)}" fill="${fill}" stroke="${ink}" stroke-width="0.25"/>`);
     if (opts.labels !== false) {
-      const code = group.members.map((m) => m.unitCode).join(' / ');
+      const code = group.members.map((m) => fpUnitNo(m)).join(' / ');
       const sq = group.members.map((m) => `${m.sqft}`).join('/') + ' sqft';
       const wmm = r.width * k;
       const hmm = r.height * k;
@@ -2715,7 +2715,7 @@ function fpGroupStartMove(e) {
   const items = fpMultiItems();
   const locked = fpGroupLocked(items);
   if (locked) {
-    fpToast(`${locked.it.unitCode} is occupied on a live plan — the group can't move. Unpublish to draft first.`, false);
+    fpToast(`${fpUnitNo(locked.it)} is occupied on a live plan — the group can't move. Unpublish to draft first.`, false);
     return;
   }
   e.preventDefault();
@@ -2750,7 +2750,7 @@ function fpGroupStartMove(e) {
         m.it.y = orig[i].y;
       });
       fpRenderCanvas();
-      fpToast(`Cannot move the group — ${clash.m.it.unitCode} would overlap ${clash.hit.unitCode}. Reverted.`, false);
+      fpToast(`Cannot move the group — ${fpUnitNo(clash.m.it)} would overlap ${fpUnitNo(clash.hit)}. Reverted.`, false);
       return;
     }
     fpCommitBatch(fpStatesOf(items), `Moved ${items.length} items.`, before);
@@ -2773,7 +2773,7 @@ function fpNudgeGroup(dx, dy) {
   if (!items.length) return;
   const locked = fpGroupLocked(items);
   if (locked) {
-    fpToast(`${locked.it.unitCode} is occupied on a live plan — the group can't move.`, false);
+    fpToast(`${fpUnitNo(locked.it)} is occupied on a live plan — the group can't move.`, false);
     return;
   }
   const orig = items.map((m) => ({ type: m.type, x: m.it.x, y: m.it.y, width: m.it.width || 0, height: m.it.height || 0 }));
@@ -2784,7 +2784,7 @@ function fpNudgeGroup(dx, dy) {
       m.it.x = orig[i].x;
       m.it.y = orig[i].y;
     });
-    fpToast(`Cannot nudge — ${clash.m.it.unitCode} would overlap ${clash.hit.unitCode}.`, false);
+    fpToast(`Cannot nudge — ${fpUnitNo(clash.m.it)} would overlap ${fpUnitNo(clash.hit)}.`, false);
     return;
   }
   if (!fpGroupNudge) {
@@ -2861,7 +2861,7 @@ async function fpDeleteMulti() {
   if (!items.length) return;
   const locked = fpGroupLocked(items);
   if (locked) {
-    fpToast(`${locked.it.unitCode} is occupied on a live plan — remove it from the selection first.`, false);
+    fpToast(`${fpUnitNo(locked.it)} is occupied on a live plan — remove it from the selection first.`, false);
     return;
   }
   const units = items.filter((m) => m.type === 'placement').length;
@@ -2891,7 +2891,7 @@ function fpAlignMulti(mode) {
   }
   const locked = fpGroupLocked(fpMultiItems());
   if (locked) {
-    fpToast(`${locked.it.unitCode} is occupied on a live plan — it can't be moved.`, false);
+    fpToast(`${fpUnitNo(locked.it)} is occupied on a live plan — it can't be moved.`, false);
     return;
   }
   const all = fpMultiItems();
@@ -2935,7 +2935,7 @@ function fpAlignMulti(mode) {
       m.it.y = orig[i].y;
     });
     fpRenderCanvas();
-    fpToast(`Cannot ${mode.startsWith('dist') ? 'distribute' : 'align'} — ${clash.m.it.unitCode} would overlap ${clash.hit.unitCode}.`, false);
+    fpToast(`Cannot ${mode.startsWith('dist') ? 'distribute' : 'align'} — ${fpUnitNo(clash.m.it)} would overlap ${fpUnitNo(clash.hit)}.`, false);
     return;
   }
   fpRenderCanvas();
@@ -3349,12 +3349,12 @@ function fpApplySelectionGeom(patch, verb, opts = {}) {
       const hit = fpOverlapAt(next.x, next.y, next.width, next.height, ids, 0);
       if (hit) {
         const action = { Moved: 'move', Resized: 'resize', Nudged: 'nudge' }[verb] || 'change';
-        fpToast(`Cannot ${action} ${it.unitCode} — ${formatFt(next.width)}×${formatFt(next.height)} ft at ${formatFt(next.x)}, ${formatFt(next.y)} overlaps ${hit.unitCode}.`, false);
+        fpToast(`Cannot ${action} ${fpUnitNo(it)} — ${formatFt(next.width)}×${formatFt(next.height)} ft at ${formatFt(next.x)}, ${formatFt(next.y)} overlaps ${fpUnitNo(hit)}.`, false);
         return false;
       }
       const areaChanged = rectAreaSqft(next) !== rectAreaSqft(it);
       if (areaChanged && fpIsContracted(it) && it.sqft > 0 && areaDeviation(next, it.sqft) > AREA_TOLERANCE) {
-        fpToast(`${it.unitCode} is ${it.status.toLowerCase()} — its ${it.sqft} sqft can't change; ${formatFt(next.width)}×${formatFt(next.height)} ft = ${fpFmtArea(rectAreaSqft(next))} sqft is more than ${Math.round(AREA_TOLERANCE * 100)}% off.`, false);
+        fpToast(`${fpUnitNo(it)} is ${it.status.toLowerCase()} — its ${it.sqft} sqft can't change; ${formatFt(next.width)}×${formatFt(next.height)} ft = ${fpFmtArea(rectAreaSqft(next))} sqft is more than ${Math.round(AREA_TOLERANCE * 100)}% off.`, false);
         return false;
       }
       for (const p of target.pair) {
@@ -3563,7 +3563,7 @@ function fpRenderSelInfoInner() {
   // render no drag/resize/rename/delete handles — descriptor + tooltip only.
   if (fpIsOccupiedLocked(pl)) {
     const lockMate = fpStackMate(pl);
-    const who = lockMate ? `⧉ Stacked pair · ${escapeHtml(pl.unitCode)} / ${escapeHtml(lockMate.unitCode)}` : escapeHtml(pl.unitCode);
+    const who = lockMate ? `⧉ Stacked pair · ${escapeHtml(fpUnitNo(pl))} / ${escapeHtml(fpUnitNo(lockMate))}` : escapeHtml(pl.unitCode);
     info.innerHTML =
       `<span class="t-type" title="Occupied — uneditable when live">${who} · ${formatFt(pl.x)}, ${formatFt(pl.y)} · ${formatFt(pl.width)}×${formatFt(pl.height)} ft · ${pl.sqft} sqft · Occupied — uneditable when live</span>`;
     return;
@@ -3576,7 +3576,7 @@ function fpRenderSelInfoInner() {
     const upper = (pl.stackTier || 0) === 1 ? pl : mate;
     const lower = upper === pl ? mate : pl;
     info.innerHTML =
-      `<span class="t-type">⧉ Stacked pair · ${escapeHtml(upper.unitCode)} (upper) over ${escapeHtml(lower.unitCode)} (lower)${lockNote}</span>` +
+      `<span class="t-type">⧉ Stacked pair · ${escapeHtml(fpUnitNo(upper))} (upper) over ${escapeHtml(fpUnitNo(lower))} (lower)${lockNote}</span>` +
       fpNumFieldsHTML(pl) +
       fpAreaNoteHTML(pl, lower.sqft, lower) +
       `<span class="t-type">doors auto (ghost ticks = all edges)</span>` +
@@ -3597,12 +3597,12 @@ function fpRenderSelInfoInner() {
     .map((e) => `<button class="act-btn${effDoors.includes(e) ? ' primary' : ''}" data-door="${e}" style="padding:2px 8px;font-size:10px;" title="Toggle ${e} door edge">${e}</button>`)
     .join('');
   info.innerHTML =
-    `<span class="t-type">${escapeHtml(pl.unitCode)} · ${pl.sqft} sqft${lockNote}</span>` +
+    `<span class="t-type">${escapeHtml(fpUnitNo(pl))} · ${pl.sqft} sqft${lockNote}</span>` +
     fpNumFieldsHTML(pl) +
     fpAreaNoteHTML(pl, pl.sqft, pl) +
     `<button class="act-btn" id="fpRotateBtn" style="padding:2px 9px;font-size:10px;" title="Swap width/height (90° rotation)">⟳ Rotate</button>` +
     (stackable.length === 1
-      ? `<button class="act-btn" id="fpStackBtn" style="padding:2px 9px;font-size:10px;" title="Stack ${escapeHtml(stackable[0].unitCode)} (upper) onto this block">⧉ Stack ${escapeHtml(stackable[0].unitCode)}</button>`
+      ? `<button class="act-btn" id="fpStackBtn" style="padding:2px 9px;font-size:10px;" title="Stack ${escapeHtml(fpUnitNo(stackable[0]))} (upper) onto this block">⧉ Stack ${escapeHtml(fpUnitNo(stackable[0]))}</button>`
       : fpIsLockerPlacement(pl) && !stackable.length
         ? `<button class="act-btn" id="fpStackNewBtn" style="padding:2px 9px;font-size:10px;" title="Create a new locker unit stacked on top of this one (draft until you publish)">⧉ Stack new locker</button>`
         : '') +
@@ -3636,7 +3636,7 @@ async function fpSaveDoors(pl, edges, offsets) {
     fpRenderCanvas();
     notifyMetricsFloorChanged();
     fpToast(
-      pl.doorEdges ? `Doors ${pl.unitCode} → ${pl.doorEdges.join('')} (authored)` : `Doors ${pl.unitCode} → auto (all edges)`,
+      pl.doorEdges ? `Doors ${fpUnitNo(pl)} → ${pl.doorEdges.join('')} (authored)` : `Doors ${fpUnitNo(pl)} → auto (all edges)`,
       true,
     );
   } catch (err) {
@@ -3648,7 +3648,7 @@ async function fpSaveDoors(pl, edges, offsets) {
     delete pl._doorDragEdge;
     fpRenderSelInfo();
     fpRenderCanvas();
-    fpToast(`Doors ${pl.unitCode}: ${describeError(err)}`, false);
+    fpToast(`Doors ${fpUnitNo(pl)}: ${describeError(err)}`, false);
   }
 }
 
@@ -3759,7 +3759,7 @@ function fpDoorStartDrag(e, hit) {
     pl.doorOffsets = { ...(pl.doorOffsets || {}), [hit.edge]: c };
     fpDoorDrag.moved = true;
     fpRenderCanvas();
-    fpSetReadout(`Door ${hit.edge} of ${pl.unitCode} → ${Math.round(c * 100)}% along the edge · release saves · Esc cancels`);
+    fpSetReadout(`Door ${hit.edge} of ${fpUnitNo(pl)} → ${Math.round(c * 100)}% along the edge · release saves · Esc cancels`);
   };
   const up = () => {
     document.removeEventListener('pointermove', move);
@@ -3858,8 +3858,8 @@ async function fpStackSelected() {
   }
   const cand = cands[0];
   const stackOk = await confirmDialog({
-    title: `Stack ${cand.unitCode} on ${pl.unitCode}?`,
-    message: `${cand.unitCode} becomes the UPPER tier and ${pl.unitCode} stays the LOWER tier — one block split by a divider line.`,
+    title: `Stack ${fpUnitNo(cand)} on ${fpUnitNo(pl)}?`,
+    message: `${fpUnitNo(cand)} becomes the UPPER tier and ${fpUnitNo(pl)} stays the LOWER tier — one block split by a divider line.`,
     confirmLabel: 'Stack',
   });
   if (!stackOk) return;
@@ -3886,11 +3886,11 @@ async function fpStackSelected() {
       hasPillar: cand.hasPillar === true,
     });
     fpPushUndo({ kind: 'placement', unitId: cand.id, prev: null }); // undo = DELETE the stacked upper tier
-    fpToast(`Stacked ${cand.unitCode} (upper) over ${pl.unitCode} (lower)`, true);
+    fpToast(`Stacked ${fpUnitNo(cand)} (upper) over ${fpUnitNo(pl)} (lower)`, true);
     fpRender();
     notifyMetricsFloorChanged();
   } catch (err) {
-    fpToast(`Stack ${cand.unitCode}: ${describeError(err)}`, false);
+    fpToast(`Stack ${fpUnitNo(cand)}: ${describeError(err)}`, false);
   }
 }
 
@@ -3904,8 +3904,8 @@ async function fpUnstackSelected() {
   const upper = (pl.stackTier || 0) === 1 ? pl : mate;
   const lower = upper === pl ? mate : pl;
   const unstackOk = await confirmDialog({
-    title: `Unstack ${upper.unitCode}?`,
-    message: `${upper.unitCode} is removed from the stack — ${lower.unitCode} remains as a single. The unit itself is unaffected.`,
+    title: `Unstack ${fpUnitNo(upper)}?`,
+    message: `${fpUnitNo(upper)} is removed from the stack — ${fpUnitNo(lower)} remains as a single. The unit itself is unaffected.`,
     confirmLabel: 'Unstack',
     danger: true,
   });
@@ -3916,7 +3916,7 @@ async function fpUnstackSelected() {
       method: 'DELETE',
     });
     fpPushUndo({ kind: 'placement', unitId: upper.unitId, prev: upperPrev }); // undo = re-PUT the upper tier
-    fpToast(`${upper.unitCode} unstacked — ${lower.unitCode} is now a single.`, true);
+    fpToast(`${fpUnitNo(upper)} unstacked — ${fpUnitNo(lower)} is now a single.`, true);
     await fpFetch();
   } catch (err) {
     fpToast('Unstack: ' + describeError(err), false);
@@ -4836,10 +4836,10 @@ async function fpPersist(pl, verb) {
     fpAdoptPlacement(pl, res && res.data);
     fpRefreshAfterSave();
     if (undoPrev) fpPushUndo({ kind: 'placement', unitId: pl.unitId, prev: { ...undoPrev, doorEdges: pl.doorEdges || null, doorOffsets: pl.doorOffsets ? { ...pl.doorOffsets } : null } });
-    fpToast(`${verb} ${pl.unitCode} → ${pl.x},${pl.y} · ${pl.width}×${pl.height} ft`, true);
+    fpToast(`${verb} ${fpUnitNo(pl)} → ${pl.x},${pl.y} · ${pl.width}×${pl.height} ft`, true);
     notifyMetricsFloorChanged();
   } catch (err) {
-    fpToast(`${verb} ${pl.unitCode}: ${describeError(err)}`, false);
+    fpToast(`${verb} ${fpUnitNo(pl)}: ${describeError(err)}`, false);
     await fpFetch(); // revert local state to what the server has
   }
 }
@@ -4864,10 +4864,10 @@ async function fpPersistPair(lower, upper, verb) {
       const prev = undoPrevs.get(p.unitId);
       if (prev) fpPushUndo({ kind: 'placement', unitId: p.unitId, prev: { ...prev, doorEdges: p.doorEdges || null, doorOffsets: p.doorOffsets ? { ...p.doorOffsets } : null } });
     }
-    fpToast(`${verb} stack ${upper.unitCode}/${lower.unitCode} → ${lower.x},${lower.y} · ${lower.width}×${lower.height} ft`, true);
+    fpToast(`${verb} stack ${fpUnitNo(upper)}/${fpUnitNo(lower)} → ${lower.x},${lower.y} · ${lower.width}×${lower.height} ft`, true);
     notifyMetricsFloorChanged();
   } catch (err) {
-    fpToast(`${verb} stack ${upper.unitCode}/${lower.unitCode}: ${describeError(err)}`, false);
+    fpToast(`${verb} stack ${fpUnitNo(upper)}/${fpUnitNo(lower)}: ${describeError(err)}`, false);
     await fpFetch(); // revert local state to what the server has
   }
 }
@@ -4875,7 +4875,7 @@ async function fpPersistPair(lower, upper, verb) {
 async function fpPlaceUnit(unit, footprint, gx, gy) {
   const { w: cw, h: ch } = fpCanvasDims();
   if (footprint.w > cw || footprint.h > ch) {
-    fpToast(`${unit.unitCode} (${footprint.w}×${footprint.h} ft) is too large for the ${cw}×${ch} ft canvas — enlarge the canvas first`, false);
+    fpToast(`${fpUnitNo(unit)} (${footprint.w}×${footprint.h} ft) is too large for the ${cw}×${ch} ft canvas — enlarge the canvas first`, false);
     return;
   }
   let x = clampFt(gx, 0, cw - footprint.w);
@@ -4904,16 +4904,16 @@ async function fpPlaceUnit(unit, footprint, gx, gy) {
   );
   if (exact) {
     if (fpStackMate(exact)) {
-      fpToast(`${exact.unitCode} is already a stacked pair — lockers stack at most 2 high. Drop ${unit.unitCode} on a free spot.`, false);
+      fpToast(`${fpUnitNo(exact)} is already a stacked pair — lockers stack at most 2 high. Drop ${fpUnitNo(unit)} on a free spot.`, false);
       return;
     }
     if (!unitIsLocker || !fpIsLockerPlacement(exact) || (exact.stackTier || 0) !== 0) {
-      fpToast(`Cannot stack ${unit.unitCode} onto ${exact.unitCode} — stacking is lockers-only (both units must be LOCKER size sharing one rect).`, false);
+      fpToast(`Cannot stack ${fpUnitNo(unit)} onto ${fpUnitNo(exact)} — stacking is lockers-only (both units must be LOCKER size sharing one rect).`, false);
       return;
     }
     const stackOk = await confirmDialog({
-      title: `Stack ${unit.unitCode} on ${exact.unitCode}?`,
-      message: `${unit.unitCode} becomes the UPPER tier and ${exact.unitCode} stays the LOWER tier — one block split by a divider line.`,
+      title: `Stack ${fpUnitNo(unit)} on ${fpUnitNo(exact)}?`,
+      message: `${fpUnitNo(unit)} becomes the UPPER tier and ${fpUnitNo(exact)} stays the LOWER tier — one block split by a divider line.`,
       confirmLabel: 'Stack',
     });
     if (!stackOk) return;
@@ -4938,18 +4938,18 @@ async function fpPlaceUnit(unit, footprint, gx, gy) {
         height: footprint.h,
         stackTier: 1,
       });
-      fpToast(`Stacked ${unit.unitCode} (upper) over ${exact.unitCode} (lower)`, true);
+      fpToast(`Stacked ${fpUnitNo(unit)} (upper) over ${fpUnitNo(exact)} (lower)`, true);
       fpRender();
       fpCollapsePaletteAfterDrop(); // successful palette drop — the only auto-collapse besides the explicit toggle
       notifyMetricsFloorChanged();
     } catch (err) {
-      fpToast(`Stack ${unit.unitCode}: ${describeError(err)}`, false);
+      fpToast(`Stack ${fpUnitNo(unit)}: ${describeError(err)}`, false);
     }
     return;
   }
   const hit = fpOverlapAt(x, y, footprint.w, footprint.h, null, 0);
   if (hit) {
-    fpToast(`Cannot place ${unit.unitCode} at ${x},${y} — overlaps ${hit.unitCode} (${hit.x},${hit.y} · ${hit.width}×${hit.height} ft). Drop it on a free spot.`, false);
+    fpToast(`Cannot place ${fpUnitNo(unit)} at ${x},${y} — overlaps ${fpUnitNo(hit)} (${hit.x},${hit.y} · ${hit.width}×${hit.height} ft). Drop it on a free spot.`, false);
     return;
   }
   try {
@@ -4975,12 +4975,12 @@ async function fpPlaceUnit(unit, footprint, gx, gy) {
       stackTier: 0,
     });
     fpPushUndo({ kind: 'placement', unitId: unit.id, prev: null }); // undo = DELETE the dropped placement
-    fpToast(`Placed ${unit.unitCode} → ${x},${y} · ${footprint.w}×${footprint.h} ft`, true);
+    fpToast(`Placed ${fpUnitNo(unit)} → ${x},${y} · ${footprint.w}×${footprint.h} ft`, true);
     fpRender();
     fpCollapsePaletteAfterDrop(); // successful palette drop — the only auto-collapse besides the explicit toggle
     notifyMetricsFloorChanged();
   } catch (err) {
-    fpToast(`Place ${unit.unitCode}: ${describeError(err)}`, false);
+    fpToast(`Place ${fpUnitNo(unit)}: ${describeError(err)}`, false);
   }
 }
 
@@ -4999,7 +4999,7 @@ function fpStartPaletteDrag(e, chip) {
   ghost.style.height = (swapGhost ? fp.w : fp.h) * u + 'px';
   ghost.style.left = e.clientX + 'px';
   ghost.style.top = e.clientY + 'px';
-  ghost.textContent = unit.unitCode;
+  ghost.textContent = fpUnitNo(unit);
   document.body.appendChild(ghost);
   const move = (ev) => {
     ghost.style.left = ev.clientX + 'px';
@@ -5070,7 +5070,7 @@ function fpStartMove(e, el) {
       p.y = ny;
     }
     fpRenderCanvas();
-    fpSetReadout(`${pl.unitCode} → ${formatFt(nx)}, ${formatFt(ny)} ft`);
+    fpSetReadout(`${fpUnitNo(pl)} → ${formatFt(nx)}, ${formatFt(ny)} ft`);
   };
   const up = async () => {
     document.removeEventListener('pointermove', move);
@@ -5101,14 +5101,14 @@ function fpStartMove(e, el) {
       }
       fpRenderCanvas();
       if (droppedExact && targetPaired) {
-        fpToast(`${hit.unitCode} is already a stacked pair — lockers stack at most 2 high. Move ${pl.unitCode} to a free spot.`, false);
+        fpToast(`${fpUnitNo(hit)} is already a stacked pair — lockers stack at most 2 high. Move ${fpUnitNo(pl)} to a free spot.`, false);
         return;
       }
       if (droppedExact && (!moverLocker || !hitLocker)) {
-        fpToast(`Cannot stack ${pl.unitCode} onto ${hit.unitCode} — stacking is lockers-only (both units must be LOCKER size sharing one rect).`, false);
+        fpToast(`Cannot stack ${fpUnitNo(pl)} onto ${fpUnitNo(hit)} — stacking is lockers-only (both units must be LOCKER size sharing one rect).`, false);
         return;
       }
-      fpToast(`Cannot move ${pl.unitCode} to ${pl.x},${pl.y} — overlaps ${hit.unitCode}. Reverted.`, false);
+      fpToast(`Cannot move ${fpUnitNo(pl)} to ${pl.x},${pl.y} — overlaps ${fpUnitNo(hit)}. Reverted.`, false);
       return;
     }
     if (!mate) fpPersist(pl, 'Moved');
@@ -5183,7 +5183,7 @@ function fpStartResize(e, pl) {
     fpRenderCanvas();
     const nextSqft = fpSqftForRect({ width: w, height: h });
     const sizeNote = !fpSameSqft(nextSqft, pl.sqft) && !pair.some(fpIsContracted) ? ` → unit ${fpFmtArea(pl.sqft)} → ${fpFmtArea(nextSqft)} sqft on publish` : ` (unit ${fpFmtArea(pl.sqft)})`;
-    fpSetReadout(`${pl.unitCode} ${formatFt(w)} × ${formatFt(h)} ft = ${fpFmtArea(rectAreaSqft({ width: w, height: h }))} sqft${sizeNote}`);
+    fpSetReadout(`${fpUnitNo(pl)} ${formatFt(w)} × ${formatFt(h)} ft = ${fpFmtArea(rectAreaSqft({ width: w, height: h }))} sqft${sizeNote}`);
   };
   const up = () => {
     document.removeEventListener('pointermove', move);
@@ -5195,7 +5195,7 @@ function fpStartResize(e, pl) {
         p.height = origH;
       }
       fpRenderCanvas();
-      fpToast(`Cannot resize ${pl.unitCode} to ${pl.width}×${pl.height} ft — overlaps ${hit.unitCode}. Reverted.`, false);
+      fpToast(`Cannot resize ${fpUnitNo(pl)} to ${pl.width}×${pl.height} ft — overlaps ${fpUnitNo(hit)}. Reverted.`, false);
       return;
     }
     if (!mate) fpPersist(pl, 'Resized');
@@ -5219,7 +5219,7 @@ async function fpRotatePlacement() {
   const w = pl.height;
   const h = pl.width;
   if (w > cw || h > ch) {
-    fpToast(`Cannot rotate ${pl.unitCode} — ${w}×${h} ft does not fit the ${cw}×${ch} ft canvas.`, false);
+    fpToast(`Cannot rotate ${fpUnitNo(pl)} — ${w}×${h} ft does not fit the ${cw}×${ch} ft canvas.`, false);
     return;
   }
   const prev = pair.map((p) => ({ p, x: p.x, y: p.y, w: p.width, h: p.height }));
@@ -5235,7 +5235,7 @@ async function fpRotatePlacement() {
   if (hit) {
     for (const o of prev) Object.assign(o.p, { x: o.x, y: o.y, width: o.w, height: o.h });
     fpRenderCanvas();
-    fpToast(`Cannot rotate ${pl.unitCode} — ${w}×${h} ft overlaps ${hit.unitCode}.`, false);
+    fpToast(`Cannot rotate ${fpUnitNo(pl)} — ${w}×${h} ft overlaps ${fpUnitNo(hit)}.`, false);
     return;
   }
   fpRender();
@@ -5610,7 +5610,7 @@ async function fpAutoPlaceAll() {
         taken.push({ x: spot.x, y: spot.y, width: geom.w, height: geom.h });
         placed.push(unit.unitCode);
       } catch (err) {
-        failed.push(`${unit.unitCode} (${describeError(err)})`);
+        failed.push(`${fpUnitNo(unit)} (${describeError(err)})`);
       }
     }
   } finally {
@@ -6464,17 +6464,17 @@ function fpOpenPublishReview(floorId, preview) {
     // Tier: pre-selected from the server (nearest band when none covers the
     // new sqft — flagged so the operator confirms it); always overridable.
     const tierCell =
-      `<select class="tbl-select" data-pub-tier="${escapeHtml(c.unitId)}" aria-label="Size tier for ${escapeHtml(c.unitCode)}">${sizeOpts(c.newSize ? c.newSize.id : '')}</select>` +
+      `<select class="tbl-select" data-pub-tier="${escapeHtml(c.unitId)}" aria-label="Size tier for ${escapeHtml(fpUnitNo(c))}">${sizeOpts(c.newSize ? c.newSize.id : '')}</select>` +
       `<div class="fp-pub-note">was ${escapeHtml(c.oldSize.name)}${c.newSize && !c.tierInBand ? ' · nearest tier — no tier range covers ' + c.newSqft + ' sqft' : ''}</div>`;
-    const policy = `<select class="tbl-select" data-pub-policy="${escapeHtml(c.unitId)}" aria-label="Rate for ${escapeHtml(c.unitCode)}">` +
+    const policy = `<select class="tbl-select" data-pub-policy="${escapeHtml(c.unitId)}" aria-label="Rate for ${escapeHtml(fpUnitNo(c))}">` +
       Object.entries(FP_RATE_POLICY_LABELS).map(([k, v]) => `<option value="${k}"${k === c.defaultPolicy ? ' selected' : ''}>${v}</option>`).join('') +
       '</select>';
     return `<tr data-pub-row="${escapeHtml(c.unitId)}"${blk && blk.code === 'UNIT_CONTRACTED' ? ' style="background:var(--red-light)"' : ''}>` +
-      `<td><b>${escapeHtml(c.unitCode)}</b><div class="fp-pub-note">${formatFt(c.widthFt)}×${formatFt(c.heightFt)} ft</div></td>` +
+      `<td><b>${escapeHtml(fpUnitNo(c))}</b><div class="fp-pub-note">${formatFt(c.widthFt)}×${formatFt(c.heightFt)} ft</div></td>` +
       `<td>${c.oldSqft}<span class="fp-pub-arrow">→</span><span class="fp-pub-up">${c.newSqft}</span></td>` +
       `<td>${tierCell}</td>` +
       `<td>${policy}</td>` +
-      `<td><input type="number" class="tbl-search fp-pub-rate" min="0" step="0.01" data-pub-rate="${escapeHtml(c.unitId)}" aria-label="New monthly rate for ${escapeHtml(c.unitCode)}" disabled></td>` +
+      `<td><input type="number" class="tbl-search fp-pub-rate" min="0" step="0.01" data-pub-rate="${escapeHtml(c.unitId)}" aria-label="New monthly rate for ${escapeHtml(fpUnitNo(c))}" disabled></td>` +
       `<td class="fp-pub-note" data-pub-psf="${escapeHtml(c.unitId)}"></td>` +
       '</tr>';
   });
@@ -6486,7 +6486,7 @@ function fpOpenPublishReview(floorId, preview) {
         '</tbody></table></div>'
       : '') +
     (preview.newUnits.length
-      ? `<p class="fp-pub-note">${preview.newUnits.length} new unit${preview.newUnits.length === 1 ? '' : 's'} become${preview.newUnits.length === 1 ? 's' : ''} available: ${preview.newUnits.map((n) => `<b>${escapeHtml(n.unitCode)}</b> (${n.sqft} sqft, ${fpMoney(n.rate)})`).join(', ')}.</p>`
+      ? `<p class="fp-pub-note">${preview.newUnits.length} new unit${preview.newUnits.length === 1 ? '' : 's'} become${preview.newUnits.length === 1 ? 's' : ''} available: ${preview.newUnits.map((n) => `<b>${escapeHtml(fpUnitNo(n))}</b> (${n.sqft} sqft, ${fpMoney(n.rate)})`).join(', ')}.</p>`
       : '') +
     '<p class="fp-pub-note">The plan also becomes visible to the booking frontend. Later edits stay in draft — customers keep seeing this published version until you publish again.</p>';
 
@@ -6860,7 +6860,7 @@ async function fpConfirmPublishDraft(draftId) {
   // only after confirm; the 409 itself is unchanged).
   const blockers = (preview && preview.blockers) || [];
   const blockerLine = blockers.length
-    ? ` Blocked (${blockers.length}): ${blockers.map((b) => `${b.unitCode} (${b.from}→${b.to} sqft)`).join(', ')} — contracted, so this version cannot publish until the drawing is resized back.`
+    ? ` Blocked (${blockers.length}): ${blockers.map((b) => `${fpUnitNo(b)} (${b.from}→${b.to} sqft)`).join(', ')} — contracted, so this version cannot publish until the drawing is resized back.`
     : '';
   // Empty-plan escalation: a 0-unit publish goes danger-styled with an explicit
   // acknowledgement checkbox (→ confirmEmpty:true) — it can never again publish
@@ -7064,7 +7064,7 @@ function fpNewUnitProblem(r) {
   const { w: cw, h: ch } = fpCanvasDims();
   if (toMilli(r.x) + toMilli(r.width) > toMilli(cw) || toMilli(r.y) + toMilli(r.height) > toMilli(ch)) return 'runs past the plan edge';
   const hit = fpOverlapAt(r.x, r.y, r.width, r.height, null, 0);
-  if (hit) return `overlaps ${hit.unitCode}`;
+  if (hit) return `overlaps ${fpUnitNo(hit)}`;
   return null;
 }
 
@@ -7331,7 +7331,7 @@ async function fpDuplicateUnit(pl) {
     .map(([x, y]) => ({ x: quantizeFt(x), y: quantizeFt(y), width: pl.width, height: pl.height }))
     .find((r) => r.x >= 0 && r.y >= 0 && toMilli(r.x) + toMilli(r.width) <= toMilli(cw) && toMilli(r.y) + toMilli(r.height) <= toMilli(ch) && !fpOverlapAt(r.x, r.y, r.width, r.height, null, 0));
   if (!spot) {
-    fpToast(`No free spot next to ${pl.unitCode} for a copy — make room or draw one with ＋ New Unit.`, false);
+    fpToast(`No free spot next to ${fpUnitNo(pl)} for a copy — make room or draw one with ＋ New Unit.`, false);
     return;
   }
   const spec = fpDraftSpec(pl);
@@ -7394,11 +7394,11 @@ async function fpOpenReconcile() {
       list
         .map(
           (m) =>
-            `<tr><td><b>${escapeHtml(m.unitCode)}</b><div class="fp-pub-note">${escapeHtml(String(m.status).toLowerCase())}</div></td>` +
+            `<tr><td><b>${escapeHtml(fpUnitNo(m))}</b><div class="fp-pub-note">${escapeHtml(String(m.status).toLowerCase())}</div></td>` +
             `<td>${fpFmtArea(m.sqft)}</td>` +
             `<td>${fpFmtArea(m.drawnSqft)}<div class="fp-pub-note">${formatFt(m.widthFt)}×${formatFt(m.heightFt)} ft</div></td>` +
             `<td style="white-space:nowrap">` +
-            `<button class="act-btn" type="button" data-rc="MARK_FOR_SYNC" data-rc-unit="${escapeHtml(m.unitId)}"${m.contracted ? ` disabled title="${escapeHtml(m.unitCode)} is ${escapeHtml(String(m.contracted).toLowerCase())} — its size can't change"` : ` title="On the next publish, set the unit to ${fpFmtArea(m.drawnSqft)} sqft (rate and tier per the publish review)"`}>Use drawing</button> ` +
+            `<button class="act-btn" type="button" data-rc="MARK_FOR_SYNC" data-rc-unit="${escapeHtml(m.unitId)}"${m.contracted ? ` disabled title="${escapeHtml(fpUnitNo(m))} is ${escapeHtml(String(m.contracted).toLowerCase())} — its size can't change"` : ` title="On the next publish, set the unit to ${fpFmtArea(m.drawnSqft)} sqft (rate and tier per the publish review)"`}>Use drawing</button> ` +
             `<button class="act-btn" type="button" data-rc="FIT_DRAWING" data-rc-unit="${escapeHtml(m.unitId)}" title="Resize the drawing to ${fpFmtArea(m.sqft)} sqft from the same corner">Fit drawing</button>` +
             `</td></tr>`,
         )
@@ -7417,7 +7417,7 @@ async function fpOpenReconcile() {
       const fp = sizeFootprint(pl.sizeCode, pl.sqft);
       const landscape = pl.width >= pl.height;
       const [w, h] = landscape === fp.w >= fp.h ? [fp.w, fp.h] : [fp.h, fp.w];
-      const ok = await fpCommitBatch([{ type: 'placement', id: pl.unitId, state: { ...fpElemState('placement', pl.unitId), width: w, height: h } }], `Fitted ${pl.unitCode}'s drawing to ${fpFmtArea(pl.sqft)} sqft.`);
+      const ok = await fpCommitBatch([{ type: 'placement', id: pl.unitId, state: { ...fpElemState('placement', pl.unitId), width: w, height: h } }], `Fitted ${fpUnitNo(pl)}'s drawing to ${fpFmtArea(pl.sqft)} sqft.`);
       if (!ok) {
         btn.disabled = false;
         return;
@@ -7479,17 +7479,17 @@ async function fpRemovePlacement() {
   if (fpGuardLocked(pl)) return; // live occupied placement: no delete
   if (fpIsDraftUnit(pl)) {
     const discardOk = await confirmDialog({
-      title: `Discard new unit ${pl.unitCode}?`,
+      title: `Discard new unit ${fpUnitNo(pl)}?`,
       message: 'It was never published, so the unit is deleted along with its drawing. Undo brings it back.',
       confirmLabel: 'Discard',
       danger: true,
     });
     if (!discardOk) return;
-    await fpCommitBatch([{ type: 'placement', id: pl.unitId, state: null }], `Discarded new unit ${pl.unitCode}.`);
+    await fpCommitBatch([{ type: 'placement', id: pl.unitId, state: null }], `Discarded new unit ${fpUnitNo(pl)}.`);
     return;
   }
   const plOk = await confirmDialog({
-    title: `Remove ${pl.unitCode} from the floor plan?`,
+    title: `Remove ${fpUnitNo(pl)} from the floor plan?`,
     message: 'The unit itself is unaffected.',
     confirmLabel: 'Remove',
     danger: true,
@@ -7501,7 +7501,7 @@ async function fpRemovePlacement() {
       method: 'DELETE',
     });
     fpPushUndo({ kind: 'placement', unitId: pl.unitId, prev: removedPrev }); // undo = re-PUT the removed placement
-    fpToast(`${pl.unitCode} removed from the floor plan.`, true);
+    fpToast(`${fpUnitNo(pl)} removed from the floor plan.`, true);
     await fpFetch();
   } catch (err) {
     fpToast('Remove: ' + describeError(err), false);
@@ -7640,13 +7640,13 @@ function fpViewRender() {
       el.style.width = r.width * u + 'px';
       el.style.height = r.height * u + 'px';
       el.title = (fpIsOccupiedLocked(lower) || fpIsOccupiedLocked(upper))
-        ? `Stacked pair — upper ${upper.unitCode} (${upper.status}) / lower ${lower.unitCode} (${lower.status}) — Occupied — uneditable when live`
-        : `Stacked pair — upper ${upper.unitCode} (${upper.status}) / lower ${lower.unitCode} (${lower.status}) · doors auto (stacked pairs stay AUTO)`;
+        ? `Stacked pair — upper ${fpUnitNo(upper)} (${upper.status}) / lower ${fpUnitNo(lower)} (${lower.status}) — Occupied — uneditable when live`
+        : `Stacked pair — upper ${fpUnitNo(upper)} (${upper.status}) / lower ${fpUnitNo(lower)} (${lower.status}) · doors auto (stacked pairs stay AUTO)`;
       el.innerHTML =
         `<div class="fp-status" style="background:${fpStatusColor(lower.status)};"></div>` +
-        `<div class="fp-code fp-stack-upper">${escapeHtml(upper.unitCode)}</div>` +
+        `<div class="fp-code fp-stack-upper">${escapeHtml(fpUnitNo(upper))}</div>` +
         `<div class="fp-stack-divider"></div>` +
-        `<div class="fp-code fp-stack-lower">${escapeHtml(lower.unitCode)}</div>` +
+        `<div class="fp-code fp-stack-lower">${escapeHtml(fpUnitNo(lower))}</div>` +
         fpDoorMarkersHTML({ doorEdges: null }, u);
       canvas.appendChild(el);
       continue;
@@ -7662,7 +7662,7 @@ function fpViewRender() {
     if (fpIsOccupiedLocked(pl)) el.title = fpLockedTooltip(pl);
     el.innerHTML =
       `<div class="fp-status" style="background:${fpStatusColor(pl.status)};"></div>` +
-      `<div class="fp-code">${escapeHtml(pl.unitCode)}</div>` +
+      `<div class="fp-code">${escapeHtml(fpUnitNo(pl))}</div>` +
       (pl.height * u > 34 ? `<div class="fp-size">${escapeHtml(pl.sizeName)}</div>` : '') +
       fpUnitTagsHTML(pl) +
       fpDoorMarkersHTML(pl, u) +

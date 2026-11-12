@@ -572,19 +572,18 @@ async function openQuoteBuilder(leadId) {
   const leads = context ? [] : (await leadsFlat()).filter((l) => !['WON', 'LOST'].includes(l.stage));
   openModal({
     title: 'Create quotation', kicker: 'SERIALISED + LEAD-LINKED', wide: true,
-    body: `<div class="v29-callout"><i>i</i><div><b>Lead and enquiry are mandatory</b>${context ? 'This quotation started from a lead profile, so the lead is locked.' : 'Search by lead ID, company/person name, email, mobile or UEN.'} The quotation number is assigned sequentially only when saved.</div></div><div class="v29-grid three"><label class="v29-field full"><span>Lead *</span>${context ? `<input value="${esc(context.displayId)} · ${esc(leadDisplayName(context))}" readonly><input id="lwQuoteLead" type="hidden" value="${esc(context.id)}">` : `<input id="lwQuoteLeadSearch" autocomplete="off" placeholder="Search lead ID, name, email, mobile or UEN…"><input id="lwQuoteLead" type="hidden" value=""><div id="lwQuoteLeadResults" class="v29-lead-results" role="listbox"></div>`}</label><label class="v29-field"><span>Enquiry *</span><input id="lwQuoteEnquiry" value="${esc(context?.displayId || 'Select a lead first')}" readonly></label><label class="v29-field"><span>Product</span><input value="${PRODUCT}" readonly></label><label class="v29-field"><span>Facility</span><input id="lwQbFacility" value="${esc(context?.branchName ? 'StoreLah ' + context.branchName : '—')}" readonly></label><label class="v29-field"><span>Unit / size *</span><select id="lwQuoteUnit"><option value="">Size recommendation only</option></select></label><label class="v29-field"><span>Gross monthly rent</span><input id="lwQuoteGross" type="number" min="0" step="0.01" value="${esc(context?.monthlyRate ?? '')}"></label><label class="v29-field"><span>Promotion (from library)</span><select id="lwQuotePromoSel" aria-label="Promotion attached from the promotion library"><option value="">No promotion</option></select><small id="lwQuotePromoHint" class="v29-hint"></small></label><label class="v29-field"><span>Promo code (override)</span><input id="lwQuotePromoCode" autocomplete="off" placeholder="Type a code to override"></label><label class="v29-field"><span>Promotion %</span><input id="lwQuotePromo" type="number" min="0" max="100" step="0.5" value="0"></label><label class="v29-field"><span>Net monthly rent</span><input id="lwQuoteNet" readonly></label><label class="v29-field"><span>Protection Plan (monthly)</span><input id="lwQuoteProtection" type="number" min="0" step="0.5" value="${esc(context?.protectionCost ?? 12.5)}"></label><label class="v29-field"><span>Commitment</span><select id="lwQuoteCommitment">${[3, 6, 12].map((m) => option(m, m + ' months', context?.durationMonths || 6)).join('')}</select></label><label class="v29-field"><span>Valid until</span><input id="lwQuoteExpiry" type="date" value="${addDays(sgYmd(), 14)}"></label></div>`,
+    body: `<div class="v29-callout"><i>i</i><div><b>Lead and enquiry are mandatory</b>${context ? 'This quotation started from a lead profile, so the lead is locked.' : 'Search by lead ID, company/person name, email, mobile or UEN.'} The quotation number is assigned sequentially only when saved.</div></div><div class="v29-grid three"><label class="v29-field full"><span>Lead *</span>${context ? `<input value="${esc(context.displayId)} · ${esc(leadDisplayName(context))}" readonly><input id="lwQuoteLead" type="hidden" value="${esc(context.id)}">` : `<input id="lwQuoteLeadSearch" autocomplete="off" placeholder="Search lead ID, name, email, mobile or UEN…"><input id="lwQuoteLead" type="hidden" value=""><div id="lwQuoteLeadResults" class="v29-lead-results" role="listbox"></div>`}</label><label class="v29-field"><span>Enquiry *</span><input id="lwQuoteEnquiry" value="${esc(context?.displayId || 'Select a lead first')}" readonly></label><label class="v29-field"><span>Product</span><input value="${PRODUCT}" readonly></label><label class="v29-field"><span>Facility</span><input id="lwQbFacility" value="${esc(context?.branchName ? 'StoreLah ' + context.branchName : '—')}" readonly></label><label class="v29-field"><span>Unit / size *</span><select id="lwQuoteUnit"><option value="">Size recommendation only</option></select></label><label class="v29-field"><span>Gross monthly rent</span><input id="lwQuoteGross" type="number" min="0" step="0.01" value="${esc(context?.monthlyRate ?? '')}"></label><label class="v29-field"><span>Promotion (from library)</span><select id="lwQuotePromoSel" aria-label="Promotion attached from the promotion library"><option value="">No promotion</option></select><small id="lwQuotePromoHint" class="v29-hint"></small></label><label class="v29-field"><span>Promo code (override)</span><input id="lwQuotePromoCode" autocomplete="off" placeholder="Type a code to override"></label><label class="v29-field"><span>Net monthly rent</span><input id="lwQuoteNet" readonly></label><label class="v29-field"><span>Protection Plan (monthly)</span><input id="lwQuoteProtection" type="number" min="0" step="0.5" value="${esc(context?.protectionCost ?? 12.5)}"></label><label class="v29-field"><span>Commitment</span><select id="lwQuoteCommitment">${[3, 6, 12].map((m) => option(m, m + ' months', context?.durationMonths || 6)).join('')}</select></label><label class="v29-field"><span>Valid until</span><input id="lwQuoteExpiry" type="date" value="${addDays(sgYmd(), 14)}"></label></div>`,
     footer: '<span class="hint">Preview does not consume a quotation number.</span><button class="btn" data-lw="quote-builder-preview">Preview quotation</button><button class="btn" data-lw="quote-builder-wa" id="lwQuoteWa" disabled title="Select a lead first">Share via WhatsApp</button><button class="btn" data-lw="close">Cancel</button><button class="primary" data-lw="quote-create">Create &amp; send</button>',
   });
   quoteBuilderWa.leadId = context?.id || '';
   quoteBuilderWa.mobile = context?.mobile || '';
   quoteBuilderWa.checked = !!context;
   quotePromo.options = []; quotePromo.code = ''; quotePromo.touched = false; quotePromo.extra = null;
-  const calc = () => { applyQuotePromo(); const g = Number(val('lwQuoteGross')) || 0; const p = Number(val('lwQuotePromo')) || 0; document.getElementById('lwQuoteNet').value = money(g * (1 - p / 100)); paintQuoteBuilderWa(); };
+  const calc = () => { applyQuotePromo(); const g = Number(val('lwQuoteGross')) || 0; const o = selectedQuotePromo(); document.getElementById('lwQuoteNet').value = money(Math.max(0, g - (o ? o.discountAmt : 0))); paintQuoteBuilderWa(); };
   quotePromo.calc = calc;
   document.getElementById('lwQuoteGross').addEventListener('input', () => { calc(); refreshQuotePromos(); });
-  document.getElementById('lwQuotePromo').addEventListener('input', calc);
   document.getElementById('lwQuoteCommitment').addEventListener('change', () => refreshQuotePromos());
-  document.getElementById('lwQuotePromoSel').addEventListener('change', (e) => { quotePromo.touched = true; quotePromo.code = e.target.value; if (!quotePromo.code) document.getElementById('lwQuotePromo').value = 0; calc(); });
+  document.getElementById('lwQuotePromoSel').addEventListener('change', (e) => { quotePromo.touched = true; quotePromo.code = e.target.value; calc(); });
   document.getElementById('lwQuotePromoCode').addEventListener('change', () => validateQuotePromoCode());
   document.getElementById('lwQuotePromoCode').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); validateQuotePromoCode(); } });
   calc();
@@ -604,52 +603,61 @@ async function openQuoteBuilder(leadId) {
 }
 
 // ----- Promotion from the library (GET /quotes/promo-options) -----
-// Options are scored server-side against this quote's gross rent, commitment
-// and unit; the best valid one is pre-selected until the operator picks one.
-// A typed override code is checked via POST /quotes/promo-validate. The chosen
-// code fills Promotion % (read-only while a code is attached) and is sent as
-// promoCode on POST /quotations, where it is re-validated.
+// The library has two kinds of entry: promo codes, and promotion plans
+// (discount matrix / free months) that apply without a code. The server
+// scores both against this quote's gross rent, commitment, unit and lead
+// (same rules checkout uses), and the best valid one is pre-selected until
+// the operator picks one. A typed override code is checked via
+// POST /quotes/promo-validate. The choice sets the net rent; POST /quotations
+// re-checks it (promoCode or promoPlanId).
 const quotePromo = { options: [], code: '', touched: false, extra: null, seq: 0, calc: null };
 
+// Select value: plans have no code, so they are keyed by plan id.
+function quotePromoKey(o) { return o.planId ? 'plan:' + o.planId : o.code; }
+
 function quotePromoCtx() {
-  return { rate: Number(val('lwQuoteGross')) || 0, months: Number(val('lwQuoteCommitment')) || 1, unitCode: val('lwQuoteUnit') || '' };
+  return { rate: Number(val('lwQuoteGross')) || 0, months: Number(val('lwQuoteCommitment')) || 1, unitCode: val('lwQuoteUnit') || '', leadId: val('lwQuoteLead') || '' };
 }
 
 function quotePromoList() {
   const list = quotePromo.options.slice();
-  if (quotePromo.extra && !list.some((o) => o.code === quotePromo.extra.code)) list.unshift(quotePromo.extra);
+  if (quotePromo.extra && !list.some((o) => o.code && o.code === quotePromo.extra.code)) list.unshift(quotePromo.extra);
   return list;
+}
+
+function selectedQuotePromo() {
+  return quotePromoList().find((o) => quotePromoKey(o) === quotePromo.code && o.valid) || null;
+}
+
+function quotePromoLabel(o) {
+  const head = o.planId ? o.name || 'Promotion plan' : `${o.code} · ${o.name || 'Promotion'}`;
+  return o.valid ? `${head} · −${money(o.discountAmt)}/mo` : `${head} · ${o.detail || 'not applicable'}`;
 }
 
 function paintQuotePromos() {
   const sel = document.getElementById('lwQuotePromoSel');
   if (!sel) return;
   const list = quotePromoList();
-  sel.innerHTML = '<option value="">No promotion</option>' + list.map((o) => `<option value="${esc(o.code)}"${o.valid ? '' : ' disabled'}${o.code === quotePromo.code ? ' selected' : ''}>${esc(o.code)} · ${esc(o.name || 'Promotion')}${o.valid ? ' · −' + money(o.discountAmt) + '/mo' : ' · not applicable'}</option>`).join('');
+  sel.innerHTML = '<option value="">No promotion</option>' + list.map((o) => `<option value="${esc(quotePromoKey(o))}"${o.valid ? '' : ' disabled'}>${esc(quotePromoLabel(o))}</option>`).join('');
   sel.value = quotePromo.code || '';
 }
 
 function applyQuotePromo() {
-  const pct = document.getElementById('lwQuotePromo');
   const hint = document.getElementById('lwQuotePromoHint');
-  if (!pct) return;
-  const gross = Number(val('lwQuoteGross')) || 0;
-  const o = quotePromoList().find((x) => x.code === quotePromo.code && x.valid);
-  if (o) {
-    pct.value = gross > 0 ? Math.round((o.discountAmt / gross) * 10000) / 100 : 0;
-    pct.readOnly = true;
-    if (hint) hint.textContent = `${o.code}: −${money(o.discountAmt)} per month (re-checked when the quotation is created).`;
-  } else {
-    pct.readOnly = false;
-    if (hint) hint.textContent = quotePromo.options.length && !quotePromo.options.some((x) => x.valid) ? 'No library promotion applies to this rent, term or unit.' : '';
-  }
+  if (!hint) return;
+  const o = selectedQuotePromo();
+  if (o) hint.textContent = `${o.planId ? o.name : o.code}: −${money(o.discountAmt)} per month${o.detail ? ' · ' + o.detail : ''} (re-checked when the quotation is created).`;
+  else if (!quotePromo.options.length) hint.textContent = 'No active promotions in the library.';
+  else if (!quotePromo.options.some((x) => x.valid)) hint.textContent = 'No library promotion applies to this rent, term or unit.';
+  else hint.textContent = '';
 }
 
 async function refreshQuotePromos() {
   const seq = ++quotePromo.seq;
-  const { rate, months, unitCode } = quotePromoCtx();
+  const { rate, months, unitCode, leadId } = quotePromoCtx();
   const qs = new URLSearchParams({ rate: String(rate), months: String(months) });
   if (unitCode) qs.set('unitCode', unitCode);
+  if (leadId) qs.set('leadId', leadId);
   let options = [];
   try { options = (await get('/quotes/promo-options?' + qs)) || []; } catch { options = []; }
   if (seq !== quotePromo.seq || !document.getElementById('lwQuotePromoSel')) return;
@@ -660,10 +668,9 @@ async function refreshQuotePromos() {
       quotePromo.extra = { ...quotePromo.extra, valid: !!v.valid, discountAmt: v.discountAmt || 0 };
     } catch { /* keep the last result */ }
   }
-  const current = quotePromoList().find((o) => o.code === quotePromo.code);
-  if (!quotePromo.touched) quotePromo.code = (options.find((o) => o.valid) || {}).code || '';
+  const current = quotePromoList().find((o) => quotePromoKey(o) === quotePromo.code);
+  if (!quotePromo.touched) { const best = options.find((o) => o.valid); quotePromo.code = best ? quotePromoKey(best) : ''; }
   else if (quotePromo.code && !(current && current.valid)) quotePromo.code = '';
-  if (!quotePromo.code) document.getElementById('lwQuotePromo').value = document.getElementById('lwQuotePromo').readOnly ? 0 : document.getElementById('lwQuotePromo').value;
   paintQuotePromos();
   quotePromo.calc?.();
 }
@@ -716,15 +723,18 @@ async function selectQuoteLead(id) {
   quoteBuilderWa.checked = true;
   paintQuoteBuilderWa();
   loadQuoteUnits(l);
+  refreshQuotePromos();
 }
 
 function quoteDraft() {
   const gross = Number(val('lwQuoteGross')) || 0;
-  const promo = Number(val('lwQuotePromo')) || 0;
+  const sp = selectedQuotePromo();
+  const discount = sp ? sp.discountAmt : 0;
+  const promo = gross > 0 && discount > 0 ? Math.round((discount / gross) * 10000) / 100 : 0;
   return {
     leadId: val('lwQuoteLead'), enquiry: val('lwQuoteEnquiry'), unit: val('lwQuoteUnit'), facility: val('lwQbFacility'),
     leadName: (document.getElementById('lwQuoteLeadSearch')?.value || document.querySelector('#v29Body input[readonly]')?.value || '').split(' · ').slice(1).join(' · '),
-    gross, promo, promoCode: quotePromoList().some((o) => o.code === quotePromo.code && o.valid) ? quotePromo.code : '', net: Math.round(gross * (1 - promo / 100) * 100) / 100, protection: Number(val('lwQuoteProtection')) || 0,
+    gross, promo, promoCode: sp && !sp.planId ? sp.code : '', promoPlanId: sp && sp.planId ? sp.planId : '', promoLabel: sp ? (sp.planId ? sp.name : sp.code) : '', net: Math.round(Math.max(0, gross - discount) * 100) / 100, protection: Number(val('lwQuoteProtection')) || 0,
     commitment: Number(val('lwQuoteCommitment')), expiry: val('lwQuoteExpiry'),
   };
 }
@@ -771,7 +781,7 @@ async function shareQuoteBuilderForm(btn) {
 
 function quotePaper(d, number) {
   const total = d.net + d.protection;
-  return `<div class="v29-quote-paper"><header><div><h3>STORELAH</h3><span>AC SELF-STORAGE · SPACE MADE SIMPLE</span></div><div><b>QUOTATION</b><small>${esc(number)}</small></div></header><div class="v29-grid"><div><small>PREPARED FOR</small><h3>${esc(d.leadName)}</h3><span>${esc(d.enquiry)}</span></div><div><small>STORAGE OPTION</small><h3>${esc(d.facility || 'StoreLah')}</h3><span>${esc(d.unit || 'Size recommendation only')}</span></div></div><table><tr><th>Description</th><th>Monthly</th></tr><tr><td>Gross monthly rent</td><td>${money(d.gross)}</td></tr><tr><td>${d.promoCode ? 'Promotion ' + esc(d.promoCode) : 'Promotion / negotiated reduction'}</td><td>−${money(d.gross - d.net)}</td></tr><tr><td>Net monthly rent</td><td>${money(d.net)}</td></tr><tr><td>Protection Plan</td><td>${money(d.protection)}</td></tr><tr class="total"><td>Estimated monthly payment</td><td>${money(total)}</td></tr></table><p><b>Commercial terms:</b> ${esc(d.commitment)} months commitment, billed monthly. Security deposit: $0 under the current launch policy. Valid until ${esc(humanDate(d.expiry))}.</p></div>`;
+  return `<div class="v29-quote-paper"><header><div><h3>STORELAH</h3><span>AC SELF-STORAGE · SPACE MADE SIMPLE</span></div><div><b>QUOTATION</b><small>${esc(number)}</small></div></header><div class="v29-grid"><div><small>PREPARED FOR</small><h3>${esc(d.leadName)}</h3><span>${esc(d.enquiry)}</span></div><div><small>STORAGE OPTION</small><h3>${esc(d.facility || 'StoreLah')}</h3><span>${esc(d.unit || 'Size recommendation only')}</span></div></div><table><tr><th>Description</th><th>Monthly</th></tr><tr><td>Gross monthly rent</td><td>${money(d.gross)}</td></tr><tr><td>${d.promoLabel ? 'Promotion · ' + esc(d.promoLabel) : 'Promotion'}</td><td>−${money(d.gross - d.net)}</td></tr><tr><td>Net monthly rent</td><td>${money(d.net)}</td></tr><tr><td>Protection Plan</td><td>${money(d.protection)}</td></tr><tr class="total"><td>Estimated monthly payment</td><td>${money(total)}</td></tr></table><p><b>Commercial terms:</b> ${esc(d.commitment)} months commitment, billed monthly. Security deposit: $0 under the current launch policy. Valid until ${esc(humanDate(d.expiry))}.</p></div>`;
 }
 
 function previewDraft() {
@@ -790,7 +800,7 @@ async function createQuote(btn, draft) {
   if (!(d.gross > 0)) { notify('Enter the gross monthly rent.'); return; }
   await busy(btn, async () => {
     const q = await post('/quotations', {
-      leadId: d.leadId, unitCode: d.unit || null, grossRate: d.gross, promoPct: d.promo || null, promoCode: d.promoCode || null,
+      leadId: d.leadId, unitCode: d.unit || null, grossRate: d.gross, promoPct: d.promo || null, promoCode: d.promoCode || null, promoPlanId: d.promoPlanId || null,
       protectionMonthly: d.protection, commitmentMonths: d.commitment, expiresAt: d.expiry || null,
     });
     closeModal();

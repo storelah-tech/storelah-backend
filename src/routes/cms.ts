@@ -105,6 +105,7 @@ import {
   deletePromotion,
   validatePromotion,
   listQuotationPromoOptions,
+  listQuotationPlanOptions,
 } from '../core/promotions';
 import {
   listPlans,
@@ -1292,6 +1293,9 @@ const issueQuoteSchema = z.object({
   // Promotion attached from the library (or an operator override code).
   // Re-validated server-side; when valid it is authoritative for promoPct.
   promoCode: z.string().trim().max(40).nullable().optional(),
+  // Library plan (DISCOUNT_MATRIX / FREE_MONTHS) picked in the builder;
+  // re-scored server-side, and its monthly-equivalent discount sets promoPct.
+  promoPlanId: z.string().trim().max(60).nullable().optional(),
   protectionMonthly: z.number().nonnegative().nullable().optional(),
   commitmentMonths: z.number().int().positive().nullable().optional(),
   expiresAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
@@ -1317,8 +1321,22 @@ router.post('/quotations', requireAuth, async (req: Request, res: Response) => {
   // and unit (400 on an invalid code). The validated discount drives promoPct
   // so the register, net rent and PDF agree; the code is kept on the lead.
   let promoPct = d.promoPct ?? null;
-  let promoFields: { promoCode: string; promoDiscountAmt: number } | null = null;
-  if (d.promoCode) {
+  let promoFields: { promoCode: string | null; promoDiscountAmt: number } | null = null;
+  if (d.promoPlanId) {
+    const planOptions = await listQuotationPlanOptions({
+      rate: d.grossRate,
+      months: d.commitmentMonths ?? 1,
+      unitCode: d.unitCode ?? undefined,
+      leadId: lead.id,
+    });
+    const plan = planOptions.find((o) => o.planId === d.promoPlanId);
+    if (!plan || !plan.valid) {
+      fail(res, 400, 'VALIDATION', 'The selected promotion does not apply to this rent, term or unit.', { promoPlanId: d.promoPlanId });
+      return;
+    }
+    promoFields = { promoCode: null, promoDiscountAmt: plan.discountAmt };
+    promoPct = d.grossRate > 0 ? Math.round((plan.discountAmt / d.grossRate) * 10000) / 100 : 0;
+  } else if (d.promoCode) {
     const promo = await resolveQuotationPromo({
       promoCode: d.promoCode,
       monthlyRate: d.grossRate,
@@ -3309,6 +3327,7 @@ router.get('/quotes/promo-options', requireAuth, async (req: Request, res: Respo
       rate: z.coerce.number().nonnegative().optional(),
       months: z.coerce.number().int().positive().optional(),
       unitCode: z.string().trim().max(40).optional(),
+      leadId: z.string().trim().max(60).optional(),
     })
     .safeParse(req.query);
   if (!q.success) {
@@ -3319,6 +3338,7 @@ router.get('/quotes/promo-options', requireAuth, async (req: Request, res: Respo
     rate: q.data.rate,
     months: q.data.months,
     unitCode: q.data.unitCode,
+    leadId: q.data.leadId,
   });
   ok(res, options, { count: options.length, best });
 });

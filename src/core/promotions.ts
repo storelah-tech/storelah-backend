@@ -322,6 +322,115 @@ export interface QuotationPromoOption {
   valid: boolean;
   discountAmt: number;
   monthlyAfterPromo: number;
+  // Library plans (DISCOUNT_MATRIX / FREE_MONTHS auto-apply plans have no
+  // code): source 'PLAN' + planId; code is '' for them. discountAmt is the
+  // monthly equivalent (free months spread over the commitment).
+  source?: 'CODE' | 'PLAN';
+  planId?: string | null;
+  planKind?: string | null;
+  detail?: string | null;
+}
+
+export interface QuotationPlanContext {
+  rate: number;
+  months: number;
+  unitCode?: string;
+  // Used when no unit is picked yet: the lead's facility and preferred size.
+  leadId?: string;
+}
+
+// Score every live promotion PLAN against a quotation, with the same rules
+// checkout uses to auto-apply them (customers.ts computeServerDueToday):
+// ACTIVE, inside its effective window, facility / floor / size in scope;
+// DISCOUNT_MATRIX needs the exact (size, commitment) cell; FREE_MONTHS needs
+// the commitment met and counts the free months inside the term.
+export async function listQuotationPlanOptions(ctx: QuotationPlanContext): Promise<QuotationPromoOption[]> {
+  const { syncPlanSchedule, planCoversBranch, planCoversFloor, planCoversSize, toCanonicalSizeCategory } = await import('./promotionPlans');
+  await syncPlanSchedule();
+  const now = new Date();
+  const rate = ctx.rate >= 0 ? ctx.rate : 0;
+  const months = ctx.months >= 1 ? Math.floor(ctx.months) : 1;
+
+  let branch: { id: string; code: string } | null = null;
+  let floorId: string | null = null;
+  let sizeCategory = '';
+  if (ctx.unitCode?.trim()) {
+    const unit = await prisma.unit.findUnique({ where: { unitCode: ctx.unitCode.trim() }, include: { size: true, branch: true } });
+    if (unit) {
+      branch = { id: unit.branch.id, code: unit.branch.code };
+      floorId = unit.floorId ?? null;
+      sizeCategory = toCanonicalSizeCategory(unit.size?.code ?? '');
+    }
+  }
+  if (!branch && ctx.leadId) {
+    const lead = await prisma.lead.findUnique({ where: { id: ctx.leadId }, include: { branch: true } });
+    if (lead?.branch) branch = { id: lead.branch.id, code: lead.branch.code };
+    if (!sizeCategory && lead?.preferredSize) sizeCategory = toCanonicalSizeCategory(lead.preferredSize);
+  }
+
+  const plans = await prisma.promotionPlan.findMany({
+    where: { status: 'ACTIVE', kind: { in: ['DISCOUNT_MATRIX', 'FREE_MONTHS'] } },
+    include: { matrixCells: true, freeMonths: true, rules: true },
+    orderBy: { createdAt: 'asc' },
+  });
+  const out: QuotationPromoOption[] = [];
+  for (const p of plans) {
+    if (!(p.effectiveFrom <= now && (!p.effectiveTo || p.effectiveTo > now))) continue;
+    const inScope = (!branch || planCoversBranch(p.facilityScope, branch)) && planCoversFloor(p.rules, floorId);
+    let valid = false;
+    let discountAmt = 0;
+    let detail: string | null = null;
+    let discountType: PromotionDiscountType = 'PERCENTAGE';
+    let discountValue = 0;
+    if (p.kind === 'DISCOUNT_MATRIX') {
+      const cell = sizeCategory
+        ? p.matrixCells.find((c) => toCanonicalSizeCategory(c.sizeCategory) === sizeCategory && c.commitmentMonths === months)
+        : undefined;
+      const pct = cell ? toNum(cell.discountPct) : 0;
+      discountValue = pct;
+      if (inScope && pct > 0) {
+        valid = true;
+        discountAmt = toNum((rate * pct) / 100);
+        detail = `${pct}% off for ${months} months`;
+      } else {
+        detail = !sizeCategory ? 'Pick a unit to check this plan' : `No discount for this size at ${months} months`;
+      }
+    } else {
+      const free = p.freeMonths
+        .filter((f) => f.free && f.monthIndex >= 0 && f.monthIndex < months)
+        .map((f) => f.monthIndex + 1)
+        .sort((a, b) => a - b);
+      const sizeOk = !sizeCategory || planCoversSize(p.sizeScope, sizeCategory);
+      discountType = 'FLAT';
+      if (inScope && sizeOk && months >= (p.commitmentMonths ?? 0) && free.length) {
+        valid = true;
+        discountAmt = toNum((rate * free.length) / months);
+        discountValue = discountAmt;
+        detail = `${free.length} month${free.length === 1 ? '' : 's'} free (month ${free.join(', ')})`;
+      } else {
+        detail = p.commitmentMonths && months < p.commitmentMonths ? `Needs a ${p.commitmentMonths}-month commitment` : 'Not available for this unit';
+      }
+    }
+    out.push({
+      code: '',
+      name: p.name,
+      description: p.description ?? null,
+      discountType,
+      discountValue,
+      minMonths: p.kind === 'FREE_MONTHS' ? p.commitmentMonths ?? null : null,
+      type: p.kind,
+      appliesTo: 'PLAN',
+      durationScope: 'PLAN',
+      valid,
+      discountAmt,
+      monthlyAfterPromo: toNum(rate - discountAmt),
+      source: 'PLAN',
+      planId: p.id,
+      planKind: p.kind,
+      detail,
+    });
+  }
+  return out;
 }
 
 // Quotation-module helper: every active in-window promotion, each scored by
@@ -336,6 +445,7 @@ export async function listQuotationPromoOptions(opts?: {
   rate?: number;
   months?: number;
   unitCode?: string;
+  leadId?: string;
 }): Promise<{ options: QuotationPromoOption[]; best: QuotationPromoOption | null }> {
   const rate = typeof opts?.rate === 'number' && opts.rate >= 0 ? opts.rate : 0;
   const months = typeof opts?.months === 'number' && opts.months >= 1 ? Math.floor(opts.months) : 1;
@@ -358,8 +468,13 @@ export async function listQuotationPromoOptions(opts?: {
       valid: v.valid,
       discountAmt: v.discountAmt,
       monthlyAfterPromo: v.monthlyAfterPromo,
+      source: 'CODE',
+      planId: null,
+      planKind: null,
+      detail: null,
     });
   }
+  options.push(...(await listQuotationPlanOptions({ rate, months, unitCode, leadId: opts?.leadId })));
   options.sort((a, b) => Number(b.valid) - Number(a.valid) || b.discountAmt - a.discountAmt);
   return { options, best: options.find((o) => o.valid) ?? null };
 }

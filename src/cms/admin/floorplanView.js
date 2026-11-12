@@ -652,7 +652,7 @@ function fpNormalizeBoundaries(plan) {
 // rings chained from endpoint-connected leftover strokes (so a loop drawn as
 // separate 2-vertex sides counts); a lone open 2-vertex segment encloses no
 // area and contributes 0 — never fabricated. UFA = marked
-// gross minus block + solid-structure rects; NLA = placement footprints
+// gross, blocks + structure included (owner 2026-11-12); NLA = placement footprints
 // clipped to the marked loops minus only the block/structure area that
 // overlaps a placement footprint (per placement row; corridors beside units
 // never reduce NLA), floored at 0 per loop; blockAreaSqft = loop-clipped BLOCK rects only
@@ -776,8 +776,9 @@ function fpBoundaryMetricsLocal() {
   for (const loop of loops) {
     const gross = fpPolygonArea(loop);
     gla += gross;
-    const blocked = obstacles.reduce((sum, r) => sum + fpRectPolygonArea(r, loop), 0);
-    ufa += Math.max(0, gross - blocked);
+    // UFA = whole area between the lines, blocks included (owner 2026-11-12)
+    // — mirrors computeBoundaryMetrics in src/core/floorPlans.ts.
+    ufa += gross;
     // NLA subtracts only block/structure area that sits ON a placement
     // footprint (loop-clipped, per placement row) — mirrors computeBoundaryMetrics
     // in src/core/floorPlans.ts. Pillars subtract additionally (NLA only):

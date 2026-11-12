@@ -324,16 +324,15 @@ function serializeMarker(m: MarkerRow) {
 //     1 grid unit = 1 ft so area = sqft). `gla` is kept so existing
 //     `boundaries`/`boundaryMetrics` shapes stay byte-compatible; new readers
 //     should prefer `facilityAreaSqft`.
-//   - UFA (usable floor area): marked gross minus non-lettable obstructed
-//     areas — every FloorPlanBlock rect plus the solid legacy-structure rects
-//     (corridor bounding boxes, entrance/lift/stairs/fireExit rects). Thin wall
-//     LINES are excluded, matching the overlap policy (unit-vs-unit only) and
-//     the auto-place obstacle set (fpAutoPlaceAll `taken` minus placements).
+//   - UFA (usable floor area): the whole marked gross — the area between the
+//     lines, corridors / entrances / other blocks and solid structure
+//     INCLUDED (owner 2026-11-12; before that it was gross minus those rects,
+//     which left Corridor = UFA − NLA showing only the leftover gaps).
 //   - NLA (net lettable area): sum of placed-unit footprints clipped to the
 //     marked loops (each placement row contributes its own rect∩loop area, so
 //     both tiers of a stacked locker pair count) MINUS the loop-clipped
-//     blocked area (blocks + solid legacy-structure rects — the same `blocked`
-//     total subtracted for UFA), floored at 0 per loop. A block added inside a
+//     blocked area that overlaps a placement (blocks + solid legacy-structure
+//     rects), floored at 0 per loop. A block added inside a
 //     marked loop therefore reduces NLA even with UFA headroom.
 //   - `gfaSqft` mirrors the plan's operator-entered GFA (null when unset);
 //     `gfaSource` is 'USER' when set, 'CANVAS' when the metrics report must
@@ -553,10 +552,11 @@ export function pillarRectsOf(
  * area (closed loops and open >= 3-vertex polylines alike), plus stitched
  * rings chained from endpoint-connected leftover strokes (so a loop drawn as
  * separate 2-vertex sides counts); a lone open 2-vertex segment contributes 0
- * (a line encloses no area — never fabricated). Per loop: UFA adds
- * max(0, gross − blocked) where blocked is the loop-clipped obstacles total
- * (blocks + solid structure); NLA adds max(0, placementsInLoop − onUnits −
- * pillarBlocked) where onUnits is only the part of those obstacles that
+ * (a line encloses no area — never fabricated). Per loop: UFA adds the
+ * full gross area between the lines (blocks and structure included — owner
+ * 2026-11-12); NLA adds max(0, placementsInLoop − onUnits −
+ * pillarBlocked) where onUnits is only the part of the obstacles (blocks +
+ * solid structure) that
  * actually overlaps a placement footprint (loop-clipped, per placement row —
  * a corridor or entrance beside the units never reduces NLA; owner
  * 2026-11-07); blockAreaSqft sums the loop-clipped BLOCK rects only.
@@ -602,8 +602,11 @@ export function computeBoundaryMetrics(input: {
   for (const loop of loops) {
     const gross = polygonArea(loop);
     gla += gross;
-    const blocked = obstacles.reduce((sum, r) => sum + rectPolygonArea(r, loop), 0);
-    ufa += Math.max(0, gross - blocked);
+    // UFA = the whole area between the lines — corridors, entrances and other
+    // blocks INCLUDED (owner 2026-11-12: "area between the line, include
+    // everything"). Subtracting blocks here made Corridor (UFA − NLA) report
+    // only the leftover gaps (SS L2: 95 instead of ~813 sq ft).
+    ufa += gross;
     // NLA subtracts only the obstacle area (blocks + solid structure) that
     // sits ON a placement footprint, loop-clipped, per placement row (each
     // stack tier counts its own footprint, so it subtracts its own overlap).

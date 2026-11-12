@@ -108,7 +108,7 @@ export const openapiSpec = {
         '`PUT|DELETE /cms/floor-plans/{floorId}/boundaries/{boundaryId}` (Bearer JWT). Plan reads ' +
         '(CMS + `GET /public/floor-plans/{branchCode}/{level}`) gain `boundaries` plus derived ' +
         '`boundaryMetrics { gla, ufa, nla, unit, boundaryClosed }`: GLA = closed-loop area, ' +
-        'UFA = GLA minus block + solid-structure footprints, NLA = placed-unit footprints inside ' +
+        'UFA = GLA (whole area between the lines, blocks included), NLA = placed-unit footprints inside ' +
         'the loops (clamped, 1dp); all-zero with `boundaryClosed: false` when no loop is closed. ' +
         'All pre-existing plan shapes, metrics endpoints, and promotion/booking/customer APIs are unchanged.',
       '',
@@ -149,7 +149,7 @@ export const openapiSpec = {
       'v1.6.2 is ADDITIVE-ONLY over 1.6.1: line-only (marked-area) UFA/NLA in the live metrics ' +
         'report — `GET /cms/floor-plans/{floorId}/metrics` gains top-level `boundaryMetrics` ' +
         '(byte-identical to the plan-read shape) and `geometry.ufa/nlaEnclosed/nlaTotal/common` ' +
-        'are now the marked-area figures (UFA = marked gross minus blocks/structure, NLA = ' +
+        'are now the marked-area figures (UFA = marked gross, blocks included, NLA = ' +
         'placements clipped to loops capped at UFA, outdoor split 0, common = UFA − NLA; ' +
         'all-zero with `boundaryClosed: false` when no marked line contributes area — never the ' +
         'whole-canvas rect). Efficiency and the occupancy-sqft/revenue NLA denominators follow ' +
@@ -1016,7 +1016,7 @@ export const openapiSpec = {
           'facility aggregate: geometry GFA/UFA/NLA sums with the NLA≤UFA clamp, summed loop-clipped ',
           '`blockArea` (+ per-floor `blockAreaSqft`), corridorArea (= common = ',
           'UFA−NLA), guarded efficiency ratios + GFA→UFA / UFA→NLA pcts, DB-wide totals (unplaced = no-placement ',
-          'units, occupied = OCCUPIED+OVERDUE) and per-size unitGroups (Locker=LOCKER, XS=SMALL, M=MEDIUM, ',
+          'units, occupied = OCCUPIED+OVERDUE) and per-size unitGroups (Locker=LOCKER, XS=XS, S=SMALL, M=MEDIUM, ',
           'L=LARGE, XL=0/0 — no Extra Large UnitSize exists). Floors without a plan contribute zero geometry ',
           'and are listed in `floorsWithoutPlan`. Snapshot payloads are never summed (source LIVE).',
           '',
@@ -6525,7 +6525,7 @@ export const openapiSpec = {
         type: 'object',
         required: ['gla', 'ufa', 'nla', 'unit', 'boundaryClosed'],
         description:
-          'Line-area UFA/NLA from the marked facility layout. Marked-area rule: every polyline with 3+ vertices and nonzero shoelace area contributes its chord-closed area (closed loops and open 3+-vertex polylines alike); open 2-vertex segments contribute 0 — never fabricated. facilityAreaSqft = marked gross (same value as gla); UFA = marked gross minus block + solid-structure footprints (thin wall lines excluded); NLA = placed-unit footprints inside the marked loops (both stack tiers count) minus only the block + solid-structure area that overlaps them (corridors/entrances beside units do not reduce NLA), clamped to UFA; blockAreaSqft = loop-clipped block rects only (solid structure excluded, 1dp). All-zero with boundaryClosed: false when no marked line contributes area. Rounded to 1 decimal. gfaSqft mirrors the plan operator-entered GFA (null when unset); gfaSource tags it USER vs CANVAS.',
+          'Line-area UFA/NLA from the marked facility layout. Marked-area rule: every polyline with 3+ vertices and nonzero shoelace area contributes its chord-closed area (closed loops and open 3+-vertex polylines alike); open 2-vertex segments contribute 0 — never fabricated. facilityAreaSqft = marked gross (same value as gla); UFA = marked gross, blocks/corridors included (equals gla; owner 2026-11-12); NLA = placed-unit footprints inside the marked loops (both stack tiers count) minus only the block + solid-structure area that overlaps them (corridors/entrances beside units do not reduce NLA), clamped to UFA; blockAreaSqft = loop-clipped block rects only (solid structure excluded, 1dp). All-zero with boundaryClosed: false when no marked line contributes area. Rounded to 1 decimal. gfaSqft mirrors the plan operator-entered GFA (null when unset); gfaSource tags it USER vs CANVAS.',
         properties: {
           gla: { type: 'number', description: 'Marked gross area (sqft) — same value as facilityAreaSqft, kept for compatibility.' },
           ufa: { type: 'number', description: 'Usable floor area (sqft).' },
@@ -6844,7 +6844,7 @@ export const openapiSpec = {
           },
           unitGroups: {
             type: 'object',
-            description: 'Additive per-size unit groups (owner-confirmed mapping: Locker=LOCKER, XS=SMALL, M=MEDIUM, L=LARGE, XL=missing → 0/0 flagged; overall = sum of all buckets over nominal Unit.sqft).',
+            description: 'Additive per-size unit groups (owner-confirmed mapping: Locker=LOCKER, XS=XS, S=SMALL, M=MEDIUM, L=LARGE, XL=missing → 0/0 flagged; overall = sum of all buckets over nominal Unit.sqft).',
             properties: {
               overall: {
                 type: 'object',

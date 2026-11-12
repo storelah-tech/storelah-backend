@@ -102,7 +102,7 @@ Markers are **points, not rects**: one icon each (fire extinguisher, do-not-ente
 exit sign, fire hose reel, first aid, keep-clear), draggable in the editor and
 rendered with a distinct icon/label/ring tone (`FP_MARKER_KINDS` in
 `src/cms/admin/floorplanView.js`). Points carry **no area**, so the metrics
-bridge ignores them (unlike blocks, which subtract from UFA) — `boundaryMetrics`
+bridge ignores them (blocks do not subtract from UFA either since 2026-11-12; they only reduce NLA where they overlap a unit) — `boundaryMetrics`
 is byte-identical with or without markers. Plan reads (CMS + public) embed
 `markers` in authored order; the endpoints are
 `GET|POST /floor-plans/:floorId/markers` + `PUT|DELETE
@@ -337,8 +337,8 @@ Definitions (same clamps as before, rounded to 1 decimal):
 | Measure | Meaning |
 | ------- | ------- |
 | `facilityAreaSqft` (= `gla`, kept for compatibility) | summed marked-loop area (shoelace, sqft) |
-| `ufa` | marked gross minus `FloorPlanBlock` rects + solid legacy-structure rects (thin wall lines excluded) |
-| `nla` | placed-unit footprints clipped to the marked loops (each placement row counts, so both stack tiers count) **minus only the blocked area that overlaps a placement footprint** (blocks + solid legacy-structure rects intersected with each placement, loop-clipped; corridors, entrances and other blocks beside the units do not reduce NLA — owner 2026-11-07) **minus pillar footprints** (placements whose unit has `hasPillar`, plus Pillar-named block rects passed via the additive `pillarRects` input to `computeBoundaryMetrics` — treated exactly like blocked area, NLA only; UFA untouched), floored at 0 per loop, clamped ≤ UFA. Adding a block on top of a unit reduces NLA; a block in open floor reduces UFA only |
+| `ufa` | marked gross — the whole area between the lines, corridors / entrances / other blocks and solid structure **included** (equals `gla`; owner 2026-11-12, was gross minus blocks) |
+| `nla` | placed-unit footprints clipped to the marked loops (each placement row counts, so both stack tiers count) **minus only the blocked area that overlaps a placement footprint** (blocks + solid legacy-structure rects intersected with each placement, loop-clipped; corridors, entrances and other blocks beside the units do not reduce NLA — owner 2026-11-07) **minus pillar footprints** (placements whose unit has `hasPillar`, plus Pillar-named block rects passed via the additive `pillarRects` input to `computeBoundaryMetrics` — treated exactly like blocked area, NLA only; UFA untouched), floored at 0 per loop, clamped ≤ UFA. Adding a block on top of a unit reduces NLA; a block in open floor changes neither |
 | `blockAreaSqft` | loop-clipped **block** area (sqft, 1dp): SUM over marked loops of rect∩loop per `FloorPlanBlock` (same loop-clipped total as UFA for consistency; solid legacy-structure rects excluded). Per-block raw `w×h` rides on each serialized block as `areaSqft` (derived, never stored — no migration, no stored-vs-geometry drift). Overlapping blocks may double-count (non-overlapping assumption, no dedupe) |
 
 With **no contributing marked line** the report is all-zero with
@@ -349,8 +349,8 @@ strip state; it never fabricates.
 
 **Line-only authority in the live metrics report.** `GET
 /floor-plans/:floorId/metrics` reports the SAME marked figures — never the
-whole-canvas rect: `geometry.ufa` is the marked gross minus
-blocks/solid-structure rects, `geometry.nlaEnclosed`/`nlaTotal` are placement
+whole-canvas rect: `geometry.ufa` is the marked gross (blocks
+included), `geometry.nlaEnclosed`/`nlaTotal` are placement
 footprints clipped to the marked loops minus the loop-clipped blocked area
 (capped ≤ UFA), `geometry.blockArea` echoes `boundaryMetrics.blockAreaSqft`
 (loop-clipped blocks only), `nlaOutdoor` is 0 (the

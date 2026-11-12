@@ -91,7 +91,7 @@ function renderKpis(r) {
   const boundaryClosed = r.boundaryMetrics ? r.boundaryMetrics.boundaryClosed : undefined;
   const hasMarkedArea = Number.isFinite(ufaSqftNum) && ufaSqftNum > 0 && boundaryClosed !== false;
   const ufaSub = hasMarkedArea ? 'usable floor area · line-only' : 'no marked area — draw lines to measure';
-  // unitGroups.groups is an array keyed by `key` (locker/xs/m/l/xl); tolerate
+  // unitGroups.groups is an array keyed by `key` (locker/xs/s/m/l/xl); tolerate
   // a keyed-object shape just in case.
   const ug = r.unitGroups || {};
   const groups = Array.isArray(ug.groups)
@@ -124,8 +124,9 @@ function renderKpis(r) {
     statCard('GFA to UFA Efficiency (%)', pct(g.gfaToUfaEfficiencyPct), 'UFA / GFA'),
     statCard('UFA to NLA Efficiency (%)', pct(g.ufaToNlaEfficiencyPct), 'NLA / UFA'),
     statCard('Overall Units', groupVal(ug.overall), 'all sizes · nominal sqft'),
-    statCard('Locker + XS Units', groupVal(groupByKey('locker')), 'LOCKER · XS'),
-    statCard('XS units', groupVal(groupByKey('xs')), 'SMALL'),
+    statCard('Locker Units', groupVal(groupByKey('locker')), 'LOCKER'),
+    statCard('XS Units', groupVal(groupByKey('xs')), 'XS'),
+    statCard('S Units', groupVal(groupByKey('s')), 'SMALL'),
     statCard('M Units', groupVal(groupByKey('m')), 'MEDIUM'),
     statCard('L Units', groupVal(groupByKey('l')), 'LARGE'),
     // XL (Extra Large) has no UnitSize code in the DB — the service reports

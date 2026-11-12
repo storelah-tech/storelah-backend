@@ -10,14 +10,14 @@ const rect = ([x, y, width, height]: number[]) => ({ x, y, width, height });
 const square = [[0, 0], [20, 0], [20, 20], [0, 20]];
 
 describe('boundary metrics — NLA', () => {
-  it('a corridor block beside the units reduces UFA but not NLA', () => {
+  it('a corridor block beside the units reduces neither UFA nor NLA', () => {
     const m = computeBoundaryMetrics({
       boundaries: [{ points: square, closed: true, kind: 'BOUNDARY' }],
       placements: [rect([0, 0, 10, 10]), rect([10, 0, 10, 10])],
       blocks: [rect([0, 10, 20, 4])], // corridor south of both units
       structure: null,
     });
-    expect(m.ufa).toBe(320);
+    expect(m.ufa).toBe(400); // whole area between the lines (owner 2026-11-12)
     expect(m.nla).toBe(200);
     expect(m.blockAreaSqft).toBe(80);
   });
@@ -30,7 +30,7 @@ describe('boundary metrics — NLA', () => {
       structure: null,
     });
     expect(m.nla).toBe(96);
-    expect(m.ufa).toBe(384);
+    expect(m.ufa).toBe(400);
   });
 
   it('Sembawang L1 (live geometry 2026-11-07): NLA follows the unit area', () => {
@@ -42,8 +42,21 @@ describe('boundary metrics — NLA', () => {
       structure: null,
       gfaSqft: 3448.9,
     });
-    expect(m.ufa).toBe(2349.5);
+    expect(m.ufa).toBe(3448.9); // = area inside the walls (was 2,349.5 with blocks subtracted)
     expect(m.blockAreaSqft).toBe(1099.4);
     expect(m.nla).toBe(2190.3); // 2,195.7 of unit footprints − ~5.3 of pillar overlap
+  });
+
+  it('Sembawang L2 (live geometry 2026-11-12): UFA is the whole area inside 8 stitched walls', () => {
+    const walls = [[[0.1, 0.1], [37.2, 0.1]], [[37.2, 9], [40.9, 9]], [[40.9, 9], [40.8, 65.3]], [[37.3, 77.3], [0.2, 77.3]], [[40.8, 65.3], [37.2, 65.3]], [[37.2, 65.3], [37.3, 77.3]], [[37.2, 0.1], [37.2, 9]], [[0.1, 0.1], [0.2, 77.3]]];
+    const m = computeBoundaryMetrics({
+      boundaries: walls.map((points) => ({ points, closed: false, kind: 'BOUNDARY' })),
+      placements: [],
+      blocks: [[6.6, 12.9, 4, 56.9], [33.2, 8.9, 4.2, 68.4], [6.6, 8.9, 26.7, 4], [32.2, 59, 1, 6.9], [10.5, 65.8, 22.8, 4], [37.3, 65.3, 3.5, 12]].map(rect),
+      structure: null,
+    });
+    expect(m.boundaryClosed).toBe(true);
+    expect(m.gla).toBe(3066.4);
+    expect(m.ufa).toBe(3066.4); // corridors included (was 2,348.4)
   });
 });

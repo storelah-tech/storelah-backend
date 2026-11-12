@@ -16,7 +16,7 @@
 //   - UFA/NLA are LINE-ONLY (marked-area, never the whole canvas): the
 //     authoritative source is the plan's marked boundary lines via
 //     computeBoundaryMetrics() (see floorPlans.ts) — geometry.ufa is the marked
-//     gross minus blocks/solid-structure rects, geometry.nlaEnclosed/nlaTotal
+//     gross, blocks included (owner 2026-11-12), geometry.nlaEnclosed/nlaTotal
 //     are placement footprints clipped to the marked loops minus the
 //     loop-clipped blocked area (same blocked total as UFA, once per loop —
 //     capped ≤ UFA), geometry.blockArea echoes boundaryMetrics.blockAreaSqft
@@ -96,15 +96,16 @@ const OCCUPIED_STATUSES = new Set(['OCCUPIED', 'OVERDUE']);
 
 // ---------- facility size groups (owner-confirmed mapping) ----------
 //
-// Locker Units = UnitSize LOCKER (Locker stays separate, NOT XS).
-// XS units = UnitSize SMALL. M Units = UnitSize MEDIUM. L Units = UnitSize LARGE.
+// Locker Units = UnitSize LOCKER only. XS Units = UnitSize XS (Locker is its
+// own category — owner 2026-11-12; they used to share a "Locker + XS" card).
+// S Units = UnitSize SMALL. M Units = UnitSize MEDIUM. L Units = UnitSize LARGE.
 // XL Units = Extra Large — NO such UnitSize row exists in the schema, seed or
 // migrations (codes are exactly LOCKER / SMALL / MEDIUM / LARGE; the old XLBIZ
 // market key was dropped with the floor-plan P1 work — see src/core/market.ts).
 // The XL bucket is therefore implemented as 0 units / 0 sqft and flagged in
 // `unitGroups.notes`; no migration or seed row is created.
 export interface FacilitySizeGroupDef {
-  key: 'locker' | 'xs' | 'm' | 'l' | 'xl';
+  key: 'locker' | 'xs' | 's' | 'm' | 'l' | 'xl';
   label: string;
   /** UnitSize codes (upper-cased) feeding this bucket; empty = no DB code. */
   sizeCodes: string[];
@@ -112,8 +113,11 @@ export interface FacilitySizeGroupDef {
 
 export const FACILITY_SIZE_GROUPS: readonly FacilitySizeGroupDef[] = [
   // LOCKER = new 8–15 Locker; XS = the pre-2026-11-11 LOCKER row (10–19).
-  { key: 'locker', label: 'Locker + XS', sizeCodes: ['LOCKER', 'XS'] },
-  { key: 'xs', label: 'XS', sizeCodes: ['SMALL'] },
+  // Key 'xs' now means UnitSize XS (it was SMALL before 2026-11-12; SMALL
+  // moved to the new 's' bucket).
+  { key: 'locker', label: 'Locker', sizeCodes: ['LOCKER'] },
+  { key: 'xs', label: 'XS', sizeCodes: ['XS'] },
+  { key: 's', label: 'S', sizeCodes: ['SMALL'] },
   { key: 'm', label: 'M', sizeCodes: ['MEDIUM'] },
   { key: 'l', label: 'L', sizeCodes: ['LARGE'] },
   { key: 'xl', label: 'XL (Extra Large)', sizeCodes: ['XLBIZ'] },
@@ -586,8 +590,8 @@ export async function getFloorMetrics(floorId: string): Promise<FloorMetricsRepo
   const effGfaSqft = userGfa ?? m.gfa.sqft;
 
   // LINE-ONLY (marked-area) UFA/NLA — the authoritative facility figures (see
-  // computeBoundaryMetrics in floorPlans.ts): marked gross minus blocks/solid
-  // structure rects (UFA), placements clipped to the marked loops minus the
+  // computeBoundaryMetrics in floorPlans.ts): marked gross, blocks included
+  // (UFA), placements clipped to the marked loops minus the
   // block/structure area overlapping the units, capped ≤ UFA (NLA), loop-clipped blocks only
   // (blockArea). All-zero with boundaryClosed false when no marked line
   // area — never the whole-canvas rect. `sqft` echoes the 1dp boundaryMetrics
@@ -743,7 +747,7 @@ export async function getFloorMetrics(floorId: string): Promise<FloorMetricsRepo
         ...(unplacedUnits.length > 0
           ? [`${unplacedUnits.length} floor unit(s) have no placement and are excluded from measured areas (see coverage.unplacedCodes).`]
           : []),
-        'unitGroups carries the owner-confirmed per-size buckets over nominal Unit.sqft (Locker + XS = LOCKER + XS, XS=SMALL, M=MEDIUM, L=LARGE, XL = XLBIZ, overall = sum).',
+        'unitGroups carries the owner-confirmed per-size buckets over nominal Unit.sqft (Locker = LOCKER, XS = XS, S = SMALL, M=MEDIUM, L=LARGE, XL = XLBIZ, overall = sum).',
       ],
     },
     geometry: {

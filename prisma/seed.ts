@@ -186,7 +186,7 @@ async function main() {
 
   for (const b of branches) {
     const branch = await prisma.branch.create({
-      data: { code: b.code, name: b.name, address: b.address, description: b.description ?? null, operatingHours: 'Mon–Sun 7am–11pm' },
+      data: { code: b.code, name: b.name, address: b.address, description: b.description ?? null, operatingHours: 'Mon–Sun 7am–11pm', multiLevel: b.floors > 1 },
     });
     const floorIds: Record<number, string> = {};
     for (let l = 1; l <= b.floors; l++) {

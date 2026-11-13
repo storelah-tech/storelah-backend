@@ -263,6 +263,10 @@ model Branch {
   description           String?
   operatingHours        String
   status                BranchStatus               @default(ACTIVE)
+  // Site type. false = single-level site: exactly one active floor (at its
+  // real level, e.g. 6) and booking shows no floor picker. true = multi-level
+  // site: several active floors, booking lets the customer choose the floor.
+  multiLevel            Boolean                    @default(false)
   floors                Floor[]
   units                 Unit[]
   tenants               Tenant[]
@@ -303,7 +307,7 @@ model Floor {
   id        String   @id @default(cuid())
   branchId  String
   branch    Branch   @relation(fields: [branchId], references: [id], onDelete: Cascade)
-  level     Int // 1..4
+  level     Int // real building level, 1..99
   name      String
   // Visibility flag: false = hidden from all PUBLIC reads (units, map,
   // branches, floor-plan) while remaining fully visible in the CMS admin

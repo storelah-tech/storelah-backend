@@ -3182,6 +3182,8 @@ const createBranchSchema = z.object({
   operatingHours: z.string().trim().min(1).max(200),
   description: z.string().trim().max(2000).nullable().optional(),
   status: z.enum(['ACTIVE', 'INACTIVE']).optional(),
+  multiLevel: z.boolean().optional(),
+  floorLevel: z.coerce.number().int().min(1).max(99).optional(),
 });
 
 const updateBranchSchema = z.object({
@@ -3190,6 +3192,8 @@ const updateBranchSchema = z.object({
   operatingHours: z.string().trim().min(1).max(200).optional(),
   description: z.string().trim().max(2000).nullable().optional(),
   status: z.enum(['ACTIVE', 'INACTIVE']).optional(),
+  multiLevel: z.boolean().optional(),
+  floorLevel: z.coerce.number().int().min(1).max(99).optional(),
 }).strict();
 
 router.post('/branches', requireAuth, async (req: Request, res: Response) => {

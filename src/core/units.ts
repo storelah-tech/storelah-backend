@@ -5,6 +5,7 @@ import { Prisma, UnitStatus } from '@prisma/client';
 import { quantizeSqft } from './unitSizing';
 import { putContentImage, deleteContentImage } from '../lib/contentStorage';
 import { canonicalBranchCode } from './branches';
+import { assertFloorAllowed } from './floors';
 
 type UnitWithRelations = Prisma.UnitGetPayload<{
   include: { size: true; branch: true; floor: true; tenant: true };
@@ -373,8 +374,10 @@ async function resolveUnitFloor(
     if (!Number.isInteger(level) || level < 1 || level > UNIT_FLOOR_LEVELS) {
       throw new AppError(400, 'VALIDATION', `floorLevel must be an integer 1..${UNIT_FLOOR_LEVELS}`);
     }
+    const existingFloor = await prisma.floor.findUnique({ where: { branchId_level: { branchId, level } } });
+    if (!existingFloor) await assertFloorAllowed(branchId);
     floor =
-      (await prisma.floor.findUnique({ where: { branchId_level: { branchId, level } } })) ??
+      existingFloor ??
       (await prisma.floor
         .create({ data: { branchId, level, name: `Level ${level}` } })
         .catch(async (err) => {

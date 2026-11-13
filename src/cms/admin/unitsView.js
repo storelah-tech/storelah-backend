@@ -919,6 +919,18 @@ export function populateFloorSelect(branchId, selected) {
   const sel = $('#f-floor');
   if (!sel) return;
   const floors = state.floors.filter((f) => f.branchId === branchId);
+  // Single-level site with its floor set up: that floor is the only choice
+  // (the API refuses a second active floor there).
+  const branch = (state.branches || []).find((b) => b.id === branchId);
+  const siteFloors = floors.filter((f) => f.isActive !== false || (selected && f.id === selected));
+  if (branch && branch.multiLevel === false && siteFloors.length) {
+    sel.innerHTML = siteFloors
+      .sort((a, b) => a.level - b.level)
+      .map((f) => `<option value="${f.id}">Level ${f.level}${f.isActive === false ? ' — inactive (activate in Floors)' : ''}</option>`)
+      .join('');
+    sel.value = selected && siteFloors.some((f) => f.id === selected) ? selected : siteFloors[0].id;
+    return;
+  }
   const maxLevel = Math.max(UNIT_FLOOR_LEVELS, ...floors.map((f) => f.level));
   const opts = [];
   for (let level = 1; level <= maxLevel; level++) {

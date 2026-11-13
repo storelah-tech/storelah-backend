@@ -100,6 +100,7 @@ export async function seedMoveInWorld(): Promise<MoveInWorld> {
       name: 'Sembawang (E2E)',
       address: 'Admirax, Sembawang',
       operatingHours: '9am – 9pm daily',
+      multiLevel: true, // the world has two floors
     },
   });
 

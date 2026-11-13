@@ -65,7 +65,7 @@ function renderBranchesTable() {
     return `<tr data-branch-id="${escapeHtml(b.id)}" class="${active ? '' : 'row-blocked'}">
       <td><strong>${escapeHtml(b.code || '—')}</strong><div class="t-type">${escapeHtml(b.name || '')}</div></td>
       <td>${escapeHtml(b.address || '')}<div class="t-type">${escapeHtml(b.operatingHours || '')}</div></td>
-      <td>${floors} floor${floors === 1 ? '' : 's'} · ${units} unit${units === 1 ? '' : 's'}</td>
+      <td>${floors} floor${floors === 1 ? '' : 's'} · ${units} unit${units === 1 ? '' : 's'}<div class="t-type">${escapeHtml(siteLabel(b))}</div></td>
       <td><span class="badge ${active ? 'avail' : 'neutral'}">${active ? 'Active' : 'Inactive'}</span></td>
       <td class="unit-actions">
         <button class="act-btn" data-bact="floors" data-branch-id="${escapeHtml(b.id)}">Floors</button>
@@ -139,7 +139,7 @@ function showBranchFormAlert(msg) {
 }
 
 // zod fieldErrors keys → branch form element keys.
-const BRANCH_FIELD_ID = { code: 'code', name: 'name', address: 'address', operatingHours: 'hours', description: 'desc', status: 'active' };
+const BRANCH_FIELD_ID = { code: 'code', name: 'name', address: 'address', operatingHours: 'hours', description: 'desc', status: 'active', multiLevel: 'site', floorLevel: 'level' };
 
 function renderBranchFieldErrors(err) {
   if (!(err instanceof ApiError) || !err.details || !err.details.fieldErrors) return false;
@@ -157,6 +157,27 @@ function renderBranchFieldErrors(err) {
   return mapped;
 }
 
+// Site type: single-level sites have exactly one active floor at a real
+// building level (e.g. 6) and booking shows no floor choice; multi-level
+// sites manage their floors in Floors and booking lets customers choose.
+function activeFloorsFor(branchId) {
+  return (state.floors || []).filter((f) => f.branchId === branchId && f.isActive !== false);
+}
+
+function syncSiteTypeFields() {
+  const multi = $('#bf-site').value === 'multi';
+  $('#bf-level-field').hidden = multi;
+  $('#bf-site-hint').textContent = multi
+    ? 'Several floors, managed in Floors. Booking lets customers choose the floor.'
+    : 'One floor. Booking shows no floor choice.';
+}
+
+function siteLabel(b) {
+  const active = activeFloorsFor(b.id).map((f) => f.level).sort((x, y) => x - y);
+  if (b.multiLevel) return `Multi-level · ${active.length} floor${active.length === 1 ? '' : 's'}`;
+  return active.length ? `Single-level · Level ${active[0]}` : 'Single-level · no floor yet';
+}
+
 export async function openCreateBranch() {
   branchMode = 'create';
   branchEditId = null;
@@ -169,6 +190,9 @@ export async function openCreateBranch() {
   $('#bf-hours').value = '';
   $('#bf-desc').value = '';
   $('#bf-active').checked = true;
+  $('#bf-site').value = 'single';
+  $('#bf-level').value = '1';
+  syncSiteTypeFields();
   $('#branchFormSubmit').textContent = 'Save Facility';
   clearBranchFieldErrors();
   $('#branchModal').hidden = false;
@@ -182,7 +206,7 @@ export async function openEditBranch(id) {
   $('#branchModalTitle').textContent = `Edit Facility — ${b.code || ''}`;
   // Code immutability notice (code is embedded in unit/door/asset codes).
   const hint = $('#branchModalHint');
-  hint.textContent = `Code ${b.code || ''} is immutable (embedded in unit/door/asset codes) — only name, address, hours, description and status can change.`;
+  hint.textContent = `Code ${b.code || ''} is immutable (embedded in unit/door/asset codes) — only name, address, hours, site type, description and status can change.`;
   hint.hidden = false;
   $('#bf-code').value = b.code || '';
   $('#bf-code').disabled = true;
@@ -191,9 +215,28 @@ export async function openEditBranch(id) {
   $('#bf-hours').value = b.operatingHours || '';
   $('#bf-desc').value = b.description || '';
   $('#bf-active').checked = b.status !== 'INACTIVE';
+  $('#bf-site').value = b.multiLevel ? 'multi' : 'single';
+  const active = activeFloorsFor(id).map((f) => f.level).sort((x, y) => x - y);
+  $('#bf-level').value = active.length ? String(active[0]) : '';
+  syncSiteTypeFields();
   $('#branchFormSubmit').textContent = 'Save Changes';
   clearBranchFieldErrors();
   $('#branchModal').hidden = false;
+}
+
+// Form → { multiLevel, floorLevel? }. floorLevel null = invalid input
+// (error already shown on the field).
+function siteTypeBody() {
+  const multiLevel = $('#bf-site').value === 'multi';
+  if (multiLevel) return { multiLevel };
+  const raw = $('#bf-level').value.trim();
+  const level = Number(raw);
+  if (!raw || !Number.isInteger(level) || level < 1 || level > 99) {
+    $('#be-level').textContent = 'Enter the building level, 1..99 (e.g. 6)';
+    $('#bf-level').classList.add('err');
+    return { multiLevel, floorLevel: null };
+  }
+  return { multiLevel, floorLevel: level };
 }
 
 export function closeBranchModal() {
@@ -219,7 +262,9 @@ export async function submitBranchForm(e) {
         address: $('#bf-address').value.trim(),
         operatingHours: $('#bf-hours').value.trim(),
         status: $('#bf-active').checked ? 'ACTIVE' : 'INACTIVE',
+        ...siteTypeBody(),
       };
+      if (body.floorLevel === null) return;
       const desc = $('#bf-desc').value.trim();
       if (desc) body.description = desc;
       await post('/branches', body);
@@ -231,7 +276,9 @@ export async function submitBranchForm(e) {
         operatingHours: $('#bf-hours').value.trim(),
         description: $('#bf-desc').value.trim() || null,
         status: $('#bf-active').checked ? 'ACTIVE' : 'INACTIVE',
+        ...siteTypeBody(),
       };
+      if (body.floorLevel === null) return;
       await put('/branches/' + encodeURIComponent(branchEditId), body);
       showBanner('Facility updated', true);
     }
@@ -313,4 +360,5 @@ export function wireBranchesView() {
   $('#branchModalClose')?.addEventListener('click', closeBranchModal);
   $('#branchFormCancel')?.addEventListener('click', closeBranchModal);
   $('#branchForm')?.addEventListener('submit', submitBranchForm);
+  $('#bf-site')?.addEventListener('change', syncSiteTypeFields);
 }

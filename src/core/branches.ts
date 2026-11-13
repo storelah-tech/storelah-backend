@@ -56,6 +56,7 @@ export async function listBranches() {
       description: b.description,
       operatingHours: b.operatingHours,
       status: b.status,
+      multiLevel: b.multiLevel,
       floors: b.floors.map((f) => f.level),
       unitCount: b._count.units,
       tenantCount: b._count.tenants,
@@ -137,6 +138,7 @@ export async function listPublicBranches() {
     name: b.name,
     address: b.address,
     operatingHours: b.operatingHours,
+    multiLevel: b.multiLevel,
     floors: b.floors.map((f) => f.level),
     availableUnits: b.units.length,
   }));
@@ -185,6 +187,10 @@ export interface CreateBranchInput {
   operatingHours: string;
   description?: string | null;
   status?: 'ACTIVE' | 'INACTIVE';
+  /** Site type (default single-level). */
+  multiLevel?: boolean;
+  /** Single-level sites: the real building level of the one floor (e.g. 6). */
+  floorLevel?: number;
 }
 
 export interface UpdateBranchInput {
@@ -193,6 +199,8 @@ export interface UpdateBranchInput {
   operatingHours?: string;
   description?: string | null;
   status?: 'ACTIVE' | 'INACTIVE';
+  multiLevel?: boolean;
+  floorLevel?: number;
 }
 
 const BRANCH_CODE_RE = /^[A-Z0-9]{2,8}$/;
@@ -231,6 +239,7 @@ function serializeBranchRow(
     description: b.description,
     operatingHours: b.operatingHours,
     status: b.status,
+    multiLevel: b.multiLevel,
     floorCount: b._count.floors,
     unitCount: b._count.units,
   };
@@ -239,6 +248,67 @@ function serializeBranchRow(
 const branchWithCounts = {
   _count: { select: { floors: true, units: true } },
 } as const;
+
+function checkLevel(level: number): number {
+  if (!Number.isInteger(level) || level < 1 || level > 99) {
+    throw new AppError(400, 'VALIDATION', 'Floor level must be a whole number 1..99', {
+      fieldErrors: { floorLevel: ['Floor level must be a whole number 1..99'] },
+    });
+  }
+  return level;
+}
+
+/**
+ * Single-level site: keep exactly one active floor, at `floorLevel` when
+ * given. No floor yet → create it; one floor at another level → re-level it
+ * (units, plan and placements follow, they reference the floor row); more
+ * than one active floor → refuse, the operator must deactivate the extras or
+ * keep the site multi-level.
+ */
+async function applySingleLevel(branch: { id: string; name: string }, floorLevel?: number) {
+  const level = floorLevel === undefined ? undefined : checkLevel(floorLevel);
+  const active = await prisma.floor.findMany({
+    where: { branchId: branch.id, isActive: true },
+    select: { id: true, level: true, name: true },
+    orderBy: { level: 'asc' },
+  });
+  if (active.length > 1) {
+    const levels = active.map((f) => f.level).join(', ');
+    throw new AppError(
+      400,
+      'SINGLE_LEVEL_SITE',
+      `${branch.name} has ${active.length} active floors (Levels ${levels}). ` +
+        'Deactivate the extra floors in Floors first, or keep it a multi-level site.',
+      { activeLevels: active.map((f) => f.level), fieldErrors: { multiLevel: [`${active.length} active floors (Levels ${levels}) — deactivate the extra floors in Floors first`] } },
+    );
+  }
+  if (level === undefined) return;
+  const current = active[0];
+  if (current && current.level === level) return;
+  const clash = await prisma.floor.findUnique({ where: { branchId_level: { branchId: branch.id, level } } });
+  if (!current) {
+    if (clash) {
+      // An inactive floor already sits at that level — re-activate it.
+      await prisma.floor.update({ where: { id: clash.id }, data: { isActive: true } });
+    } else {
+      await prisma.floor.create({ data: { branchId: branch.id, level, name: `Level ${level}` } });
+    }
+    return;
+  }
+  if (clash) {
+    throw new AppError(
+      409,
+      'CONFLICT',
+      `${branch.name} already has an inactive floor at Level ${level}. Remove it in Floors first, or pick another level.`,
+      { fieldErrors: { floorLevel: [`Level ${level} already exists (inactive)`] } },
+    );
+  }
+  const autoName = current.name === `Level ${current.level}`;
+  await prisma.floor.update({
+    where: { id: current.id },
+    data: { level, ...(autoName ? { name: `Level ${level}` } : {}) },
+  });
+}
 
 export async function createBranch(input: CreateBranchInput) {
   const code = normalizeBranchCode(input.code);
@@ -251,6 +321,11 @@ export async function createBranch(input: CreateBranchInput) {
         operatingHours: input.operatingHours.trim(),
         description: input.description === undefined ? undefined : input.description?.trim() || null,
         status: input.status ?? 'ACTIVE',
+        multiLevel: input.multiLevel ?? false,
+        // A single-level site starts with its one floor at the real level.
+        ...(!input.multiLevel && input.floorLevel !== undefined
+          ? { floors: { create: { level: checkLevel(input.floorLevel), name: `Level ${input.floorLevel}` } } }
+          : {}),
       },
       include: branchWithCounts,
     });
@@ -277,7 +352,10 @@ export async function updateBranch(id: string, input: UpdateBranchInput & { code
     ...(input.operatingHours !== undefined ? { operatingHours: input.operatingHours.trim() } : {}),
     ...(input.description !== undefined ? { description: input.description?.trim() || null } : {}),
     ...(input.status !== undefined ? { status: input.status } : {}),
+    ...(input.multiLevel !== undefined ? { multiLevel: input.multiLevel } : {}),
   };
+  const singleLevel = input.multiLevel === false || (input.multiLevel === undefined && !existing.multiLevel);
+  if (singleLevel) await applySingleLevel(existing, input.floorLevel);
   const updated = await prisma.branch.update({
     where: { id },
     data,

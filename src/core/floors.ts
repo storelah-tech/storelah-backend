@@ -114,6 +114,33 @@ export async function getFloor(id: string) {
   return serializeFloor({ ...floor, liveUnits: liveUnitCount, planStatus: toPlanStatus(floor.floorPlan?.status) });
 }
 
+/**
+ * Single-level sites (Branch.multiLevel = false) keep exactly one ACTIVE
+ * floor, so booking never offers a floor choice there. Call before anything
+ * that would add or re-activate a floor; throws when the facility already has
+ * another active floor. `exceptFloorId` = the floor being changed itself.
+ */
+export async function assertFloorAllowed(branchId: string, exceptFloorId?: string) {
+  const branch = await prisma.branch.findUnique({
+    where: { id: branchId },
+    select: { code: true, name: true, multiLevel: true },
+  });
+  if (!branch || branch.multiLevel) return;
+  const others = await prisma.floor.findMany({
+    where: { branchId, isActive: true, ...(exceptFloorId ? { id: { not: exceptFloorId } } : {}) },
+    select: { level: true },
+  });
+  if (others.length > 0) {
+    throw new AppError(
+      400,
+      'SINGLE_LEVEL_SITE',
+      `${branch.name} is a single-level site (Level ${others[0].level}). ` +
+        'Set it to Multi-level in the facility settings before adding another floor.',
+      { branchCode: branch.code, activeLevels: others.map((f) => f.level) },
+    );
+  }
+}
+
 export async function createFloor(input: CreateFloorInput) {
   const branch = await prisma.branch.findUnique({ where: { id: input.branchId } });
   if (!branch) throw new AppError(400, 'VALIDATION', `Branch ${input.branchId} not found`);
@@ -121,6 +148,7 @@ export async function createFloor(input: CreateFloorInput) {
     throw new AppError(400, 'VALIDATION', 'level must be an integer 1..99');
   }
   const name = input.name?.trim() || `Level ${input.level}`;
+  await assertFloorAllowed(input.branchId);
   try {
     const floor = await prisma.floor.create({
       data: { branchId: input.branchId, level: input.level, name },
@@ -148,6 +176,7 @@ export async function updateFloor(id: string, input: UpdateFloorInput) {
   if (input.level !== undefined && (!Number.isInteger(input.level) || input.level < 1 || input.level > 99)) {
     throw new AppError(400, 'VALIDATION', 'level must be an integer 1..99');
   }
+  if (input.isActive === true && !floor.isActive) await assertFloorAllowed(floor.branchId, id);
   // Renaming/re-levelling keeps the auto-derived convention ("Level N") only
   // when the operator leaves the name untouched; an explicit name always wins.
   const data: Prisma.FloorUpdateInput = {

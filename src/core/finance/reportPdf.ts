@@ -40,6 +40,20 @@ export const sgd = (n: number | null | undefined, dp = 2) =>
 export const num = (n: number | null | undefined) => (n == null ? '-' : n.toLocaleString('en-SG'));
 export const pct = (n: number | null | undefined) => (n == null ? '-' : `${n.toFixed(1)}%`);
 export const day = (s: string) => new Date(`${s.slice(0, 10)}T00:00:00Z`).toLocaleDateString('en-SG', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' });
+/** Rent-free wording for reports: per-lease-year ranges, else the single
+ * dated window, else the legacy whole-month count. */
+export function rentFreeLabel(lease: unknown): string {
+  const l = (lease ?? {}) as {
+    rentFreeMonths?: number;
+    rentFreeStartDate?: string | null;
+    rentFreeEndDate?: string | null;
+    schedule?: Array<{ leaseYear: number; excluded?: boolean; rentFreeStartDate?: string | null; rentFreeEndDate?: string | null }>;
+  };
+  const perYear = (l.schedule ?? []).filter((r) => !r.excluded && r.rentFreeStartDate && r.rentFreeEndDate);
+  if (perYear.length) return perYear.map((r) => `Year ${r.leaseYear}: ${day(r.rentFreeStartDate as string)} - ${day(r.rentFreeEndDate as string)}`).join('; ');
+  if (l.rentFreeStartDate && l.rentFreeEndDate) return `${day(l.rentFreeStartDate)} - ${day(l.rentFreeEndDate)}`;
+  return l.rentFreeMonths ? `${num(l.rentFreeMonths)} month(s)` : 'None';
+}
 export const monthLabel = (fm: string) => new Date(`${fm}-01T00:00:00Z`).toLocaleDateString('en-SG', { month: 'long', year: 'numeric', timeZone: 'UTC' });
 /** Model month t (1-based) -> "Month 18 (Apr 2027)" from the model start date. */
 export const modelMonth = (start: string, t: number | null) => {
@@ -421,7 +435,7 @@ export async function buildFinanceReportPdf(r: FinanceReport): Promise<Buffer> {
           ['Target occupancy', pct(i.occupancy.targetPct)],
           ['Annual rent increase', pct(i.pricing.annualIncreasePct)],
           ['Lease (monthly, by model year)', leaseYears || '-'],
-          ['Rent-free months', num(i.lease.rentFreeMonths)],
+          ['Rent-free (landlord lease)', rentFreeLabel(i.lease)],
           ['Non-lease operating costs', `${sgd(i.opex.baseMonthly, 0)}/month, growing ${pct(i.opex.annualGrowthPct)} a year`],
         ],
       );

@@ -137,3 +137,7 @@ details.fm-details summary{cursor:pointer;font-size:11px;color:var(--ink)}
 .fm-chart-readonly-note{margin-top:9px;padding:10px 12px;border-left:4px solid var(--olive);border-radius:8px;background:#f6f3ed;color:#53504b;font-size:10px;line-height:1.5}
 .fm-val-tiles{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-bottom:12px}.fm-val-tiles>div{display:grid;gap:3px;padding:10px 11px;border:1px solid var(--line);border-radius:9px;background:#faf7f1;min-width:0}.fm-val-tiles small{font-size:9px;color:var(--muted);font-weight:800;text-transform:uppercase;letter-spacing:.05em}.fm-val-tiles b{font-size:14px;overflow-wrap:anywhere}
 @media(max-width:760px){.fm-npv-status{align-items:flex-start;flex-direction:column}.fm-npv-status>strong{font-size:25px}.fm-npv-guide,.fm-rate-slider{grid-template-columns:1fr}.fm-val-tiles{grid-template-columns:1fr 1fr}}
+/* Per-lease-year rent-free dates inside the Section 4 schedule table */
+#bill-models .fm-lease-year-table .fm-rf-pair{min-width:250px}
+#bill-models .fm-lease-year-table .fm-rf-pair input{padding:6px;font-size:11.5px;min-width:112px}
+#bill-models .fm-lease-year-table .fm-term-error{display:block;margin-top:4px}

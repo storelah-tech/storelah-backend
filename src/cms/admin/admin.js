@@ -3617,7 +3617,11 @@ function bootPromotions() {
     renderFreeSummary();
   }
 
-  if (monthStrip) {
+  // Wire once: bootPromotions() re-runs on every promotions visit, and a
+  // second click listener re-toggled the month straight back (deselect "did
+  // nothing" once the strip was at its free-month limit).
+  if (monthStrip && !monthStrip.dataset.wired) {
+    monthStrip.dataset.wired = '1';
     monthStrip.querySelectorAll('.month').forEach(function (m) {
       m.addEventListener('click', function () {
         var limit = freeMonthCount.value;

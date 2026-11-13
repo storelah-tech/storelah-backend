@@ -18,7 +18,7 @@ import { prisma } from '../lib/prisma';
 import { AppError } from '../lib/http';
 import { toNum } from '../lib/format';
 import { normalizeEmail } from './customers';
-import { isFreeAgreementMonth } from './finance/billing';
+import { rentChargedOn } from './finance/billing';
 
 const r2 = (n: number) => Math.round(n * 100) / 100;
 const ymd = (d: Date | null | undefined) => (d ? d.toISOString().slice(0, 10) : null);
@@ -279,8 +279,8 @@ async function buildSettlement(tenantId: string, req: SettlementRequest) {
   if (!t.unitId || !t.unit) throw new AppError(409, 'CONFLICT', 'This customer has no active unit.');
   const rent = toNum(t.monthlyRate);
   // Unused-rent credits only refund rent that was charged: a free agreement
-  // month (FREE_MONTHS plan) was never billed, so it credits nothing.
-  const paidRentOn = async (d: Date) => ((await isFreeAgreementMonth(t.id, t.unitId!, d)) ? 0 : rent);
+  // month credits nothing, a booked-term month credits the discounted rent.
+  const paidRentOn = (d: Date) => rentChargedOn(t.id, t.unitId!, d, rent);
   if (req.kind === 'TRANSFER') {
     const dest = await prisma.unit.findUnique({ where: { id: req.toUnitId }, include: { branch: true, size: true } });
     if (!dest || dest.deletedAt) throw new AppError(404, 'NOT_FOUND', 'Choose a destination unit.');

@@ -744,8 +744,8 @@ export async function getCustomerPortal(payload: CustomerJwtPayload) {
 // DISCOUNT MATRIX exact (sizeCategory, commitmentMonths) cell discounts the
 // rent (largest pct across eligible plans); a FREE_MONTHS plan whose
 // commitment the booking meets makes its listed months rent-free (month 1 →
-// waived today). If both apply the free-months plan wins (owner decision
-// 2026-10-26) — one rent promotion per agreement. Only when no plan applies does the promo-code path
+// waived today). If both apply they STACK (owner 2026-11-12): the free
+// months are $0 and the matrix % discounts every other month. Only when no plan applies does the promo-code path
 // below run (plan-linked codes also need their plan live/in scope/under cap) — its
 // validation mirrors validatePromotion() in core/promotions.ts (active + date
 // window + minMonths), and its scope is classified by
@@ -891,6 +891,9 @@ export interface AppliedPromotion {
   code: string | null;
   // 1-based month numbers of the agreement that are rent-free (FREE_MONTHS).
   freeMonths?: number[];
+  // FREE_MONTHS + matrix stack (owner 2026-11-12): the DISCOUNT_MATRIX plan
+  // whose % still prices the non-free months (null = no matrix cell applies).
+  matrixPlanId?: string | null;
 }
 
 async function computeServerDueToday(
@@ -957,14 +960,19 @@ async function computeServerDueToday(
       const idx = p.freeMonths.filter((f) => f.free && f.monthIndex >= 0 && f.monthIndex < months).map((f) => f.monthIndex).sort((a, b) => a - b);
       if (idx.length && (!bestFree || idx.length > bestFree.idx.length)) bestFree = { planId: p.id, idx };
     }
-    // One rent promotion per agreement: an eligible FREE_MONTHS plan always
-    // wins over the matrix (owner decision 2026-10-26 — a published
-    // free-months offer must be what the customer sees, even when the
-    // matrix % would save more); the matrix prices everything else.
+    // Free months and the matrix STACK (owner 2026-11-12: "discount is still
+    // applied to non free months"): an eligible FREE_MONTHS plan makes its
+    // months $0 and the best matrix % still discounts every other month.
+    // (Supersedes 2026-10-26 "free months win", which dropped the %.)
     const matrixValue = bestPct != null && bestPct > 0 ? (base * bestPct / 100) * months : 0;
     if (bestFree) {
       planApplied = true;
-      applied = { planId: bestFree.planId, kind: 'FREE_MONTHS', code: null, freeMonths: bestFree.idx.map((i) => i + 1) };
+      const stacksMatrix = matrixValue > 0 && !!bestMatrixPlan;
+      if (stacksMatrix) discountPct = bestPct!;
+      applied = {
+        planId: bestFree.planId, kind: 'FREE_MONTHS', code: null, freeMonths: bestFree.idx.map((i) => i + 1),
+        matrixPlanId: stacksMatrix ? bestMatrixPlan : null,
+      };
       // Month 1 free → the whole first (prorated) month is waived today; later
       // free months are recorded on the redemption for recurring billing.
       if (bestFree.idx.includes(0)) firstMonthAmt = base;
@@ -1265,22 +1273,32 @@ export async function createCustomerBooking(customer: Customer, input: CreateBoo
       },
     });
 
-    // Record which plan priced this booking (Performance "applied", code
+    // Record which plan(s) priced this booking (Performance "applied", code
     // redemption caps). Amount = what the customer saves: the monthly saving
     // for a matrix %, the first-month/recurring saving for a code, or the
-    // rent of every free month for a free-months plan.
+    // (discounted) rent of every free month for a free-months plan. A
+    // free-months booking that also takes the matrix % records both plans.
     if (quote.applied) {
       const a = quote.applied;
       const amount =
         a.kind === 'FREE_MONTHS'
-          ? toNum(quote.base * (a.freeMonths?.length ?? 0))
+          ? toNum(quote.monthlyStorage * (a.freeMonths?.length ?? 0))
           : toNum(quote.promoDiscount + quote.firstMonthDiscount);
       await tx.promotionRedemption.create({
         data: {
           planId: a.planId, bookingId: booking.id, code: a.code, amount,
           freeMonths: a.kind === 'FREE_MONTHS' ? (a.freeMonths ?? []) : [],
+          discountPct: a.kind === 'DISCOUNT_MATRIX' ? quote.discountPct : null,
         },
       });
+      if (a.kind === 'FREE_MONTHS' && a.matrixPlanId) {
+        await tx.promotionRedemption.create({
+          data: {
+            planId: a.matrixPlanId, bookingId: booking.id, code: null, amount: toNum(quote.promoDiscount),
+            discountPct: quote.discountPct,
+          },
+        });
+      }
     }
 
     return {

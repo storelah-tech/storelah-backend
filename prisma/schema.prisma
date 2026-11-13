@@ -1333,6 +1333,10 @@ model PromotionRedemption {
   // time (the billing run skips them). Snapshot, so later plan edits never
   // change an existing customer's bills. [] for other plan kinds.
   freeMonths Int[]         @default([])
+  // DISCOUNT_MATRIX plans: the term % granted at booking. The billing run
+  // applies it to non-free months within the booked term only (owner
+  // 2026-11-12); null for other kinds / rows from before the snapshot.
+  discountPct Decimal?     @db.Decimal(5, 2)
   redeemedAt DateTime      @default(now())
   createdAt  DateTime      @default(now())
 

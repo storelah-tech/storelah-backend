@@ -256,21 +256,34 @@ describe('checkout — free months and CMS promo codes', () => {
     expect((await book(PIN.rentableUnit, 6)).breakdown.appliedPromotion).toBeNull();
   });
 
-  it('free months vs matrix: an eligible free-months plan wins, never both', async () => {
-    const m = await createPlan({ kind: 'DISCOUNT_MATRIX', name: 'E2E 12m', effectiveFrom: today, facilityScope: ['ALL'], matrixCells: [{ sizeCategory: 'SMALL', accessType: 'Standard', commitmentMonths: 12, discountPct: 10 }] } as any);
-    await walkActive(m.id); // 10% × 12 months = 1.2 months of rent
-    const f = await freePlan([5, 11]); // 2 months of rent
+  it('free months and the matrix stack: free months $0, the matrix % on every other month (owner 2026-11-12)', async () => {
+    const m = await createPlan({ kind: 'DISCOUNT_MATRIX', name: 'E2E 12m 30', effectiveFrom: today, facilityScope: ['ALL'], matrixCells: [{ sizeCategory: 'SMALL', accessType: 'Standard', commitmentMonths: 12, discountPct: 30 }] } as any);
+    await walkActive(m.id);
+    const f = await freePlan([5, 10]); // months 6 & 11
     const b = await book(PIN.rentableUnit, 12);
-    expect(b.breakdown.appliedPromotion).toMatchObject({ planId: f.id, kind: 'FREE_MONTHS' });
-    expect(b.breakdown.discountPct).toBe(0);
+    expect(b.breakdown.appliedPromotion).toMatchObject({ planId: f.id, kind: 'FREE_MONTHS', freeMonths: [6, 11], matrixPlanId: m.id });
+    expect(b.breakdown.discountPct).toBe(30);
+    // Month 1 is not free → the prorated first month is at the discounted rate.
+    expect(b.breakdown.monthlyStorage).toBe(Math.round(b.breakdown.base * 0.7));
+    const booking = await prisma.booking.findUniqueOrThrow({ where: { bookingRef: b.bookingRef } });
+    const reds = await prisma.promotionRedemption.findMany({ where: { bookingId: booking.id } });
+    expect(reds.map((r) => r.planId).sort()).toEqual([f.id, m.id].sort());
+    expect(reds.find((r) => r.planId === f.id)!.freeMonths).toEqual([6, 11]);
   });
 
-  it('free months win even when the matrix saves more (owner decision 2026-10-26)', async () => {
-    const m = await createPlan({ kind: 'DISCOUNT_MATRIX', name: 'E2E 12m 30', effectiveFrom: today, facilityScope: ['ALL'], matrixCells: [{ sizeCategory: 'SMALL', accessType: 'Standard', commitmentMonths: 12, discountPct: 30 }] } as any);
-    await walkActive(m.id); // 30% × 12 months = 3.6 months of rent
-    const f = await freePlan([5, 11]); // 2 months of rent — still wins
+  it('month 1 free with a matrix %: the first month is waived today, the % still applies after', async () => {
+    const m = await createPlan({ kind: 'DISCOUNT_MATRIX', name: 'E2E 12m 10', effectiveFrom: today, facilityScope: ['ALL'], matrixCells: [{ sizeCategory: 'SMALL', accessType: 'Standard', commitmentMonths: 12, discountPct: 10 }] } as any);
+    await walkActive(m.id);
+    await freePlan([0]);
     const b = await book(PIN.rentableUnit, 12);
-    expect(b.breakdown.appliedPromotion).toMatchObject({ planId: f.id, kind: 'FREE_MONTHS', freeMonths: [6, 12] });
+    expect(b.breakdown.discountPct).toBe(10);
+    expect(b.breakdown.prorated).toBe(0);
+  });
+
+  it('free months without a matrix cell: no % (unchanged)', async () => {
+    const f = await freePlan([5, 11]);
+    const b = await book(PIN.rentableUnit, 12);
+    expect(b.breakdown.appliedPromotion).toMatchObject({ planId: f.id, kind: 'FREE_MONTHS', matrixPlanId: null });
     expect(b.breakdown.discountPct).toBe(0);
   });
 

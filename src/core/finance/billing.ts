@@ -542,20 +542,39 @@ function sgtYearMonth(d: Date): { year: number; month: number } {
   };
 }
 
+/** What the tenant's booking says about agreement month `ym`. */
+export interface AgreementMonth {
+  /** 1-based agreement month (1 = the SGT move-in month; < 1 = before it). */
+  n: number;
+  /** Booked term in months (0 = unknown). */
+  durationMonths: number;
+  /** FREE_MONTHS: this month is rent-free. */
+  free: boolean;
+  freePlanName: string | null;
+  /** Term % for this month: the matrix % inside the booked term, else 0. */
+  discountPct: number;
+  /** Legacy matrix redemptions (no % snapshot): the monthly $ saving instead. */
+  legacySaving: number;
+  matrixPlanName: string | null;
+}
+
 /**
- * Which agreement month `ym` is for the tenant's latest live booking of the
- * unit, and whether it is rent-free. Agreement month N is the (N−1)th SGT
- * calendar month after the move-in month — the model the booking app shows
- * ("Months 6 & 11 free · Apr & Sep"). Free months come from the
- * redemption's snapshot; rows from before the snapshot existed fall back to
- * the plan's months within the booked duration. null = no booking (manual /
- * legacy tenants).
+ * Agreement month `ym` for the tenant's latest live booking of the unit.
+ * Agreement month N is the (N−1)th SGT calendar month after the move-in
+ * month — the model the booking app shows ("Months 6 & 11 free · Apr &
+ * Sep"). Promotions come from the booking's redemptions (snapshots taken at
+ * checkout, so later plan edits never change an existing customer's bills):
+ *  - FREE_MONTHS: the listed months are $0 (legacy rows without the
+ *    snapshot fall back to the plan's months within the booked term);
+ *  - DISCOUNT_MATRIX: the % applies to every non-free month WITHIN the
+ *    booked term only (owner 2026-11-12); after the term, full rate.
+ * null = no booking (manual / legacy tenants bill as before).
  */
 export async function agreementMonthFor(
   tenantId: string,
   unitId: string,
   ym: { year: number; month: number },
-): Promise<{ n: number; durationMonths: number; free: boolean; planName: string | null } | null> {
+): Promise<AgreementMonth | null> {
   const booking = await prisma.booking.findFirst({
     where: { tenantId, unitId, status: { in: ['CONFIRMED', 'ACTIVE'] } },
     orderBy: { moveInDate: 'desc' },
@@ -564,23 +583,48 @@ export async function agreementMonthFor(
   const moveIn = sgtYearMonth(booking.moveInDate);
   const n = (ym.year - moveIn.year) * 12 + (ym.month - moveIn.month) + 1;
   const durationMonths = Number(/(\d+)/.exec(booking.duration)?.[1] ?? 0);
-  const redemption = await prisma.promotionRedemption.findFirst({
-    where: { bookingId: booking.id, plan: { kind: 'FREE_MONTHS' } },
+  const inTerm = n >= 1 && (!durationMonths || n <= durationMonths);
+  const redemptions = await prisma.promotionRedemption.findMany({
+    where: { bookingId: booking.id, plan: { kind: { in: ['FREE_MONTHS', 'DISCOUNT_MATRIX'] } } },
     include: { plan: { include: { freeMonths: true } } },
     orderBy: { createdAt: 'desc' },
   });
-  if (!redemption) return { n, durationMonths, free: false, planName: null };
-  const months = redemption.freeMonths.length
-    ? redemption.freeMonths
-    : redemption.plan.freeMonths
-        .filter((f) => f.free && f.monthIndex >= 0 && (!durationMonths || f.monthIndex < durationMonths))
-        .map((f) => f.monthIndex + 1);
-  return { n, durationMonths, free: months.includes(n), planName: redemption.plan.name };
+  const out: AgreementMonth = { n, durationMonths, free: false, freePlanName: null, discountPct: 0, legacySaving: 0, matrixPlanName: null };
+  const freeRed = redemptions.find((r) => r.plan.kind === 'FREE_MONTHS');
+  if (freeRed) {
+    const months = freeRed.freeMonths.length
+      ? freeRed.freeMonths
+      : freeRed.plan.freeMonths
+          .filter((f) => f.free && f.monthIndex >= 0 && (!durationMonths || f.monthIndex < durationMonths))
+          .map((f) => f.monthIndex + 1);
+    out.free = months.includes(n);
+    out.freePlanName = freeRed.plan.name;
+  }
+  const matrixRed = redemptions.find((r) => r.plan.kind === 'DISCOUNT_MATRIX');
+  if (matrixRed && inTerm) {
+    out.matrixPlanName = matrixRed.plan.name;
+    if (matrixRed.discountPct != null) out.discountPct = toNum(matrixRed.discountPct);
+    else out.legacySaving = toNum(matrixRed.amount);
+  }
+  return out;
 }
 
-/** True when the agreement month containing `date` (SGT) is rent-free. */
-export async function isFreeAgreementMonth(tenantId: string, unitId: string, date: Date): Promise<boolean> {
-  return (await agreementMonthFor(tenantId, unitId, sgtYearMonth(date)))?.free ?? false;
+/**
+ * Rent actually charged for agreement month `a` at monthly `rate`: $0 for a
+ * free month; the term-discounted rent inside the booked term (whole
+ * dollars, the same rounding checkout uses); the full rate otherwise.
+ */
+export function rentChargedFor(a: AgreementMonth | null, rate: number): number {
+  if (!a) return rate;
+  if (a.free) return 0;
+  if (a.discountPct > 0) return Math.round(rate * (1 - a.discountPct / 100));
+  if (a.legacySaving > 0) return Math.max(0, round2(rate - a.legacySaving));
+  return rate;
+}
+
+/** Rent charged in the agreement month containing `date` (SGT). */
+export async function rentChargedOn(tenantId: string, unitId: string, date: Date, rate: number): Promise<number> {
+  return rentChargedFor(await agreementMonthFor(tenantId, unitId, sgtYearMonth(date)), rate);
 }
 
 /**
@@ -589,17 +633,12 @@ export async function isFreeAgreementMonth(tenantId: string, unitId: string, dat
  * is the prorated first month, charged at checkout by the booking's own DUE
  * invoice — billing it here would charge it twice); and FREE_MONTHS months.
  */
-export async function billingRunExemption(
-  tenantId: string,
-  unitId: string,
-  billingMonth: { year: number; month: number },
-): Promise<string | null> {
-  const a = await agreementMonthFor(tenantId, unitId, billingMonth);
+export function billingRunExemption(a: AgreementMonth | null): string | null {
   if (!a) return null;
   if (a.n < 1) return 'Before the move-in month — nothing to bill yet';
   if (a.n === 1) return 'Move-in month — the first (prorated) month is charged at checkout';
   if (!a.free) return null;
-  return `Free month ${a.n}${a.durationMonths ? ` of ${a.durationMonths}` : ''} (${a.planName}) — rent waived, no invoice`;
+  return `Free month ${a.n}${a.durationMonths ? ` of ${a.durationMonths}` : ''} (${a.freePlanName}) — rent waived, no invoice`;
 }
 
 export interface BillingRunInput {
@@ -626,6 +665,22 @@ export interface BillingRunResult {
  * twice → one draft set. Drafts need one approval before issue (Q2). The run
  * NEVER posts late fees and NEVER charges (Phase 4 owns enforcement).
  */
+/**
+ * Invoice lines for a billed month: full RENT, plus a negative ADJUSTMENT
+ * for the booked-term plan discount so the invoice shows both the rate and
+ * the saving (sums to rentChargedFor).
+ */
+function rentLines(a: AgreementMonth | null, rate: number, monthLabel: string): InvoiceLineInput[] {
+  const lines: InvoiceLineInput[] = [{ kind: 'RENT', label: `Storage rent — ${monthLabel}`, amount: rate }];
+  const saving = round2(rate - rentChargedFor(a, rate));
+  if (a && saving > 0) {
+    const what = a.discountPct > 0 ? `${a.discountPct}% plan discount` : 'Plan discount';
+    const label = `${what} — month ${a.n}${a.durationMonths ? ` of ${a.durationMonths}` : ''}${a.matrixPlanName ? ` (${a.matrixPlanName})` : ''}`;
+    lines.push({ kind: 'ADJUSTMENT', label: label.slice(0, 120), amount: -saving });
+  }
+  return lines;
+}
+
 export async function runBilling(input: BillingRunInput): Promise<BillingRunResult> {
   const m = /^(\d{4})-(\d{2})$/.exec(input.billingMonth.trim());
   if (!m) throw new AppError(400, 'VALIDATION', 'billingMonth must be YYYY-MM.');
@@ -654,7 +709,8 @@ export async function runBilling(input: BillingRunInput): Promise<BillingRunResu
     // zero-balance invoice can never be issued (no payment instruction for a
     // $0 balance) and would sit in DRAFT forever; the skip carries the reason
     // so the operator sees why the tenant has no invoice this month.
-    const exemption = await billingRunExemption(t.id, t.unitId!, { year: Number(m[1]), month: Number(m[2]) });
+    const agreement = await agreementMonthFor(t.id, t.unitId!, { year: Number(m[1]), month: Number(m[2]) });
+    const exemption = billingRunExemption(agreement);
     if (exemption) {
       result.skipped.push({ tenant: t.name, unit: t.unit?.unitCode ?? '—', reason: exemption });
       continue;
@@ -673,7 +729,7 @@ export async function runBilling(input: BillingRunInput): Promise<BillingRunResu
         dueDate: dueDate.toISOString(),
         serviceStart: serviceStart.toISOString(),
         serviceEnd: serviceEnd.toISOString(),
-        lines: [{ kind: 'RENT', label: `Storage rent — ${monthLabel}`, amount: rate }],
+        lines: rentLines(agreement, rate, monthLabel),
         idempotencyKey: key,
         actor: input.actor,
       });

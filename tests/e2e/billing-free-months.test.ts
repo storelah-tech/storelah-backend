@@ -143,4 +143,65 @@ describe('billing run — free months', () => {
     expect(Math.abs(await credit(6))).toBe(0); // -0 from the credit sign
     expect(await credit(7)).toBeLessThan(0); // refund of the paid month's unused days
   });
+
+  it('free months + matrix %: free months skipped, other in-term months at the discounted rent, full rate after the term', async () => {
+    const m = await createPlan({ kind: 'DISCOUNT_MATRIX', name: 'Longer Stay', effectiveFrom: today, facilityScope: ['ALL'], matrixCells: [{ sizeCategory: 'SMALL', accessType: 'Standard', commitmentMonths: 12, discountPct: 30 }] } as any);
+    await walkActive(m.id);
+    const f = await createPlan({
+      kind: 'FREE_MONTHS', name: 'Stay 12, Pay 10', effectiveFrom: today, facilityScope: ['ALL'], sizeScope: ['ALL'],
+      freeMonthCount: 2, commitmentMonths: 12, freeMonths: [5, 10].map((i) => ({ monthIndex: i, free: true })),
+    } as any);
+    await walkActive(f.id);
+    const { booking, tenant, moveIn, breakdown } = await bookAndActivate(12);
+    expect(breakdown.discountPct).toBe(30);
+    const matrixRed = await prisma.promotionRedemption.findFirstOrThrow({ where: { bookingId: booking.id, planId: m.id } });
+    expect(Number(matrixRed.discountPct)).toBe(30);
+    const rate = Number(tenant.monthlyRate);
+    const discounted = Math.round(rate * 0.7);
+    for (let n = 2; n <= 13; n++) {
+      const run = await runFor(world, agreementMonth(moveIn, n));
+      const mine = run.invoices.filter((i) => i.tenant === tenant.name);
+      if (n === 6 || n === 11) {
+        expect(mine).toHaveLength(0);
+        continue;
+      }
+      expect(mine).toHaveLength(1);
+      if (n <= 12) {
+        expect(mine[0].amount).toBe(discounted);
+        expect(mine[0].lines).toMatchObject([
+          { kind: 'RENT', amount: rate },
+          { kind: 'ADJUSTMENT', amount: -(rate - discounted), label: `30% plan discount — month ${n} of 12 (Longer Stay)` },
+        ]);
+      } else {
+        // Month 13: past the booked term → full rate, no discount line.
+        expect(mine[0].amount).toBe(rate);
+        expect(mine[0].lines).toHaveLength(1);
+      }
+    }
+  });
+
+  it('matrix-only booking: the % applies for the booked term only', async () => {
+    const m = await createPlan({ kind: 'DISCOUNT_MATRIX', name: 'Six month', effectiveFrom: today, facilityScope: ['ALL'], matrixCells: [{ sizeCategory: 'SMALL', accessType: 'Standard', commitmentMonths: 6, discountPct: 10 }] } as any);
+    await walkActive(m.id);
+    const { tenant, moveIn, breakdown } = await bookAndActivate(6);
+    expect(breakdown.appliedPromotion).toMatchObject({ kind: 'DISCOUNT_MATRIX' });
+    const rate = Number(tenant.monthlyRate);
+    const amountFor = async (n: number) => (await runFor(world, agreementMonth(moveIn, n))).invoices.find((i) => i.tenant === tenant.name)!.amount;
+    expect(await amountFor(2)).toBe(Math.round(rate * 0.9));
+    expect(await amountFor(6)).toBe(Math.round(rate * 0.9));
+    expect(await amountFor(7)).toBe(rate);
+  });
+
+  it('move-out credit refunds the discounted rent inside the term', async () => {
+    const m = await createPlan({ kind: 'DISCOUNT_MATRIX', name: 'Six month', effectiveFrom: today, facilityScope: ['ALL'], matrixCells: [{ sizeCategory: 'SMALL', accessType: 'Standard', commitmentMonths: 6, discountPct: 10 }] } as any);
+    await walkActive(m.id);
+    const { tenant, moveIn } = await bookAndActivate(6);
+    const rate = Number(tenant.monthlyRate);
+    const ym = agreementMonth(moveIn, 3);
+    const out = await previewSettlement(tenant.id, { kind: 'MOVE_OUT', lastDay: `${ym}-10` });
+    const [y, mo] = ym.split('-').map(Number);
+    const dim = new Date(Date.UTC(y, mo, 0)).getUTCDate();
+    const expected = Math.round((Math.round(rate * 0.9) * (dim - 10)) / dim * 100) / 100;
+    expect(out.lines.find((l) => /Unused rent/.test(l.label))!.amount).toBe(-expected);
+  });
 });

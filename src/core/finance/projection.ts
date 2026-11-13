@@ -35,12 +35,16 @@ import {
   committedEndDate,
   daysInMonth,
   diffDays,
+  hasRentFreeByYear,
   leaseExpenseForRow,
+  rentFreeWindowsOf,
   resolveTimeline,
   validateRentFree,
+  validateRentFreeByYear,
   validateSchedule,
   type CalendarRow,
   type ProrationMethod,
+  type RentFreePeriod,
 } from './leaseTerm';
 
 export const ENGINE_VERSION = 'finance-projection/1';
@@ -88,6 +92,10 @@ export interface V2LeaseScheduleRow {
   source: 'contract' | 'user_entered' | 'estimated';
   confirmed: boolean;
   excluded?: boolean; // shortened-term rows stay saved for re-extension
+  /** Per-lease-year rent-free range (inclusive, inside this row's period).
+   * When any active row has one, these replace the lease-level single window. */
+  rentFreeStartDate?: string | null;
+  rentFreeEndDate?: string | null;
 }
 
 export interface V2LeaseBlock extends LeaseInput {
@@ -577,17 +585,26 @@ export function projectV2(rawInput: ProjectionInput): ProjectionResult {
   const schedProblems = validateSchedule(active, leaseStart, committedEnd);
   if (schedProblems.length) fail(schedProblems.join(' '));
 
-  let rentFree: { startDate: string; endDate: string } | null = null;
-  const rfStart = lease.rentFreeStartDate;
-  const rfEnd = lease.rentFreeEndDate;
-  if (rfStart !== null || rfEnd !== null) {
-    if (rfStart === null || rfEnd === null) {
-      throw new AppError(400, 'VALIDATION', 'Rent-free start and end dates must both be set or both be empty.');
+  // §8.4 rent-free: per-lease-year ranges on the schedule rows take
+  // precedence; models without them keep the single lease-level window
+  // (byte-identical rows for every stored model).
+  let rentFree: RentFreePeriod | RentFreePeriod[] | null = null;
+  if (hasRentFreeByYear(active)) {
+    const byYearProblems = Object.values(validateRentFreeByYear(active)).flat();
+    if (byYearProblems.length) fail(byYearProblems.join(' '));
+    rentFree = rentFreeWindowsOf(active);
+  } else {
+    const rfStart = lease.rentFreeStartDate;
+    const rfEnd = lease.rentFreeEndDate;
+    if (rfStart !== null || rfEnd !== null) {
+      if (rfStart === null || rfEnd === null) {
+        throw new AppError(400, 'VALIDATION', 'Rent-free start and end dates must both be set or both be empty.');
+      }
+      rentFree = { startDate: rfStart, endDate: rfEnd };
     }
-    rentFree = { startDate: rfStart, endDate: rfEnd };
+    const rfProblems = validateRentFree(rentFree, leaseStart, committedEnd);
+    if (rfProblems.length) fail(rfProblems.join(' '));
   }
-  const rfProblems = validateRentFree(rentFree, leaseStart, committedEnd);
-  if (rfProblems.length) fail(rfProblems.join(' '));
 
   // R6: churn stays row-indexed; starting it past the last calendar row is a
   // named engine error (P4 maps it to a 422 with a clear message).

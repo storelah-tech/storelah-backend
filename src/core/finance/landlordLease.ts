@@ -43,8 +43,10 @@ import {
   committedEndDate,
   daysInMonth,
   parseISODate,
+  hasRentFreeByYear,
   upcastInputs,
   validateRentFree,
+  validateRentFreeByYear,
   type ProrationMethod,
   type UpcastSource,
 } from './leaseTerm';
@@ -169,6 +171,9 @@ export interface LeaseScheduleInputRow {
   monthlyRent?: unknown;
   source?: unknown;
   confirmed?: unknown;
+  /** Optional per-lease-year rent-free range (both or neither). */
+  rentFreeStartDate?: unknown;
+  rentFreeEndDate?: unknown;
 }
 
 export interface LandlordLeaseUpdateBody {
@@ -264,6 +269,13 @@ function assertCentsInput(n: number, field: string, label: string, allowNegative
   }
 }
 
+/** Per-row rent-free range from a request row (empty strings → none). */
+function rowRentFree(row: LeaseScheduleInputRow): { rentFreeStartDate?: string; rentFreeEndDate?: string } {
+  const s = typeof row.rentFreeStartDate === 'string' && row.rentFreeStartDate ? row.rentFreeStartDate : null;
+  const e = typeof row.rentFreeEndDate === 'string' && row.rentFreeEndDate ? row.rentFreeEndDate : null;
+  return s || e ? { ...(s ? { rentFreeStartDate: s } : {}), ...(e ? { rentFreeEndDate: e } : {}) } : {};
+}
+
 function validateScheduleRows(raw: unknown): LeaseScheduleInputRow[] {
   if (!Array.isArray(raw)) throw fieldError('schedule', 'schedule must be an array with one row per committed lease year.');
   const problems: Record<string, string[]> = {};
@@ -289,6 +301,13 @@ function validateScheduleRows(raw: unknown): LeaseScheduleInputRow[] {
       (problems[key] ??= []).push('source must be contract, user_entered or estimated.');
     }
     if (typeof r.confirmed !== 'boolean') (problems[key] ??= []).push('confirmed must be true or false.');
+    for (const f of ['rentFreeStartDate', 'rentFreeEndDate'] as const) {
+      const v = r[f];
+      if (v === undefined || v === null || v === '') continue;
+      if (typeof v !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(v)) {
+        (problems[key] ??= []).push(`${f} must be a YYYY-MM-DD date or empty.`);
+      }
+    }
   });
   const years = rows.map((r) => r.leaseYear);
   const dupes = years.filter((y, i) => years.indexOf(y) !== i);
@@ -374,6 +393,7 @@ async function validateLeaseCommand(body: LandlordLeaseUpdateBody): Promise<Vali
         monthlyRent: row.monthlyRent as number,
         source: row.source as V2LeaseScheduleRow['source'],
         confirmed: row.confirmed as boolean,
+        ...rowRentFree(row),
       });
     } else if (lastRent !== null) {
       serverRows.push({ leaseYear: k, periodStart, periodEnd, monthlyRent: lastRent, source: 'estimated', confirmed: false });
@@ -399,6 +419,22 @@ async function validateLeaseCommand(body: LandlordLeaseUpdateBody): Promise<Vali
     }
   }
   serverRows.sort((a, b) => a.leaseYear - b.leaseYear);
+
+  // Per-lease-year rent-free: each range must sit inside its own (server-
+  // derived) lease year. It replaces the single lease-level window, so a
+  // request may carry one or the other, never both.
+  if (hasRentFreeByYear(serverRows)) {
+    if (rentFreeStartDate || rentFreeEndDate) {
+      throw fieldError(
+        'rentFreeEndDate',
+        'Use either the per-year rent-free dates or the single rent-free window, not both — clear the single window.',
+      );
+    }
+    const byYear = validateRentFreeByYear(serverRows);
+    if (Object.keys(byYear).length) {
+      throw new AppError(422, 'VALIDATION', Object.values(byYear).flat().join(' '), { fieldErrors: byYear, field: 'schedule' });
+    }
+  }
 
   // LH07 estimated gate: every committed year needs a contract, user-entered
   // or CONFIRMED-estimated row — an inferred rent never counts as contractual.
@@ -594,6 +630,7 @@ interface ScheduleDiff {
   changed: Array<{ leaseYear: number; before: number; after: number }>;
   excluded: number[];
   confirmed: number[];
+  rentFreeChanged: Array<{ leaseYear: number; before: string | null; after: string | null }>;
 }
 
 function diffSchedules(before: V2LeaseScheduleRow[], after: V2LeaseScheduleRow[]): ScheduleDiff {
@@ -602,8 +639,11 @@ function diffSchedules(before: V2LeaseScheduleRow[], after: V2LeaseScheduleRow[]
   const added: number[] = [];
   const changed: Array<{ leaseYear: number; before: number; after: number }> = [];
   const confirmed: number[] = [];
+  const rentFreeChanged: ScheduleDiff['rentFreeChanged'] = [];
+  const rf = (r?: V2LeaseScheduleRow) => (r?.rentFreeStartDate && r?.rentFreeEndDate ? `${r.rentFreeStartDate}–${r.rentFreeEndDate}` : null);
   for (const [year, row] of a) {
     const prev = b.get(year);
+    if (rf(prev) !== rf(row)) rentFreeChanged.push({ leaseYear: year, before: rf(prev), after: rf(row) });
     if (!prev) {
       added.push(year);
       continue;
@@ -617,7 +657,7 @@ function diffSchedules(before: V2LeaseScheduleRow[], after: V2LeaseScheduleRow[]
     const next = a.get(year);
     return !next || (after.find((r) => r.leaseYear === year)?.excluded ?? false);
   });
-  return { added, changed, excluded, confirmed };
+  return { added, changed, excluded, confirmed, rentFreeChanged };
 }
 
 function buildMergedInputs(stored: ProjectionInput, cmd: ValidLeaseCommand): { merged: ProjectionInput; oldTerm: number; oldEnd: string } {

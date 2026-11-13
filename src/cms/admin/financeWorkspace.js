@@ -1059,11 +1059,37 @@ export function initFinanceWorkspace() {
     const c=srv.lease;if(!c)return null;
     return {
       committedTermMonths:c.committedTermMonths,leaseStartDate:c.leaseStartDate,
-      ufaSqft:c.ufaSqft??0,rentFreeStartDate:c.rentFreeStartDate??'',rentFreeEndDate:c.rentFreeEndDate??'',
+      ufaSqft:c.ufaSqft??0,
       prorationMethod:c.prorationMethod||'actual_days',
-      rows:(c.leaseSchedule||[]).filter(r=>!r.excluded).map(r=>({leaseYear:r.leaseYear,monthlyRent:r.monthlyRent,source:r.source,confirmed:!!r.confirmed,periodStart:r.periodStart,periodEnd:r.periodEnd})),
+      rows:leaseRowsWithRentFree(c),
       excluded:(c.leaseSchedule||[]).filter(r=>r.excluded),
     };
+  }
+  /** Rent-free is one optional date range per lease year (schedule row). A
+   * model saved with the older single lease-level window shows it split
+   * across the lease years it covers; the next Update stores it per year
+   * (same free days, so the same payable amounts). */
+  function leaseRowsWithRentFree(c){
+    const active=(c.leaseSchedule||[]).filter(r=>!r.excluded);
+    const perYear=active.some(r=>r.rentFreeStartDate||r.rentFreeEndDate);
+    const gs=c.rentFreeStartDate||'',ge=c.rentFreeEndDate||'';
+    return active.map(r=>{
+      let rfs=r.rentFreeStartDate||'',rfe=r.rentFreeEndDate||'';
+      if(!perYear&&gs&&ge&&r.periodStart&&r.periodEnd&&ge>=r.periodStart&&gs<=r.periodEnd){rfs=gs>r.periodStart?gs:r.periodStart;rfe=ge<r.periodEnd?ge:r.periodEnd}
+      return {leaseYear:r.leaseYear,monthlyRent:r.monthlyRent,source:r.source,confirmed:!!r.confirmed,periodStart:r.periodStart,periodEnd:r.periodEnd,rentFreeStartDate:rfs,rentFreeEndDate:rfe};
+    });
+  }
+  /** Inline per-year rent-free problems (same rules the server enforces). */
+  function leaseRentFreeErrors(v){
+    const out={};
+    for(const r of (v?.rows||[])){
+      const a=r.rentFreeStartDate||'',b=r.rentFreeEndDate||'';
+      if(!a&&!b)continue;
+      if(!a||!b)out[r.leaseYear]='Enter both a start and an end date, or leave both empty.';
+      else if(b<a)out[r.leaseYear]='The end date is before the start date.';
+      else if(r.periodStart&&r.periodEnd&&(a<r.periodStart||b>r.periodEnd))out[r.leaseYear]=`Must lie within Year ${r.leaseYear} (${leaseStubRange(r.periodStart,r.periodEnd)}).`;
+    }
+    return out;
   }
   /** Merged editable view: staged draft over the committed section. */
   function leaseEditView(){
@@ -1143,7 +1169,7 @@ export function initFinanceWorkspace() {
     const unconfirmed=leaseUnconfirmed(),needsAck=unconfirmed.length>0;
     const ackOk=!needsAck||leaseAck;
     const termErr=leaseDraft?leaseTermError(leaseDraft.committedTermMonths):null;
-    const updateDisabled=!dirty||!canEdit||!ackOk||!!termErr||srv.leaseBusy;
+    const updateDisabled=!dirty||!canEdit||!ackOk||!!termErr||!!Object.keys(leaseRentFreeErrors(v)).length||srv.leaseBusy;
     const termMonths=c.committedTermMonths,rent0=leaseSummaryRent();
     const endLong=fmtDayLong(c.committedEndDate);
     const payable=leasePayableByYear();
@@ -1156,7 +1182,7 @@ export function initFinanceWorkspace() {
     +`<label class="fm-assumption"><span>Lease commencement date<small>The contract start. The end date is derived by the server and cannot be typed in.</small></span><span class="fm-date-wrap"><input type="date" value="${escapeHtml(v.leaseStartDate)}" data-lh-start aria-label="Lease commencement date" ${canEdit?'':'disabled'}></span></label>`
     +`<div class="fm-assumption"><span>Committed end date (read-only)<small>Derived by the server as start + term − 1 day. A new end date appears here after Update.</small></span><span class="fm-readonly-date" aria-readonly="true">${endLong}</span></div>`
     +`<label class="fm-assumption"><span>Usable floor area (UFA)<small>The landlord\u2019s chargeable usable floor area. This is used only to show the implied lease PSF.</small></span><span class="fm-number-wrap"><input type="number" min="0" step="1" value="${v.ufaSqft}" data-lh-ufa aria-label="Usable floor area" ${canEdit?'':'disabled'}><em>sq ft</em></span></label>`
-    +`<div class="fm-assumption"><span>Rent-free period (contract dates)<small>Explicit start and end dates from the signed lease. Leave both empty when there is no rent-free period.</small></span><span class="fm-date-pair"><input type="date" value="${escapeHtml(v.rentFreeStartDate||'')}" data-lh-rfstart aria-label="Rent-free start date" ${canEdit?'':'disabled'}><i>–</i><input type="date" value="${escapeHtml(v.rentFreeEndDate||'')}" data-lh-rfend aria-label="Rent-free end date" ${canEdit?'':'disabled'}></span></div>`
+    +`<div class="fm-assumption"><span>Rent-free period (contract dates)<small>Set per lease year in the schedule below — each year can have its own start and end date from the signed lease. Leave a year empty when it has no rent-free period.</small></span></div>`
     +`</div>`
     +`<fieldset class="fm-proration" ${canEdit?'':'disabled'}><legend>Proration method</legend><div class="fm-scenario" role="radiogroup" aria-label="Proration method">${PRORATION_OPTIONS.map(([val,label])=>`<button type="button" role="radio" aria-checked="${v.prorationMethod===val?'true':'false'}" class="${v.prorationMethod===val?'active':''}" data-lh-proration="${val}" ${canEdit?'':'disabled'}>${label}</button>`).join('')}</div><small>${(PRORATION_OPTIONS.find(o=>o[0]===v.prorationMethod)||PRORATION_OPTIONS[0])[2]} Applies to landlord lease only.</small></fieldset>`
     +`<div class="fm-schedule-head"><div><b>Editable landlord lease schedule</b><small>Enter the contractual total monthly rent for every lease year. Prefilled rows are marked Estimated and need confirmation before Update.</small></div>${leaseScheduleSelector(leaseNeedYears(v.committedTermMonths))}</div>`
@@ -1187,7 +1213,7 @@ export function initFinanceWorkspace() {
     const lastUnconfirmed=Math.max(0,...(v.rows||[]).filter(r=>r.leaseYear<=need&&r.source==='estimated'&&!r.confirmed).map(r=>r.leaseYear));
     const show=Math.max(picked,lastUnconfirmed);
     const rows=(v.rows||[]).filter(r=>r.leaseYear<=show).sort((a,b)=>a.leaseYear-b.leaseYear);
-    const ufa=Number(v.ufaSqft)||0;
+    const ufa=Number(v.ufaSqft)||0,rfErr=leaseRentFreeErrors(v);
     const body=rows.map(r=>{
       const psf=ufa?r.monthlyRent/ufa:0;
       const p=payable[r.leaseYear];
@@ -1195,13 +1221,14 @@ export function initFinanceWorkspace() {
       return `<tr class="${r.source==='estimated'&&!r.confirmed?'fm-est-row':''}"><td><b>Year ${r.leaseYear}</b><small class="fm-capped">${r.periodStart&&r.periodEnd?escapeHtml(leaseStubRange(r.periodStart,r.periodEnd)):'Dates appear after Update'}</small></td>`
       +`<td><span class="fm-table-input"><em>$</em><input type="number" min="0" step="0.01" value="${Number(r.monthlyRent).toFixed(2)}" data-lh-rent="${r.leaseYear}" aria-label="Year ${r.leaseYear} monthly rent" ${canEdit?'':'disabled'}></span></td>`
       +`<td>$${num(psf,2)} / UFA sq ft</td>`
+      +`<td><span class="fm-date-pair fm-rf-pair"><input type="date" value="${escapeHtml(r.rentFreeStartDate||'')}" ${r.periodStart?`min="${escapeHtml(r.periodStart)}" max="${escapeHtml(r.periodEnd)}"`:''} data-lh-rf-start="${r.leaseYear}" aria-label="Year ${r.leaseYear} rent-free start date" ${canEdit?'':'disabled'}><i>–</i><input type="date" value="${escapeHtml(r.rentFreeEndDate||'')}" ${r.periodStart?`min="${escapeHtml(r.periodStart)}" max="${escapeHtml(r.periodEnd)}"`:''} data-lh-rf-end="${r.leaseYear}" aria-label="Year ${r.leaseYear} rent-free end date" ${canEdit?'':'disabled'}></span>${rfErr[r.leaseYear]?`<small class="fm-term-error" role="alert">${escapeHtml(rfErr[r.leaseYear])}</small>`:''}</td>`
       +`<td>${p?money(Math.round(p.payable*100)/100):money(r.monthlyRent*12)}${dirty?'<small class="fm-capped">committed · refreshes on Update</small>':''}</td>`
       +`<td>${p?leaseFactorLabel(p.factor):leaseFactorLabel(12)}</td>`
       +`<td>${basis}${r.source==='estimated'?`<label class="fm-confirm"><input type="checkbox" data-lh-confirm="${r.leaseYear}" ${r.confirmed?'checked':''} ${canEdit?'':'disabled'}> Confirm</label>`:''}</td></tr>`;
     }).join('');
     // Years outside the term are listed only when the whole term is shown.
-    const excluded=show<need?'':(v.excluded||[]).map(r=>`<tr class="fm-excluded-row"><td><b>Year ${r.leaseYear}</b></td><td>${money(r.monthlyRent)}</td><td>—</td><td colspan="3">Outside the committed term — kept for re-extension and audit.</td></tr>`).join('');
-    return `<div class="table-wrap"><table class="fm-table fm-year-table fm-lease-year-table"><thead><tr><th>Lease year</th><th>Monthly landlord rent</th><th>Implied UFA PSF</th><th>Payable amount within the committed term</th><th>Payable months</th><th>Basis or source</th></tr></thead><tbody>${body}${excluded}</tbody></table></div><div class="fm-table-key">Showing ${show} of ${need} lease year${need===1?'':'s'} for a ${v.committedTermMonths}-month term. Payable amounts are the committed server revision and refresh on Update.</div>`;
+    const excluded=show<need?'':(v.excluded||[]).map(r=>`<tr class="fm-excluded-row"><td><b>Year ${r.leaseYear}</b></td><td>${money(r.monthlyRent)}</td><td>—</td><td>—</td><td colspan="3">Outside the committed term — kept for re-extension and audit.</td></tr>`).join('');
+    return `<div class="table-wrap"><table class="fm-table fm-year-table fm-lease-year-table"><thead><tr><th>Lease year</th><th>Monthly landlord rent</th><th>Implied UFA PSF</th><th>Rent-free (contract dates)</th><th>Payable amount within the committed term</th><th>Payable months</th><th>Basis or source</th></tr></thead><tbody>${body}${excluded}</tbody></table></div><div class="fm-table-key">Showing ${show} of ${need} lease year${need===1?'':'s'} for a ${v.committedTermMonths}-month term. Payable amounts are the committed server revision and refresh on Update.</div>`;
   }
 
   function paintLeaseDirty(){
@@ -1211,7 +1238,7 @@ export function initFinanceWorkspace() {
     card.querySelector('.fm-unsaved')?.classList.toggle('show',!!dirty);
     const undoBtn=card.querySelector('[data-lh-undo]'),updateBtn=card.querySelector('[data-lh-update]');
     if(undoBtn){if(dirty&&edit.ok&&!srv.leaseBusy)undoBtn.removeAttribute('disabled');else undoBtn.setAttribute('disabled','')}
-    if(updateBtn){if(dirty&&edit.ok&&ackOk&&!termErr&&!srv.leaseBusy)updateBtn.removeAttribute('disabled');else updateBtn.setAttribute('disabled','')}
+    if(updateBtn){if(dirty&&edit.ok&&ackOk&&!termErr&&!Object.keys(leaseRentFreeErrors(leaseDraft)).length&&!srv.leaseBusy)updateBtn.removeAttribute('disabled');else updateBtn.setAttribute('disabled','')}
     // Keep the inline term message live per keystroke (B1/B8) — the full
     // re-render on change rebuilds it anyway.
     let termErrEl=card.querySelector('.fm-term-error');
@@ -1272,8 +1299,7 @@ export function initFinanceWorkspace() {
     card.querySelector('[data-lh-start]')?.addEventListener('change',e=>{const d=ensureLeaseDraft();if(!d)return;d.leaseStartDate=e.target.value;paintLeaseDirty();rerender()});
     card.querySelector('[data-lh-ufa]')?.addEventListener('input',e=>{const d=ensureLeaseDraft();if(!d)return;d.ufaSqft=Math.max(0,Number(e.target.value)||0);paintLeaseDirty()});
     card.querySelector('[data-lh-ufa]')?.addEventListener('change',rerender);
-    card.querySelector('[data-lh-rfstart]')?.addEventListener('change',e=>{const d=ensureLeaseDraft();if(!d)return;d.rentFreeStartDate=e.target.value||'';paintLeaseDirty();rerender()});
-    card.querySelector('[data-lh-rfend]')?.addEventListener('change',e=>{const d=ensureLeaseDraft();if(!d)return;d.rentFreeEndDate=e.target.value||'';paintLeaseDirty();rerender()});
+    card.querySelectorAll('[data-lh-rf-start],[data-lh-rf-end]').forEach(input=>input.addEventListener('change',()=>{const d=ensureLeaseDraft();if(!d)return;const isStart=input.hasAttribute('data-lh-rf-start'),y=Number(isStart?input.dataset.lhRfStart:input.dataset.lhRfEnd),row=d.rows.find(r=>r.leaseYear===y);if(row)row[isStart?'rentFreeStartDate':'rentFreeEndDate']=input.value||'';paintLeaseDirty();rerender()}));
     card.querySelectorAll('[data-lh-proration]').forEach(b=>b.addEventListener('click',()=>{const d=ensureLeaseDraft();if(!d)return;d.prorationMethod=b.dataset.lhProration;paintLeaseDirty();rerender()}));
     // P9: the Section 4 schedule year selector re-renders the lease card only.
     card.querySelector('[data-lease-schedule-years]')?.addEventListener('change',e=>{state.leaseScheduleYears=e.target.value;rerender()});
@@ -1321,12 +1347,14 @@ export function initFinanceWorkspace() {
       version: srv.lease.rowVersion,
       leaseStartDate: d.leaseStartDate,
       committedTermMonths: d.committedTermMonths,
-      rentFreeStartDate: d.rentFreeStartDate||null,
-      rentFreeEndDate: d.rentFreeEndDate||null,
+      // Rent-free travels per lease year on the schedule rows; the older
+      // single lease-level window is always cleared on write.
+      rentFreeStartDate: null,
+      rentFreeEndDate: null,
       prorationMethod: d.prorationMethod,
       currency: 'SGD',
       ufaSqft: d.ufaSqft,
-      schedule: d.rows.filter(r=>r.leaseYear<=leaseNeedYears(d.committedTermMonths)).map(r=>({leaseYear:r.leaseYear,monthlyRent:Math.round(Number(r.monthlyRent)*100)/100,source:r.source,confirmed:!!r.confirmed})),
+      schedule: d.rows.filter(r=>r.leaseYear<=leaseNeedYears(d.committedTermMonths)).map(r=>({leaseYear:r.leaseYear,monthlyRent:Math.round(Number(r.monthlyRent)*100)/100,source:r.source,confirmed:!!r.confirmed,rentFreeStartDate:r.rentFreeStartDate||null,rentFreeEndDate:r.rentFreeEndDate||null})),
     };
   }
 

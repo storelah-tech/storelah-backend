@@ -246,11 +246,14 @@ export function buildLeaseYears(startISO: string, termMonths: number): LeaseYear
 export function chargeableSegments(
   row: CalendarRow,
   leaseYears: LeaseYear[],
-  rentFree: RentFreePeriod | null,
+  rentFree: RentFreePeriod | RentFreePeriod[] | null,
 ): ChargeableSegment[] {
-  if (rentFree) {
-    parseISODate(rentFree.startDate, 'rent-free start date');
-    parseISODate(rentFree.endDate, 'rent-free end date');
+  // One window (legacy single rent-free period) or several non-overlapping
+  // windows (one per lease year, rentFreeByYear). Overlaps are summed.
+  const windows = rentFree === null ? [] : Array.isArray(rentFree) ? rentFree : [rentFree];
+  for (const w of windows) {
+    parseISODate(w.startDate, 'rent-free start date');
+    parseISODate(w.endDate, 'rent-free end date');
   }
   const out: ChargeableSegment[] = [];
   for (const ly of leaseYears) {
@@ -259,11 +262,13 @@ export function chargeableSegments(
     if (segEnd < segStart) continue;
     const days = diffDays(segStart, segEnd) + 1;
     let rentFreeDays = 0;
-    if (rentFree && rentFree.endDate >= segStart && rentFree.startDate <= segEnd) {
-      const fStart = rentFree.startDate > segStart ? rentFree.startDate : segStart;
-      const fEnd = rentFree.endDate < segEnd ? rentFree.endDate : segEnd;
-      rentFreeDays = diffDays(fStart, fEnd) + 1;
+    for (const w of windows) {
+      if (w.endDate < segStart || w.startDate > segEnd) continue;
+      const fStart = w.startDate > segStart ? w.startDate : segStart;
+      const fEnd = w.endDate < segEnd ? w.endDate : segEnd;
+      rentFreeDays += diffDays(fStart, fEnd) + 1;
     }
+    rentFreeDays = Math.min(rentFreeDays, days);
     out.push({
       leaseYear: ly.leaseYear,
       segmentStart: segStart,
@@ -275,6 +280,61 @@ export function chargeableSegments(
     });
   }
   return out;
+}
+
+/** A lease-schedule row as far as per-year rent-free is concerned. */
+export interface RentFreeYearRow {
+  leaseYear: number;
+  periodStart: string; // lease-year window (inclusive)
+  periodEnd: string; // lease-year window (inclusive, capped at the committed end)
+  rentFreeStartDate?: string | null;
+  rentFreeEndDate?: string | null;
+  excluded?: boolean;
+}
+
+/** True when any active schedule row carries its own rent-free range. */
+export function hasRentFreeByYear(rows: RentFreeYearRow[] | undefined | null): boolean {
+  return (rows ?? []).some((r) => !r.excluded && (r.rentFreeStartDate || r.rentFreeEndDate));
+}
+
+/**
+ * Per-lease-year rent-free (one optional date range per schedule row). Each
+ * range needs both dates, end ≥ start, and must lie inside its own lease
+ * year. Returns problems keyed by `schedule[i]` (i = leaseYear − 1).
+ */
+export function validateRentFreeByYear(rows: RentFreeYearRow[]): Record<string, string[]> {
+  const problems: Record<string, string[]> = {};
+  for (const r of rows) {
+    if (r.excluded) continue;
+    const s = r.rentFreeStartDate || null;
+    const e = r.rentFreeEndDate || null;
+    if (!s && !e) continue;
+    const key = `schedule[${r.leaseYear - 1}]`;
+    if (!s || !e) {
+      (problems[key] ??= []).push(
+        `Year ${r.leaseYear} rent-free needs both a start and an end date — leave both empty when there is no rent-free that year.`,
+      );
+      continue;
+    }
+    parseISODate(s, `Year ${r.leaseYear} rent-free start date`);
+    parseISODate(e, `Year ${r.leaseYear} rent-free end date`);
+    if (e < s) {
+      (problems[key] ??= []).push(`Year ${r.leaseYear} rent-free end ${e} is before start ${s}.`);
+    } else if (s < r.periodStart || e > r.periodEnd) {
+      (problems[key] ??= []).push(
+        `Year ${r.leaseYear} rent-free ${s}–${e} must lie within Year ${r.leaseYear} (${r.periodStart}–${r.periodEnd}).`,
+      );
+    }
+  }
+  return problems;
+}
+
+/** The per-year rent-free windows of a validated schedule, in lease-year order. */
+export function rentFreeWindowsOf(rows: RentFreeYearRow[]): RentFreePeriod[] {
+  return rows
+    .filter((r) => !r.excluded && r.rentFreeStartDate && r.rentFreeEndDate)
+    .sort((a, b) => a.leaseYear - b.leaseYear)
+    .map((r) => ({ startDate: r.rentFreeStartDate as string, endDate: r.rentFreeEndDate as string }));
 }
 
 function round2(n: number): number {

@@ -7,7 +7,7 @@
 
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 import type { ProjectionReport } from './projectionReport';
-import { Writer, drawWordmark, W, H, M, OLIVE, LINE, MUTED, RED, ascii, sgd, num, pct, day, modelMonth } from './reportPdf';
+import { Writer, drawWordmark, W, H, M, OLIVE, LINE, MUTED, RED, ascii, sgd, num, pct, day, modelMonth, rentFreeLabel } from './reportPdf';
 import { effectiveNla } from './projection';
 
 const STATUS_LABEL: Record<string, string> = {
@@ -173,7 +173,7 @@ export async function buildProjectionReportPdf(r: ProjectionReport): Promise<Buf
       ['Move-out rate', `${pct(i.occupancy.moveOutRatePct)} of occupied area per month, from month ${i.occupancy.churnStartMonth}`],
       ['Stabilisation target', `${pct(i.occupancy.targetPct)} occupancy`],
       ['Rent increase', `${pct(i.pricing.annualIncreasePct)} a year, from each model-year anniversary`],
-      ['Rent-free lease months', num(i.lease.rentFreeMonths)],
+      ['Rent-free (landlord lease)', rentFreeLabel(i.lease)],
       ['Other operating costs', `${sgd(i.opex.baseMonthly, 0)}/month, growing ${pct(i.opex.annualGrowthPct)} a year`],
       ['Capital investment', sgd(i.capitalTotal, 0)],
     ],

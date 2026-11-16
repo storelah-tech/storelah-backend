@@ -23,12 +23,24 @@ export const MIN_UNIT_SQFT = 1;
 export const MAX_UNIT_SQFT = 2000;
 
 /**
- * Decimal sqft (owner decision 2026-10-14, supersedes D3's whole numbers):
- * Unit.sqft is stored quantized to 0.01 sqft.
+ * Unit.sqft precision: whole sqft since 2026-11-16 (see wholeSqft below —
+ * supersedes the 2026-10-14 0.01-sqft decision). quantizeSqft is kept for
+ * aggregate totals; legacy rows may still hold decimals until re-saved.
  */
 export const SQFT_STEP = 0.01;
 export function quantizeSqft(n: number): number {
   return Math.round(n * 100) / 100;
+}
+
+/**
+ * Whole square feet (owner 2026-11-16: "round the unit size to zero decimal
+ * place when creating a unit"). Every write of Unit.sqft — Add Unit form,
+ * edit, CSV import, floor-plan drawn units and publish sync — stores the area
+ * rounded half-up to an integer. quantizeSqft (0.01) stays for aggregates;
+ * plan geometry and NLA/UFA keep their exact drawn area.
+ */
+export function wholeSqft(n: number): number {
+  return Math.round(n);
 }
 
 /**
@@ -39,12 +51,15 @@ export function quantizeSqft(n: number): number {
  */
 export const SQFT_EPSILON = 0.05;
 export function sameSqft(a: number, b: number): boolean {
-  return Math.abs(a - b) < SQFT_EPSILON;
+  // Whole-sqft units (2026-11-16): two sizes are the same when they round to
+  // the same integer, so a legacy 47.18 unit drawn at 47.18 stays unchanged
+  // (it is never silently re-written to 47) and a 29.998 drawing is still 30.
+  return Math.abs(a - b) < SQFT_EPSILON || wholeSqft(a) === wholeSqft(b);
 }
 
-/** Unit.sqft for a drawn rect: the exact drawn area quantized to 0.01 sqft. */
+/** Unit.sqft for a drawn rect: the drawn area rounded to whole sqft. */
 export function sqftForRect(r: { width: number; height: number }): number {
-  return quantizeSqft(rectAreaSqft(r));
+  return wholeSqft(rectAreaSqft(r));
 }
 
 /**

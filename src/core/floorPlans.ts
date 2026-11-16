@@ -813,7 +813,19 @@ export function doorEdgesToArray(stored: string | null | undefined): DoorEdge[] 
 // 0.5 = centred, the legacy render). Stored as a JSON object (or NULL = all
 // centred); readers intersect with the authored doorEdges, so stale keys for
 // removed edges are ignored.
-export type DoorOffsets = Partial<Record<DoorEdge, number>>;
+// Door width (owner 2026-11-16: "I can't change the size of the door"): the
+// optional `w` key holds this unit's door width in decimal FEET, applied to
+// every authored door of the placement (clamped to each edge's length when
+// drawn). Absent = the legacy tick (36% of the edge). Rides in the same JSON
+// column, so drafts, versions, snapshots and publish carry it unchanged and
+// public reads (which strip doorOffsets) stay byte-identical.
+export type DoorOffsets = Partial<Record<DoorEdge, number>> & { w?: number };
+export const DOOR_WIDTH_MIN_FT = 0.5;
+export const DOOR_WIDTH_MAX_FT = 50;
+function doorWidthOrNull(v: unknown): number | null {
+  const n = Number(v);
+  return Number.isFinite(n) && n >= DOOR_WIDTH_MIN_FT && n <= DOOR_WIDTH_MAX_FT ? Math.round(n * 100) / 100 : null;
+}
 
 /**
  * Normalise authored door offsets for storage. `undefined` means "not
@@ -835,8 +847,17 @@ export function normalizeDoorOffsets(
   }
   const out: DoorOffsets = {};
   for (const [k, v] of Object.entries(input)) {
+    if (k === 'w') {
+      if (v === null) continue; // null width = back to the default tick
+      const w = doorWidthOrNull(v);
+      if (w === null) {
+        throw new AppError(400, 'VALIDATION', `doorOffsets.w (door width) must be a number of feet between ${DOOR_WIDTH_MIN_FT} and ${DOOR_WIDTH_MAX_FT} — got ${JSON.stringify(v)}`);
+      }
+      out.w = w;
+      continue;
+    }
     if (k !== 'N' && k !== 'S' && k !== 'E' && k !== 'W') {
-      throw new AppError(400, 'VALIDATION', `doorOffsets keys must be a subset of ["N","S","E","W"] — got ${JSON.stringify(k)}`);
+      throw new AppError(400, 'VALIDATION', `doorOffsets keys must be a subset of ["N","S","E","W","w"] — got ${JSON.stringify(k)}`);
     }
     const n = Number(v);
     if (!Number.isFinite(n) || n < 0 || n > 1) {
@@ -846,7 +867,7 @@ export function normalizeDoorOffsets(
   }
   if (edges === null) return null;
   if (edges) {
-    for (const k of Object.keys(out) as DoorEdge[]) if (!edges.includes(k)) delete out[k];
+    for (const k of DOOR_EDGE_ORDER) if (!edges.includes(k)) delete out[k];
   }
   return Object.keys(out).length ? out : null;
 }
@@ -859,6 +880,8 @@ export function doorOffsetsToObject(stored: unknown): DoorOffsets | null {
     const n = Number((stored as Record<string, unknown>)[e]);
     if (Number.isFinite(n) && n >= 0 && n <= 1) out[e] = Math.round(n * 1000) / 1000;
   }
+  const w = doorWidthOrNull((stored as Record<string, unknown>).w);
+  if (w !== null) out.w = w;
   return Object.keys(out).length ? out : null;
 }
 

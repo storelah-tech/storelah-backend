@@ -400,15 +400,16 @@ function fpFmtArea(sqft) {
   return (Math.round(Number(sqft || 0) * 100) / 100).toLocaleString('en-SG', { maximumFractionDigits: 2 });
 }
 
-// Decimal unit sizes — mirrors sqftForRect / sameSqft in src/core/unitSizing.ts:
-// a drawn unit's sqft is its exact area to 0.01, and sizes within 0.05 sqft
-// count as unchanged (absorbs the 0.001-ft geometry quantization).
+// Unit sizes — mirrors sqftForRect / sameSqft in src/core/unitSizing.ts:
+// a drawn unit's sqft is its area rounded to whole sqft (2026-11-16), and two
+// sizes that round to the same integer (or sit within 0.05 sqft) count as
+// unchanged, so legacy decimal units are never flagged as resized.
 const FP_SQFT_EPSILON = 0.05;
 function fpSqftForRect(r) {
-  return Math.round(rectAreaSqft(r) * 100) / 100;
+  return Math.round(rectAreaSqft(r));
 }
 function fpSameSqft(a, b) {
-  return Math.abs(Number(a) - Number(b)) < FP_SQFT_EPSILON;
+  return Math.abs(Number(a) - Number(b)) < FP_SQFT_EPSILON || Math.round(Number(a)) === Math.round(Number(b));
 }
 
 // ---------- drawn units (floor-plan unit sync Phase 4) ----------
@@ -509,7 +510,30 @@ function fpDoorOffsetsOf(pl) {
     const n = Number(src[e]);
     if (Number.isFinite(n) && n >= 0 && n <= 1) out[e] = Math.round(n * 1000) / 1000;
   }
+  const w = fpDoorWidthOrNull(src.w);
+  if (w != null) out.w = w;
   return Object.keys(out).length ? out : null;
+}
+// Door width (owner 2026-11-16): optional `w` in doorOffsets = this unit's
+// door width in feet, applied to all of its doors; absent = the legacy tick
+// (36% of the edge). Mirrors DOOR_WIDTH_MIN_FT/MAX_FT in src/core/floorPlans.ts.
+const FP_DOOR_W_MIN = 0.5;
+const FP_DOOR_W_MAX = 50;
+function fpDoorWidthOrNull(v) {
+  if (v == null || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) && n >= FP_DOOR_W_MIN && n <= FP_DOOR_W_MAX ? Math.round(n * 100) / 100 : null;
+}
+function fpDoorWidthOf(pl) {
+  return pl && pl.doorOffsets && typeof pl.doorOffsets === 'object' ? fpDoorWidthOrNull(pl.doorOffsets.w) : null;
+}
+// A door's length as a fraction of its edge: the authored width clamped to the
+// edge, else the legacy 36%. N/S doors run along the rect width, E/W along its height.
+function fpDoorFrac(pl, edge) {
+  const w = fpDoorWidthOf(pl);
+  const len = edge === 'N' || edge === 'S' ? Number(pl.width) : Number(pl.height);
+  if (w == null || !(len > 0)) return 0.36;
+  return Math.min(1, w / len);
 }
 // Offset-aware tick placement: a door sits centred (legacy 32% inset) unless
 // an authored offset moves its centre along the edge. Ticks stay 36% of the
@@ -521,16 +545,18 @@ function fpDoorMarkersHTML(pl, u) {
   const offsets = fpDoorOffsetsOf(pl);
   const t = Math.max(3, Math.round(u * 0.2));
   const tone = authored ? 'authored' : 'auto';
+  const len = (e) => `${(fpDoorFrac(pl, e) * 100).toFixed(2)}%`;
   const pos = (e) => {
-    const c = Math.min(0.82, Math.max(0.18, offsets && offsets[e] != null ? offsets[e] : 0.5));
-    return `${((c - 0.18) * 100).toFixed(2)}%`;
+    const half = fpDoorFrac(pl, e) / 2;
+    const c = Math.min(1 - half, Math.max(half, offsets && offsets[e] != null ? offsets[e] : 0.5));
+    return `${((c - half) * 100).toFixed(2)}%`;
   };
   const hot = (e) => (pl && pl._doorDragEdge === e ? 'box-shadow:0 0 0 2px #7A3B28;' : '');
   const bits = [];
-  if (edges.includes('N')) bits.push(`<div class="fp-door fp-door-n ${tone}" style="height:${t}px;left:${pos('N')};width:36%;${hot('N')}" aria-hidden="true"></div>`);
-  if (edges.includes('S')) bits.push(`<div class="fp-door fp-door-s ${tone}" style="height:${t}px;left:${pos('S')};width:36%;${hot('S')}" aria-hidden="true"></div>`);
-  if (edges.includes('W')) bits.push(`<div class="fp-door fp-door-w ${tone}" style="width:${t}px;top:${pos('W')};height:36%;${hot('W')}" aria-hidden="true"></div>`);
-  if (edges.includes('E')) bits.push(`<div class="fp-door fp-door-e ${tone}" style="width:${t}px;top:${pos('E')};height:36%;${hot('E')}" aria-hidden="true"></div>`);
+  if (edges.includes('N')) bits.push(`<div class="fp-door fp-door-n ${tone}" style="height:${t}px;left:${pos('N')};width:${len('N')};${hot('N')}" aria-hidden="true"></div>`);
+  if (edges.includes('S')) bits.push(`<div class="fp-door fp-door-s ${tone}" style="height:${t}px;left:${pos('S')};width:${len('S')};${hot('S')}" aria-hidden="true"></div>`);
+  if (edges.includes('W')) bits.push(`<div class="fp-door fp-door-w ${tone}" style="width:${t}px;top:${pos('W')};height:${len('W')};${hot('W')}" aria-hidden="true"></div>`);
+  if (edges.includes('E')) bits.push(`<div class="fp-door fp-door-e ${tone}" style="width:${t}px;top:${pos('E')};height:${len('E')};${hot('E')}" aria-hidden="true"></div>`);
   return bits.join('');
 }
 // Normalize a server/snapshot doorOffsets value against authored edges (client
@@ -545,6 +571,8 @@ function fpNormalizeDoorOffsets(v, edges) {
     const n = Number(v[e]);
     if (Number.isFinite(n) && n >= 0 && n <= 1) out[e] = Math.round(n * 1000) / 1000;
   }
+  const w = fpDoorWidthOrNull(v.w);
+  if (w != null) out.w = w;
   return Object.keys(out).length ? out : null;
 }
 
@@ -3277,7 +3305,7 @@ function fpAreaNoteHTML(rect, sqft, it) {
   if (!fpIsContracted(it)) {
     const next = fpSqftForRect(rect);
     const changes = !fpSameSqft(next, sqft);
-    return `<span class="t-type" style="${changes ? 'color:var(--terra,#C1664C);font-weight:700;' : ''}" title="The floor plan sets this unit's size: its sqft becomes the drawn area (to 0.01 sqft) when the plan is published">${fpFmtArea(area)} sqft${changes ? ` · unit ${fpFmtArea(sqft)} → ${fpFmtArea(next)} on publish` : ''}</span>`;
+    return `<span class="t-type" style="${changes ? 'color:var(--terra,#C1664C);font-weight:700;' : ''}" title="The floor plan sets this unit's size: its sqft becomes the drawn area (rounded to whole sqft) when the plan is published">${fpFmtArea(area)} sqft${changes ? ` · unit ${fpFmtArea(sqft)} → ${fpFmtArea(next)} on publish` : ''}</span>`;
   }
   const dev = (area - sqft) / sqft;
   const pct = (Math.round(dev * 10000) / 100).toLocaleString('en-SG', { maximumFractionDigits: 2, signDisplay: 'exceptZero' });
@@ -3642,9 +3670,13 @@ function fpDoorControlsHTML(host, pair) {
   const doorBtns = ['N', 'S', 'E', 'W']
     .map((e) => `<button class="act-btn${effDoors.includes(e) ? ' primary' : ''}" data-door="${e}" style="padding:2px 8px;font-size:10px;" title="Toggle ${e} door edge${pair ? ' (both tiers)' : ''}">${e}</button>`)
     .join('');
+  const dw = fpDoorWidthOf(host);
   return (
     `<span class="t-type">${pair ? 'Shared doors' : 'Doors'}${authored ? ' · terra ticks = authored' : ' (auto · ghost ticks = all edges)'}:</span>` + doorBtns +
-    (authored ? `<button class="act-btn" id="fpDoorsAutoBtn" style="padding:2px 9px;font-size:10px;" title="Clear authored doors — fall back to all edges">Auto</button>` : '')
+    (authored ? `<button class="act-btn" id="fpDoorsAutoBtn" style="padding:2px 9px;font-size:10px;" title="Clear authored doors — fall back to all edges">Auto</button>` : '') +
+    `<label class="t-type" for="fpDoorWidth" style="margin-left:4px;">Door width</label>` +
+    `<input type="number" id="fpDoorWidth" class="tbl-search" data-fp-door-width="1" min="${FP_DOOR_W_MIN}" max="${FP_DOOR_W_MAX}" step="0.1" inputmode="decimal" value="${dw != null ? dw : ''}" placeholder="auto" style="width:64px;padding:2px 6px;font-size:10px;" aria-label="Door width in feet${pair ? ' (both tiers)' : ''}" title="Door width in feet for this unit's doors${pair ? ' (both tiers)' : ''} — Enter saves, empty = default">` +
+    `<span class="t-type">ft</span>`
   );
 }
 
@@ -3741,6 +3773,30 @@ async function fpToggleDoor(edge) {
   await fpSaveDoors(pl, next);
 }
 
+// Door width (ft) from the inspector field: applies to every door of the unit
+// (a stacked pair writes both tiers via fpSaveDoors). Setting a width on an
+// AUTO unit authors all four edges first, like the move-door tool does — a
+// width needs authored doors to stick. Empty clears back to the default tick.
+async function fpSetDoorWidth(raw) {
+  const sel = state.fp.placements.find((p) => p.unitId === state.fp.selected);
+  if (!sel) return;
+  if (fpGuardDoorsLocked(sel)) return; // live occupied placement: doors frozen
+  const pl = fpDoorHost(sel);
+  const txt = String(raw == null ? '' : raw).trim();
+  const w = txt === '' ? null : fpDoorWidthOrNull(txt);
+  if (txt !== '' && w == null) {
+    fpToast(`Door width must be between ${FP_DOOR_W_MIN} and ${FP_DOOR_W_MAX} ft`, false);
+    fpRenderSelInfo();
+    return;
+  }
+  if (w === fpDoorWidthOf(pl)) return;
+  const edges = Array.isArray(pl.doorEdges) && pl.doorEdges.length ? pl.doorEdges.slice() : ['N', 'S', 'E', 'W'];
+  const next = { ...(fpNormalizeDoorOffsets(pl.doorOffsets, edges) || {}) };
+  if (w == null) delete next.w;
+  else next.w = w;
+  await fpSaveDoors(pl, edges, Object.keys(next).length ? next : null);
+}
+
 async function fpResetDoors() {
   const sel = state.fp.placements.find((p) => p.unitId === state.fp.selected);
   if (!sel) return;
@@ -3795,8 +3851,9 @@ function fpDoorHitAt(clientX, clientY) {
 
 function fpDoorFraction(pl, edge, raw) {
   const c = edge === 'N' || edge === 'S' ? (raw[0] - pl.x) / pl.width : (raw[1] - pl.y) / pl.height;
-  // Ticks are 36% of the edge — clamp the centre so a tick never overhangs.
-  return Math.round(Math.min(0.82, Math.max(0.18, c)) * 1000) / 1000;
+  // Clamp the centre by half the door length so a tick never overhangs a corner.
+  const half = fpDoorFrac(pl, edge) / 2;
+  return Math.round(Math.min(1 - half, Math.max(half, c)) * 1000) / 1000;
 }
 
 // Press on a door while the tool is armed: author the edge set when needed
@@ -8819,6 +8876,16 @@ export function fpInitEvents() {
       }
       return;
     }
+    if (e.target && e.target.id === 'fpDoorWidth') {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        fpSetDoorWidth(e.target.value);
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        fpRenderSelInfo();
+      }
+      return;
+    }
     if (e.key === 'Enter' && e.target && e.target.id === 'fpBlockRename') {
       e.preventDefault();
       fpRenameBlock();
@@ -8836,6 +8903,10 @@ export function fpInitEvents() {
     }
     if (e.target && e.target.dataset && e.target.dataset.fpLine) {
       fpCommitLineField(e.target);
+      return;
+    }
+    if (e.target && e.target.id === 'fpDoorWidth') {
+      fpSetDoorWidth(e.target.value);
       return;
     }
     if (e.target && e.target.id === 'fpBlockColorPick') {

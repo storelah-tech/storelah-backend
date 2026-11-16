@@ -987,8 +987,9 @@ export function onUnitSizeChange() {
 
 // ---------- dimensions → area ----------
 // Length × width (decimal feet) drive #f-sqft (read-only). Mirrors the
-// server's derivation (quantized to 0.01) so the preview matches what is saved.
-const round2 = (n) => Math.round(n * 100) / 100;
+// server's derivation (rounded to whole sqft, wholeSqft in unitSizing.ts) so
+// the preview matches what is saved.
+const roundSqft = (n) => Math.round(n);
 
 function readDim(sel) {
   const raw = $(sel).value;
@@ -1012,7 +1013,7 @@ export function onUnitDimsInput() {
   const w = readDim('#f-width');
   const h = readDim('#f-height');
   const hint = $('#f-dimsHint');
-  const area = l > 0 && w > 0 ? round2(l * w) : null;
+  const area = l > 0 && w > 0 ? roundSqft(l * w) : null;
   $('#f-sqft').value = area != null ? String(area) : legacySqft != null ? String(legacySqft) : '';
   if (area != null && !sizeTouched && (mode === 'create' || dimsEdited)) {
     // Auto-pick the size tier NEAREST the area (inside a band = distance 0).

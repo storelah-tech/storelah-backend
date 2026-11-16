@@ -487,6 +487,8 @@ const floorPlanDoorOffsetsSchema = z
     S: z.number().min(0).max(1).optional(),
     E: z.number().min(0).max(1).optional(),
     W: z.number().min(0).max(1).optional(),
+    // Door width in feet for this unit's doors (see DoorOffsets in core/floorPlans.ts).
+    w: z.number().min(0.5).max(50).optional(),
   })
   .nullish();
 

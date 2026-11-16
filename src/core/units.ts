@@ -2,7 +2,7 @@ import { prisma } from '../lib/prisma';
 import { toNum } from '../lib/format';
 import { AppError } from '../lib/http';
 import { Prisma, UnitStatus } from '@prisma/client';
-import { quantizeSqft } from './unitSizing';
+import { wholeSqft } from './unitSizing';
 import { putContentImage, deleteContentImage } from '../lib/contentStorage';
 import { canonicalBranchCode } from './branches';
 import { assertFloorAllowed } from './floors';
@@ -68,9 +68,9 @@ export interface UpdateUnitInput {
 // ---------- physical dimensions (decimal feet) ----------
 //
 // Length × width drive the floor area: whenever both are known after a write,
-// sqft = quantizeSqft(lengthFt × widthFt) — the operator never types sqft for
+// sqft = wholeSqft(lengthFt × widthFt) — the operator never types sqft for
 // a dimensioned unit. Height is informational (volume = L × W × H, cu ft).
-// Dimensions are stored at the same 0.01 precision as sqft.
+// Dimensions are stored to 0.01 ft; the derived sqft is rounded to whole sqft.
 
 export function quantizeDim(ft: number): number {
   return Math.round(ft * 100) / 100;
@@ -81,7 +81,7 @@ function quantizeDimOrNull(ft: number | null | undefined): number | null | undef
 }
 
 export function areaFromDims(lengthFt: number | null | undefined, widthFt: number | null | undefined): number | null {
-  return lengthFt != null && widthFt != null && lengthFt > 0 && widthFt > 0 ? quantizeSqft(lengthFt * widthFt) : null;
+  return lengthFt != null && widthFt != null && lengthFt > 0 && widthFt > 0 ? wholeSqft(lengthFt * widthFt) : null;
 }
 
 function dimsOf(u: { lengthFt: number | null; widthFt: number | null; heightFt: number | null }) {
@@ -440,7 +440,7 @@ export async function createUnit(input: CreateUnitInput) {
   const widthFt = quantizeDimOrNull(input.widthFt) ?? null;
   const heightFt = quantizeDimOrNull(input.heightFt) ?? null;
   const derivedSqft = areaFromDims(lengthFt, widthFt);
-  const sqft = derivedSqft ?? (input.sqft !== undefined ? quantizeSqft(input.sqft) : null);
+  const sqft = derivedSqft ?? (input.sqft !== undefined ? wholeSqft(input.sqft) : null);
   if (!(sqft != null && sqft > 0)) {
     throw new AppError(400, 'VALIDATION', 'Provide lengthFt and widthFt (area = length × width) or a positive sqft');
   }
@@ -452,7 +452,7 @@ export async function createUnit(input: CreateUnitInput) {
       sizeId: input.sizeId,
       unitCode,
       name: input.name?.trim() || null,
-      sqft, // decimal sqft, 0.01 step (derived from length × width when given)
+      sqft, // whole sqft (derived from length × width when given, rounded)
       lengthFt,
       widthFt,
       heightFt,
@@ -483,8 +483,10 @@ export async function updateUnit(code: string, input: UpdateUnitInput) {
   const nextWidth = input.widthFt === undefined ? unit.widthFt : quantizeDimOrNull(input.widthFt) ?? null;
   const dimsTouched = input.lengthFt !== undefined || input.widthFt !== undefined;
   const derivedSqft = dimsTouched ? areaFromDims(nextLength, nextWidth) : null;
-  const nextSqft = derivedSqft ?? (input.sqft === undefined ? undefined : quantizeSqft(input.sqft)); // decimal sqft, 0.01 step
-  if (unit.placement && nextSqft !== undefined && nextSqft !== unit.sqft) {
+  const nextSqft = derivedSqft ?? (input.sqft === undefined ? undefined : wholeSqft(input.sqft)); // whole sqft
+  // Re-sending a legacy decimal size (47.18) rounds to the same whole sqft as
+  // the drawing, so it is not a resize — it just stores the rounded value.
+  if (unit.placement && nextSqft !== undefined && nextSqft !== wholeSqft(unit.sqft)) {
     throw new AppError(
       409,
       'SIZE_OWNED_BY_PLAN',
@@ -1162,12 +1164,12 @@ export async function importUnits(csvText: string): Promise<UnitImportReport> {
         continue;
       }
       const sqftIn = Number(sqftRaw);
-      // Decimal sqft (2026-10-14): up to 2 decimal places, e.g. 47.25.
-      if (!Number.isFinite(sqftIn) || sqftIn <= 0 || Math.abs(quantizeSqft(sqftIn) - sqftIn) > 1e-9) {
-        rows.push(fail(rowNum, `sqft must be a positive number with at most 2 decimals (got ${JSON.stringify(sqftRaw)})`));
+      // Whole sqft (2026-11-16): decimals are accepted and rounded, e.g. 47.25 → 47.
+      if (!Number.isFinite(sqftIn) || wholeSqft(sqftIn) <= 0) {
+        rows.push(fail(rowNum, `sqft must be a positive number (got ${JSON.stringify(sqftRaw)})`));
         continue;
       }
-      const sqft = quantizeSqft(sqftIn);
+      const sqft = wholeSqft(sqftIn);
       const rate = Number(rateRaw);
       if (!Number.isFinite(rate) || rate < 0) {
         rows.push(fail(rowNum, `rate must be 0 or greater (got ${JSON.stringify(rateRaw)})`));

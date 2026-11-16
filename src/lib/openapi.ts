@@ -30,7 +30,7 @@ export const openapiSpec = {
   openapi: '3.0.3',
   info: {
     title: 'StoreLah Booking API',
-    version: '1.13.0',
+    version: '1.13.1',
     description: [
       'Customer-facing booking API for the StoreLah self-storage business.',
       '',
@@ -403,6 +403,11 @@ export const openapiSpec = {
         'LOCKER "Locker" 8–15 (new meaning), XS "XS" 10–19 (the former LOCKER row, re-coded), SMALL "S" 20–39, ' +
         'MEDIUM "M" 40–69, LARGE "L" 70–99, XLBIZ "XL" 100–150 (codes unchanged; names are display only); promotions read XS as LOCKER and XLBIZ as XL; ' +
         'stacking accepts LOCKER and XS. Public shapes unchanged.',
+      'v1.13.1: WHOLE SQFT — every write of a unit\'s `sqft` (`POST|PUT /cms/units`, CSV import, drawn units, ' +
+        'publish size sync) stores the area rounded to a whole number (47.18 → 47; CSV decimals are accepted and rounded); ' +
+        'sizes that round to the same integer count as unchanged, so legacy decimal rows are never flagged or re-synced. ' +
+        'DOOR WIDTH (CMS only, additive): placement `doorOffsets` accepts an optional `w` = door width in feet ' +
+        '(0.5–50, applied to all of that unit\'s authored doors; omitted = default tick). Public shapes unchanged.',
     ].join('\n'),
   },
   servers: [

@@ -702,7 +702,7 @@ export async function deletePlan(id: string) {
 }
 
 export interface PlanCheck { status: 'pass' | 'warning' | 'blocker'; message: string }
-export interface SampleBooking { unitCode: string; branch: string; monthlyRate: number; months: number; baseTotal: number; discountTotal: number; effectiveTotal: number; effectiveRate: number; note: string }
+export interface SampleBooking { unitCode: string; name: string; branch: string; monthlyRate: number; months: number; baseTotal: number; discountTotal: number; effectiveTotal: number; effectiveRate: number; note: string }
 export interface PlanOverlap { planId: string; planName: string; status: string; effectiveFrom: Date; effectiveTo: Date | null }
 
 // DIFFICULTY LOG (validation engine simplifications — see return Note):
@@ -928,6 +928,7 @@ export async function validatePlan(id: string) {
         const discountTotal = (baseTotal * headlinePct) / 100;
         samples.push({
           unitCode: u.unitCode,
+          name: u.name ?? u.unitCode,
           branch: u.branch.code,
           monthlyRate: rate,
           months,

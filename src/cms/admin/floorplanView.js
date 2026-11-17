@@ -17,14 +17,29 @@ import {
   DEFAULT_SNAP_FT,
   DEFAULT_WALL_THICKNESS_FT,
   LINE_KINDS,
+  MAX_OUTLINE_VERTICES,
   MAX_WALL_THICKNESS_FT,
+  MIN_OUTLINE_EDGE_FT,
+  MIN_OUTLINE_VERTICES,
   MIN_WALL_THICKNESS_FT,
+  OVERLAP_AREA_SQFT,
   angleDeg,
   calibrateUnderlay,
+  clipPolygonToRect,
   lineFeedsArea,
   nearestOnSegment,
+  normalizeOutline,
+  outlineArea,
+  outlineBBox,
+  outlineOf,
+  placementPolygon,
+  placementsOverlap,
   pointAtAngle,
+  pointInPolygon,
+  polygonIntersectionArea,
+  polygonLabelPoint,
   polylineLengthFt,
+  rectToPolygon,
   segmentLengthFt,
   FINE_SNAP_FT,
   MIN_RECT_SIDE_FT,
@@ -200,19 +215,22 @@ function unitBaseFootprint(u) {
 // PLACEMENT_OVERLAP (unit-vs-unit only — decoration blocks may underlay).
 // Touching edges are fine; only shared interior area collides.
 //
-// STACKING exemption (mirrors src/core/floorPlans.ts): two placements sharing
-// the EXACT same rect with differing tiers (0 + 1 locker pair) do NOT collide.
-// `tier` is the incoming write's tier; `ignore` is one unitId (string), several
-// (array, for paired stack moves), or null.
-function fpOverlapAt(x, y, w, h, ignore, tier) {
+// STACKING exemption (mirrors src/core/floorPlans.ts): two RECT placements
+// sharing the EXACT same rect with differing tiers (0 + 1 locker pair) do NOT
+// collide. `tier` is the incoming write's tier; `ignore` is one unitId
+// (string), several (array, for paired stack moves), or null. `outline` is
+// the incoming write's shaped outline (null for rects) — shaped units collide
+// through polygon intersection, so a neighbour sitting in an L-notch is fine.
+function fpOverlapAt(x, y, w, h, ignore, tier, outline) {
   const t = tier === 1 ? 1 : 0;
   const ignored = new Set(Array.isArray(ignore) ? ignore : ignore ? [ignore] : []);
+  const cand = { x, y, width: w, height: h, outline: fpOutlineOf(outline) };
   return (
     state.fp.placements.find((o) => {
       if (ignored.has(o.unitId)) return false;
-      const r = { x, y, width: w, height: h };
-      if (!rectsOverlapExact(r, o)) return false; // integer-exact (milli-ft): touching decimal edges never collide
-      if (sameRect(r, o) && (o.stackTier || 0) !== t) return false; // stacked pair shares one rect
+      if (!fpPlacementsOverlap(cand, o)) return false;
+      // Stack exemption is rect-only (shaped units never stack, D6).
+      if (!fpIsShaped(cand) && !fpIsShaped(o) && sameRect({ x, y, width: w, height: h }, o) && (o.stackTier || 0) !== t) return false;
       return true;
     }) || null
   );
@@ -230,8 +248,11 @@ function fpIsLockerPlacement(p) {
 }
 
 // The other tier on the same rect, if any (a rect holds at most one pair).
+// Rect-only: shaped units never stack (D6), so a bbox coincidence never
+// reports a mate.
 function fpStackMate(pl) {
-  return state.fp.placements.find((o) => o.unitId !== pl.unitId && fpSameRect(o, pl)) || null;
+  if (fpIsShaped(pl)) return null;
+  return state.fp.placements.find((o) => o.unitId !== pl.unitId && !fpIsShaped(o) && fpSameRect(o, pl)) || null;
 }
 
 // Door host: a stacked pair shares one footprint and one set of doors. The
@@ -264,6 +285,7 @@ function fpDoorCopy(lower) {
 // third-placement check.
 function fpStackDropAllowed(pl, hit, pairIds) {
   if (!pl || !hit) return false;
+  if (fpIsShaped(pl) || fpIsShaped(hit)) return false; // shaped units never stack (D6)
   if (!Array.isArray(pairIds) || pairIds.length !== 1) return false; // singles only — pairs move as one block
   if ((pl.stackTier || 0) !== 0 || (hit.stackTier || 0) !== 0) return false;
   if (!fpIsLockerPlacement(pl) || !fpIsLockerPlacement(hit)) return false;
@@ -321,7 +343,11 @@ async function fpStackMovedOn(pl, hit, orig) {
 function fpGroupByRect(list) {
   const groups = new Map();
   for (const pl of list || []) {
-    const k = [pl.x, pl.y, pl.width, pl.height].map(toMilli).join(',');
+    // Shaped units never merge: a bbox coincidence is not a shared rect
+    // (stacked pairs are rect-only, D6).
+    const k = fpIsShaped(pl)
+      ? `shaped:${pl.unitId}`
+      : [pl.x, pl.y, pl.width, pl.height].map(toMilli).join(',');
     if (!groups.has(k)) groups.set(k, []);
     groups.get(k).push(pl);
   }
@@ -400,7 +426,7 @@ function fpFmtArea(sqft) {
   return (Math.round(Number(sqft || 0) * 100) / 100).toLocaleString('en-SG', { maximumFractionDigits: 2 });
 }
 
-// Unit sizes — mirrors sqftForRect / sameSqft in src/core/unitSizing.ts:
+// Unit sizes — mirrors sqftForPlacement / sameSqft in src/core/unitSizing.ts:
 // a drawn unit's sqft is its area rounded to whole sqft (2026-11-16), and two
 // sizes that round to the same integer (or sit within 0.05 sqft) count as
 // unchanged, so legacy decimal units are never flagged as resized.
@@ -408,8 +434,144 @@ const FP_SQFT_EPSILON = 0.05;
 function fpSqftForRect(r) {
   return Math.round(rectAreaSqft(r));
 }
+// Drawn area of a placement in sq ft (outline polygon area, else w×h).
+function fpPlacementAreaSqft(p) {
+  const o = fpOutlineOf(p && p.outline);
+  if (o && o.length >= 3) return Math.round(outlineArea(o) * 10000) / 10000;
+  return rectAreaSqft(p);
+}
+// Unit.sqft for a drawn placement: outline area when shaped, else w×h.
+function fpSqftForPlacement(p) {
+  return Math.round(fpPlacementAreaSqft(p));
+}
 function fpSameSqft(a, b) {
   return Math.abs(Number(a) - Number(b)) < FP_SQFT_EPSILON || Math.round(Number(a)) === Math.round(Number(b));
+}
+
+// ---------- odd-shaped units (client mirrors of src/core/planGeometry.ts + floorPlans.ts) ----------
+// The generated planGeometry.js runs the SAME code as the server; the helpers
+// below mirror the floorPlans.ts outline/door logic so the editor pre-checks
+// exactly what the API enforces (the server stays the final arbiter).
+const FP_OUTLINE_EDGE_RE = /^e(\d+)$/;
+function fpIsShaped(pl) {
+  return !!fpOutlineOf(pl && pl.outline);
+}
+// Read helper: validated outline pairs or null (never throws on read).
+function fpOutlineOf(v) {
+  return outlineOf(v);
+}
+function fpPlacementPolygon(pl) {
+  return placementPolygon({ x: pl.x, y: pl.y, width: pl.width, height: pl.height, outline: fpOutlineOf(pl.outline) });
+}
+// Shape-aware overlap (mirrors placementsOverlap): bbox reject, then shared
+// interior area above OVERLAP_AREA_SQFT. Edge-touching is never an overlap.
+function fpPlacementsOverlap(a, b) {
+  return placementsOverlap(
+    { x: a.x, y: a.y, width: a.width, height: a.height, outline: fpOutlineOf(a.outline) },
+    { x: b.x, y: b.y, width: b.width, height: b.height, outline: fpOutlineOf(b.outline) },
+  );
+}
+// Deviation of a placement's drawn area from sqft (contracted-unit rule).
+function fpPlacementAreaDeviation(p, sqft) {
+  return Math.abs(fpPlacementAreaSqft(p) - sqft) / Math.max(1, sqft);
+}
+// Label anchor: the server sends labelAt; fall back to the same computation
+// (pole of inaccessibility for shaped, bbox centre for rects).
+function fpLabelAtOf(pl) {
+  if (Array.isArray(pl.labelAt) && pl.labelAt.length >= 2) return pl.labelAt;
+  const o = fpOutlineOf(pl.outline);
+  if (o && o.length >= 3) return polygonLabelPoint(o);
+  return [quantizeFt(pl.x + pl.width / 2), quantizeFt(pl.y + pl.height / 2)];
+}
+// clip-path for a shaped tile, in % of its bbox (bbox div keeps working for
+// drag math, the polygon clips the paint).
+function fpClipPathFor(pl) {
+  const o = fpOutlineOf(pl.outline);
+  if (!o || !pl.width || !pl.height) return null;
+  const pts = o.map(([x, y]) => `${(((x - pl.x) / pl.width) * 100).toFixed(3)}% ${(((y - pl.y) / pl.height) * 100).toFixed(3)}%`);
+  return `polygon(${pts.join(', ')})`;
+}
+// Remap authored doors onto a new outline (mirrors remapDoorsToOutline):
+// kept edges hold their offsets, doors on removed edges move to the nearest
+// remaining edge. Returns { doorEdges, doorOffsets } (stored form).
+function fpRemapDoorsToOutline(prevOutline, nextOutline, doorEdges, doorOffsets) {
+  const nextCount = nextOutline.length;
+  const edgeKey = (i) => `e${i}`;
+  const prevArr = Array.isArray(doorEdges) ? doorEdges.filter((k) => FP_OUTLINE_EDGE_RE.test(k)) : [];
+  const prevOffsets = doorOffsets && typeof doorOffsets === 'object' && !Array.isArray(doorOffsets) ? doorOffsets : {};
+  const doorPoint = (key) => {
+    const m = FP_OUTLINE_EDGE_RE.exec(key);
+    const i = m ? Number(m[1]) % prevOutline.length : 0;
+    const a = prevOutline[i];
+    const b = prevOutline[(i + 1) % prevOutline.length];
+    const f = Number(prevOffsets[key] ?? 0.5);
+    return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f];
+  };
+  const out = [];
+  const outOffsets = {};
+  if (typeof prevOffsets.w === 'number') outOffsets.w = prevOffsets.w;
+  for (const key of prevArr) {
+    const m = FP_OUTLINE_EDGE_RE.exec(key);
+    if (m && Number(m[1]) < nextCount) {
+      out.push(edgeKey(Number(m[1])));
+      if (typeof prevOffsets[key] === 'number') outOffsets[edgeKey(Number(m[1]))] = prevOffsets[key];
+      continue;
+    }
+    const pt = doorPoint(key);
+    let best = 0;
+    let bestDist = Infinity;
+    let bestFrac = 0.5;
+    for (let i = 0; i < nextCount; i++) {
+      const hit = nearestOnSegment(pt, nextOutline[i], nextOutline[(i + 1) % nextCount]);
+      if (hit.dist < bestDist) {
+        bestDist = hit.dist;
+        best = i;
+        const a = nextOutline[i];
+        const len = Math.hypot(nextOutline[(i + 1) % nextCount][0] - a[0], nextOutline[(i + 1) % nextCount][1] - a[1]);
+        bestFrac = len > 0 ? Math.min(1, Math.max(0, Math.hypot(hit.x - a[0], hit.y - a[1]) / len)) : 0.5;
+      }
+    }
+    const nk = edgeKey(best);
+    if (!out.includes(nk)) {
+      out.push(nk);
+      outOffsets[nk] = Math.round(bestFrac * 1000) / 1000;
+    }
+  }
+  if (!out.length) return { doorEdges: null, doorOffsets: Object.keys(outOffsets).length ? outOffsets : null };
+  out.sort((a, b) => Number(a.slice(1)) - Number(b.slice(1)));
+  return { doorEdges: out, doorOffsets: Object.keys(outOffsets).length ? outOffsets : null };
+}
+// Auto-door for a shaped outline (mirrors inferOutlineDoorEdges): nearest edge
+// to a corridor-like block, else the longest edge.
+function fpInferOutlineDoorEdges(outline, blocks) {
+  if (!outline || !outline.length) return [];
+  const corridors = (blocks || []).filter((b) => fpIsCorridorLike(b && b.name));
+  const mid = (i) => {
+    const a = outline[i];
+    const b = outline[(i + 1) % outline.length];
+    return [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+  };
+  if (corridors.length) {
+    let best = -1;
+    let bestDist = Infinity;
+    for (let i = 0; i < outline.length; i++) {
+      const [mx, my] = mid(i);
+      for (const c of corridors) {
+        const dx = mx < c.x ? c.x - mx : mx > c.x + c.width ? mx - (c.x + c.width) : 0;
+        const dy = my < c.y ? c.y - my : my > c.y + c.height ? my - (c.y + c.height) : 0;
+        const d = Math.hypot(dx, dy);
+        if (d < bestDist) {
+          bestDist = d;
+          best = i;
+        }
+      }
+    }
+    if (best >= 0 && bestDist <= 1) return [`e${best}`];
+  }
+  const edgeLen = (i) => Math.hypot(outline[(i + 1) % outline.length][0] - outline[i][0], outline[(i + 1) % outline.length][1] - outline[i][1]);
+  let longest = 0;
+  for (let i = 1; i < outline.length; i++) if (edgeLen(i) > edgeLen(longest)) longest = i;
+  return [`e${longest}`];
 }
 
 // ---------- drawn units (floor-plan unit sync Phase 4) ----------
@@ -495,7 +657,11 @@ function fpOnCanvasHover(e) {
 // `u`, lengths are % of the rect so they track zoom automatically.
 function fpEffectiveDoors(pl) {
   const authored = Array.isArray(pl.doorEdges) && pl.doorEdges.length ? pl.doorEdges : null;
-  return { edges: authored ? authored.slice() : ['N', 'S', 'E', 'W'], authored: !!authored };
+  if (fpIsShaped(pl)) {
+    const all = fpOutlineOf(pl.outline).map((_, i) => `e${i}`);
+    return { edges: authored ? authored.filter((e) => FP_OUTLINE_EDGE_RE.test(e)) : all, authored: !!authored, shaped: true };
+  }
+  return { edges: authored ? authored.slice() : ['N', 'S', 'E', 'W'], authored: !!authored, shaped: false };
 }
 // Authored door positions (door-move tool): per-edge door-centre fractions
 // along the edge (0..1, 0.5 = centred, the legacy render). Intersected with
@@ -531,9 +697,31 @@ function fpDoorWidthOf(pl) {
 // edge, else the legacy 36%. N/S doors run along the rect width, E/W along its height.
 function fpDoorFrac(pl, edge) {
   const w = fpDoorWidthOf(pl);
-  const len = edge === 'N' || edge === 'S' ? Number(pl.width) : Number(pl.height);
+  let len;
+  if (fpIsShaped(pl)) {
+    const m = FP_OUTLINE_EDGE_RE.exec(edge);
+    const o = fpOutlineOf(pl.outline);
+    if (!m || !o) return 0.36;
+    const i = Number(m[1]);
+    const a = o[i % o.length];
+    const b = o[(i + 1) % o.length];
+    len = Math.hypot(b[0] - a[0], b[1] - a[1]);
+  } else {
+    len = edge === 'N' || edge === 'S' ? Number(pl.width) : Number(pl.height);
+  }
   if (w == null || !(len > 0)) return 0.36;
   return Math.min(1, w / len);
+}
+// Outline edge geometry for a shaped placement: endpoints in feet + plan
+// angle (CAD convention, same as angleDeg) for the rotated door marker.
+function fpOutlineEdgeGeom(pl, edge) {
+  const m = FP_OUTLINE_EDGE_RE.exec(String(edge));
+  const o = fpOutlineOf(pl.outline);
+  if (!m || !o) return null;
+  const i = Number(m[1]) % o.length;
+  const a = o[i];
+  const b = o[(i + 1) % o.length];
+  return { a, b, len: Math.hypot(b[0] - a[0], b[1] - a[1]), deg: angleDeg(a, b) };
 }
 // Offset-aware tick placement: a door sits centred (legacy 32% inset) unless
 // an authored offset moves its centre along the edge. Ticks stay 36% of the
@@ -541,10 +729,28 @@ function fpDoorFrac(pl, edge) {
 // in-drag edge (pl._doorDragEdge, transient, never persisted) gets a terra
 // ring so the live ghost reads while dragging.
 function fpDoorMarkersHTML(pl, u) {
-  const { edges, authored } = fpEffectiveDoors(pl);
+  const { edges, authored, shaped } = fpEffectiveDoors(pl);
   const offsets = fpDoorOffsetsOf(pl);
   const t = Math.max(3, Math.round(u * 0.2));
   const tone = authored ? 'authored' : 'auto';
+  // Shaped units: one rotated tick per authored edge, centred at the authored
+  // fraction (default 0.5), clamped so the tick never overhangs a corner.
+  if (shaped) {
+    const bits = [];
+    for (const e of edges) {
+      const g = fpOutlineEdgeGeom(pl, e);
+      if (!g || !(g.len > 0)) continue;
+      const half = fpDoorFrac(pl, e) / 2;
+      const c = Math.min(1 - half, Math.max(half, offsets && offsets[e] != null ? offsets[e] : 0.5));
+      const cx = (g.a[0] + (g.b[0] - g.a[0]) * c - pl.x) * u;
+      const cy = (g.a[1] + (g.b[1] - g.a[1]) * c - pl.y) * u;
+      const wpx = Math.max(4, fpDoorFrac(pl, e) * g.len * u);
+      const hot = pl && pl._doorDragEdge === e ? 'box-shadow:0 0 0 2px #7A3B28;' : '';
+      // Plan y-down: screen rotation is the negative plan angle.
+      bits.push(`<div class="fp-door ${tone}" style="height:${t}px;width:${wpx.toFixed(1)}px;left:${cx.toFixed(1)}px;top:${cy.toFixed(1)}px;transform:translate(-50%,-50%) rotate(${(-g.deg).toFixed(1)}deg);${hot}" aria-hidden="true"></div>`);
+    }
+    return bits.join('');
+  }
   const len = (e) => `${(fpDoorFrac(pl, e) * 100).toFixed(2)}%`;
   const pos = (e) => {
     const half = fpDoorFrac(pl, e) / 2;
@@ -562,11 +768,17 @@ function fpDoorMarkersHTML(pl, u) {
 // Normalize a server/snapshot doorOffsets value against authored edges (client
 // mirror of normalizeDoorOffsets pruning): object form only, keys outside the
 // effective edges dropped, values outside 0..1 dropped; null when empty.
-function fpNormalizeDoorOffsets(v, edges) {
+// Shaped units key offsets by outline edge ("e0", …) — pass the outline so
+// auto placements keep all-edge keys instead of dropping them.
+function fpNormalizeDoorOffsets(v, edges, outline) {
   if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
-  const eff = Array.isArray(edges) && edges.length ? edges : null;
+  const o = fpOutlineOf(outline);
+  const keys = o && o.length
+    ? Array.from({ length: o.length }, (_, i) => `e${i}`)
+    : ['N', 'S', 'E', 'W'];
+  const eff = Array.isArray(edges) && edges.length ? edges : o && o.length ? keys : null;
   const out = {};
-  for (const e of ['N', 'S', 'E', 'W']) {
+  for (const e of keys) {
     if (eff && !eff.includes(e)) continue;
     const n = Number(v[e]);
     if (Number.isFinite(n) && n >= 0 && n <= 1) out[e] = Math.round(n * 1000) / 1000;
@@ -616,15 +828,21 @@ function fpNormalizePlacements(plan) {
     height: p.height,
     // Stacking tier: 0 = ground/sole tier, 1 = upper tier of a same-rect pair.
     stackTier: p.stackTier === 1 ? 1 : 0,
-    // Authored door compass edges (editor N/S/E/W toggles); null = unauthored
-    // (metrics falls back to AUTO_ALL_EDGES for this unit).
-    doorEdges: Array.isArray(p.doorEdges) && p.doorEdges.length ? p.doorEdges.slice() : null,
-    // Authored door positions (door-move tool fractions per edge); null = all
-    // centred. Pruned to the authored edges so stale keys never render.
-    doorOffsets: fpNormalizeDoorOffsets(p.doorOffsets, Array.isArray(p.doorEdges) && p.doorEdges.length ? p.doorEdges : null),
-    // Unit sync: drawn area ≠ unit sqft — the unit's size updates on publish.
-    areaDirty: p.areaDirty === true,
-  }));
+  // Authored door compass edges (editor N/S/E/W toggles); null = unauthored
+  // (metrics falls back to AUTO_ALL_EDGES for this unit).
+  doorEdges: Array.isArray(p.doorEdges) && p.doorEdges.length ? p.doorEdges.slice() : null,
+  // Authored door positions (door-move tool fractions per edge); null = all
+  // centred. Pruned to the authored edges so stale keys never render.
+  // Shaped units key offsets by outline edge ("e0", …) — validated against
+  // the outline's edge count.
+  doorOffsets: fpNormalizeDoorOffsets(p.doorOffsets, Array.isArray(p.doorEdges) && p.doorEdges.length ? p.doorEdges : null, fpOutlineOf(p.outline)),
+  // Odd-shaped units (D1): outline polygon or null for rectangles. labelAt
+  // is the pole of inaccessibility (shaped) or the bbox centre (rect).
+  outline: fpOutlineOf(p.outline),
+  labelAt: Array.isArray(p.labelAt) && p.labelAt.length >= 2 ? [Number(p.labelAt[0]), Number(p.labelAt[1])] : null,
+  // Unit sync: drawn area ≠ unit sqft — the unit's size updates on publish.
+  areaDirty: p.areaDirty === true,
+}));
 }
 
 function fpNormalizeBlocks(plan) {
@@ -808,19 +1026,27 @@ function fpBoundaryMetricsLocal() {
     // — mirrors computeBoundaryMetrics in src/core/floorPlans.ts.
     ufa += gross;
     // NLA subtracts only block/structure area that sits ON a placement
-    // footprint (loop-clipped, per placement row) — mirrors computeBoundaryMetrics
-    // in src/core/floorPlans.ts. Pillars subtract additionally (NLA only):
+    // footprint (loop-clipped, per placement row — mirrors computeBoundaryMetrics
+    // in src/core/floorPlans.ts). Pillars subtract additionally (NLA only):
     // loop-clipped hasPillar-unit footprints (Pillar blocks already ride in
     // `blocked` via state.fp.blocks) — mirrors the `pillarRects` input to
     // computeBoundaryMetrics in src/core/floorPlans.ts.
-    const placementsInLoop = (state.fp.placements || []).reduce((sum, r) => sum + fpRectPolygonArea(r, loop), 0);
+    // Shaped placements feed the polygon ∩ loop (fpPlacementInLoop); rect
+    // placements keep the exact rectPolygonArea path (byte-identical numbers).
+    const fpPlacementInLoop = (r, loop) => {
+      const o = fpOutlineOf(r.outline);
+      return o ? polygonIntersectionArea(o, loop) : fpRectPolygonArea(r, loop);
+    };
+    const placementsInLoop = (state.fp.placements || []).reduce((sum, r) => sum + fpPlacementInLoop(r, loop), 0);
     const onUnits = (state.fp.placements || []).reduce((sum, p) => sum + obstacles.reduce((s, o) => {
       const hit = fpRectIntersection(p, o);
-      return hit ? s + fpRectPolygonArea(hit, loop) : s;
+      if (!hit) return s;
+      const po = fpOutlineOf(p.outline);
+      return hit ? s + (po ? polygonIntersectionArea(po, clipPolygonToRect(loop, hit)) : fpRectPolygonArea(hit, loop)) : s;
     }, 0), 0);
     const pillarBlocked = (state.fp.placements || [])
       .filter((r) => r.hasPillar === true)
-      .reduce((sum, r) => sum + fpRectPolygonArea(r, loop), 0);
+      .reduce((sum, r) => sum + fpPlacementInLoop(r, loop), 0);
     nla += Math.max(0, placementsInLoop - onUnits - pillarBlocked);
     // Loop-clipped BLOCK rects only (solid structure excluded); SUM may
     // double-count overlapping blocks (non-overlapping assumption, no dedupe).
@@ -842,6 +1068,34 @@ function fpBoundaryMetricsLocal() {
 }
 
 const fpFmt1 = (n) => Number(n || 0).toLocaleString('en-SG', { maximumFractionDigits: 1 });
+
+// Odd-shaped tile content (editor + read-only viewer): the bbox div clips
+// paint to the polygon; an SVG overlay draws the outline stroke (+ selection
+// ring when selected). Labels anchor at labelAt. No resize handle (option A).
+function fpShapedTileInnerHTML(pl, u, selected) {
+  const [lx, ly] = fpLabelAtOf(pl);
+  const lxPx = ((lx - pl.x) * u).toFixed(1);
+  const lyPx = ((ly - pl.y) * u).toFixed(1);
+  const o = fpOutlineOf(pl.outline);
+  const pts = o.map(([x, y]) => `${((x - pl.x) * u).toFixed(1)},${((y - pl.y) * u).toFixed(1)}`).join(' ');
+  return (
+    `<svg class="fp-shape-svg" width="${(pl.width * u).toFixed(1)}" height="${(pl.height * u).toFixed(1)}" viewBox="0 0 ${(pl.width * u).toFixed(1)} ${(pl.height * u).toFixed(1)}" style="position:absolute;inset:0;overflow:visible;pointer-events:none;" aria-hidden="true">` +
+    `<polygon points="${pts}" fill="var(--sage, #DCE5D8)" stroke="var(--olive2, #5B6B4C)" stroke-width="2"/>` +
+    (selected ? `<polygon points="${pts}" fill="none" stroke="#7A3B28" stroke-width="3"/>` : '') +
+    `</svg>` +
+    `<div class="fp-status" style="background:${fpStatusColor(pl.status)};"></div>` +
+    `<div class="fp-code" style="position:absolute;left:${lxPx}px;top:${lyPx}px;transform:translate(-50%,-50%);">${escapeHtml(fpUnitNo(pl))}</div>` +
+    `<div class="fp-sqft" style="position:absolute;left:${lxPx}px;top:${(Number(lyPx) + 11).toFixed(1)}px;transform:translate(-50%,-50%);">${fpFmtArea(pl.sqft)} sqft</div>` +
+    fpUnitTagsHTML(pl) +
+    fpDoorMarkersHTML(pl, u)
+  );
+}
+function fpApplyShapedTileStyle(el, pl) {
+  const clip = fpClipPathFor(pl);
+  if (clip) el.style.clipPath = clip;
+  el.style.borderColor = 'transparent';
+  el.style.background = 'transparent';
+}
 
 // Status-bar metrics (plain text, not a badge — it isn't clickable): the live
 // marked-area UFA/NLA (parity preview of the server boundaryMetrics on plan
@@ -1111,6 +1365,10 @@ async function fpFetch() {
   }
   try {
     const body = await get(`/floor-plans/${encodeURIComponent(state.fp.floorId)}`);
+    // Any in-progress outline tool is dropped on reload (draft vertices and
+    // edit mode never survive a fetch — the canvas matches the server).
+    state.fp.outlineMode = null;
+    state.fp.outlineDraft = null;
     fpApplyPlanPayload(body, false); // full reload: selection, zoom and undo reset
     // A (re)load shows the live plan — no draft version is loaded anymore and
     // the canvas matches the server (unsaved-changes guard resets).
@@ -1352,7 +1610,7 @@ async function fpAutoDoors() {
       skippedLocked += 1;
       continue;
     }
-    const inferred = fpInferDoorEdges(pl, state.fp.blocks || []);
+    const inferred = fpIsShaped(pl) ? fpInferOutlineDoorEdges(fpOutlineOf(pl.outline), state.fp.blocks || []) : fpInferDoorEdges(pl, state.fp.blocks || []);
     if (!inferred.length) {
       noCorridor += 1;
       continue;
@@ -1360,10 +1618,10 @@ async function fpAutoDoors() {
     try {
       const res = await fpMutate(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/units/${encodeURIComponent(pl.unitId)}`, {
         method: 'PUT',
-        body: JSON.stringify({ x: pl.x, y: pl.y, width: pl.width, height: pl.height, stackTier: pl.stackTier || 0, doorEdges: inferred }),
+        body: JSON.stringify({ x: pl.x, y: pl.y, width: pl.width, height: pl.height, ...(fpIsShaped(pl) ? { outline: pl.outline } : {}), stackTier: pl.stackTier || 0, doorEdges: inferred }),
       });
       pl.doorEdges = res && res.data ? res.data.doorEdges : inferred;
-      fpPushUndo({ kind: 'placement', unitId: pl.unitId, prev: { x: pl.x, y: pl.y, width: pl.width, height: pl.height, stackTier: pl.stackTier || 0, doorEdges: null, doorOffsets: null } });
+      fpPushUndo({ kind: 'placement', unitId: pl.unitId, prev: { x: pl.x, y: pl.y, width: pl.width, height: pl.height, outline: fpOutlineOf(pl.outline) ? fpOutlineOf(pl.outline).map(([x, y]) => [x, y]) : null, stackTier: pl.stackTier || 0, doorEdges: null, doorOffsets: null } });
       applied += 1;
     } catch (err) {
       fpToast(`Auto-doors ${fpUnitNo(pl)}: ${describeError(err)}`, false);
@@ -1535,7 +1793,7 @@ function fpUnitTagsHTML(...units) {
   if (draft) html += '<div class="fp-tag fp-tag-new" title="New unit — not published yet; publish the plan to make it available">NEW</div>';
   if (dirty.length) {
     const d = dirty[0];
-    html += `<div class="fp-tag fp-tag-dirty" title="${escapeHtml(fpUnitNo(d))}: drawn ${fpFmtArea(fpSqftForRect(d))} sqft, unit ${fpFmtArea(d.sqft)} sqft — updates on publish">Δ</div>`;
+    html += `<div class="fp-tag fp-tag-dirty" title="${escapeHtml(fpUnitNo(d))}: drawn ${fpFmtArea(fpSqftForPlacement(d))} sqft, unit ${fpFmtArea(d.sqft)} sqft — updates on publish">Δ</div>`;
   }
   return html;
 }
@@ -1628,7 +1886,7 @@ function fpRenderCanvas() {
     }
     const pl = group.members[0];
     const el = document.createElement('div');
-    el.className = 'fp-placed' + (state.fp.selected === pl.unitId || fpInMulti('placement', pl.unitId) ? ' selected' : '') + (fpIsDraftUnit(pl) ? ' fp-draft' : '');
+    el.className = 'fp-placed' + (state.fp.selected === pl.unitId || fpInMulti('placement', pl.unitId) ? ' selected' : '') + (fpIsDraftUnit(pl) ? ' fp-draft' : '') + (fpIsShaped(pl) ? ' fp-shaped' : '');
     el.dataset.unitId = pl.unitId;
     el.dataset.stackTier = String(pl.stackTier || 0);
     el.style.left = pl.x * u + 'px';
@@ -1636,22 +1894,35 @@ function fpRenderCanvas() {
     el.style.width = pl.width * u + 'px';
     el.style.height = pl.height * u + 'px';
     if (fpIsOccupiedLocked(pl)) el.title = fpLockedTooltip(pl);
-    el.innerHTML =
-      `<div class="fp-status" style="background:${fpStatusColor(pl.status)};"></div>` +
-      `<div class="fp-code">${escapeHtml(fpUnitNo(pl))}</div>` +
-      `<div class="fp-sqft">${fpFmtArea(pl.sqft)} sqft</div>` +
-      (pl.height * u > 34 ? `<div class="fp-size">${escapeHtml(pl.sizeName)}</div>` : '') +
-      fpUnitTagsHTML(pl) +
-      fpDoorMarkersHTML(pl, u) +
-      (fpIsOccupiedLocked(pl) ? '' : `<div class="fp-resize" title="Drag to resize"></div>`);
+    if (fpIsShaped(pl)) {
+      // Odd-shaped tile: the bbox div clips paint to the polygon; the SVG
+      // overlay draws the outline stroke + selection ring (a clipped div's
+      // border would be cut). Labels anchor at labelAt. No .fp-resize handle
+      // on shaped tiles (option A).
+      fpApplyShapedTileStyle(el, pl);
+      el.innerHTML = fpShapedTileInnerHTML(pl, u, state.fp.selected === pl.unitId || fpInMulti('placement', pl.unitId));
+    } else {
+      el.innerHTML =
+        `<div class="fp-status" style="background:${fpStatusColor(pl.status)};"></div>` +
+        `<div class="fp-code">${escapeHtml(fpUnitNo(pl))}</div>` +
+        `<div class="fp-sqft">${fpFmtArea(pl.sqft)} sqft</div>` +
+        (pl.height * u > 34 ? `<div class="fp-size">${escapeHtml(pl.sizeName)}</div>` : '') +
+        fpUnitTagsHTML(pl) +
+        fpDoorMarkersHTML(pl, u) +
+        (fpIsOccupiedLocked(pl) ? '' : `<div class="fp-resize" title="Drag to resize"></div>`);
+    }
     canvas.appendChild(el);
   }
+  // Odd-shaped outline tools paint above the tiles: edit handles (●/■) and
+  // the in-progress draw draft.
+  fpRenderOutlineHandles(canvas, u);
+  fpRenderOutlineDraft(canvas, u);
   // Line-tool affordance: crosshair while draw mode is armed (mode-gated —
   // placement/block drags only run when the tool is toggled off). An armed
   // marker (Markers/Safety group) behaves the same — the next canvas click
   // places it, so the crosshair applies there too. The move-door tool shows a
   // grab hand (grabbing mid-drag) so doors read as grabbable while armed.
-  canvas.style.cursor = fpDoorDrag ? 'grabbing' : state.fp.doorMove ? 'grab' : state.fp.underlayMode === 'move' ? 'move' : state.fp.drawMode || state.fp.armedMarker || state.fp.measureMode || state.fp.underlayMode || state.fp.newUnitMode ? 'crosshair' : '';
+  canvas.style.cursor = fpDoorDrag ? 'grabbing' : state.fp.doorMove ? 'grab' : state.fp.underlayMode === 'move' ? 'move' : state.fp.drawMode || state.fp.armedMarker || state.fp.measureMode || state.fp.underlayMode || state.fp.newUnitMode || state.fp.outlineMode ? 'crosshair' : '';
   if (fpNewDraft) fpRenderNewUnitGhost(canvas, u);
   // Safety/facility point icons render LAST (top of the z-order) so a marker
   // never hides under a placement.
@@ -2175,21 +2446,29 @@ function fpBuildExportSVG(opts) {
     const fs = Math.min(blk.height * k * 0.35, (blk.width * k) / Math.max(4, String(blk.name || '').length * 0.62), 3.2);
     if (fs >= 0.9) out.push(`<text x="${X(blk.x + blk.width / 2)}" y="${Y(blk.y + blk.height / 2)}" font-size="${fs.toFixed(2)}" text-anchor="middle" dominant-baseline="central" fill="#5A5048">${fpXml(blk.name)}</text>`);
   }
-  // Units (stacked pairs print once with both codes).
+  // Units (stacked pairs print once with both codes). Shaped units draw as
+  // <polygon> at their outline with the label at labelAt.
   for (const group of fpLayerHidden('units') ? [] : fpGroupByRect(state.fp.placements)) {
     const r = group.rect;
     const lower = group.members[0];
     const [fill, ink] = fpExportFill(lower.status);
-    out.push(`<rect x="${X(r.x)}" y="${Y(r.y)}" width="${(r.width * k).toFixed(3)}" height="${(r.height * k).toFixed(3)}" fill="${fill}" stroke="${ink}" stroke-width="0.25"/>`);
+    const lo = fpOutlineOf(lower.outline);
+    if (lo && lo.length >= 3) {
+      const pts = lo.map(([x, y]) => `${X(x)},${Y(y)}`).join(' ');
+      out.push(`<polygon points="${pts}" fill="${fill}" stroke="${ink}" stroke-width="0.25"/>`);
+    } else {
+      out.push(`<rect x="${X(r.x)}" y="${Y(r.y)}" width="${(r.width * k).toFixed(3)}" height="${(r.height * k).toFixed(3)}" fill="${fill}" stroke="${ink}" stroke-width="0.25"/>`);
+    }
     if (opts.labels !== false) {
       const code = group.members.map((m) => fpUnitNo(m)).join(' / ');
       const sq = group.members.map((m) => `${m.sqft}`).join('/') + ' sqft';
+      const [alx, aly] = fpLabelAtOf(lower);
       const wmm = r.width * k;
       const hmm = r.height * k;
       const fs = Math.min(hmm * 0.3, wmm / Math.max(3, code.length * 0.62), 3.4);
       if (fs >= 0.8) {
-        out.push(`<text x="${X(r.x + r.width / 2)}" y="${(oy + (r.y + r.height / 2) * k - fs * 0.15).toFixed(3)}" font-size="${fs.toFixed(2)}" font-weight="700" text-anchor="middle" fill="${ink}">${fpXml(code)}</text>`);
-        if (hmm > fs * 2.6) out.push(`<text x="${X(r.x + r.width / 2)}" y="${(oy + (r.y + r.height / 2) * k + fs * 1.05).toFixed(3)}" font-size="${(fs * 0.75).toFixed(2)}" text-anchor="middle" fill="${ink}">${fpXml(sq)}</text>`);
+        out.push(`<text x="${X(alx)}" y="${(oy + aly * k - fs * 0.15).toFixed(3)}" font-size="${fs.toFixed(2)}" font-weight="700" text-anchor="middle" fill="${ink}">${fpXml(code)}</text>`);
+        if (hmm > fs * 2.6) out.push(`<text x="${X(alx)}" y="${(oy + aly * k + fs * 1.05).toFixed(3)}" font-size="${(fs * 0.75).toFixed(2)}" text-anchor="middle" fill="${ink}">${fpXml(sq)}</text>`);
       }
     }
   }
@@ -2413,7 +2692,7 @@ function fpSetLayerProp(layer, prop, on) {
 function fpElemState(type, id) {
   if (type === 'placement') {
     const p = state.fp.placements.find((x) => x.unitId === id);
-    return p ? { unitId: p.unitId, x: p.x, y: p.y, width: p.width, height: p.height, stackTier: p.stackTier || 0, doorEdges: p.doorEdges || null, doorOffsets: p.doorOffsets ? { ...p.doorOffsets } : null } : null;
+    return p ? { unitId: p.unitId, x: p.x, y: p.y, width: p.width, height: p.height, outline: fpOutlineOf(p.outline) ? fpOutlineOf(p.outline).map(([x, y]) => [x, y]) : null, stackTier: p.stackTier || 0, doorEdges: p.doorEdges || null, doorOffsets: p.doorOffsets ? { ...p.doorOffsets } : null } : null;
   }
   if (type === 'block') {
     const b = state.fp.blocks.find((x) => x.id === id);
@@ -2739,7 +3018,7 @@ function fpGroupOverlap(items) {
     if (m.type !== 'placement') continue;
     const mate = fpStackMate(m.it);
     const ignore = [m.it.unitId].concat(mate ? [mate.unitId] : []);
-    const hit = fpOverlapAt(m.it.x, m.it.y, m.it.width, m.it.height, ignore, m.it.stackTier || 0);
+    const hit = fpOverlapAt(m.it.x, m.it.y, m.it.width, m.it.height, ignore, m.it.stackTier || 0, m.it.outline);
     if (hit) return { m, hit };
   }
   return null;
@@ -2752,6 +3031,8 @@ function fpGroupLocked(items) {
 const fpStatesOf = (items) => items.map((m) => ({ type: m.type, id: m.id, state: fpElemState(m.type, m.id) }));
 
 // Translate the group by (dx, dy), clamped so the bbox stays on canvas.
+// Shaped members translate their outline vertices with the bbox (a move never
+// resizes — the polygon area is unchanged).
 function fpShiftGroup(items, orig, dx, dy) {
   const { w: cw, h: ch } = fpCanvasDims();
   const bb = fpBBox(orig.map((o) => ({ type: o.type, it: o })));
@@ -2760,6 +3041,8 @@ function fpShiftGroup(items, orig, dx, dy) {
   items.forEach((m, i) => {
     m.it.x = quantizeFt(orig[i].x + cdx);
     m.it.y = quantizeFt(orig[i].y + cdy);
+    const o = fpOutlineOf(m.it.outline);
+    if (o) m.it.outline = o.map(([x, y]) => [quantizeFt(x + cdx), quantizeFt(y + cdy)]);
   });
   return { dx: cdx, dy: cdy };
 }
@@ -2773,7 +3056,7 @@ function fpGroupStartMove(e) {
   }
   e.preventDefault();
   const raw0 = fpCanvasRawAt(e.clientX, e.clientY);
-  const orig = items.map((m) => ({ type: m.type, x: m.it.x, y: m.it.y, width: m.it.width || 0, height: m.it.height || 0 }));
+  const orig = items.map((m) => ({ type: m.type, x: m.it.x, y: m.it.y, width: m.it.width || 0, height: m.it.height || 0, outline: fpOutlineOf(m.it.outline) ? fpOutlineOf(m.it.outline).map(([x, y]) => [x, y]) : null }));
   const before = fpStatesOf(items);
   let moved = false;
   const move = (ev) => {
@@ -2801,6 +3084,7 @@ function fpGroupStartMove(e) {
       items.forEach((m, i) => {
         m.it.x = orig[i].x;
         m.it.y = orig[i].y;
+        if (orig[i].outline) m.it.outline = orig[i].outline.map(([x, y]) => [x, y]);
       });
       fpRenderCanvas();
       fpToast(`Cannot move the group — ${fpUnitNo(clash.m.it)} would overlap ${fpUnitNo(clash.hit)}. Reverted.`, false);
@@ -2829,13 +3113,14 @@ function fpNudgeGroup(dx, dy) {
     fpToast(`${fpUnitNo(locked.it)} is occupied on a live plan — the group can't move.`, false);
     return;
   }
-  const orig = items.map((m) => ({ type: m.type, x: m.it.x, y: m.it.y, width: m.it.width || 0, height: m.it.height || 0 }));
+  const orig = items.map((m) => ({ type: m.type, x: m.it.x, y: m.it.y, width: m.it.width || 0, height: m.it.height || 0, outline: fpOutlineOf(m.it.outline) ? fpOutlineOf(m.it.outline).map(([x, y]) => [x, y]) : null }));
   fpShiftGroup(items, orig, dx, dy);
   const clash = fpGroupOverlap(items);
   if (clash) {
     items.forEach((m, i) => {
       m.it.x = orig[i].x;
       m.it.y = orig[i].y;
+      if (orig[i].outline) m.it.outline = orig[i].outline.map(([x, y]) => [x, y]);
     });
     fpToast(`Cannot nudge — ${fpUnitNo(clash.m.it)} would overlap ${fpUnitNo(clash.hit)}.`, false);
     return;
@@ -2843,7 +3128,7 @@ function fpNudgeGroup(dx, dy) {
   if (!fpGroupNudge) {
     const before = items.map((m, i) => {
       const s = fpElemState(m.type, m.id);
-      return { type: m.type, id: m.id, state: s ? { ...s, x: orig[i].x, y: orig[i].y } : s };
+      return { type: m.type, id: m.id, state: s ? { ...s, x: orig[i].x, y: orig[i].y, outline: orig[i].outline ? orig[i].outline.map(([x, y]) => [x, y]) : s.outline } : s };
     });
     fpGroupNudge = { before, items, timer: null };
   }
@@ -3297,13 +3582,14 @@ function fpIsContracted(it) {
   return FP_CONTRACTED_STATUSES.includes(String((it && it.status) || '').toUpperCase());
 }
 
-// Area readout for a unit rect vs its sqft. Contracted: "29.99 sqft · −0.03%"
+// Area readout for a unit footprint vs its sqft. Contracted: "29.99 sqft · −0.03%"
 // (flags > tolerance). Otherwise: "47.25 sqft · unit 40 → 47.25 on publish".
+// Shape-aware: shaped units compare the polygon area (fpPlacementAreaSqft).
 function fpAreaNoteHTML(rect, sqft, it) {
-  const area = rectAreaSqft(rect);
+  const area = fpPlacementAreaSqft(rect);
   if (!(sqft > 0)) return `<span class="t-type">${fpFmtArea(area)} sqft</span>`;
   if (!fpIsContracted(it)) {
-    const next = fpSqftForRect(rect);
+    const next = fpSqftForPlacement(rect);
     const changes = !fpSameSqft(next, sqft);
     return `<span class="t-type" style="${changes ? 'color:var(--terra,#C1664C);font-weight:700;' : ''}" title="The floor plan sets this unit's size: its sqft becomes the drawn area (rounded to whole sqft) when the plan is published">${fpFmtArea(area)} sqft${changes ? ` · unit ${fpFmtArea(sqft)} → ${fpFmtArea(next)} on publish` : ''}</span>`;
   }
@@ -3374,6 +3660,10 @@ function fpApplySelectionGeom(patch, verb, opts = {}) {
     it.y = quantizeFt(y);
   } else {
     if (target.kind === 'unit' && fpGuardLocked(it)) return false;
+    if (target.kind === 'unit' && fpIsShaped(it) && (patch.width !== undefined || patch.height !== undefined)) {
+      fpToast('A custom shape resizes through Edit outline — width/height are the bounding box and are derived. Drag the outline corners instead.', false);
+      return false;
+    }
     let width = patch.width !== undefined ? patch.width : it.width;
     let height = patch.height !== undefined ? patch.height : it.height;
     // Sqft lock: typing one side derives the other so area stays = sqft.
@@ -3399,20 +3689,32 @@ function fpApplySelectionGeom(patch, verb, opts = {}) {
     if (sameRect(next, it)) return false;
     if (target.kind === 'unit') {
       const ids = target.pair.map((p) => p.unitId);
-      const hit = fpOverlapAt(next.x, next.y, next.width, next.height, ids, 0);
+      const hit = fpOverlapAt(next.x, next.y, next.width, next.height, ids, 0, it.outline);
       if (hit) {
         const action = { Moved: 'move', Resized: 'resize', Nudged: 'nudge' }[verb] || 'change';
         fpToast(`Cannot ${action} ${fpUnitNo(it)} — ${formatFt(next.width)}×${formatFt(next.height)} ft at ${formatFt(next.x)}, ${formatFt(next.y)} overlaps ${fpUnitNo(hit)}.`, false);
         return false;
       }
-      const areaChanged = rectAreaSqft(next) !== rectAreaSqft(it);
-      if (areaChanged && fpIsContracted(it) && it.sqft > 0 && areaDeviation(next, it.sqft) > AREA_TOLERANCE) {
+      // Shaped moves translate the outline (a move never resizes); rect logic
+      // below is unchanged.
+      const moveOutline = (p, dx, dy) => {
+        const o = fpOutlineOf(p.outline);
+        if (o && (dx || dy)) p.outline = o.map(([x, y]) => [quantizeFt(x + dx), quantizeFt(y + dy)]);
+      };
+      const nextShaped = fpIsShaped(it) ? fpOutlineOf(it.outline).map(([x, y]) => [quantizeFt(x + (next.x - it.x)), quantizeFt(y + (next.y - it.y))]) : null;
+      const areaChanged = nextShaped
+        ? Math.abs(outlineArea(nextShaped) - outlineArea(fpOutlineOf(it.outline))) > 1e-9
+        : rectAreaSqft(next) !== rectAreaSqft(it);
+      if (areaChanged && fpIsContracted(it) && it.sqft > 0 && fpPlacementAreaDeviation({ width: next.width, height: next.height, outline: nextShaped }, it.sqft) > AREA_TOLERANCE) {
         fpToast(`${fpUnitNo(it)} is ${it.status.toLowerCase()} — its ${it.sqft} sqft can't change; ${formatFt(next.width)}×${formatFt(next.height)} ft = ${fpFmtArea(rectAreaSqft(next))} sqft is more than ${Math.round(AREA_TOLERANCE * 100)}% off.`, false);
         return false;
       }
       for (const p of target.pair) {
-        if (!p._undoPrev) p._undoPrev = { x: p.x, y: p.y, width: p.width, height: p.height, stackTier: p.stackTier || 0 };
+        if (!p._undoPrev) p._undoPrev = { x: p.x, y: p.y, width: p.width, height: p.height, outline: fpOutlineOf(p.outline) ? fpOutlineOf(p.outline).map(([x, y]) => [x, y]) : null, stackTier: p.stackTier || 0 };
+        const dx = next.x - p.x;
+        const dy = next.y - p.y;
         Object.assign(p, next);
+        moveOutline(p, dx, dy);
       }
     } else {
       if (!it._undoPrev) it._undoPrev = { name: it.name, x: it.x, y: it.y, width: it.width, height: it.height, color: it.color || null, doorEdges: it.doorEdges || null };
@@ -3616,7 +3918,7 @@ function fpRenderSelInfoInner() {
   // render no drag/resize/rename/delete handles — descriptor + tooltip only.
   if (fpIsOccupiedLocked(pl)) {
     const lockMate = fpStackMate(pl);
-    const who = lockMate ? `⧉ Stacked pair · ${escapeHtml(fpUnitNo(pl))} / ${escapeHtml(fpUnitNo(lockMate))}` : escapeHtml(pl.unitCode);
+    const who = lockMate ? `⧉ Stacked pair · ${escapeHtml(fpUnitNo(pl))} / ${escapeHtml(fpUnitNo(lockMate))}` : escapeHtml(fpUnitNo(pl));
     info.innerHTML =
       `<span class="t-type" title="Occupied — uneditable when live">${who} · ${formatFt(pl.x)}, ${formatFt(pl.y)} · ${formatFt(pl.width)}×${formatFt(pl.height)} ft · ${pl.sqft} sqft · Occupied — uneditable when live</span>`;
     return;
@@ -3638,9 +3940,38 @@ function fpRenderSelInfoInner() {
       `<button class="act-btn danger" id="fpRemoveBtn" style="padding:2px 9px;font-size:10px;">${fpIsDraftUnit(pl) ? 'Discard new unit' : 'Remove from floor'}</button>`;
     return;
   }
+  // Odd-shaped unit (D1–D6): X/Y move only (a move never resizes — the
+  // polygon translates with the bbox); no resize handle (option A), no
+  // rotate, no stacking. Shape tools live here: Notch corner, Draw outline,
+  // Edit vertices, Reset to rectangle.
+  const shapedOutline = fpIsShaped(pl) ? fpOutlineOf(pl.outline) : null;
+  if (shapedOutline) {
+    const editMode = state.fp.outlineMode; // null | 'draw' | 'edit'
+    info.innerHTML =
+      `<span class="t-type">${escapeHtml(fpUnitNo(pl))} · custom shape · ${shapedOutline.length} corners · ${pl.sqft} sqft${lockNote}</span>` +
+      fpNumFieldsHTML({ x: pl.x, y: pl.y }) +
+      fpAreaNoteHTML(pl, pl.sqft, pl) +
+      `<span class="t-type">Shape:</span>` +
+      `<button class="act-btn${editMode === 'notch' ? ' primary' : ''}" id="fpOutlineNotchBtn" style="padding:2px 9px;font-size:10px;" title="Cut a W×H ft notch out of one corner (turns a rectangle into the client's L example)">▙ Notch corner</button>` +
+      `<button class="act-btn${editMode === 'draw' ? ' primary' : ''}" id="fpOutlineDrawBtn" style="padding:2px 9px;font-size:10px;" title="Redraw the outline: click corners (15° snap, Shift = free, snap to grid/vertices, tracing underlay), double-click or Close loop to finish">✎ Draw outline</button>` +
+      `<button class="act-btn${editMode === 'edit' ? ' primary' : ''}" id="fpOutlineEditBtn" style="padding:2px 9px;font-size:10px;" title="Drag ● corners to move them, drag ■ midpoints to add corners, double-click a corner to remove it">⬡ Edit outline</button>` +
+      `<button class="act-btn" id="fpOutlineResetBtn" style="padding:2px 9px;font-size:10px;" title="Clear the outline back to the bounding-box rectangle">Reset to rectangle</button>` +
+      `<span class="t-type" title="Shaped units resize through Edit outline (move, add or remove corners)">Edit outline to resize — no corner handle on custom shapes</span>` +
+      fpDoorControlsHTML(pl, false) +
+      `<button class="act-btn danger" id="fpRemoveBtn" style="padding:2px 9px;font-size:10px;">${fpIsDraftUnit(pl) ? 'Discard new unit' : 'Remove from floor'}</button>`;
+    fpRenderOutlineNotchForm(pl);
+    return;
+  }
   // Lone locker placements offer Stack when exactly one same-rect partner is
   // possible (one unplaced locker with a matching footprint).
   const stackable = (pl.stackTier || 0) === 0 && fpIsLockerPlacement(pl) ? fpStackCandidates(pl) : [];
+  // Shape entry points (rect → odd shape): Notch corner cuts a W×H ft notch
+  // out of one corner (rect becomes the client's L example), Draw outline
+  // redraws the polygon freehand. Edit outline + Reset stay shaped-only.
+  // Occupied-locked placements return earlier; stacked pairs return earlier
+  // (outlining a stacked unit stays blocked); contracted/overlap rules are
+  // enforced in fpApplyOutlineEdit with the server as final arbiter.
+  const editMode = state.fp.outlineMode; // null | 'notch' | 'draw' ('edit' is shaped-only)
   // Door authoring (Phase 3): N/S/E/W toggles persisted per placement via the
   // existing PUT units endpoint (additive doorEdges). Null = unauthored (AUTO
   // all edges in metrics); toggling one edge off authors the rest.
@@ -3658,14 +3989,36 @@ function fpRenderSelInfoInner() {
     (state.fp.arrayOpen
       ? fpArrayFormHTML()
       : `<button class="act-btn" id="fpArrayBtn" style="padding:2px 9px;font-size:10px;" title="Array — place the next unplaced units of this size in a row from here">⇶ Array</button>`) +
+    `<span class="t-type">Shape:</span>` +
+    `<button class="act-btn${editMode === 'notch' ? ' primary' : ''}" id="fpOutlineNotchBtn" style="padding:2px 9px;font-size:10px;" title="Cut a W×H ft notch out of one corner (turns a rectangle into the client's L example)">▙ Notch corner</button>` +
+    `<button class="act-btn${editMode === 'draw' ? ' primary' : ''}" id="fpOutlineDrawBtn" style="padding:2px 9px;font-size:10px;" title="Redraw the outline: click corners (15° snap, Shift = free, snap to grid/vertices, tracing underlay), double-click or Close loop to finish">✎ Draw outline</button>` +
     `<button class="act-btn danger" id="fpRemoveBtn" style="padding:2px 9px;font-size:10px;">${fpIsDraftUnit(pl) ? 'Discard new unit' : 'Remove from floor'}</button>`;
+  // Notch/draw form rows only — 'edit' mode is meaningless on a rect (no
+  // outline vertices exist yet), so its hint row stays shaped-only.
+  if (editMode === 'notch' || editMode === 'draw') fpRenderOutlineNotchForm(pl);
 }
 
 // N/S/E/W door toggles (+ Auto) for a single or a stacked pair's door host.
 // Null doorEdges = unauthored (AUTO all edges in metrics); toggling one edge
-// off authors the rest.
+// off authors the rest. Shaped units toggle outline edge keys ("e0", …).
 function fpDoorControlsHTML(host, pair) {
   const authored = Array.isArray(host.doorEdges) && host.doorEdges.length ? host.doorEdges : null;
+  if (fpIsShaped(host)) {
+    const o = fpOutlineOf(host.outline);
+    const all = o.map((_, i) => `e${i}`);
+    const effDoors = authored ? authored.filter((e) => FP_OUTLINE_EDGE_RE.test(e)) : all;
+    const doorBtns = all
+      .map((e) => `<button class="act-btn${effDoors.includes(e) ? ' primary' : ''}" data-door="${e}" style="padding:2px 8px;font-size:10px;" title="Toggle wall ${e} door${pair ? ' (both tiers)' : ''}">${e}</button>`)
+      .join('');
+    const dw = fpDoorWidthOf(host);
+    return (
+      `<span class="t-type">${pair ? 'Shared doors' : 'Doors'}${authored ? ' · terra ticks = authored' : ' (auto · ghost ticks = all walls)'}:</span>` + doorBtns +
+      (authored ? `<button class="act-btn" id="fpDoorsAutoBtn" style="padding:2px 9px;font-size:10px;" title="Clear authored doors — fall back to all walls">Auto</button>` : '') +
+      `<label class="t-type" for="fpDoorWidth" style="margin-left:4px;">Door width</label>` +
+      `<input type="number" id="fpDoorWidth" class="tbl-search" data-fp-door-width="1" min="${FP_DOOR_W_MIN}" max="${FP_DOOR_W_MAX}" step="0.1" inputmode="decimal" value="${dw != null ? dw : ''}" placeholder="auto" style="width:64px;padding:2px 6px;font-size:10px;" aria-label="Door width in feet${pair ? ' (both tiers)' : ''}" title="Door width in feet for this unit's doors${pair ? ' (both tiers)' : ''} — Enter saves, empty = default">` +
+      `<span class="t-type">ft</span>`
+    );
+  }
   const effDoors = authored || ['N', 'S', 'E', 'W'];
   const doorBtns = ['N', 'S', 'E', 'W']
     .map((e) => `<button class="act-btn${effDoors.includes(e) ? ' primary' : ''}" data-door="${e}" style="padding:2px 8px;font-size:10px;" title="Toggle ${e} door edge${pair ? ' (both tiers)' : ''}">${e}</button>`)
@@ -3691,7 +4044,7 @@ function fpDoorControlsHTML(host, pair) {
 async function fpSaveDoors(pl, edges, offsets, prevDoors) {
   const doorsPrev = prevDoors ? prevDoors.doorEdges : Array.isArray(pl.doorEdges) ? pl.doorEdges.slice() : null;
   const offsetsPrev = prevDoors ? prevDoors.doorOffsets : pl.doorOffsets ? { ...pl.doorOffsets } : null;
-  const nextOffsets = offsets === undefined ? fpNormalizeDoorOffsets(pl.doorOffsets, edges) : offsets;
+  const nextOffsets = offsets === undefined ? fpNormalizeDoorOffsets(pl.doorOffsets, edges, pl.outline) : offsets;
   const mate = fpStackMate(pl);
   if (mate) {
     const members = [pl, mate];
@@ -3720,11 +4073,11 @@ async function fpSaveDoors(pl, edges, offsets, prevDoors) {
   try {
     const res = await fpMutate(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/units/${encodeURIComponent(pl.unitId)}`, {
       method: 'PUT',
-      body: JSON.stringify({ x: pl.x, y: pl.y, width: pl.width, height: pl.height, stackTier: pl.stackTier || 0, doorEdges: edges, doorOffsets: nextOffsets }),
+      body: JSON.stringify({ x: pl.x, y: pl.y, width: pl.width, height: pl.height, stackTier: pl.stackTier || 0, ...(fpIsShaped(pl) ? { outline: pl.outline } : {}), doorEdges: edges, doorOffsets: nextOffsets }),
     });
     pl.doorEdges = res && res.data ? res.data.doorEdges : edges;
-    pl.doorOffsets = res && res.data ? fpNormalizeDoorOffsets(res.data.doorOffsets, Array.isArray(pl.doorEdges) ? pl.doorEdges : null) : nextOffsets;
-    fpPushUndo({ kind: 'placement', unitId: pl.unitId, prev: { x: pl.x, y: pl.y, width: pl.width, height: pl.height, stackTier: pl.stackTier || 0, doorEdges: doorsPrev, doorOffsets: offsetsPrev } });
+    pl.doorOffsets = res && res.data ? fpNormalizeDoorOffsets(res.data.doorOffsets, Array.isArray(pl.doorEdges) ? pl.doorEdges : null, pl.outline) : nextOffsets;
+    fpPushUndo({ kind: 'placement', unitId: pl.unitId, prev: { x: pl.x, y: pl.y, width: pl.width, height: pl.height, outline: pl.outline ? pl.outline.map(([x, y]) => [x, y]) : null, stackTier: pl.stackTier || 0, doorEdges: doorsPrev, doorOffsets: offsetsPrev } });
     fpRenderSelInfo();
     fpRenderCanvas();
     notifyMetricsFloorChanged();
@@ -3758,9 +4111,11 @@ async function fpToggleDoor(edge) {
   if (fpGuardDoorsLocked(sel)) return; // live occupied placement: doors frozen
   const pl = fpDoorHost(sel);
   const authored = Array.isArray(pl.doorEdges) ? pl.doorEdges.slice() : null;
+  // Shaped units toggle outline edge keys; the full edge set is the default.
+  const fullSet = fpIsShaped(pl) ? fpOutlineOf(pl.outline).map((_, i) => `e${i}`) : ['N', 'S', 'E', 'W'];
   let next;
   if (!authored) {
-    next = ['N', 'S', 'E', 'W'].filter((e) => e !== edge); // turning one edge off authors the rest
+    next = fullSet.filter((e) => e !== edge); // turning one edge off authors the rest
   } else if (authored.includes(edge)) {
     next = authored.filter((e) => e !== edge);
     if (!next.length) {
@@ -3771,6 +4126,471 @@ async function fpToggleDoor(edge) {
     next = authored.concat(edge);
   }
   await fpSaveDoors(pl, next);
+}
+
+// ---------- odd-shaped outline tools (inspector: notch / draw / edit / reset) ----------
+// One undo step per outline edit (same batch path as moves). The server stays
+// the final arbiter (409 on contracted-shape change, stacking, overlap); the
+// client pre-checks the same rules so failures toast without stuck state.
+function fpSelectedShaped() {
+  const pl = (state.fp.placements || []).find((p) => p.unitId === state.fp.selected);
+  return pl && fpOutlineOf(pl.outline) ? pl : null;
+}
+
+function fpSetOutlineMode(mode) {
+  state.fp.outlineMode = mode || null;
+  if (mode !== 'draw') state.fp.outlineDraft = null;
+  state.fp.drawAngle = null;
+  fpRenderCanvas();
+  fpRenderSelInfo();
+}
+
+// Notch-corner form (appended to the inspector branch by
+// fpRenderOutlineNotchForm): W×H ft + corner + Apply/Cancel. Draw/edit modes
+// render a hint row with Finish/Cancel instead.
+function fpRenderOutlineNotchForm(pl) {
+  const info = $('#fpSelInfo');
+  if (!info) return;
+  const old = $('#fpOutlineForm');
+  if (old) old.remove();
+  const wrap = document.createElement('span');
+  wrap.id = 'fpOutlineForm';
+  wrap.className = 't-type';
+  const mode = state.fp.outlineMode;
+  if (mode === 'notch') {
+    const nw = state.fp.notchW ?? '';
+    const nh = state.fp.notchH ?? '';
+    const corner = state.fp.notchCorner || 'NW';
+    wrap.innerHTML =
+      `<span class="t-type">Notch:</span>` +
+      `<input type="number" id="fpNotchW" class="tbl-search" min="0.1" step="0.1" inputmode="decimal" value="${nw}" placeholder="W" title="Notch width in feet" style="width:56px;padding:2px 6px;font-size:10px;" aria-label="Notch width in feet">` +
+      `<span class="t-type">×</span>` +
+      `<input type="number" id="fpNotchH" class="tbl-search" min="0.1" step="0.1" inputmode="decimal" value="${nh}" placeholder="H" title="Notch height in feet" style="width:56px;padding:2px 6px;font-size:10px;" aria-label="Notch height in feet">` +
+      `<span class="t-type">ft from</span>` +
+      ['NW', 'NE', 'SW', 'SE'].map((c) => `<button class="act-btn${corner === c ? ' primary' : ''}" data-notch-corner="${c}" style="padding:2px 8px;font-size:10px;" title="Cut the notch out of the ${c} corner">${c}</button>`).join('') +
+      `<button class="act-btn primary" id="fpOutlineApplyBtn" style="padding:2px 9px;font-size:10px;" title="Cut the notch — one undo step">Apply notch</button>` +
+      `<button class="act-btn" id="fpOutlineCancelBtn" style="padding:2px 9px;font-size:10px;">Cancel</button>`;
+  } else if (mode === 'draw') {
+    const n = (state.fp.outlineDraft && state.fp.outlineDraft.points.length) || 0;
+    wrap.innerHTML =
+      `<span class="t-type">Draw: click corners (${n} placed) · 15° snap, Shift = free · snap to grid/vertices · underlay traces underneath · double-click or Close loop to finish (3–24 corners)</span>` +
+      `<input type="text" id="fpDrawLen" class="tbl-search" inputmode="decimal" placeholder="Length ft" title="Length in feet — Enter appends a corner at the current angle" style="width:76px;padding:2px 6px;font-size:10px;" aria-label="Next edge length in feet" autocomplete="off" spellcheck="false">` +
+      `<button class="act-btn primary" id="fpOutlineCloseBtn" style="padding:2px 9px;font-size:10px;" title="Close the loop and save the outline">Close loop</button>` +
+      `<button class="act-btn" id="fpOutlineCancelBtn" style="padding:2px 9px;font-size:10px;">Cancel</button>`;
+  } else if (mode === 'edit') {
+    wrap.innerHTML =
+      `<span class="t-type">Edit: drag a ● corner to move it · drag a ■ midpoint to add a corner · double-click a corner to remove it · release saves (one undo step)</span>` +
+      `<button class="act-btn" id="fpOutlineCancelBtn" style="padding:2px 9px;font-size:10px;">Done</button>`;
+  } else {
+    return;
+  }
+  info.appendChild(wrap);
+  const first = wrap.querySelector('input');
+  if (first && mode === 'notch') first.select();
+}
+
+// Cut a W×H ft notch out of one bbox corner (clockwise outline, y-down).
+function fpNotchPolygon(pl, nw, nh, corner) {
+  const { x, y, width: w, height: h } = pl;
+  if (!(nw >= MIN_OUTLINE_EDGE_FT) || !(nh >= MIN_OUTLINE_EDGE_FT) || nw >= w || nh >= h) {
+    fpToast(`Notch must be at least ${MIN_OUTLINE_EDGE_FT} ft and smaller than the ${formatFt(w)}×${formatFt(h)} ft tile.`, false);
+    return null;
+  }
+  const q = (v) => quantizeFt(v);
+  switch (corner) {
+    case 'NE': return [[x, y], [q(x + w - nw), y], [q(x + w - nw), q(y + nh)], [q(x + w), q(y + nh)], [q(x + w), q(y + h)], [x, q(y + h)]];
+    case 'SW': return [[x, y], [q(x + w), y], [q(x + w), q(y + h)], [q(x + nw), q(y + h)], [q(x + nw), q(y + h - nh)], [x, q(y + h - nh)]];
+    case 'SE': return [[x, y], [q(x + w), y], [q(x + w), q(y + h - nh)], [q(x + w - nw), q(y + h - nh)], [q(x + w - nw), q(y + h)], [x, q(y + h)]];
+    default: return [[q(x + nw), y], [q(x + w), y], [q(x + w), q(y + h)], [x, q(y + h)], [x, q(y + nh)], [q(x + nw), q(y)]];
+  }
+}
+
+// Validate + persist an outline edit as ONE undo step. `prev` is the
+// pre-edit element state (captured before live drag mutations); omitted means
+// "snapshot now" (notch/draw/reset). Returns true when saved.
+async function fpApplyOutlineEdit(pl, outline, verb, prev) {
+  let next;
+  try {
+    next = normalizeOutline(outline, { minAreaSqft: 1, maxAreaSqft: 2000 });
+  } catch (err) {
+    fpToast(`Outline: ${err instanceof Error ? err.message : err}`, false);
+    return false;
+  }
+  if (!next) {
+    fpToast('That outline is a rectangle — use Reset to rectangle instead.', false);
+    return false;
+  }
+  if (fpGuardLocked(pl)) return false;
+  if (fpStackMate(pl)) {
+    fpToast(`Cannot outline ${fpUnitNo(pl)} — it is in a stacked pair. Unstack it first.`, false);
+    return false;
+  }
+  if (fpIsContracted(pl) && pl.sqft > 0) {
+    const dev = Math.abs(outlineArea(next) - pl.sqft) / pl.sqft;
+    if (dev > AREA_TOLERANCE) {
+      fpToast(`${fpUnitNo(pl)} is ${pl.status.toLowerCase()} — its ${pl.sqft} sqft can't change shape while contracted (reshape within ${Math.round(AREA_TOLERANCE * 100)}%).`, false);
+      return false;
+    }
+  }
+  // Local overlap pre-check (bbox reject + polygon intersection, self ignored).
+  const bb = outlineBBox(next);
+  const clash = fpOverlapAt(bb.x, bb.y, bb.width, bb.height, [pl.unitId], pl.stackTier || 0, next);
+  if (clash) {
+    fpToast(`Cannot reshape ${fpUnitNo(pl)} — the new outline overlaps ${fpUnitNo(clash)}.`, false);
+    return false;
+  }
+  const before = prev || fpElemState('placement', pl.unitId);
+  const prevOutline = fpOutlineOf(pl.outline);
+  const remapped = prevOutline ? fpRemapDoorsToOutline(prevOutline, next, pl.doorEdges, pl.doorOffsets) : { doorEdges: null, doorOffsets: null };
+  const prevEdgeSet = new Set(Array.isArray(pl.doorEdges) ? pl.doorEdges : []);
+  const nextEdgeSet = new Set(Array.isArray(remapped.doorEdges) ? remapped.doorEdges : []);
+  const doorMoved = [...prevEdgeSet].some((e) => FP_OUTLINE_EDGE_RE.test(e) && !nextEdgeSet.has(e));
+  try {
+    const res = await fpMutate(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/units/${encodeURIComponent(pl.unitId)}`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        x: bb.x,
+        y: bb.y,
+        width: bb.width,
+        height: bb.height,
+        outline: next,
+        doorEdges: remapped.doorEdges ? remapped.doorEdges : null,
+        doorOffsets: remapped.doorOffsets,
+      }),
+    });
+    fpAdoptPlacement(pl, res && res.data);
+    fpSetOutlineMode(null);
+    fpPushUndo({ kind: 'placement', unitId: pl.unitId, prev: before });
+    fpRender();
+    notifyMetricsFloorChanged();
+    fpToast(`${verb} ${fpUnitNo(pl)} → ${next.length} corners, ${fpFmtArea(fpSqftForPlacement(pl))} sqft${doorMoved ? ' · door moved to the nearest remaining wall' : ''}.`, true);
+    return true;
+  } catch (err) {
+    fpToast(`${verb} ${fpUnitNo(pl)}: ${describeError(err)}`, false);
+    await fpFetch();
+    return false;
+  }
+}
+
+async function fpResetOutline() {
+  const pl = fpSelectedShaped();
+  if (!pl) return;
+  if (fpGuardLocked(pl)) return;
+  const ok = await confirmDialog({
+    title: `Reset ${fpUnitNo(pl)} to a rectangle?`,
+    message: 'The custom shape is cleared back to its bounding box. Authored wall doors reset (edge keys only exist on outlines).',
+    confirmLabel: 'Reset to rectangle',
+  });
+  if (!ok) return;
+  const before = fpElemState('placement', pl.unitId);
+  try {
+    const res = await fpMutate(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/units/${encodeURIComponent(pl.unitId)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ x: pl.x, y: pl.y, width: pl.width, height: pl.height, outline: null }),
+    });
+    fpAdoptPlacement(pl, res && res.data);
+    fpSetOutlineMode(null);
+    fpPushUndo({ kind: 'placement', unitId: pl.unitId, prev: before });
+    fpRender();
+    notifyMetricsFloorChanged();
+    fpToast(`Reset ${fpUnitNo(pl)} to a rectangle.`, true);
+  } catch (err) {
+    fpToast(`Reset ${fpUnitNo(pl)}: ${describeError(err)}`, false);
+    await fpFetch();
+  }
+}
+
+// Apply the notch form (W×H from the corner buttons row). Works from a plain
+// rectangle (first outline) as well as from an existing shaped outline — the
+// guards in fpApplyOutlineEdit (occupied lock, stacked pair, contracted-area,
+// overlap pre-check, one undo step) cover both starting points.
+async function fpOutlineApplyNotch() {
+  const pl = (state.fp.placements || []).find((p) => p.unitId === state.fp.selected);
+  if (!pl) return;
+  const nw = fpParseLen(($('#fpNotchW') || {}).value);
+  const nh = fpParseLen(($('#fpNotchH') || {}).value);
+  state.fp.notchW = ($('#fpNotchW') || {}).value;
+  state.fp.notchH = ($('#fpNotchH') || {}).value;
+  if (nw === null || nh === null) {
+    fpToast('Enter the notch width and height in feet first.', false);
+    return;
+  }
+  const poly = fpNotchPolygon(pl, nw, nh, state.fp.notchCorner || 'NW');
+  if (!poly) return;
+  await fpApplyOutlineEdit(pl, poly, 'Notched');
+}
+
+// ---------- draw outline (redraw the polygon corner by corner) ----------
+// Clicks add snapped vertices (15° angle snap unless Shift, grid + vertex
+// snap, tracing underlay underneath); double-click or Close loop finishes.
+function fpOutlineStartDraw() {
+  const pl = (state.fp.placements || []).find((p) => p.unitId === state.fp.selected);
+  if (!pl) return;
+  if (fpGuardLocked(pl)) return;
+  if (fpStackMate(pl)) {
+    fpToast(`Cannot outline ${fpUnitNo(pl)} — it is in a stacked pair. Unstack it first.`, false);
+    return;
+  }
+  state.fp.outlineDraft = { unitId: pl.unitId, points: [] };
+  fpSetOutlineMode('draw');
+  fpSetReadout('Draw outline: click corners · 15° snap (Shift = free) · double-click or Close loop to finish · Esc cancels');
+}
+
+// Snap a draw click: object snap (nearby unit/wall vertices) wins, else grid;
+// the angle from the last vertex snaps to 15° unless Shift is held.
+// Extra object-snap candidates: every shaped outline vertex (tracing one
+// unit's walls off its neighbour's corners), minus the unit being drawn.
+function fpOutlineSnapExtra(excludeUnitId) {
+  const out = [];
+  for (const p of state.fp.placements || []) {
+    if (p.unitId === excludeUnitId) continue;
+    const o = fpOutlineOf(p.outline);
+    if (o) for (const [x, y] of o) out.push([x, y]);
+  }
+  return out;
+}
+
+function fpOutlineDrawSnap(raw, ev) {
+  const draft = state.fp.outlineDraft;
+  const last = draft && draft.points.length ? draft.points[draft.points.length - 1] : null;
+  if (ev.shiftKey || !last) {
+    // Shift (or the first corner) = free placement on the grid step.
+    const step = fpSnapStep(ev);
+    return [snapFt(raw[0], step), snapFt(raw[1], step)];
+  }
+  const snapped = fpObjectSnap(raw, ev, { extra: fpOutlineSnapExtra(draft.unitId) });
+  if (snapped && snapped.type !== 'grid') return [snapped.x, snapped.y];
+  const dx = raw[0] - last[0];
+  const dy = raw[1] - last[1];
+  const dist = Math.hypot(dx, dy);
+  if (!(dist > 0)) return [last[0], last[1]];
+  const deg = Math.round(angleDeg(last, raw) / 15) * 15;
+  const p = pointAtAngle(last, dist, deg);
+  const { w: cw, h: ch } = fpCanvasDims();
+  const step = fpSnapStep(ev);
+  return [clampFt(snapFt(p[0], step), 0, cw), clampFt(snapFt(p[1], step), 0, ch)];
+}
+
+function fpOutlineDrawClick(e) {
+  const draft = state.fp.outlineDraft;
+  const pl = draft && (state.fp.placements || []).find((p) => p.unitId === draft.unitId);
+  if (!draft || !pl) {
+    fpSetOutlineMode(null);
+    return true;
+  }
+  const raw = fpCanvasRawAt(e.clientX, e.clientY);
+  if (!raw) return true;
+  const [gx, gy] = fpOutlineDrawSnap(raw, e);
+  if (draft.points.length >= MAX_OUTLINE_VERTICES) {
+    fpToast(`Outlines hold at most ${MAX_OUTLINE_VERTICES} corners — double-click or Close loop to finish.`, false);
+    return true;
+  }
+  // Double-click the first vertex also closes the loop (handled by dblclick).
+  draft.points.push([gx, gy]);
+  state.fp.drawAngle = draft.points.length > 1 ? angleDeg(draft.points[draft.points.length - 2], [gx, gy]) : null;
+  fpRenderCanvas();
+  fpRenderSelInfo();
+  fpSetReadout(`Draw outline: ${draft.points.length} corner${draft.points.length === 1 ? '' : 's'} · double-click or Close loop to finish · Esc cancels`);
+  return true;
+}
+
+// Length entry: append a corner `len` ft from the last at the current angle.
+function fpOutlineDrawAppendLength(rawLen) {
+  const draft = state.fp.outlineDraft;
+  const len = fpParseLen(rawLen);
+  if (!draft || draft.points.length < 1 || len === null || !(len >= MIN_OUTLINE_EDGE_FT)) {
+    fpToast('Place one corner first, then enter a length in feet.', false);
+    return;
+  }
+  const last = draft.points[draft.points.length - 1];
+  const deg = state.fp.drawAngle != null ? state.fp.drawAngle : 0;
+  const p = pointAtAngle(last, len, deg);
+  const { w: cw, h: ch } = fpCanvasDims();
+  draft.points.push([clampFt(p[0], 0, cw), clampFt(p[1], 0, ch)]);
+  const input = $('#fpDrawLen');
+  if (input) {
+    input.value = '';
+    input.focus();
+  }
+  fpRenderCanvas();
+  fpRenderSelInfo();
+}
+
+async function fpOutlineFinishDraw() {
+  const draft = state.fp.outlineDraft;
+  const pl = draft && (state.fp.placements || []).find((p) => p.unitId === draft.unitId);
+  if (!draft || !pl) {
+    fpSetOutlineMode(null);
+    return;
+  }
+  if (draft.points.length < 3) {
+    fpToast('An outline needs at least 3 corners — keep clicking or Esc to cancel.', false);
+    return;
+  }
+  state.fp.outlineDraft = null;
+  await fpApplyOutlineEdit(pl, draft.points.map(([x, y]) => [x, y]), 'Redrew');
+}
+
+// ---------- edit outline (vertex / midpoint handles) ----------
+// Handles render on the selected shaped unit while edit mode is armed (see
+// fpRenderOutlineHandles, called from fpRenderCanvas). ● drag moves the
+// corner; ■ drag inserts a corner; double-click a ● removes it.
+function fpOutlineHandleHitAt(clientX, clientY) {
+  if (state.fp.outlineMode !== 'edit') return null;
+  const pl = fpSelectedShaped();
+  const o = pl && fpOutlineOf(pl.outline);
+  if (!o) return null;
+  const raw = fpCanvasRawAt(clientX, clientY);
+  if (!raw) return null;
+  const tol = 9 / fpPx();
+  for (let i = 0; i < o.length; i++) {
+    if (Math.hypot(raw[0] - o[i][0], raw[1] - o[i][1]) <= tol) return { pl, type: 'vertex', index: i };
+  }
+  for (let i = 0; i < o.length; i++) {
+    const a = o[i];
+    const b = o[(i + 1) % o.length];
+    if (Math.hypot(raw[0] - (a[0] + b[0]) / 2, raw[1] - (a[1] + b[1]) / 2) <= tol) return { pl, type: 'mid', index: i, insertAt: i + 1 };
+  }
+  return null;
+}
+
+function fpOutlineVertexStartDrag(e, hit) {
+  e.preventDefault();
+  const pl = hit.pl;
+  if (fpGuardLocked(pl)) return;
+  const before = fpElemState('placement', pl.unitId);
+  let pts = fpOutlineOf(pl.outline).map(([x, y]) => [x, y]);
+  let index = hit.index;
+  if (hit.type === 'mid') {
+    const a = pts[hit.index];
+    const b = pts[(hit.index + 1) % pts.length];
+    pts.splice(hit.insertAt, 0, [quantizeFt((a[0] + b[0]) / 2), quantizeFt((a[1] + b[1]) / 2)]);
+    index = hit.insertAt;
+    pl.outline = pts.map(([x, y]) => [x, y]);
+  }
+  const downX = e.clientX;
+  const downY = e.clientY;
+  let moved = hit.type === 'mid';
+  fpRenderCanvas();
+  const move = (ev) => {
+    if (!moved && Math.hypot(ev.clientX - downX, ev.clientY - downY) <= 3) return;
+    moved = true;
+    const raw = fpCanvasRawAt(ev.clientX, ev.clientY);
+    if (!raw) return;
+    const s = fpSnapPointer(ev, pts[(index - 1 + pts.length) % pts.length], { extra: fpOutlineSnapExtra(pl.unitId) });
+    const nx = s ? s.x : quantizeFt(raw[0]);
+    const ny = s ? s.y : quantizeFt(raw[1]);
+    pts[index] = [nx, ny];
+    pl.outline = pts.map(([x, y]) => [x, y]);
+    fpRenderCanvas();
+    fpSetReadout(`Corner ${index + 1} → ${formatFt(nx)}, ${formatFt(ny)} ft · release saves · Esc cancels`);
+  };
+  const up = async () => {
+    document.removeEventListener('pointermove', move);
+    document.removeEventListener('pointerup', up);
+    if (!moved) {
+      fpRenderCanvas(); // a click just selects the handle
+      return;
+    }
+    const ok = await fpApplyOutlineEdit(pl, pts.map(([x, y]) => [x, y]), hit.type === 'mid' ? 'Added a corner to' : 'Moved a corner of', before);
+    if (!ok) {
+      const b = before;
+      pl.outline = b.outline ? b.outline.map(([x, y]) => [x, y]) : null;
+      pl.x = b.x;
+      pl.y = b.y;
+      pl.width = b.width;
+      pl.height = b.height;
+      fpRenderCanvas();
+      fpRenderSelInfo();
+    }
+  };
+  document.addEventListener('pointermove', move);
+  document.addEventListener('pointerup', up);
+}
+
+async function fpOutlineRemoveVertex(e) {
+  const hit = fpOutlineHandleHitAt(e.clientX, e.clientY);
+  if (!hit || hit.type !== 'vertex') return false;
+  const pl = hit.pl;
+  if (fpGuardLocked(pl)) return true;
+  const pts = fpOutlineOf(pl.outline).map(([x, y]) => [x, y]);
+  if (pts.length <= 4) {
+    // Dropping to 3 corners is allowed; below that the shape collapses.
+    if (pts.length <= 3) {
+      fpToast('An outline needs at least 3 corners — use Reset to rectangle instead.', false);
+      return true;
+    }
+  }
+  pts.splice(hit.index, 1);
+  await fpApplyOutlineEdit(pl, pts, 'Removed a corner from');
+  return true;
+}
+
+// Vertex/midpoint handles for the selected shaped unit (edit mode only).
+// Inline styles only — no dashboard CSS changes.
+function fpRenderOutlineHandles(canvas, u) {
+  if (state.fp.outlineMode !== 'edit') return;
+  const pl = fpSelectedShaped();
+  const o = pl && fpOutlineOf(pl.outline);
+  if (!o) return;
+  const size = Math.max(10, Math.round(u * 0.45));
+  const add = (x, y, kind, label) => {
+    const el = document.createElement('div');
+    el.className = 'fp-outline-handle';
+    el.dataset.outlineHandle = kind;
+    el.title = label;
+    el.style.position = 'absolute';
+    el.style.left = x * u - size / 2 + 'px';
+    el.style.top = y * u - size / 2 + 'px';
+    el.style.width = size + 'px';
+    el.style.height = size + 'px';
+    el.style.background = kind === 'vertex' ? '#7A3B28' : '#fff';
+    el.style.border = '2px solid #7A3B28';
+    el.style.borderRadius = kind === 'vertex' ? '50%' : '2px';
+    el.style.cursor = 'grab';
+    el.style.zIndex = '4';
+    el.style.boxSizing = 'border-box';
+    el.style.pointerEvents = 'auto';
+    canvas.appendChild(el);
+  };
+  for (let i = 0; i < o.length; i++) add(o[i][0], o[i][1], 'vertex', `Corner ${i + 1} — drag to move, double-click to remove`);
+  for (let i = 0; i < o.length; i++) {
+    const a = o[i];
+    const b = o[(i + 1) % o.length];
+    add((a[0] + b[0]) / 2, (a[1] + b[1]) / 2, 'mid', 'Midpoint — drag to insert a corner');
+  }
+}
+
+// In-progress draw draft: dashed polyline + corner dots (SVG overlay).
+function fpRenderOutlineDraft(canvas, u) {
+  const draft = state.fp.outlineDraft;
+  if (state.fp.outlineMode !== 'draw' || !draft || !draft.points.length) return;
+  const ns = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(ns, 'svg');
+  svg.setAttribute('width', canvas.style.width);
+  svg.setAttribute('height', canvas.style.height);
+  svg.style.position = 'absolute';
+  svg.style.inset = '0';
+  svg.style.overflow = 'visible';
+  svg.style.pointerEvents = 'none';
+  svg.style.zIndex = '5';
+  const pts = draft.points.map(([x, y]) => `${(x * u).toFixed(1)},${(y * u).toFixed(1)}`).join(' ');
+  const line = document.createElementNS(ns, 'polyline');
+  line.setAttribute('points', pts);
+  line.setAttribute('fill', 'none');
+  line.setAttribute('stroke', '#7A3B28');
+  line.setAttribute('stroke-width', '2');
+  line.setAttribute('stroke-dasharray', '5 3');
+  svg.appendChild(line);
+  for (const [x, y] of draft.points) {
+    const c = document.createElementNS(ns, 'circle');
+    c.setAttribute('cx', (x * u).toFixed(1));
+    c.setAttribute('cy', (y * u).toFixed(1));
+    c.setAttribute('r', '4');
+    c.setAttribute('fill', '#7A3B28');
+    svg.appendChild(c);
+  }
+  canvas.appendChild(svg);
 }
 
 // Door width (ft) from the inspector field: applies to every door of the unit
@@ -3790,8 +4610,11 @@ async function fpSetDoorWidth(raw) {
     return;
   }
   if (w === fpDoorWidthOf(pl)) return;
-  const edges = Array.isArray(pl.doorEdges) && pl.doorEdges.length ? pl.doorEdges.slice() : ['N', 'S', 'E', 'W'];
-  const next = { ...(fpNormalizeDoorOffsets(pl.doorOffsets, edges) || {}) };
+  // Setting a width on an AUTO unit authors edges first (all four for rects,
+  // all walls for shaped), like the move-door tool does — a width needs
+  // authored doors to stick.
+  const edges = Array.isArray(pl.doorEdges) && pl.doorEdges.length ? pl.doorEdges.slice() : fpIsShaped(pl) ? fpOutlineOf(pl.outline).map((_, i) => `e${i}`) : ['N', 'S', 'E', 'W'];
+  const next = { ...(fpNormalizeDoorOffsets(pl.doorOffsets, edges, pl.outline) || {}) };
   if (w == null) delete next.w;
   else next.w = w;
   await fpSaveDoors(pl, edges, Object.keys(next).length ? next : null);
@@ -3818,6 +4641,7 @@ let fpDoorDrag = null; // { pl, edge, authored, prev, move, up } while dragging
 // Door under the pointer (feet-space, ~10 px tolerance), or null. Corners
 // resolve to the nearest edge. Locked placements hit-test too so the hover
 // readout can name the lock (the drag itself still refuses via fpGuardLocked).
+// Shaped units hit-test outline segments (click-any-wall places a door).
 function fpDoorHitAt(clientX, clientY) {
   const raw = fpCanvasRawAt(clientX, clientY);
   if (!raw) return null;
@@ -3832,7 +4656,19 @@ function fpDoorHitAt(clientX, clientY) {
   let best = null;
   for (const pl of state.fp.placements || []) {
     if (fpDoorHost(pl) !== pl) continue; // upper tier: the pair's doors live on the lower tier
-    const { edges } = fpEffectiveDoors(pl);
+    const { edges, shaped } = fpEffectiveDoors(pl);
+    if (shaped) {
+      const o = fpOutlineOf(pl.outline);
+      if (!o) continue;
+      for (const e of edges) {
+        const m = FP_OUTLINE_EDGE_RE.exec(e);
+        if (!m) continue;
+        const i = Number(m[1]) % o.length;
+        const d = segDist(raw[0], raw[1], o[i][0], o[i][1], o[(i + 1) % o.length][0], o[(i + 1) % o.length][1]);
+        if (d <= tol && (!best || d < best.d)) best = { pl, edge: e, d };
+      }
+      continue;
+    }
     const x0 = pl.x;
     const y0 = pl.y;
     const x1 = pl.x + pl.width;
@@ -3850,6 +4686,17 @@ function fpDoorHitAt(clientX, clientY) {
 }
 
 function fpDoorFraction(pl, edge, raw) {
+  if (fpIsShaped(pl)) {
+    // Fraction along the outline edge, clamped so the door keeps at least
+    // half its width from the corners (D5).
+    const g = fpOutlineEdgeGeom(pl, edge);
+    if (!g || !(g.len > 0)) return 0.5;
+    const halfLen = (fpDoorFrac(pl, edge) * g.len) / 2;
+    const along = (raw[0] - g.a[0]) * (g.b[0] - g.a[0]) + (raw[1] - g.a[1]) * (g.b[1] - g.a[1]);
+    const c = along / (g.len * g.len);
+    const lo = halfLen / g.len;
+    return Math.round(Math.min(1 - lo, Math.max(lo, c)) * 1000) / 1000;
+  }
   const c = edge === 'N' || edge === 'S' ? (raw[0] - pl.x) / pl.width : (raw[1] - pl.y) / pl.height;
   // Clamp the centre by half the door length so a tick never overhangs a corner.
   const half = fpDoorFrac(pl, edge) / 2;
@@ -3857,19 +4704,25 @@ function fpDoorFraction(pl, edge, raw) {
 }
 
 // Press on a door while the tool is armed: author the edge set when needed
-// (grabbing an AUTO door authors all four edges, like toggling one off does)
-// and drag the centre along the edge. Returns true when a drag started (the
-// caller swallows the press); locked placements toast and swallow.
+// (grabbing an AUTO door authors all four edges — or the single wall for a
+// shaped unit — like toggling one off does) and drag the centre along the
+// edge. Shaped doors can cross onto the next wall around a corner (the edge
+// joins the authored set). Returns true when a drag started (the caller
+// swallows the press); locked placements toast and swallow.
 function fpDoorStartDrag(e, hit) {
   const pl = hit.pl;
   if (fpGuardDoorsLocked(pl)) return true;
   e.preventDefault();
-  const authored = Array.isArray(pl.doorEdges) && pl.doorEdges.length ? pl.doorEdges.slice() : ['N', 'S', 'E', 'W'];
+  const shaped = fpIsShaped(pl);
+  const authored = Array.isArray(pl.doorEdges) && pl.doorEdges.length
+    ? pl.doorEdges.slice()
+    : shaped ? [hit.edge] : ['N', 'S', 'E', 'W'];
   const prev = {
     x: pl.x,
     y: pl.y,
     width: pl.width,
     height: pl.height,
+    outline: shaped && pl.outline ? pl.outline.map(([x, y]) => [x, y]) : null,
     stackTier: pl.stackTier || 0,
     doorEdges: Array.isArray(pl.doorEdges) ? pl.doorEdges.slice() : null,
     doorOffsets: pl.doorOffsets ? { ...pl.doorOffsets } : null,
@@ -3877,16 +4730,41 @@ function fpDoorStartDrag(e, hit) {
   pl.doorEdges = authored; // local authoring for the live ghost (persisted on release)
   pl._doorDragEdge = hit.edge;
   fpDoorDrag = { pl, edge: hit.edge, authored, prev, move: null, up: null };
-  const cur = () => (pl.doorOffsets && pl.doorOffsets[hit.edge] != null ? pl.doorOffsets[hit.edge] : 0.5);
+  const cur = () => (pl.doorOffsets && pl.doorOffsets[fpDoorDrag.edge] != null ? pl.doorOffsets[fpDoorDrag.edge] : 0.5);
+  // Nearest outline edge to the pointer (shaped cross-corner dragging).
+  const nearestEdge = (raw) => {
+    const o = fpOutlineOf(pl.outline);
+    const tol = 12 / fpPx();
+    let bestEdge = null;
+    let bestDist = Infinity;
+    for (let i = 0; i < o.length; i++) {
+      const hitSeg = nearestOnSegment(raw, o[i], o[(i + 1) % o.length]);
+      if (hitSeg.dist < bestDist) {
+        bestDist = hitSeg.dist;
+        bestEdge = `e${i}`;
+      }
+    }
+    return bestDist <= tol ? bestEdge : null;
+  };
   const move = (ev) => {
     const raw = fpCanvasRawAt(ev.clientX, ev.clientY);
     if (!raw) return;
-    const c = fpDoorFraction(pl, hit.edge, raw);
+    if (shaped) {
+      const ne = nearestEdge(raw);
+      if (ne && ne !== fpDoorDrag.edge) {
+        // Cross the corner: the new wall joins the authored set (D5).
+        if (!fpDoorDrag.authored.includes(ne)) fpDoorDrag.authored.push(ne);
+        pl.doorEdges = fpDoorDrag.authored.slice();
+        fpDoorDrag.edge = ne;
+        pl._doorDragEdge = ne;
+      }
+    }
+    const c = fpDoorFraction(pl, fpDoorDrag.edge, raw);
     if (c === cur()) return;
-    pl.doorOffsets = { ...(pl.doorOffsets || {}), [hit.edge]: c };
+    pl.doorOffsets = { ...(pl.doorOffsets || {}), [fpDoorDrag.edge]: c };
     fpDoorDrag.moved = true;
     fpRenderCanvas();
-    fpSetReadout(`Door ${hit.edge} of ${fpUnitNo(pl)} → ${Math.round(c * 100)}% along the edge · release saves · Esc cancels`);
+    fpSetReadout(`Door ${fpDoorDrag.edge} of ${fpUnitNo(pl)} → ${Math.round(c * 100)}% along the edge · release saves · Esc cancels`);
   };
   const up = () => {
     document.removeEventListener('pointermove', move);
@@ -4935,6 +5813,15 @@ function fpBoundaryHitAt(clientX, clientY) {
 function fpAdoptPlacement(pl, data) {
   if (!pl || !data) return;
   pl.areaDirty = data.areaDirty === true;
+  // The server derives the bbox from the outline — adopt the canonical
+  // geometry (bbox + outline + label anchor) so local state never drifts.
+  if (Number.isFinite(data.x)) pl.x = data.x;
+  if (Number.isFinite(data.y)) pl.y = data.y;
+  if (Number.isFinite(data.width)) pl.width = data.width;
+  if (Number.isFinite(data.height)) pl.height = data.height;
+  if (data.outline !== undefined) pl.outline = fpOutlineOf(data.outline);
+  if (Array.isArray(data.labelAt) && data.labelAt.length >= 2) pl.labelAt = [Number(data.labelAt[0]), Number(data.labelAt[1])];
+  if (Array.isArray(data.doorEdges) || data.doorEdges === null) pl.doorEdges = data.doorEdges;
   if (data.unit) {
     pl.sqft = data.unit.sqft;
     pl.status = String(data.unit.status || pl.status || '').toUpperCase();
@@ -4959,7 +5846,7 @@ async function fpPersist(pl, verb) {
   try {
     const res = await fpMutate(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/units/${encodeURIComponent(pl.unitId)}`, {
       method: 'PUT',
-      body: JSON.stringify({ x: pl.x, y: pl.y, width: pl.width, height: pl.height, stackTier: pl.stackTier || 0 }),
+      body: JSON.stringify({ x: pl.x, y: pl.y, width: pl.width, height: pl.height, ...(fpIsShaped(pl) ? { outline: pl.outline } : {}), stackTier: pl.stackTier || 0 }),
     });
     fpAdoptPlacement(pl, res && res.data);
     fpRefreshAfterSave();
@@ -5177,7 +6064,7 @@ function fpStartMove(e, el) {
   const offsetX = grab[0] - pl.x * fpPx();
   const offsetY = grab[1] - pl.y * fpPx();
   state.fp.selected = uid;
-  pl._undoPrev = { x: pl.x, y: pl.y, width: pl.width, height: pl.height, stackTier: pl.stackTier || 0 };
+  pl._undoPrev = { x: pl.x, y: pl.y, width: pl.width, height: pl.height, outline: fpOutlineOf(pl.outline) ? fpOutlineOf(pl.outline).map(([x, y]) => [x, y]) : null, stackTier: pl.stackTier || 0 };
   // A unit interaction supersedes any block/marker selection — otherwise the
   // info strip would keep showing the stale block while the operator is acting
   // on the unit (fpRenderSelInfo gives a selected block priority over a unit).
@@ -5192,7 +6079,7 @@ function fpStartMove(e, el) {
   const pair = mate ? [pl, mate].slice().sort((a, b) => (a.stackTier || 0) - (b.stackTier || 0)) : [pl];
   const pairIds = pair.map((p) => p.unitId);
   const { w: cw, h: ch } = fpCanvasDims();
-  const orig = pair.map((p) => ({ p, x: p.x, y: p.y }));
+  const orig = pair.map((p) => ({ p, x: p.x, y: p.y, outline: fpOutlineOf(p.outline) ? fpOutlineOf(p.outline).map(([x, y]) => [x, y]) : null }));
   const move = (ev) => {
     const loc = fpClientToLocal(ev.clientX, ev.clientY);
     const cell = loc ? fpCanvasCellAtLocal(loc[0] - offsetX, loc[1] - offsetY, ev) : null;
@@ -5205,8 +6092,14 @@ function fpStartMove(e, el) {
       else nx = orig[0].x;
     }
     for (const p of pair) {
+      const dx = nx - p.x;
+      const dy = ny - p.y;
       p.x = nx;
       p.y = ny;
+      // A move never resizes: shaped members translate their outline with
+      // the bbox (the polygon area is unchanged).
+      const o = fpOutlineOf(p.outline);
+      if (o && (dx || dy)) p.outline = o.map(([x, y]) => [quantizeFt(x + dx), quantizeFt(y + dy)]);
     }
     fpRenderCanvas();
     fpSetReadout(`${fpUnitNo(pl)} → ${formatFt(nx)}, ${formatFt(ny)} ft`);
@@ -5214,13 +6107,13 @@ function fpStartMove(e, el) {
   const up = async () => {
     document.removeEventListener('pointermove', move);
     document.removeEventListener('pointerup', up);
-    const hit = fpOverlapAt(pl.x, pl.y, pl.width, pl.height, pairIds, 0);
+    const hit = fpOverlapAt(pl.x, pl.y, pl.width, pl.height, pairIds, 0, pl.outline);
     if (hit) {
-      // Locker stack-drop: a lone locker moved EXACTLY onto a lone locker's
-      // rect stacks as the upper tier instead of reverting (lockers-only,
-      // max 2-high, same footprint — mirrors src/core/floorPlans.ts). Every
-      // other overlap keeps the revert below.
-      if (fpStackDropAllowed(pl, hit, pairIds)) {
+      // Locker stack-drop: a lone RECT locker moved EXACTLY onto a lone
+      // locker's rect stacks as the upper tier instead of reverting
+      // (lockers-only, max 2-high, same footprint — mirrors
+      // src/core/floorPlans.ts). Shaped units never stack (D6).
+      if (!fpIsShaped(pl) && fpStackDropAllowed(pl, hit, pairIds)) {
         await fpStackMovedOn(pl, hit, orig);
         return;
       }
@@ -5237,6 +6130,7 @@ function fpStartMove(e, el) {
       for (const o of orig) {
         o.p.x = o.x;
         o.p.y = o.y;
+        if (o.outline) o.p.outline = o.outline.map(([x, y]) => [x, y]);
       }
       fpRenderCanvas();
       if (droppedExact && targetPaired) {
@@ -5351,6 +6245,10 @@ async function fpRotatePlacement() {
   const pl = state.fp.placements.find((p) => p.unitId === state.fp.selected);
   if (!pl) return;
   if (fpGuardLocked(pl)) return; // live occupied placement: no rotate
+  if (fpIsShaped(pl)) {
+    fpToast('Custom shapes rotate through Edit outline — dragging corners keeps the area exact. Width/height swap only applies to rectangles.', false);
+    return;
+  }
   const mate = fpStackMate(pl);
   const pair = mate ? [pl, mate].slice().sort((a, b) => (a.stackTier || 0) - (b.stackTier || 0)) : [pl];
   const pairIds = pair.map((p) => p.unitId);
@@ -5721,7 +6619,7 @@ async function fpAutoPlaceAll() {
         }
       }
       if (!spot) {
-        unfit.push(unit.unitCode);
+        unfit.push(fpUnitNo(unit));
         continue;
       }
       try {
@@ -5747,7 +6645,7 @@ async function fpAutoPlaceAll() {
           stackTier: 0,
         });
         taken.push({ x: spot.x, y: spot.y, width: geom.w, height: geom.h });
-        placed.push(unit.unitCode);
+        placed.push(fpUnitNo(unit));
       } catch (err) {
         failed.push(`${fpUnitNo(unit)} (${describeError(err)})`);
       }
@@ -6092,9 +6990,15 @@ function fpToggleArmedMarker(kind) {
 function fpOnEscapeTool(e) {
   if (e.key !== 'Escape' || e.defaultPrevented) return;
   if (fpDoorDrag) {
-    // An in-flight door drag owns Escape: drop the ghost, keep the tool armed.
+    // An in-flight drag owns Escape: drop the ghost, keep the tool armed.
     e.preventDefault();
     fpCancelDoorDrag();
+    return;
+  }
+  if (state.fp.outlineMode) {
+    e.preventDefault();
+    fpSetOutlineMode(null);
+    fpToast('Outline edit cancelled.', true);
     return;
   }
   if (state.fp.doorMove) {
@@ -7439,7 +8343,11 @@ async function fpCreateUnits(items, verbOverride) {
   for (const t of targets) {
     const ref = fpLastCreated[t.id];
     if (!ref) continue;
-    codes.push(ref.unitCode);
+    // Operator-facing label: the display name (Unit no.) when the draft was
+    // created with one, else the minted code (which unnamed drafts display).
+    // unitCode stays the lookup key — only this toast label uses the name.
+    const specName = t.createSpec && typeof t.createSpec.name === 'string' ? t.createSpec.name.trim() : '';
+    codes.push(specName || ref.unitCode);
     ids.push(ref.id);
     if (t.createSpec.monthlyRate != null) {
       state.fp.draftSpecs = state.fp.draftSpecs || {};
@@ -7794,21 +8702,25 @@ function fpViewRender() {
     }
     const pl = group.members[0];
     const el = document.createElement('div');
-    el.className = 'fp-placed';
+    el.className = 'fp-placed' + (fpIsShaped(pl) ? ' fp-shaped' : '');
     el.dataset.unitId = pl.unitId;
     el.style.left = pl.x * u + 'px';
     el.style.top = pl.y * u + 'px';
     el.style.width = pl.width * u + 'px';
     el.style.height = pl.height * u + 'px';
     if (fpIsOccupiedLocked(pl)) el.title = fpLockedTooltip(pl);
-    el.innerHTML =
-      `<div class="fp-status" style="background:${fpStatusColor(pl.status)};"></div>` +
-      `<div class="fp-code">${escapeHtml(fpUnitNo(pl))}</div>` +
-      `<div class="fp-sqft">${fpFmtArea(pl.sqft)} sqft</div>` +
-      (pl.height * u > 34 ? `<div class="fp-size">${escapeHtml(pl.sizeName)}</div>` : '') +
-      fpUnitTagsHTML(pl) +
-      fpDoorMarkersHTML(pl, u) +
-      (fpIsOccupiedLocked(pl) ? '' : `<div class="fp-resize" title="Drag to resize"></div>`);
+    if (fpIsShaped(pl)) {
+      fpApplyShapedTileStyle(el, pl);
+      el.innerHTML = fpShapedTileInnerHTML(pl, u, false);
+    } else {
+      el.innerHTML =
+        `<div class="fp-status" style="background:${fpStatusColor(pl.status)};"></div>` +
+        `<div class="fp-code">${escapeHtml(fpUnitNo(pl))}</div>` +
+        `<div class="fp-sqft">${fpFmtArea(pl.sqft)} sqft</div>` +
+        (pl.height * u > 34 ? `<div class="fp-size">${escapeHtml(pl.sizeName)}</div>` : '') +
+        fpUnitTagsHTML(pl) +
+        fpDoorMarkersHTML(pl, u);
+    }
     canvas.appendChild(el);
   }
   // Safety/facility point icons, static in the read-only preview.
@@ -8651,8 +9563,7 @@ export function fpInitEvents() {
     fpToggleArmedMarker(btn.dataset.markerKind);
   });
   // --- Group: info (Labels) — canvas selection/drag dispatch + selection strip ---
-  $('#fpCanvasWrap').addEventListener('pointerdown', (e) => {
-    fpFlushNudge(); // land any debounced nudge before a new drag captures undo state
+  $('#fpCanvasWrap').addEventListener('pointerdown', (e) => {    fpFlushNudge(); // land any debounced nudge before a new drag captures undo state
     // Armed marker (Markers/Safety group): the next canvas click places the
     // armed kind and disarms — same mode-gated pattern as the line tool below
     // (placement/block/line interactions stay off until placed or cancelled).
@@ -8700,6 +9611,20 @@ export function fpInitEvents() {
         if (hit && fpDoorStartDrag(e, hit)) return;
       }
     }
+    // Odd-shaped outline tools own the canvas while armed (same mode-gated
+    // contract as the line tool): draw clicks append corners, edit handles
+    // win over tiles.
+    if (state.fp.outlineMode === 'draw' && !fpLayerLocked('units')) {
+      const canvas = $('#fpCanvas');
+      if (canvas && canvas.contains(e.target) && e.button === 0 && fpOutlineDrawClick(e)) return;
+    }
+    if (state.fp.outlineMode === 'edit' && !fpLayerLocked('units')) {
+      const oHit = fpOutlineHandleHitAt(e.clientX, e.clientY);
+      if (oHit) {
+        fpOutlineVertexStartDrag(e, oHit);
+        return;
+      }
+    }
     // Selected line: its vertex / midpoint handles win over everything below
     // (handles can sit on top of units and blocks).
     const vHit = fpLayerLocked('lines') ? null : fpVertexHitAt(e.clientX, e.clientY);
@@ -8710,9 +9635,19 @@ export function fpInitEvents() {
     state.fp.selectedVertex = null;
     state.fp.arrayOpen = false;
     // Locked / hidden layers (Layers menu) ignore pointer input.
-    const placed = fpLayerLocked('units') ? null : e.target.closest('.fp-placed');
+    let placed = fpLayerLocked('units') ? null : e.target.closest('.fp-placed');
     const marker = fpLayerLocked('markers') ? null : e.target.closest('.fp-marker');
     const blk = fpLayerLocked('blocks') ? null : e.target.closest('.fp-block');
+    // Odd-shaped hit-testing: clicks inside the bbox but outside the polygon
+    // pass through to whatever is underneath (point-in-polygon check).
+    if (placed && placed.dataset && placed.dataset.unitId) {
+      const spl = (state.fp.placements || []).find((p) => p.unitId === placed.dataset.unitId);
+      const so = spl && fpOutlineOf(spl.outline);
+      if (so && so.length >= 3 && !e.target.classList.contains('fp-resize')) {
+        const raw = fpCanvasRawAt(e.clientX, e.clientY);
+        if (raw && !pointInPolygon([raw[0], raw[1]], so)) placed = null;
+      }
+    }
     // Marker badges render topmost, so they hit-test before blocks.
     const hitRef = placed
       ? { type: 'placement', id: placed.dataset.unitId }
@@ -8760,6 +9695,21 @@ export function fpInitEvents() {
     // Empty canvas: drag = marquee select (Shift adds); a plain click deselects.
     if (e.button === 0) fpMarqueeStart(e);
   });
+  // Odd-shaped outlines: double-click finishes a draw loop; double-clicking a
+  // ● edit handle removes that corner.
+  $('#fpCanvasWrap').addEventListener('dblclick', (e) => {
+    if (state.fp.outlineMode === 'draw' && state.fp.outlineDraft && state.fp.outlineDraft.points.length >= 3) {
+      e.preventDefault();
+      // The double-click itself landed two pointerdowns (two corners) — drop
+      // the second landing before closing the loop.
+      state.fp.outlineDraft.points.pop();
+      fpOutlineFinishDraw();
+      return;
+    }
+    if (state.fp.outlineMode === 'edit' && fpOutlineRemoveVertex(e)) {
+      e.preventDefault();
+    }
+  });
   $('#fpSelInfo').addEventListener('click', (e) => {
     const alignBtn = e.target && e.target.closest ? e.target.closest('[data-fp-align]') : null;
     if (alignBtn) {
@@ -8797,6 +9747,16 @@ export function fpInitEvents() {
       if (cblk) fpSetBlockColor(cblk, e.target.dataset.blockColor);
     } else if (e.target && e.target.id === 'fpDoorsAutoBtn') fpResetDoors();
     else if (e.target && e.target.dataset && e.target.dataset.door) fpToggleDoor(e.target.dataset.door);
+    else if (e.target && e.target.dataset && e.target.dataset.notchCorner) {
+      state.fp.notchCorner = e.target.dataset.notchCorner;
+      fpRenderSelInfo();
+    } else if (id === 'fpOutlineNotchBtn') fpSetOutlineMode(state.fp.outlineMode === 'notch' ? null : 'notch');
+    else if (id === 'fpOutlineDrawBtn') fpOutlineStartDraw();
+    else if (id === 'fpOutlineEditBtn') fpSetOutlineMode(state.fp.outlineMode === 'edit' ? null : 'edit');
+    else if (id === 'fpOutlineResetBtn') fpResetOutline();
+    else if (id === 'fpOutlineApplyBtn') fpOutlineApplyNotch();
+    else if (id === 'fpOutlineCloseBtn') fpOutlineFinishDraw();
+    else if (id === 'fpOutlineCancelBtn') fpSetOutlineMode(null);
   });
   $('#fpSelInfo').addEventListener('keydown', (e) => {
     // Numeric inspector: Enter applies, Esc reverts, ↑/↓ step by the snap step.
@@ -8883,6 +9843,17 @@ export function fpInitEvents() {
       } else if (e.key === 'Escape') {
         e.preventDefault();
         fpRenderSelInfo();
+      }
+      return;
+    }
+    // Draw-outline length entry: Enter appends a corner at the current angle.
+    if (e.target && e.target.id === 'fpDrawLen') {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        fpOutlineDrawAppendLength(e.target.value);
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        fpSetOutlineMode(null);
       }
       return;
     }

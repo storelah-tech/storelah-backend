@@ -707,6 +707,12 @@ model UnitPlacement {
   // stale keys for removed edges are ignored. CMS-only: public reads never
   // expose it (see serializePlan publicView). Additive, nullable, no backfill.
   doorOffsets Json?
+  // Odd-shaped units (D1): polygon outline [[x,y],...] in absolute decimal
+  // feet, clockwise-normalised, quantized to 0.001 ft. NULL = plain rectangle
+  // (every pre-outline row reads unchanged). When set, x/y/width/height store
+  // the server-derived bounding box, so drag/canvas-fit/sort keep working.
+  // Additive, nullable, no backfill needed.
+  outline     Json?
   // Floor-plan unit sync (docs/FLOOR_PLAN_UNIT_SYNC_PLAN.md D2): true when the
   // drawn area changed since the last publish AND round(width × height) no
   // longer equals Unit.sqft — publish syncs Unit.sqft/size/rate from geometry and

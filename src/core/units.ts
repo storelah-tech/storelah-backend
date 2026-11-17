@@ -470,9 +470,22 @@ export async function createUnit(input: CreateUnitInput) {
 export async function updateUnit(code: string, input: UpdateUnitInput) {
   const unit = await prisma.unit.findUnique({
     where: { unitCode: code, deletedAt: null },
-    include: { placement: { select: { id: true } } },
+    include: { placement: { select: { id: true, outline: true } } },
   });
   if (!unit) throw new AppError(404, 'NOT_FOUND', `Unit ${code} not found`);
+  // Odd-shaped units (D4): a shaped placement owns the footprint — L×W edits
+  // are rejected (the Units form shows "Custom shape — edit in Floor Plan
+  // Designer", sqft read-only). sqft edits stay under the SIZE_OWNED_BY_PLAN
+  // rule below.
+  const shapedOutline = unit.placement?.outline;
+  const isShaped = Array.isArray(shapedOutline) && (shapedOutline as unknown[]).length >= 3;
+  if (isShaped && (input.lengthFt !== undefined || input.widthFt !== undefined)) {
+    throw new AppError(
+      409,
+      'SHAPE_OWNED_BY_PLAN',
+      `Unit ${code} has a custom shape — edit it in the Floor Plan Designer (length × width don't apply to shaped units).`,
+    );
+  }
   // Floor-plan unit sync (docs/FLOOR_PLAN_UNIT_SYNC_PLAN.md D1): a PLACED
   // unit's size is set by its drawing (synced on publish) — resize it on the
   // floor plan instead. Re-sending the current sqft (the edit form always
@@ -817,7 +830,7 @@ export async function getUnitDetail(code: string) {
       floor: true,
       tenant: true,
       rateHistory: { orderBy: { date: 'desc' } },
-      placement: { select: { width: true, height: true, areaDirty: true, floorPlan: { select: { status: true } } } },
+      placement: { select: { width: true, height: true, outline: true, areaDirty: true, floorPlan: { select: { status: true } } } },
       areaHistory: { orderBy: { createdAt: 'desc' }, take: 20 },
       images: { orderBy: { sortOrder: 'asc' } },
     },
@@ -901,16 +914,19 @@ export async function getUnitDetail(code: string) {
       by: r.appliedBy,
     })),
     // Floor-plan unit sync: a placed unit's size is owned by its drawing
-    // (sizeOwnedByPlan → the edit form makes sqft read-only).
+    // (sizeOwnedByPlan → the edit form makes sqft read-only). A shaped
+    // placement additionally locks L×W (shapedPlacement → "Custom shape").
     placement: unit.placement
       ? {
           widthFt: unit.placement.width,
           heightFt: unit.placement.height,
           areaDirty: unit.placement.areaDirty,
           floorPlanStatus: unit.placement.floorPlan.status,
+          shaped: Array.isArray(unit.placement.outline),
         }
       : null,
     sizeOwnedByPlan: !!unit.placement,
+    shapedPlacement: Array.isArray(unit.placement?.outline),
     images: unit.images.map(serializeUnitImage),
     areaHistory: unit.areaHistory.map((a) => ({
       date: a.createdAt,

@@ -490,6 +490,17 @@ const floorPlanDoorOffsetsSchema = z
     // Door width in feet for this unit's doors (see DoorOffsets in core/floorPlans.ts).
     w: z.number().min(0.5).max(50).optional(),
   })
+  // Shaped units key offsets by outline edge ("e0", …) — the server validates
+  // the range against the outline's edge count (400 outside it).
+  .catchall(z.number().min(0).max(1))
+  .nullish();
+
+// Authored door edges: N/S/E/W toggles for rectangles, outline edge keys
+// ("e0", …) for shaped units. Omitted keeps, null clears, array replaces —
+// the server validates the subset strictly (400 outside it).
+const floorPlanDoorEdgesSchema = z
+  .array(z.union([z.enum(['N', 'S', 'E', 'W']), z.string().regex(/^e\d{1,2}$/, 'outline edge key like "e0"')]))
+  .max(24)
   .nullish();
 
 const floorPlanListQuerySchema = z.object({
@@ -505,13 +516,18 @@ const floorPlanPlacementSchema = z.object({
   // Stacking tier: 0 = ground/sole tier (default), 1 = upper tier of a
   // same-rect locker pair. Anything else is 400; omitted keeps the tier on update.
   stackTier: z.number().int().min(0).max(1).optional(),
-  // Authored door compass edges (editor N/S/E/W toggles): omitted keeps the
-  // placement's edges, null clears back to unauthored (AUTO_ALL_EDGES in
-  // metrics), an array replaces. Additive — old clients simply omit it.
-  doorEdges: z.array(z.enum(['N', 'S', 'E', 'W'])).max(4).nullish(),
+  // Authored door edges (editor toggles): N/S/E/W for rectangles, outline
+  // edge keys ("e0", …) for shaped units. Omitted keeps, null clears.
+  doorEdges: floorPlanDoorEdgesSchema,
   // Authored door positions (door-move tool): omitted keeps, null clears,
   // an object replaces (pruned to the effective authored edges server-side).
   doorOffsets: floorPlanDoorOffsetsSchema,
+  // Odd-shaped units (D1): polygon outline [[x,y],...] in absolute decimal
+  // feet (3–24 vertices; the server validates simplicity, min edge length,
+  // area band and clockwise-normalises). Omitted keeps the stored shape, null
+  // clears back to a rectangle. When set, x/y/width/height are ignored — the
+  // server derives and stores the outline's bounding box.
+  outline: z.array(z.tuple([z.number(), z.number()])).min(3).max(24).nullish(),
 });
 
 const floorPlanBlockSchema = z.object({
@@ -4068,8 +4084,11 @@ const floorPlanDraftPlacementSchema = z.object({
   width: z.number().positive(),
   height: z.number().positive(),
   stackTier: z.number().int().min(0).max(1).optional(),
-  doorEdges: z.array(z.enum(['N', 'S', 'E', 'W'])).max(4).nullish(),
+  doorEdges: floorPlanDoorEdgesSchema,
   doorOffsets: floorPlanDoorOffsetsSchema,
+  // Odd-shaped units (D1): authored outline [[x,y],...]; the server validates
+  // it like a live placement write. Omitted keeps the live shape on restore.
+  outline: z.array(z.tuple([z.number(), z.number()])).min(3).max(24).nullish(),
 });
 
 const floorPlanDraftBlockSchema = z.object({

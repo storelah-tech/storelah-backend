@@ -65,7 +65,8 @@ import { toNum } from '../lib/format';
 import { AppError } from '../lib/http';
 import type { PlanStatus, Prisma } from '@prisma/client';
 import { MARKET_PSF } from './market';
-import { computeBoundaryMetrics, doorEdgesToArray, pillarRectsOf, type BoundaryMetrics, type GfaSource } from './floorPlans';
+import { computeBoundaryMetrics, doorEdgesToArray, outlineDoorsToCompass, pillarRectsOf, type BoundaryMetrics, type GfaSource } from './floorPlans';
+import { outlineOf } from './planGeometry';
 import { canonicalBranchCode } from './branches';
 import {
   computeFloorMetrics,
@@ -431,7 +432,8 @@ interface PlacedUnit {
   width: number;
   height: number;
   stackTier: number;
-  doorEdges: string | null; // canonical CSV subset (N/S/E/W) or NULL = unauthored
+  doorEdges: string | null; // canonical CSV subset (N/S/E/W, or eK for shaped) or NULL = unauthored
+  outline: unknown; // shaped-unit polygon JSON (NULL = rectangle)
   unit: {
     id: string;
     unitCode: string;
@@ -456,7 +458,7 @@ const AUTO_DOOR_EDGES: readonly Edge[] = ['N', 'S', 'E', 'W'];
  * behaviour — edges facing units/walls resolve to nothing in the core).
  * `authoredOnly` feeds geometryHash so door edits flip the fingerprint.
  */
-export function buildUnitDoors(placed: Array<{ doorEdges: string | null; unit: { id: string } }>): {
+export function buildUnitDoors(placed: Array<{ doorEdges: string | null; outline?: unknown; unit: { id: string } }>): {
   doors: DoorInput[];
   authoredOnly: DoorInput[];
   doorSourceByRegion: Map<string, { edges: Edge[]; source: 'authored' | 'auto' }>;
@@ -468,7 +470,18 @@ export function buildUnitDoors(placed: Array<{ doorEdges: string | null; unit: {
   let authoredUnits = 0;
   for (const p of placed) {
     const regionId = `u-${p.unit.id}`;
-    const authored = doorEdgesToArray(p.doorEdges);
+    // Shaped placements author edge-index doors (eK); the rect-region core
+    // consumes compass edges, so shaped doors bridge through their dominant
+    // compass direction (see outlineDoorsToCompass). Rect placements keep the
+    // exact authored-subset path.
+    const outline = outlineOf(p.outline);
+    const authoredRaw = doorEdgesToArray(p.doorEdges, outline ? { edgeCount: outline.length } : undefined);
+    const authored: Edge[] | null =
+      authoredRaw && authoredRaw.length
+        ? outline
+          ? outlineDoorsToCompass(outline, p.doorEdges)
+          : (authoredRaw as Edge[])
+        : null;
     if (authored && authored.length > 0) {
       authoredUnits += 1;
       for (const edge of authored) {
@@ -600,11 +613,11 @@ export async function getFloorMetrics(floorId: string): Promise<FloorMetricsRepo
     boundaries: (plan.boundaries ?? []).map((b) => ({ points: b.points, closed: b.closed, kind: b.kind })),
     blocks: plan.blocks.map((b) => ({ x: b.x, y: b.y, width: b.width, height: b.height })),
     structure: (plan as { structure?: unknown }).structure ?? null,
-    placements: placed.map((p) => ({ x: p.x, y: p.y, width: p.width, height: p.height })),
+    placements: placed.map((p) => ({ x: p.x, y: p.y, width: p.width, height: p.height, outline: outlineOf(p.outline) })),
     gfaSqft: userGfa,
     // Pillars subtract from NLA only (hasPillar-unit footprints; Pillar
     // blocks already ride in `blocks` — see pillarRectsOf).
-    pillarRects: pillarRectsOf(placed.map((p) => ({ x: p.x, y: p.y, width: p.width, height: p.height, unit: { hasPillar: p.unit.hasPillar } }))),
+    pillarRects: pillarRectsOf(placed.map((p) => ({ x: p.x, y: p.y, width: p.width, height: p.height, outline: outlineOf(p.outline), unit: { hasPillar: p.unit.hasPillar } }))),
   });
   const lineUfaQ = BigInt(Math.round(boundaryMetrics.ufa * Number(Q_PER_SQFT)));
   const lineNlaQ = BigInt(Math.round(boundaryMetrics.nla * Number(Q_PER_SQFT)));

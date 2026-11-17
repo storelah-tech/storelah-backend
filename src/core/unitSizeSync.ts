@@ -3,8 +3,8 @@ import { Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { AppError } from '../lib/http';
 import { toNum } from '../lib/format';
-import { formatFt, rectAreaSqft } from './planGeometry';
-import { loadContractedUnits, resolveSizeTier, sameSqft, sqftForRect } from './unitSizing';
+import { formatFt } from './planGeometry';
+import { loadContractedUnits, placementAreaSqft, resolveSizeTier, sameSqft, sqftForPlacement } from './unitSizing';
 
 export { resolveSizeTier };
 
@@ -45,6 +45,8 @@ export interface SizeSyncChange {
   status: string;
   widthFt: number;
   heightFt: number;
+  /** True when the drawing is a shaped outline (L×W stay NULL — see D4). */
+  shaped: boolean;
   drawnSqft: number; // exact drawn area (2 dp)
   oldSqft: number;
   newSqft: number;
@@ -129,9 +131,12 @@ export async function buildSizeSyncPlan(
       out.newUnits.push({ unitId: u.id, unitCode: u.unitCode, sqft: u.sqft, size: { code: u.size.code, name: u.size.name }, rate: toNum(u.monthlyRate) });
       continue;
     }
-    const newSqft = sqftForRect(p);
+    const newSqft = sqftForPlacement(p);
+    const shaped = Array.isArray((p as { outline?: unknown }).outline) && ((p as { outline?: unknown }).outline as unknown[]).length >= 3;
     if (sameSqft(newSqft, u.sqft)) {
-      out.unchanged.push({ unitId: u.id, unitCode: u.unitCode, widthFt: p.width, heightFt: p.height });
+      // Shaped drawings carry no L×W (D4: Units form shows "Custom shape"), so
+      // the unchanged path skips dimension reconciliation for them.
+      out.unchanged.push(shaped ? { unitId: u.id, unitCode: u.unitCode } : { unitId: u.id, unitCode: u.unitCode, widthFt: p.width, heightFt: p.height });
       continue;
     }
     const reason = contracted.get(u.id);
@@ -163,7 +168,8 @@ export async function buildSizeSyncPlan(
       status: u.status,
       widthFt: p.width,
       heightFt: p.height,
-      drawnSqft: round2(rectAreaSqft(p)),
+      shaped,
+      drawnSqft: round2(placementAreaSqft(p)),
       oldSqft: u.sqft,
       newSqft,
       oldSize: sizeRef(u.size),
@@ -238,9 +244,10 @@ export async function applySizeSync(
     const newRate = rateFor(c, choiceBy.get(c.unitId));
     // L × W follow the drawing too (length = plan y-extent, width = x-extent),
     // so the Units module never shows dimensions that disagree with sqft.
+    // D4: shaped units carry no L×W — the Units form shows "Custom shape".
     await tx.unit.update({
       where: { id: c.unitId },
-      data: { sqft: c.newSqft, sizeId: newSize.id, monthlyRate: newRate, lengthFt: c.heightFt, widthFt: c.widthFt },
+      data: { sqft: c.newSqft, sizeId: newSize.id, monthlyRate: newRate, lengthFt: c.shaped ? null : c.heightFt, widthFt: c.shaped ? null : c.widthFt },
     });
     await tx.unitAreaChange.create({
       data: {
@@ -249,8 +256,8 @@ export async function applySizeSync(
         current: c.newSqft,
         prevSizeId: c.oldSize.id,
         newSizeId: newSize.id,
-        widthFt: c.widthFt,
-        heightFt: c.heightFt,
+        widthFt: c.shaped ? null : c.widthFt,
+        heightFt: c.shaped ? null : c.heightFt,
         source: 'FLOOR_PLAN_PUBLISH',
         floorPlanId: opts.floorPlanId,
         appliedBy: opts.appliedBy,
@@ -264,7 +271,9 @@ export async function applySizeSync(
           previous: c.oldRate,
           current: newRate,
           changePct: c.oldRate ? Math.round(((newRate - c.oldRate) / c.oldRate) * 1000) / 10 : 0,
-          reason: `Floor plan resize ${c.oldSqft}→${c.newSqft} sqft (${formatFt(c.widthFt)}×${formatFt(c.heightFt)} ft)`,
+          reason: c.shaped
+            ? `Floor plan reshape ${c.oldSqft}→${c.newSqft} sqft (shaped outline)`
+            : `Floor plan resize ${c.oldSqft}→${c.newSqft} sqft (${formatFt(c.widthFt)}×${formatFt(c.heightFt)} ft)`,
           appliedBy: opts.appliedBy,
         },
       });
@@ -347,14 +356,14 @@ export async function listSizeMismatches(floorId: string): Promise<SizeMismatch[
     orderBy: { unit: { unitCode: 'asc' } },
   });
   // Draft-plan units are not inventory yet (see where clause above).
-  const mism = rows.filter((p) => p.unit.status !== 'DRAFT' && !sameSqft(sqftForRect(p), p.unit.sqft));
+  const mism = rows.filter((p) => p.unit.status !== 'DRAFT' && !sameSqft(sqftForPlacement(p), p.unit.sqft));
   const contracted = await loadContractedUnits(mism.map((p) => p.unitId));
   return mism.map((p) => ({
     unitId: p.unitId,
     unitCode: p.unit.unitCode,
     status: p.unit.status,
     sqft: p.unit.sqft,
-    drawnSqft: round2(rectAreaSqft(p)),
+    drawnSqft: round2(placementAreaSqft(p)),
     widthFt: p.width,
     heightFt: p.height,
     contracted: contracted.get(p.unitId) ?? null,

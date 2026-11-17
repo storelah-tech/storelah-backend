@@ -30,7 +30,7 @@ export const openapiSpec = {
   openapi: '3.0.3',
   info: {
     title: 'StoreLah Booking API',
-    version: '1.13.1',
+    version: '1.14.0',
     description: [
       'Customer-facing booking API for the StoreLah self-storage business.',
       '',
@@ -408,6 +408,18 @@ export const openapiSpec = {
         'sizes that round to the same integer count as unchanged, so legacy decimal rows are never flagged or re-synced. ' +
         'DOOR WIDTH (CMS only, additive): placement `doorOffsets` accepts an optional `w` = door width in feet ' +
         '(0.5–50, applied to all of that unit\'s authored doors; omitted = default tick). Public shapes unchanged.',
+      'v1.14.0 is ADDITIVE-ONLY over 1.13.1: ODD-SHAPED UNITS — placements may carry an `outline` ' +
+        'polygon `[[x,y],...]` (absolute decimal feet, 3–24 vertices, server-validated + clockwise-normalised; ' +
+        'NULL/absent = rectangle, and `x/y/width/height` always carry the server-derived bounding box). ' +
+        'CMS placement payloads accept `outline` (omitted keeps, null clears; a bbox-filling 4-vertex outline ' +
+        'normalises to null). Shaped placements: sqft = polygon area (rounded whole), contracted units cannot ' +
+        'change shape (409, same as the resize lock), stacking is 409, `PUT /cms/units/{code}` rejects L×W edits ' +
+        '(409 SHAPE_OWNED_BY_PLAN) and publish writes L×W null, draft snapshots round-trip `outline`. ' +
+        'Shaped `doorEdges` use edge-index keys (`["e0",…]`, offsets `{"eK": 0..1, "w": ft}`); rect N/S/E/W is ' +
+        'unchanged. Public placements gain shaped-only `outline` + `labelAt` (pole of inaccessibility, ' +
+        'omitted for rectangles — rect output is byte-identical); `doorEdges` may be `["eK"]`. Safety net: ' +
+        'shaped placements are hidden from the public map unless `PUBLIC_MAP_INCLUDE_SHAPED_UNITS=true` ' +
+        '(booking list unaffected).',
     ].join('\n'),
   },
   servers: [
@@ -6348,10 +6360,18 @@ export const openapiSpec = {
           },
           doorEdges: {
             type: 'array',
-            maxItems: 4,
-            items: { type: 'string', enum: ['N', 'S', 'E', 'W'] },
+            maxItems: 24,
+            items: { type: 'string', description: 'N/S/E/W for rectangles; outline edge key "eK" for shaped units.' },
             description:
-              'Authored door compass edges (editor N/S/E/W toggles): omitted keeps the placement\'s edges, null clears back to unauthored (AUTO_ALL_EDGES in metrics), an array replaces. Anything outside N/S/E/W is 400.',
+              'Authored door edges (editor toggles): N/S/E/W for rectangles, outline edge keys ("e0", …) for shaped units. Omitted keeps the placement\'s edges, null clears back to unauthored (AUTO_ALL_EDGES in metrics), an array replaces. Anything else is 400.',
+          },
+          outline: {
+            type: 'array',
+            minItems: 3,
+            maxItems: 24,
+            items: { type: 'array', items: { type: 'number' }, minItems: 2, maxItems: 2 },
+            description:
+              'Odd-shaped units: polygon outline [[x,y],...] in absolute decimal feet. Omitted keeps the stored shape, null clears to a rectangle. When set, x/y/width/height are ignored — the server derives and stores the outline\'s bounding box. Rectangles are never stored as outlines (a bbox-filling 4-vertex outline normalises to null).',
           },
         },
       },
@@ -6374,9 +6394,23 @@ export const openapiSpec = {
           },
           doorEdges: {
             type: ['array', 'null'],
-            items: { type: 'string', enum: ['N', 'S', 'E', 'W'] },
+            items: { type: 'string', description: 'N/S/E/W for rectangles; outline edge key "eK" for shaped units.' },
             description:
-              'Authored door compass edges (N/S/E/W toggles); null = unauthored (metrics falls back to AUTO_ALL_EDGES for this unit).',
+              'Authored door edges (N/S/E/W toggles for rectangles; outline edge keys ["e0", …] for shaped units); null = unauthored (metrics falls back to AUTO_ALL_EDGES for this unit).',
+          },
+          outline: {
+            type: 'array',
+            items: { type: 'array', items: { type: 'number' }, minItems: 2, maxItems: 2 },
+            description:
+              'Shaped-unit outline polygon [[x,y],...] in absolute decimal feet (clockwise, quantized to 0.001 ft). OMITTED — not null — for rectangles, so rect output is byte-identical to before outlines existed.',
+          },
+          labelAt: {
+            type: 'array',
+            items: { type: 'number' },
+            minItems: 2,
+            maxItems: 2,
+            description:
+              'Label/focus point [x,y] in decimal feet: the polygon pole of inaccessibility for shaped units (bbox centre for rectangles in CMS reads). Omitted for rectangles in the public view. Booking renders the unit label here.',
           },
           unit: {
             type: 'object',

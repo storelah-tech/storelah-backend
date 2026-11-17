@@ -5,19 +5,32 @@ import {
   MIN_RECT_SIDE_FT,
   DEFAULT_WALL_THICKNESS_FT,
   MAX_WALL_THICKNESS_FT,
+  MIN_OUTLINE_AREA_SQFT,
+  MAX_OUTLINE_AREA_SQFT,
   MIN_WALL_THICKNESS_FT,
+  clipPolygonToRect,
   fitSqftFootprint,
   isGuideLine,
-  lineFeedsArea,
-  formatFt,
   isPlanNumber,
+  lineFeedsArea,
+  normalizeOutline,
+  formatFt,
+  outlineBBox,
+  outlineOf,
+  placementsOverlap,
+  polygonIntersectionArea,
+  polygonLabelPoint,
   pointOnCanvas,
   quantizeFt,
-  rectAreaSqft,
   rectFitsCanvas,
   rectsOverlapExact,
+  rectToPolygon,
   sameRect as sameFtRect,
+  segmentLengthFt,
+  nearestOnSegment,
   toMilli,
+  type FtRect,
+  type OutlinePoints,
 } from './planGeometry';
 import { serializeUnderlay } from './floorPlanUnderlay';
 import {
@@ -28,9 +41,11 @@ import {
   defaultRateFor,
   loadContractedUnits,
   loadSizeTiers,
+  placementAreaSqft,
   resolveSizeTier,
   sameSqft,
-  sqftForRect,
+  sqftForPlacement,
+  type PlacementGeom,
   type SizeTierRow,
 } from './unitSizing';
 import { applySizeSync, keepPsfRate, listSizeMismatches, type SizeSyncChoice, type SizeSyncResult } from './unitSizeSync';
@@ -200,9 +215,11 @@ export function unitDimsFootprint(u: {
 }
 
 function serializePlacement(
-  p: { id: string; x: number; y: number; width: number; height: number; stackTier: number; doorEdges: string | null; doorOffsets: unknown; areaDirty?: boolean; unit: PlacementUnit },
+  p: { id: string; x: number; y: number; width: number; height: number; stackTier: number; doorEdges: string | null; doorOffsets: unknown; outline: unknown; areaDirty?: boolean; unit: PlacementUnit },
   opts: { publicView?: boolean } = {},
 ) {
+  const outline = outlineOf(p.outline);
+  const labelAt = outline ? polygonLabelPoint(outline) : [quantizeFt(p.x + p.width / 2), quantizeFt(p.y + p.height / 2)] as [number, number];
   return {
     id: p.id,
     x: p.x,
@@ -212,12 +229,23 @@ function serializePlacement(
     // Stacking tier: 0 = ground/sole tier, 1 = upper tier of a same-rect locker pair.
     stackTier: p.stackTier,
     // Authored door compass edges (N/S/E/W toggles); null = unauthored
-    // (metrics bridge falls back to AUTO_ALL_EDGES for this unit).
-    doorEdges: doorEdgesToArray(p.doorEdges),
+    // (metrics bridge falls back to AUTO_ALL_EDGES for this unit). Shaped
+    // units carry edge-index edges (["e0", ...]) — see normalizeDoorEdges.
+    doorEdges: doorEdgesToArray(p.doorEdges, outline ? { edgeCount: outline.length } : undefined),
     // Authored door positions along their edges (door-move tool fractions);
     // null = all doors centred. CMS-only: public reads keep the pre-existing
     // shape (doorEdges only) so booking output is byte-identical.
-    ...(opts.publicView ? {} : { doorOffsets: doorOffsetsToObject(p.doorOffsets) }),
+    ...(opts.publicView ? {} : { doorOffsets: doorOffsetsToObject(p.doorOffsets, outline ? { edgeCount: outline.length } : undefined) }),
+    // Odd-shaped units (D1/D7): the outline polygon for shaped placements.
+    // OMITTED (not null) for rectangles — in both views — so rect output is
+    // byte-identical to before outlines existed (same approach as
+    // doorOffsets). CMS readers see `outline: null` explicitly? No — omitted
+    // too; `labelAt` is the shaped-only companion.
+    ...(!outline ? {} : { outline }),
+    // Pole of inaccessibility (shaped) or bbox centre (rect): the label +
+    // focus point. Booking renders the label here; the CMS editor names tiles
+    // from it. Omitted for rects in the public view (byte-identical).
+    ...(outline ? { labelAt } : opts.publicView ? {} : { labelAt }),
     // Floor-plan unit sync: drawn area differs from Unit.sqft and will sync on publish.
     areaDirty: p.areaDirty === true,
     unit: serializeUnitSummary(p.unit, opts),
@@ -537,11 +565,11 @@ export function isPillarBlockName(name: string | null | undefined): boolean {
  * subtracted via `blocked` (including them again would double-count).
  */
 export function pillarRectsOf(
-  placements: Array<FootRect & { unit?: { hasPillar?: boolean | null } | null }>,
-): FootRect[] {
+  placements: Array<FootRect & { outline?: unknown; unit?: { hasPillar?: boolean | null } | null }>,
+): Array<FootRect & { outline?: unknown }> {
   return placements
     .filter((p) => p?.unit?.hasPillar === true)
-    .map((p) => ({ x: p.x, y: p.y, width: p.width, height: p.height }));
+    .map((p) => ({ x: p.x, y: p.y, width: p.width, height: p.height, ...(outlineOf(p.outline) ? { outline: outlineOf(p.outline) } : {}) }));
 }
 
 /**
@@ -574,9 +602,9 @@ export function computeBoundaryMetrics(input: {
   boundaries: Array<{ points: unknown; closed: boolean; kind?: string | null }>;
   blocks: FootRect[];
   structure: unknown;
-  placements: FootRect[];
+  placements: Array<FootRect & { outline?: unknown }>;
   gfaSqft?: number | null;
-  pillarRects?: FootRect[];
+  pillarRects?: Array<FootRect & { outline?: unknown }>;
 }): BoundaryMetrics {
   // Only area-marking lines (BOUNDARY, legacy PENCIL, unknown kinds) feed the
   // marked-area rule — WALL / PARTITION / GUIDE lines never do (Phase 3).
@@ -594,7 +622,7 @@ export function computeBoundaryMetrics(input: {
     return { gla: 0, ufa: 0, nla: 0, unit: 'sqft', boundaryClosed: false, facilityAreaSqft: 0, blockAreaSqft: 0, gfaSqft, gfaSource };
   }
   const obstacles: FootRect[] = [...input.blocks, ...solidStructureRects(input.structure)];
-  const pillarRects: FootRect[] = input.pillarRects ?? [];
+  const pillarRects: Array<FootRect & { outline?: unknown }> = input.pillarRects ?? [];
   let gla = 0;
   let ufa = 0;
   let nla = 0;
@@ -607,6 +635,13 @@ export function computeBoundaryMetrics(input: {
     // everything"). Subtracting blocks here made Corridor (UFA − NLA) report
     // only the leftover gaps (SS L2: 95 instead of ~813 sq ft).
     ufa += gross;
+    // Placement footprint in a loop: rect placements keep the exact
+    // rectPolygonArea path (byte-identical numbers); shaped placements use
+    // polygon ∩ loop through the clipping core.
+    const placementInLoop = (r: FootRect & { outline?: unknown }): number => {
+      const o = outlineOf(r.outline);
+      return o ? polygonIntersectionArea(o, loop) : rectPolygonArea(r, loop);
+    };
     // NLA subtracts only the obstacle area (blocks + solid structure) that
     // sits ON a placement footprint, loop-clipped, per placement row (each
     // stack tier counts its own footprint, so it subtracts its own overlap).
@@ -614,17 +649,22 @@ export function computeBoundaryMetrics(input: {
     // the unit footprints — subtracting them again under-reported NLA (SW L1:
     // 1,096 instead of ~2,190 sq ft). Pillars subtract additionally (NLA
     // only): loop-clipped hasPillar-unit footprints via `pillarRects`.
-    const placementsInLoop = input.placements.reduce((sum, r) => sum + rectPolygonArea(r, loop), 0);
+    const placementsInLoop = input.placements.reduce((sum, r) => sum + placementInLoop(r), 0);
     const onUnits = input.placements.reduce(
       (sum, p) =>
         sum +
         obstacles.reduce((s, o) => {
           const hit = rectIntersection(p, o);
-          return hit ? s + rectPolygonArea(hit, loop) : s;
+          if (!hit) return s;
+          const po = outlineOf((p as { outline?: unknown }).outline);
+          // Shaped: polygon ∩ (rect ∩ loop) — the loop clipped to the
+          // footprint∩obstacle rect, then polygon intersection. Rects keep the
+          // exact rectPolygonArea(hit, loop) path.
+          return hit ? s + (po ? polygonIntersectionArea(po, clipPolygonToRect(loop, hit)) : rectPolygonArea(hit, loop)) : s;
         }, 0),
       0,
     );
-    const pillarBlocked = pillarRects.reduce((sum, r) => sum + rectPolygonArea(r, loop), 0);
+    const pillarBlocked = pillarRects.reduce((sum, r) => sum + placementInLoop(r), 0);
     nla += Math.max(0, placementsInLoop - onUnits - pillarBlocked);
     // Loop-clipped BLOCK area only (solid structure excluded) — the exposed
     // blockAreaSqft total. SUM double-counts overlapping blocks (same
@@ -776,36 +816,82 @@ export function checkBlockColor(color: string | null | undefined): string | null
 const DOOR_EDGE_ORDER = ['N', 'S', 'E', 'W'] as const;
 export type DoorEdge = (typeof DOOR_EDGE_ORDER)[number];
 
+/** Edge-index door edge for shaped units ("e0" = outline edge 0→1). */
+export type OutlineDoorEdge = `e${number}`;
+const OUTLINE_DOOR_EDGE_RE = /^e(\d+)$/;
+function outlineEdgeKey(i: number): string {
+  return `e${i}`;
+}
+/** Validate one authored door-edge key; returns the canonical key. */
+function checkDoorEdgeKey(e: string, edgeCount?: number): string {
+  if (edgeCount != null) {
+    const m = OUTLINE_DOOR_EDGE_RE.exec(e);
+    const i = m ? Number(m[1]) : -1;
+    if (!m || !Number.isInteger(i) || i < 0 || i >= edgeCount) {
+      throw new AppError(
+        400,
+        'VALIDATION',
+        `doorEdges for a shaped unit must be outline edge keys "e0"–"e${edgeCount - 1}" — got ${JSON.stringify(e)}`,
+      );
+    }
+    return outlineEdgeKey(i);
+  }
+  if (e !== 'N' && e !== 'S' && e !== 'E' && e !== 'W') {
+    throw new AppError(400, 'VALIDATION', `doorEdges must be a subset of ["N","S","E","W"] — got ${JSON.stringify(e)}`);
+  }
+  return e;
+}
+
 /**
  * Normalise an authored door-edge selection for storage. `undefined` means
  * "not supplied — keep the current value" (upsert endpoints); `null` clears
- * back to unauthored; an array stores the canonical CSV subset in compass
- * order (e.g. ["S","N"] -> "N,S"). Anything outside N/S/E/W is 400.
+ * back to unauthored; an array stores the canonical CSV subset (compass order
+ * "N,S" for rectangles; numeric edge order "e0,e3" for shaped units — pass
+ * `opts.edgeCount` for a shaped placement). Anything else is 400. Rect and
+ * shaped key forms never mix.
  */
-export function normalizeDoorEdges(input: readonly string[] | null | undefined): string | null | undefined {
+export function normalizeDoorEdges(
+  input: readonly string[] | null | undefined,
+  opts: { edgeCount?: number } = {},
+): string | null | undefined {
   if (input === undefined) return undefined;
   if (input === null) return null;
   const set = new Set<string>();
-  for (const e of input) {
-    if (e !== 'N' && e !== 'S' && e !== 'E' && e !== 'W') {
-      throw new AppError(400, 'VALIDATION', `doorEdges must be a subset of ["N","S","E","W"] — got ${JSON.stringify(e)}`);
-    }
-    set.add(e);
-  }
+  for (const e of input) set.add(checkDoorEdgeKey(e, opts.edgeCount));
   if (set.size === 0) {
-    throw new AppError(400, 'VALIDATION', 'doorEdges must list at least one compass edge, or be null to clear');
+    throw new AppError(400, 'VALIDATION', 'doorEdges must list at least one edge, or be null to clear');
+  }
+  const edgeCount = opts.edgeCount;
+  if (edgeCount != null) {
+    return [...set].sort((a, b) => Number(a.slice(1)) - Number(b.slice(1))).join(',');
   }
   return DOOR_EDGE_ORDER.filter((e) => set.has(e)).join(',');
 }
 
-/** Stored canonical CSV ("N,S") -> authored edge array; NULL/empty -> null (unauthored). */
-export function doorEdgesToArray(stored: string | null | undefined): DoorEdge[] | null {
+/**
+ * Stored canonical CSV ("N,S" or "e0,e3") -> authored edge array; NULL/empty
+ * -> null (unauthored). Shaped ranges pass `opts.edgeCount` to drop keys for
+ * removed edges (outline edits remap first — see remapDoorsToOutline).
+ */
+export function doorEdgesToArray(
+  stored: string | null | undefined,
+  opts: { edgeCount?: number } = {},
+): Array<DoorEdge | string> | null {
   if (stored == null) return null;
+  const edgeCount = opts.edgeCount;
   const parts = stored
     .split(',')
     .map((s) => s.trim())
-    .filter((s) => s === 'N' || s === 'S' || s === 'E' || s === 'W') as DoorEdge[];
-  return parts.length > 0 ? parts : null;
+    .filter((s) => {
+      if (edgeCount != null) {
+        const m = OUTLINE_DOOR_EDGE_RE.exec(s);
+        return !!m && Number(m[1]) >= 0 && Number(m[1]) < edgeCount;
+      }
+      return s === 'N' || s === 'S' || s === 'E' || s === 'W';
+    });
+  if (!parts.length) return null;
+  if (edgeCount != null) return parts.sort((a, b) => Number(a.slice(1)) - Number(b.slice(1)));
+  return DOOR_EDGE_ORDER.filter((e) => parts.includes(e)) as DoorEdge[];
 }
 
 // Authored door positions along their edges (door-move tool): each authored
@@ -819,7 +905,7 @@ export function doorEdgesToArray(stored: string | null | undefined): DoorEdge[] 
 // drawn). Absent = the legacy tick (36% of the edge). Rides in the same JSON
 // column, so drafts, versions, snapshots and publish carry it unchanged and
 // public reads (which strip doorOffsets) stay byte-identical.
-export type DoorOffsets = Partial<Record<DoorEdge, number>> & { w?: number };
+export type DoorOffsets = Partial<Record<DoorEdge, number>> & { w?: number } & Record<string, number | undefined>;
 export const DOOR_WIDTH_MIN_FT = 0.5;
 export const DOOR_WIDTH_MAX_FT = 50;
 function doorWidthOrNull(v: unknown): number | null {
@@ -831,19 +917,21 @@ function doorWidthOrNull(v: unknown): number | null {
  * Normalise authored door offsets for storage. `undefined` means "not
  * supplied — keep the current value" (upsert endpoints); `null` clears back
  * to centred; an object stores per-edge 0..1 fractions (rounded to 0.001).
- * Keys outside N/S/E/W or values outside 0..1 are 400. When `edges` is given,
- * keys for non-authored edges are pruned (toggling an edge off drops its
- * offset); `edges: null` (unauthored) normalises any object to null since
- * unauthored placements have no offsets — centred render.
+ * Keys outside N/S/E/W (rect) or eK (shaped — pass `opts.edgeCount`) or values
+ * outside 0..1 are 400. When `edges` is given, keys for non-authored edges are
+ * pruned (toggling an edge off drops its offset); `edges: null` (unauthored)
+ * normalises any object to null since unauthored placements have no offsets —
+ * centred render.
  */
 export function normalizeDoorOffsets(
   input: Record<string, unknown> | null | undefined,
   edges?: readonly string[] | null,
+  opts: { edgeCount?: number } = {},
 ): DoorOffsets | null | undefined {
   if (input === undefined) return undefined;
   if (input === null) return null;
   if (typeof input !== 'object' || Array.isArray(input)) {
-    throw new AppError(400, 'VALIDATION', 'doorOffsets must be an object mapping a compass edge (N/S/E/W) to a 0..1 door position, or null to clear');
+    throw new AppError(400, 'VALIDATION', 'doorOffsets must be an object mapping a door edge to a 0..1 door position, or null to clear');
   }
   const out: DoorOffsets = {};
   for (const [k, v] of Object.entries(input)) {
@@ -856,7 +944,12 @@ export function normalizeDoorOffsets(
       out.w = w;
       continue;
     }
-    if (k !== 'N' && k !== 'S' && k !== 'E' && k !== 'W') {
+    if (opts.edgeCount != null) {
+      const m = OUTLINE_DOOR_EDGE_RE.exec(k);
+      if (!m || Number(m[1]) < 0 || Number(m[1]) >= opts.edgeCount) {
+        throw new AppError(400, 'VALIDATION', `doorOffsets keys must be outline edge keys "e0"–"e${opts.edgeCount - 1}" (or "w") — got ${JSON.stringify(k)}`);
+      }
+    } else if (k !== 'N' && k !== 'S' && k !== 'E' && k !== 'W') {
       throw new AppError(400, 'VALIDATION', `doorOffsets keys must be a subset of ["N","S","E","W","w"] — got ${JSON.stringify(k)}`);
     }
     const n = Number(v);
@@ -867,22 +960,197 @@ export function normalizeDoorOffsets(
   }
   if (edges === null) return null;
   if (edges) {
-    for (const k of DOOR_EDGE_ORDER) if (!edges.includes(k)) delete out[k];
+    for (const k of [...DOOR_EDGE_ORDER, ...Object.keys(out).filter((k) => k !== 'w' && OUTLINE_DOOR_EDGE_RE.test(k))]) {
+      if (!edges.includes(k)) delete (out as Record<string, number | undefined>)[k];
+    }
   }
   return Object.keys(out).length ? out : null;
 }
 
 /** Stored JSON -> per-edge offset object; malformed/empty -> null (centred). Never throws on read. */
-export function doorOffsetsToObject(stored: unknown): DoorOffsets | null {
-  if (!stored || typeof stored !== 'object' || Array.isArray(stored)) return null;
+export function doorOffsetsToObject(stored: unknown, opts: { edgeCount?: number } = {}): DoorOffsets | null {  if (!stored || typeof stored !== 'object' || Array.isArray(stored)) return null;
   const out: DoorOffsets = {};
-  for (const e of DOOR_EDGE_ORDER) {
+  const keys =
+    opts.edgeCount != null
+      ? Array.from({ length: opts.edgeCount }, (_, i) => outlineEdgeKey(i))
+      : [...DOOR_EDGE_ORDER];
+  for (const e of keys) {
     const n = Number((stored as Record<string, unknown>)[e]);
-    if (Number.isFinite(n) && n >= 0 && n <= 1) out[e] = Math.round(n * 1000) / 1000;
+    if (Number.isFinite(n) && n >= 0 && n <= 1) (out as Record<string, number>)[e] = Math.round(n * 1000) / 1000;
   }
   const w = doorWidthOrNull((stored as Record<string, unknown>).w);
   if (w !== null) out.w = w;
   return Object.keys(out).length ? out : null;
+}
+
+// ---------- odd-shaped unit outlines (D1/D2/D5) ----------
+// outlineOf (stored JSON -> outline | null) lives in planGeometry.ts so the
+// CMS mirror and unit-sizing share it without a floorPlans import cycle.
+/**
+ * Bounding box of a RAW outline input (pre-normalisation vertex list). Used
+ * when a supplied outline normalises to null — i.e. it exactly fills its
+ * bbox, so the write is a rectangle whose geometry is the vertices' bbox
+ * (x/y/width/height are ignored whenever an outline is supplied).
+ */
+export function bboxOfRawOutline(raw: unknown): FtRect | null {  if (!Array.isArray(raw)) return null;
+  const pts: Array<[number, number]> = [];
+  for (const p of raw) {
+    if (!Array.isArray(p) || typeof p[0] !== 'number' || typeof p[1] !== 'number') return null;
+    if (!Number.isFinite(p[0]) || !Number.isFinite(p[1])) return null;
+    pts.push([p[0], p[1]]);
+  }
+  return outlineBBox(pts);
+}
+
+/**
+ * Resolve an outline write. `input` is the raw `outline` field: undefined =
+ * keep the stored value, null = clear back to a rectangle, an array =
+ * validate (D2) and store (a bbox-filling 4-vertex outline normalises to null
+ * — a rectangle is never stored as an outline). Throws 400 VALIDATION.
+ */
+export function resolveOutlineInput(input: unknown): OutlinePoints | null | undefined {
+  if (input === undefined) return undefined;
+  if (input === null) return null;
+  try {
+    return normalizeOutline(input, { minAreaSqft: MIN_OUTLINE_AREA_SQFT, maxAreaSqft: MAX_OUTLINE_AREA_SQFT });
+  } catch (err) {
+    throw new AppError(400, 'VALIDATION', err instanceof Error ? err.message : 'Invalid outline');
+  }
+}
+
+/** Length of outline edge i (vertex i → vertex (i+1) % n), in feet. */
+export function outlineEdgeLength(outline: OutlinePoints, i: number): number {
+  return segmentLengthFt(outline[i], outline[(i + 1) % outline.length]);
+}
+
+/** True when the placement row carries a shaped outline. */
+export function isShapedPlacement(p: { outline?: unknown }): boolean {
+  return outlineOf(p.outline) != null;
+}
+
+/**
+ * Remap authored doors onto a new outline after an edit (D5): every stored
+ * edge key that still exists keeps its offset; a door on a removed edge moves
+ * to the nearest remaining edge (by old door-point distance), keeping its
+ * fraction clamped to the new edge. Returns { doorEdges, doorOffsets } in
+ * stored form (CSV + JSON-object-or-null). Never throws — falls back to
+ * unauthored when nothing maps.
+ */
+export function remapDoorsToOutline(
+  prevOutline: OutlinePoints,
+  nextOutline: OutlinePoints,
+  doorEdges: string | null | undefined,
+  doorOffsets: unknown,
+): { doorEdges: string | null; doorOffsets: DoorOffsets | null } {
+  const nextCount = nextOutline.length;
+  const prevArr = doorEdgesToArray(doorEdges, { edgeCount: prevOutline.length }) ?? [];
+  const prevOffsets = doorOffsetsToObject(doorOffsets, { edgeCount: prevOutline.length }) ?? {};
+  const doorPoint = (edgeKey: string): [number, number] => {
+    const m = OUTLINE_DOOR_EDGE_RE.exec(edgeKey);
+    const i = m ? Number(m[1]) % prevOutline.length : 0;
+    const a = prevOutline[i];
+    const b = prevOutline[(i + 1) % prevOutline.length];
+    const f = Number(prevOffsets[edgeKey] ?? 0.5);
+    return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f];
+  };
+  const out: string[] = [];
+  const outOffsets: DoorOffsets = {};
+  if (typeof prevOffsets.w === 'number') outOffsets.w = prevOffsets.w;
+  for (const key of prevArr) {
+    const m = OUTLINE_DOOR_EDGE_RE.exec(key);
+    if (m && Number(m[1]) < nextCount) {
+      out.push(outlineEdgeKey(Number(m[1])));
+      if (typeof prevOffsets[key] === 'number') outOffsets[outlineEdgeKey(Number(m[1]))] = prevOffsets[key] as number;
+      continue;
+    }
+    // Removed edge: nearest remaining edge to the old door point.
+    const pt = doorPoint(key);
+    let best = 0;
+    let bestDist = Infinity;
+    let bestFrac = 0.5;
+    for (let i = 0; i < nextCount; i++) {
+      const hit = nearestOnSegment(pt, nextOutline[i], nextOutline[(i + 1) % nextCount]);
+      if (hit.dist < bestDist) {
+        bestDist = hit.dist;
+        best = i;
+        const len = outlineEdgeLength(nextOutline, i);
+        const a = nextOutline[i];
+        bestFrac = len > 0 ? Math.min(1, Math.max(0, Math.hypot(hit.x - a[0], hit.y - a[1]) / len)) : 0.5;
+      }
+    }
+    const nk = outlineEdgeKey(best);
+    if (!out.includes(nk)) {
+      out.push(nk);
+      outOffsets[nk] = Math.round(bestFrac * 1000) / 1000;
+    }
+  }
+  if (!out.length) return { doorEdges: null, doorOffsets: Object.keys(outOffsets).length ? outOffsets : null };
+  out.sort((a, b) => Number(a.slice(1)) - Number(b.slice(1)));
+  return { doorEdges: out.join(','), doorOffsets: Object.keys(outOffsets).length ? outOffsets : null };
+}
+
+/**
+ * Bridge shaped authored doors onto the compass-edge metrics core: each
+ * authored outline edge maps to its dominant compass direction (plan y-down:
+ * +x = E, +y = S), deduped in compass order. The region graph stays
+ * rect-based (bbox for shaped units); UFA/NLA use the exact polygon path.
+ */
+export function outlineDoorsToCompass(outline: OutlinePoints, doorEdges: string | null | undefined): DoorEdge[] {
+  const arr = doorEdgesToArray(doorEdges, { edgeCount: outline.length }) ?? [];
+  const dirs = new Set<DoorEdge>();
+  for (const key of arr) {
+    const m = OUTLINE_DOOR_EDGE_RE.exec(String(key));
+    if (!m) continue;
+    const i = Number(m[1]) % outline.length;
+    const a = outline[i];
+    const b = outline[(i + 1) % outline.length];
+    const dx = b[0] - a[0];
+    const dy = b[1] - a[1];
+    if (Math.abs(dx) >= Math.abs(dy)) dirs.add(dx >= 0 ? 'E' : 'W');
+    else dirs.add(dy >= 0 ? 'S' : 'N');
+  }
+  return DOOR_EDGE_ORDER.filter((e) => dirs.has(e));
+}
+
+/**
+ * Infer a door edge for a shaped outline (D5 auto-doors): the edge whose
+ * overlapping span proximity); otherwise the longest edge. Returns a single
+ * edge key array (the door renders centred — offsets stay null). Pure — the
+ * designer mirrors it client-side (see fpInferOutlineDoorEdges).
+ */
+export function inferOutlineDoorEdges(
+  outline: OutlinePoints,
+  blocks: Array<{ name: string | null; x: number; y: number; width: number; height: number }>,
+): string[] {
+  if (!outline.length) return [];
+  const corridors = (blocks ?? []).filter((b) => isCorridorLikeBlock(b?.name));
+  const mid = (i: number): [number, number] => {
+    const a = outline[i];
+    const b = outline[(i + 1) % outline.length];
+    return [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+  };
+  if (corridors.length) {
+    let best = -1;
+    let bestDist = Infinity;
+    for (let i = 0; i < outline.length; i++) {
+      const [mx, my] = mid(i);
+      for (const c of corridors) {
+        const dx = mx < c.x ? c.x - mx : mx > c.x + c.width ? mx - (c.x + c.width) : 0;
+        const dy = my < c.y ? c.y - my : my > c.y + c.height ? my - (c.y + c.height) : 0;
+        const d = Math.hypot(dx, dy);
+        if (d < bestDist) {
+          bestDist = d;
+          best = i;
+        }
+      }
+    }
+    if (best >= 0 && bestDist <= 1) return [outlineEdgeKey(best)];
+  }
+  let longest = 0;
+  for (let i = 1; i < outline.length; i++) {
+    if (outlineEdgeLength(outline, i) > outlineEdgeLength(outline, longest)) longest = i;
+  }
+  return [outlineEdgeKey(longest)];
 }
 
 // ---------- corridor → door inference (auto-doors) ----------
@@ -1111,10 +1379,16 @@ export interface PlacementGeometry {
   // Stacking tier: 0 = ground/sole tier (default), 1 = upper tier of a
   // same-rect locker pair. Omitted on update keeps the placement's tier.
   stackTier?: number;
-  // Authored door compass edges (editor N/S/E/W toggles): omitted keeps the
-  // placement's edges, null clears back to unauthored (AUTO_ALL_EDGES in
-  // metrics), an array replaces. Additive — old clients simply omit it.
-  doorEdges?: DoorEdge[] | null;
+  // Authored door edges (editor toggles): N/S/E/W for rectangles, outline
+  // edge keys ("e0", …) for shaped units. Omitted keeps the placement's
+  // edges, null clears back to unauthored (AUTO_ALL_EDGES in metrics), an
+  // array replaces. Additive — old clients simply omit it.
+  doorEdges?: string[] | null;
+  // Odd-shaped units (D1): polygon outline [[x,y],...] in absolute decimal
+  // feet, or null to clear back to a rectangle. Omitted on update keeps the
+  // placement's shape. When set, x/y/width/height are IGNORED on write — the
+  // server derives and stores the outline's bounding box instead.
+  outline?: OutlinePoints | null;
   // Authored door positions along their edges (door-move tool): omitted keeps
   // the placement's offsets, null clears back to centred, an object replaces
   // (keys pruned to the effective authored edges). Additive — old clients
@@ -1233,6 +1507,23 @@ async function storePublishedSnapshot(
 }
 
 /**
+ * Rollout safety net (§7.2): while the booking map cannot draw shaped units,
+ * shaped placements are hidden from the PUBLIC map read (they still appear in
+ * the booking unit list, where sqft comes from the Unit row). Set
+ * PUBLIC_MAP_INCLUDE_SHAPED_UNITS=true once booking ships its outline
+ * renderer, then remove this flag entirely.
+ */
+export function publicMapIncludesShapedUnits(): boolean {
+  return process.env.PUBLIC_MAP_INCLUDE_SHAPED_UNITS === 'true';
+}
+
+/** Drop shaped placements from a public view unless the booking map is ready. */
+function filterShapedForPublic<T extends { outline?: unknown }>(placements: T[]): T[] {
+  if (publicMapIncludesShapedUnits()) return placements;
+  return placements.filter((pl) => outlineOf(pl.outline) == null);
+}
+
+/**
  * Re-join a snapshot's placements to live units: drop units that were since
  * deleted, deactivated, returned to DRAFT or moved to another floor, and
  * replace each unit summary (status, sqft, size, name) with the live row so a
@@ -1247,11 +1538,11 @@ async function refreshSnapshotUnits(
     ? await prisma.unit.findMany({ where: { id: { in: ids } }, include: { size: true } })
     : [];
   const live = new Map(units.map((u) => [u.id, u]));
-  const placements = (snap.placements || []).flatMap((pl) => {
+  const placements = filterShapedForPublic((snap.placements || []).flatMap((pl) => {
     const u = live.get(pl.unit.id);
     if (!u || u.deletedAt || u.floorId !== floor.id || u.status === 'INACTIVE' || u.status === 'DRAFT') return [];
     return [{ ...pl, unit: serializeUnitSummary(u as unknown as PlacementUnit, { publicView: true }) }];
-  });
+  }));
   return {
     ...snap,
     status: 'ACTIVE',
@@ -1457,7 +1748,9 @@ export async function reconcileUnitSizes(floorId: string, items: ReadonlyArray<{
       const fp = unitDimsFootprint(u);
       const landscape = row.width >= row.height;
       const [w, h] = landscape === fp.w >= fp.h ? [fp.w, fp.h] : [fp.h, fp.w];
-      await setUnitPlacement(floorId, item.unitId, { x: row.x, y: row.y, width: w, height: h });
+      // A shaped placement reconciles back to a fitted rectangle (the outline
+      // is cleared — the fitted drawing is a rect by construction).
+      await setUnitPlacement(floorId, item.unitId, { x: row.x, y: row.y, width: w, height: h, outline: null });
     }
     done.push({ unitCode: m.unitCode, action: item.action });
   }
@@ -1485,7 +1778,23 @@ export async function reconcileUnitSizes(floorId: string, items: ReadonlyArray<{
  * to a standalone tier-0 single, so "move restores single" holds.
  */
 export async function setUnitPlacement(floorId: string, unitId: string, input: PlacementGeometry) {
-  const geom: PlacementGeometry = { ...input, ...checkGeometry(input) };
+  const existing = await prisma.unitPlacement.findUnique({ where: { unitId } });
+  // Odd-shaped units (D1): when `outline` is set, x/y/width/height are IGNORED
+  // on write — the server derives and stores the outline's bounding box.
+  // `outline: undefined` keeps the stored shape; null clears to a rectangle.
+  // A supplied outline that normalises to null exactly fills its bbox, so the
+  // write is that bbox as a rectangle.
+  const resolvedOutline = resolveOutlineInput(input.outline);
+  const rawBb = input.outline != null && resolvedOutline === null ? bboxOfRawOutline(input.outline) : null;
+  const nextOutline = resolvedOutline === undefined ? outlineOf(existing?.outline) : resolvedOutline;
+  const geom: PlacementGeometry = nextOutline
+    ? (() => {
+        const bb = outlineBBox(nextOutline)!;
+        return { ...input, x: bb.x, y: bb.y, width: bb.width, height: bb.height, outline: nextOutline };
+      })()
+    : rawBb
+      ? { ...input, ...rawBb, outline: null }
+      : { ...input, ...checkGeometry(input), outline: null };
 
   const unit = await prisma.unit.findUnique({ where: { id: unitId }, include: { size: true } });
   if (!unit) throw new AppError(404, 'NOT_FOUND', `Unit ${unitId} not found`);
@@ -1506,19 +1815,51 @@ export async function setUnitPlacement(floorId: string, unitId: string, input: P
   // reject drag/resize/door-toggle writes with 409.
   await assertPlacementEditable(floorId, unitId, 'editing this placement');
 
-  const existing = await prisma.unitPlacement.findUnique({ where: { unitId } });
   const tier = geom.stackTier === undefined ? (existing?.stackTier ?? 0) : checkStackTier(geom.stackTier);
-  const doorEdges = normalizeDoorEdges(geom.doorEdges); // undefined = keep, null = clear, CSV = replace
+  const edgeCount = nextOutline ? nextOutline.length : undefined;
+  // An outline edit remaps stored doors first (D5): a door on a removed edge
+  // moves to the nearest remaining edge. Explicit doorEdges/doorOffsets in the
+  // same write win over the remap.
+  const outlineChanged =
+    JSON.stringify(nextOutline ?? null) !== JSON.stringify(outlineOf(existing?.outline) ?? null);
+  let baseDoorEdges: string | null | undefined = existing?.doorEdges ?? null;
+  let baseDoorOffsets: unknown = existing?.doorOffsets ?? null;
+  if (outlineChanged && nextOutline) {
+    const prev = outlineOf(existing?.outline) ?? rectToPolygon({ x: existing?.x ?? geom.x, y: existing?.y ?? geom.y, width: existing?.width ?? geom.width, height: existing?.height ?? geom.height });
+    const remapped = remapDoorsToOutline(prev, nextOutline, baseDoorEdges, baseDoorOffsets);
+    baseDoorEdges = remapped.doorEdges;
+    baseDoorOffsets = remapped.doorOffsets;
+  } else if (outlineChanged && !nextOutline) {
+    // Cleared back to a rectangle: edge-index doors cannot survive the shape
+    // change — reset to unauthored unless the same write authors rect edges.
+    baseDoorEdges = null;
+    baseDoorOffsets = null;
+  }
+  const doorEdges =
+    geom.doorEdges !== undefined
+      ? normalizeDoorEdges(geom.doorEdges, edgeCount != null ? { edgeCount } : {})
+      : outlineChanged && nextOutline
+        ? (baseDoorEdges as string | null)
+        : undefined; // undefined = keep, null = clear, CSV = replace
   // Offsets prune to the effective authored edges (toggling an edge off drops
-  // its offset); unauthored placements stay centred. Omitted keeps.
-  const effectiveEdges = doorEdges === undefined ? doorEdgesToArray(existing?.doorEdges) : doorEdgesToArray(doorEdges);
-  const doorOffsets = normalizeDoorOffsets(geom.doorOffsets, effectiveEdges);
+  // its offset); unauthored placements stay centred. Omitted keeps — except
+  // after an outline remap, which persists its own offsets.
+  const effectiveEdges =
+    doorEdges === undefined
+      ? doorEdgesToArray(baseDoorEdges, edgeCount != null ? { edgeCount } : {})
+      : doorEdgesToArray(doorEdges, edgeCount != null ? { edgeCount } : {});
+  const doorOffsets =
+    geom.doorOffsets !== undefined
+      ? normalizeDoorOffsets(geom.doorOffsets, effectiveEdges, edgeCount != null ? { edgeCount } : {})
+      : outlineChanged && nextOutline
+        ? (baseDoorOffsets as DoorOffsets | null)
+        : undefined;
 
   const plan = await ensureCanvasPlan(floorId);
 
   // Sibling placements on this plan (self excluded — the upsert key is unitId,
   // so this covers both place and move). Carries each sibling's tier + size
-  // for the stacking rules below.
+  // for the stacking rules below, plus outlines for the shape-aware overlap.
   const siblings = await prisma.unitPlacement.findMany({
     where: { floorPlanId: plan.id, unitId: { not: unitId } },
     select: {
@@ -1527,14 +1868,34 @@ export async function setUnitPlacement(floorId: string, unitId: string, input: P
       y: true,
       width: true,
       height: true,
+      outline: true,
       stackTier: true,
       unit: { select: { unitCode: true, size: { select: { code: true } } } },
     },
   });
   const isSameRect = (s: { x: number; y: number; width: number; height: number }) => sameFtRect(s, geom);
-  const sameRect = siblings.filter(isSameRect);
+  // Same-rect matches are rect-only: a shaped unit shares no exact rect (its
+  // bbox equality with a neighbour is coincidence, not stacking).
+  const sameRect = nextOutline ? [] : siblings.filter((s) => !outlineOf(s.outline) && isSameRect(s));
   const rectLabel = `${geom.x},${geom.y} ${geom.width}×${geom.height}`;
   const selfIsLocker = isLockerSize(unit.size.code);
+
+  // D6: stacking is lockers-only AND rect-only. Stacking a shaped unit — or
+  // outlining a unit that is already stacked — returns 409.
+  if (nextOutline && tier === 1) {
+    throw new AppError(
+      409,
+      'PLACEMENT_OVERLAP',
+      `Cannot stack ${unit.unitCode} — shaped units can't stack (D6). Reset it to a rectangle first, or keep it a single.`,
+    );
+  }
+  if (nextOutline && existing && (existing.stackTier === 1 || siblings.some((s) => !outlineOf(s.outline) && s.stackTier === 1 && sameFtRect(s, existing)))) {
+    throw new AppError(
+      409,
+      'PLACEMENT_OVERLAP',
+      `Cannot outline ${unit.unitCode} — it is in a stacked pair. Unstack it first.`,
+    );
+  }
 
   // Same-rect stacking rules run BEFORE the area/canvas/overlap checks so a
   // stack attempt gets its specific error (lone tier 1, third tier,
@@ -1604,6 +1965,8 @@ export async function setUnitPlacement(floorId: string, unitId: string, input: P
   // is re-validated (tier-1 rules require the ground on the new rect).
   if (
     tier === 0 &&
+    !nextOutline &&
+    !outlineOf(existing?.outline) &&
     existing &&
     existing.floorPlanId === plan.id &&
     existing.stackTier === 0 &&
@@ -1614,7 +1977,14 @@ export async function setUnitPlacement(floorId: string, unitId: string, input: P
     );
     if (mate) exemptIds.add(mate.id);
   }
-  const hit = siblings.find((s) => !exemptIds.has(s.id) && rectsOverlap(geom, s));
+  const hit = siblings.find(
+    (s) =>
+      !exemptIds.has(s.id) &&
+      placementsOverlap(
+        { x: geom.x, y: geom.y, width: geom.width, height: geom.height, outline: nextOutline },
+        { x: s.x, y: s.y, width: s.width, height: s.height, outline: outlineOf(s.outline) },
+      ),
+  );
   if (hit) {
     throw new AppError(
       409,
@@ -1628,16 +1998,20 @@ export async function setUnitPlacement(floorId: string, unitId: string, input: P
   // contracted (legacy ±AREA_TOLERANCE, 409 UNIT_CONTRACTED). Runs after the
   // stacking/overlap rules so stack attempts report their specific error first.
   const contracted = await loadContractedUnits([unitId]);
-  const checkedDirty = checkPlacementArea({ unit, geom, existing, contractedReason: contracted.get(unitId) });
+  const existingGeom = existing
+    ? { x: existing.x, y: existing.y, width: existing.width, height: existing.height, outline: outlineOf(existing.outline), areaDirty: existing.areaDirty }
+    : null;
+  const checkedDirty = checkPlacementArea({ unit, geom, existing: existingGeom, contractedReason: contracted.get(unitId) });
   // DRAFT units are not live: their Unit row follows the drawing right away.
   const isDraftUnit = unit.status === 'DRAFT';
   const areaDirty = isDraftUnit ? false : checkedDirty;
   // D4: a stacked locker pair stays in the LOCKER tier. Stacked = this write
   // is an upper tier, sits under an upper tier, or moves a ground tier whose
-  // upper mate follows onto the new rect.
-  const areaChanged = !existing || rectAreaSqft(existing) !== rectAreaSqft(geom);
+  // upper mate follows onto the new rect. Shaped units never stack (D6).
+  const areaChanged = !existingGeom || placementAreaSqft(existingGeom) !== placementAreaSqft(geom);
   const movingWithMate =
     tier === 0 &&
+    !nextOutline &&
     !!existing &&
     existing.floorPlanId === plan.id &&
     existing.stackTier === 0 &&
@@ -1665,6 +2039,7 @@ export async function setUnitPlacement(floorId: string, unitId: string, input: P
       height: geom.height,
       stackTier: tier,
       areaDirty,
+      outline: nextOutline ?? Prisma.JsonNull,
       ...(doorEdges !== undefined ? { doorEdges } : {}),
       ...(doorOffsets !== undefined ? { doorOffsets: doorOffsets as unknown as Prisma.InputJsonValue } : {}),
     },
@@ -1675,6 +2050,7 @@ export async function setUnitPlacement(floorId: string, unitId: string, input: P
       height: geom.height,
       stackTier: tier,
       areaDirty,
+      outline: nextOutline ?? Prisma.JsonNull,
       ...(doorEdges !== undefined ? { doorEdges } : {}),
       ...(doorOffsets !== undefined ? { doorOffsets: doorOffsets as unknown as Prisma.InputJsonValue } : {}),
     },
@@ -1691,7 +2067,9 @@ export async function setUnitPlacement(floorId: string, unitId: string, input: P
 
   // A ground tier moving off its rect orphans its upper tier — demote the
   // leftover upper to a standalone ground single (never leave a lone tier 1).
+  // Rect-only: shaped units never stack (D6).
   if (
+    !nextOutline &&
     existing &&
     existing.floorPlanId === plan.id &&
     existing.stackTier === 0 &&
@@ -1774,19 +2152,21 @@ async function discardDraftUnitTx(tx: Prisma.TransactionClient, unitId: string):
 /** A DRAFT unit's size follows its drawing immediately (it is not live yet). */
 function draftResize(
   unit: { id: string; sqft: number; sizeId: string; monthlyRate: Prisma.Decimal | number },
-  geom: { width: number; height: number },
+  geom: PlacementGeom,
   sizes: readonly SizeTierRow[],
-): { id: string; sqft: number; sizeId: string; monthlyRate: number; lengthFt: number; widthFt: number } | null {
-  const sqft = sqftForRect(geom);
+): { id: string; sqft: number; sizeId: string; monthlyRate: number; lengthFt: number | null; widthFt: number | null } | null {
+  const sqft = sqftForPlacement(geom);
   if (sameSqft(sqft, unit.sqft)) return null;
   const tier = resolveSizeTier(sizes, unit.sizeId, sqft);
+  const shaped = Array.isArray(geom.outline) && (geom.outline as unknown[]).length >= 3;
   return {
     id: unit.id,
     sqft,
     sizeId: tier?.size.id ?? unit.sizeId,
     monthlyRate: keepPsfRate(toNum(unit.monthlyRate), unit.sqft, sqft),
-    lengthFt: geom.height,
-    widthFt: geom.width,
+    // D4: a shaped unit carries no L×W — the Units form shows "Custom shape".
+    lengthFt: shaped ? null : geom.height,
+    widthFt: shaped ? null : geom.width,
   };
 }
 
@@ -2269,6 +2649,7 @@ export async function getPublicFloorPlan(branchCode: string, level: number) {
   let view: PublicPlanView | null = null;
   if (row && row.status === 'ACTIVE') {
     view = serializePlan(row, { publicView: true });
+    view = { ...view, placements: filterShapedForPublic(view.placements) };
     // Lazily capture legacy ACTIVE plans so their first edit stays visible.
     if (!row.publishedSnapshot) await storePublishedSnapshot(prisma, row).catch(() => undefined);
   } else if (row && row.publishedSnapshot) {
@@ -2334,11 +2715,11 @@ export async function applyFloorPlanBatch(floorId: string, input: FloorPlanBatch
   const currentByUnit = new Map(current.map((p) => [p.unitId, p]));
 
   // ---- placements: final layout ----
-  type Final = { unitId: string; unitCode: string; sizeCode: string; x: number; y: number; width: number; height: number; stackTier: 0 | 1; explicitTier: boolean };
+  type Final = { unitId: string; unitCode: string; sizeCode: string; x: number; y: number; width: number; height: number; outline: OutlinePoints | null; stackTier: 0 | 1; explicitTier: boolean };
   const final = new Map<string, Final>();
   for (const p of current) {
     if (p.unit.deletedAt || p.unit.status === 'INACTIVE') continue; // hidden rows never collide (same as reads)
-    final.set(p.unitId, { unitId: p.unitId, unitCode: p.unit.unitCode, sizeCode: p.unit.size.code, x: p.x, y: p.y, width: p.width, height: p.height, stackTier: p.stackTier === 1 ? 1 : 0, explicitTier: false });
+    final.set(p.unitId, { unitId: p.unitId, unitCode: p.unit.unitCode, sizeCode: p.unit.size.code, x: p.x, y: p.y, width: p.width, height: p.height, outline: outlineOf(p.outline), stackTier: p.stackTier === 1 ? 1 : 0, explicitTier: false });
   }
   const lockCheck = (unit: { unitCode: string; status: string }, action: string) => {
     if (live && (unit.status === 'OCCUPIED' || unit.status === 'OVERDUE')) {
@@ -2356,9 +2737,9 @@ export async function applyFloorPlanBatch(floorId: string, input: FloorPlanBatch
   const creates = input.create?.units ?? [];
   const needSizes = creates.length > 0 || (up.placements ?? []).length > 0;
   const sizes = needSizes ? await loadSizeTiers() : [];
-  const draftUpdates: Array<{ id: string; sqft: number; sizeId: string; monthlyRate: number; lengthFt: number; widthFt: number }> = [];
+  const draftUpdates: Array<{ id: string; sqft: number; sizeId: string; monthlyRate: number; lengthFt: number | null; widthFt: number | null }> = [];
   // areaDirty undefined = leave the stored flag (demoted uppers keep their rect).
-  const placementWrites: Array<{ unitId: string; x: number; y: number; width: number; height: number; stackTier: 0 | 1; doorEdges: string | null | undefined; doorOffsets: DoorOffsets | null | undefined; areaDirty?: boolean }> = [];
+  const placementWrites: Array<{ unitId: string; x: number; y: number; width: number; height: number; outline: OutlinePoints | null | undefined; stackTier: 0 | 1; doorEdges: string | null | undefined; doorOffsets: DoorOffsets | null | undefined; areaDirty?: boolean }> = [];
   const upUnitIds = (up.placements ?? []).map((p) => p.unitId);
   const units = upUnitIds.length
     ? await prisma.unit.findMany({ where: { id: { in: upUnitIds } }, include: { size: true } })
@@ -2367,36 +2748,86 @@ export async function applyFloorPlanBatch(floorId: string, input: FloorPlanBatch
   const contracted = await loadContractedUnits(upUnitIds);
   const resized = new Set<string>(); // unit ids whose drawn area changes in this batch (D4 band check below)
   for (const raw of up.placements ?? []) {
-    const geom = { ...raw, ...checkGeometry(raw) };
+    const resolved = resolveOutlineInput(raw.outline);
+    const rawBb = raw.outline != null && resolved === null ? bboxOfRawOutline(raw.outline) : null;
+    const nextOutline = resolved === undefined ? outlineOf(currentByUnit.get(raw.unitId)?.outline) : resolved;
+    const geom = nextOutline
+      ? (() => {
+          const bb = outlineBBox(nextOutline)!;
+          return { ...raw, x: bb.x, y: bb.y, width: bb.width, height: bb.height, outline: nextOutline };
+        })()
+      : rawBb
+        ? { ...raw, ...rawBb, outline: null as OutlinePoints | null }
+        : { ...raw, ...checkGeometry(raw), outline: null as OutlinePoints | null };
     const unit = unitById.get(raw.unitId);
     if (!unit) throw new AppError(404, 'NOT_FOUND', `Unit ${raw.unitId} not found`);
     if (unit.deletedAt) throw new AppError(400, 'VALIDATION', `Unit ${unit.unitCode} is deleted and cannot be placed on a plan`);
     if (unit.status === 'INACTIVE') throw new AppError(400, 'VALIDATION', `Unit ${unit.unitCode} is INACTIVE and cannot be placed on a plan — reactivate it first`);
     if (unit.floorId !== floorId) throw new AppError(400, 'VALIDATION', `Unit ${unit.unitCode} does not belong to floor ${floorId}`);
     const existing = currentByUnit.get(raw.unitId);
-    if (!existing || !sameFtRect(existing, geom) || (geom.stackTier !== undefined && geom.stackTier !== existing.stackTier)) {
+    const existingOutline = outlineOf(existing?.outline);
+    const outlineChanged = JSON.stringify(nextOutline ?? null) !== JSON.stringify(existingOutline ?? null);
+    if (!existing || !sameFtRect(existing, geom) || outlineChanged || (geom.stackTier !== undefined && geom.stackTier !== existing.stackTier)) {
       lockCheck(unit, 'editing this placement');
     }
     if (!rectFitsCanvas(geom, plan)) {
       throw new AppError(400, 'VALIDATION', `Placement ${unit.unitCode} ${formatFt(geom.x)},${formatFt(geom.y)} ${formatFt(geom.width)}×${formatFt(geom.height)} exceeds the ${formatFt(plan.width)}×${formatFt(plan.height)} ft canvas — enlarge the canvas first`);
     }
+    // D6: shaped units never stack; outlining a stacked unit is blocked.
+    const explicitTier0 = geom.stackTier !== undefined ? checkStackTier(geom.stackTier as number) : null;
+    const tier0 = explicitTier0 ?? (((existing?.stackTier ?? 0) === 1 ? 1 : 0) as 0 | 1);
+    if (nextOutline && tier0 === 1) {
+      throw new AppError(409, 'PLACEMENT_OVERLAP', `Cannot stack ${unit.unitCode} — shaped units can't stack. Reset it to a rectangle first, or keep it a single.`);
+    }
+    if (nextOutline && existing && (existing.stackTier === 1 || [...currentByUnit.values()].some((s) => s.unitId !== raw.unitId && s.floorPlanId === plan.id && s.stackTier === 1 && sameFtRect(s, existing)))) {
+      throw new AppError(409, 'PLACEMENT_OVERLAP', `Cannot outline ${unit.unitCode} — it is in a stacked pair. Unstack it first.`);
+    }
     // Area rule (./unitSizing.ts): resize → areaDirty, contracted → ±tolerance.
     // DRAFT units are never dirty — their Unit row follows the drawing now.
-    let areaDirty = checkPlacementArea({ unit, geom, existing, contractedReason: contracted.get(unit.id) });
+    const existingGeom = existing
+      ? { x: existing.x, y: existing.y, width: existing.width, height: existing.height, outline: existingOutline, areaDirty: existing.areaDirty }
+      : null;
+    let areaDirty = checkPlacementArea({ unit, geom, existing: existingGeom, contractedReason: contracted.get(unit.id) });
     if (unit.status === 'DRAFT') {
       areaDirty = false;
       const upd = draftResize(unit, geom, sizes);
       if (upd) draftUpdates.push(upd);
     }
-    if (!existing || rectAreaSqft(existing) !== rectAreaSqft(geom)) resized.add(unit.id);
+    if (!existingGeom || placementAreaSqft(existingGeom) !== placementAreaSqft(geom)) resized.add(unit.id);
     const explicitTier = geom.stackTier !== undefined;
     const tier = explicitTier ? checkStackTier(geom.stackTier as number) : ((existing?.stackTier ?? 0) === 1 ? 1 : 0);
-    final.set(unit.id, { unitId: unit.id, unitCode: unit.unitCode, sizeCode: unit.size.code, x: geom.x, y: geom.y, width: geom.width, height: geom.height, stackTier: tier, explicitTier });
-    // Offsets prune to the effective authored edges (explicit edges win, else
-    // the row's current edges); unauthored placements stay centred.
-    const batchDoorEdges = normalizeDoorEdges(geom.doorEdges);
-    const batchEffective = batchDoorEdges === undefined ? doorEdgesToArray(existing?.doorEdges) : doorEdgesToArray(batchDoorEdges);
-    placementWrites.push({ unitId: unit.id, x: geom.x, y: geom.y, width: geom.width, height: geom.height, stackTier: tier, doorEdges: batchDoorEdges, doorOffsets: normalizeDoorOffsets(geom.doorOffsets, batchEffective), areaDirty });
+    final.set(unit.id, { unitId: unit.id, unitCode: unit.unitCode, sizeCode: unit.size.code, x: geom.x, y: geom.y, width: geom.width, height: geom.height, outline: nextOutline, stackTier: tier, explicitTier });
+    // Doors: an outline edit remaps stored doors first (D5); explicit edges
+    // win. Offsets prune to the effective authored edges.
+    const edgeCount = nextOutline ? nextOutline.length : undefined;
+    let bEdges: string | null | undefined = existing?.doorEdges ?? null;
+    let bOffsets: unknown = existing?.doorOffsets ?? null;
+    if (outlineChanged && nextOutline) {
+      const prev = existingOutline ?? rectToPolygon(existingGeom ?? geom);
+      const remapped = remapDoorsToOutline(prev, nextOutline, bEdges, bOffsets);
+      bEdges = remapped.doorEdges;
+      bOffsets = remapped.doorOffsets;
+    } else if (outlineChanged && !nextOutline) {
+      bEdges = null;
+      bOffsets = null;
+    }
+    const batchDoorEdges =
+      geom.doorEdges !== undefined
+        ? normalizeDoorEdges(geom.doorEdges, edgeCount != null ? { edgeCount } : {})
+        : outlineChanged && nextOutline
+          ? bEdges
+          : undefined;
+    const batchEffective =
+      batchDoorEdges === undefined
+        ? doorEdgesToArray(bEdges, edgeCount != null ? { edgeCount } : {})
+        : doorEdgesToArray(batchDoorEdges, edgeCount != null ? { edgeCount } : {});
+    const batchDoorOffsets =
+      geom.doorOffsets !== undefined
+        ? normalizeDoorOffsets(geom.doorOffsets, batchEffective, edgeCount != null ? { edgeCount } : {})
+        : outlineChanged && nextOutline
+          ? (bOffsets as DoorOffsets | null)
+          : undefined;
+    placementWrites.push({ unitId: unit.id, x: geom.x, y: geom.y, width: geom.width, height: geom.height, outline: resolveOutlineInput(raw.outline), stackTier: tier, doorEdges: batchDoorEdges, doorOffsets: batchDoorOffsets, areaDirty });
   }
   // ---- new units drawn on the canvas (created DRAFT inside the tx below) ----
   type CreateRow = {
@@ -2408,6 +2839,7 @@ export async function applyFloorPlanBatch(floorId: string, input: FloorPlanBatch
     name: string | null;
     hasAC: boolean;
     hasPillar: boolean;
+    outline: OutlinePoints | null;
     geom: { x: number; y: number; width: number; height: number; stackTier: 0 | 1; doorEdges: string | null | undefined; doorOffsets: DoorOffsets | null | undefined };
   };
   const createRows: CreateRow[] = [];
@@ -2420,13 +2852,25 @@ export async function applyFloorPlanBatch(floorId: string, input: FloorPlanBatch
       if (typeof c.tempId !== 'string' || !c.tempId || c.tempId.length > 64) throw new AppError(400, 'VALIDATION', 'Each new unit needs a tempId (1–64 chars)');
       if (seen.has(c.tempId)) throw new AppError(400, 'VALIDATION', `Duplicate tempId ${c.tempId}`);
       seen.add(c.tempId);
-      const g = checkGeometry(c);
+      // Drawn units may carry an outline (D1); the bbox derives server-side.
+      // A bbox-filling outline is that bbox as a rectangle.
+      const cResolved = resolveOutlineInput(c.outline);
+      const cOutline = cResolved ?? null;
+      const cRawBb = c.outline != null && cResolved === null ? bboxOfRawOutline(c.outline) : null;
+      const g = cOutline
+        ? (() => {
+            const bb = outlineBBox(cOutline)!;
+            return { ...c, x: bb.x, y: bb.y, width: bb.width, height: bb.height };
+          })()
+        : cRawBb
+          ? { ...c, ...cRawBb }
+          : checkGeometry(c);
       if (!rectFitsCanvas(g, plan)) {
         throw new AppError(400, 'VALIDATION', `New unit ${formatFt(g.x)},${formatFt(g.y)} ${formatFt(g.width)}×${formatFt(g.height)} exceeds the ${formatFt(plan.width)}×${formatFt(plan.height)} ft canvas — enlarge the canvas first`);
       }
-      const sqft = sqftForRect(g);
+      const sqft = sqftForPlacement({ width: g.width, height: g.height, outline: cOutline });
       if (sqft < MIN_UNIT_SQFT || sqft > MAX_UNIT_SQFT) {
-        throw new AppError(400, 'VALIDATION', `New unit ${formatFt(g.width)}×${formatFt(g.height)} ft would be ${sqft} sqft — units must be ${MIN_UNIT_SQFT}–${MAX_UNIT_SQFT} sqft`);
+        throw new AppError(400, 'VALIDATION', `New unit ${cOutline ? `shaped outline (${cOutline.length} corners)` : `${formatFt(g.width)}×${formatFt(g.height)} ft`} would be ${sqft} sqft — units must be ${MIN_UNIT_SQFT}–${MAX_UNIT_SQFT} sqft`);
       }
       const size = c.sizeId ? sizes.find((s) => s.id === c.sizeId) : resolveSizeTier(sizes, '', sqft)?.size;
       if (!size) throw new AppError(400, 'VALIDATION', `Unknown size ${c.sizeId}`);
@@ -2434,8 +2878,13 @@ export async function applyFloorPlanBatch(floorId: string, input: FloorPlanBatch
       if (!(Number.isFinite(rate) && rate >= 0 && rate <= 1_000_000)) throw new AppError(400, 'VALIDATION', 'monthlyRate must be between 0 and 1,000,000');
       const name = typeof c.name === 'string' && c.name.trim() ? c.name.trim().slice(0, 80) : null;
       const tier = c.stackTier === undefined ? 0 : checkStackTier(c.stackTier);
+      if (cOutline && tier === 1) {
+        throw new AppError(409, 'PLACEMENT_OVERLAP', `Cannot stack the new unit ${name ?? `(${c.tempId})`} — shaped units can't stack.`);
+      }
       const key = `new:${c.tempId}`;
-      final.set(key, { unitId: key, unitCode: name ?? `new unit (${c.tempId})`, sizeCode: size.code, x: g.x, y: g.y, width: g.width, height: g.height, stackTier: tier, explicitTier: c.stackTier !== undefined });
+      const cEdgeCount = cOutline ? cOutline.length : undefined;
+      const cDoorEdges = normalizeDoorEdges(c.doorEdges, cEdgeCount != null ? { edgeCount: cEdgeCount } : {});
+      final.set(key, { unitId: key, unitCode: name ?? `new unit (${c.tempId})`, sizeCode: size.code, x: g.x, y: g.y, width: g.width, height: g.height, outline: cOutline, stackTier: tier, explicitTier: c.stackTier !== undefined });
       createRows.push({
         key,
         tempId: c.tempId,
@@ -2445,17 +2894,20 @@ export async function applyFloorPlanBatch(floorId: string, input: FloorPlanBatch
         name,
         hasAC: c.hasAC ?? false,
         hasPillar: c.hasPillar ?? false,
-        geom: { ...g, stackTier: tier, doorEdges: normalizeDoorEdges(c.doorEdges), doorOffsets: normalizeDoorOffsets(c.doorOffsets, doorEdgesToArray(normalizeDoorEdges(c.doorEdges))) },
+        outline: cOutline,
+        geom: { ...g, stackTier: tier, doorEdges: cDoorEdges, doorOffsets: normalizeDoorOffsets(c.doorOffsets, doorEdgesToArray(cDoorEdges, cEdgeCount != null ? { edgeCount: cEdgeCount } : {}), cEdgeCount != null ? { edgeCount: cEdgeCount } : {}) },
       });
     }
   }
 
   // Stacking + overlap over the FINAL layout (only pairs touching a changed unit).
+  // Same-rect stack exemptions are rect-only (shaped units never stack, D6);
+  // every other pair goes through the shape-aware overlap guard.
   const changed = new Set([...placementWrites.map((w) => w.unitId), ...createRows.map((r) => r.key)]);
   const finals = [...final.values()];
   const demote = new Set<string>();
   for (const f of finals) {
-    const mates = finals.filter((o) => o.unitId !== f.unitId && sameFtRect(o, f));
+    const mates = finals.filter((o) => o.unitId !== f.unitId && !f.outline && !o.outline && sameFtRect(o, f));
     if (f.stackTier === 1 && !mates.some((o) => o.stackTier === 0)) {
       if (f.explicitTier) throw new AppError(400, 'VALIDATION', `Cannot place ${f.unitCode} as upper tier (stackTier 1) — no ground-tier placement shares its exact rect`);
       demote.add(f.unitId); // orphaned upper → ground single (same as the single-write path)
@@ -2472,24 +2924,24 @@ export async function applyFloorPlanBatch(floorId: string, input: FloorPlanBatch
     }
     const w = placementWrites.find((x) => x.unitId === id);
     if (w) w.stackTier = 0;
-    else placementWrites.push({ unitId: id, x: f.x, y: f.y, width: f.width, height: f.height, stackTier: 0, doorEdges: undefined, doorOffsets: undefined });
+    else placementWrites.push({ unitId: id, x: f.x, y: f.y, width: f.width, height: f.height, outline: undefined, stackTier: 0, doorEdges: undefined, doorOffsets: undefined });
   }
   for (const id of changed) {
     const f = final.get(id)!;
     for (const o of final.values()) {
       if (o.unitId === id || !rectsOverlapExact(f, o)) continue;
-      const stackPair = sameFtRect(f, o) && f.stackTier !== o.stackTier && isLockerSize(f.sizeCode) && isLockerSize(o.sizeCode);
-      const third = [...final.values()].filter((x) => sameFtRect(x, f)).length > 2;
-      if (!stackPair || third) {
-        throw new AppError(409, 'PLACEMENT_OVERLAP', `Placement ${f.unitCode} (${formatFt(f.x)},${formatFt(f.y)} ${formatFt(f.width)}×${formatFt(f.height)}) overlaps ${o.unitCode} (${formatFt(o.x)},${formatFt(o.y)} ${formatFt(o.width)}×${formatFt(o.height)}) — move to a free spot`);
-      }
+      const stackPair = !f.outline && !o.outline && sameFtRect(f, o) && f.stackTier !== o.stackTier && isLockerSize(f.sizeCode) && isLockerSize(o.sizeCode);
+      const third = [...final.values()].filter((x) => !x.outline && sameFtRect(x, f)).length > 2;
+      if (stackPair && !third) continue;
+      if (!placementsOverlap(f, o)) continue;
+      throw new AppError(409, 'PLACEMENT_OVERLAP', `Placement ${f.unitCode} (${formatFt(f.x)},${formatFt(f.y)} ${formatFt(f.width)}×${formatFt(f.height)}) overlaps ${o.unitCode} (${formatFt(o.x)},${formatFt(o.y)} ${formatFt(o.width)}×${formatFt(o.height)}) — move to a free spot`);
     }
   }
 
   // D4: a resized locker that ends up in a stacked pair stays in the LOCKER tier.
   const stackedResized = [...resized].filter((id) => {
     const f = final.get(id);
-    return !!f && isLockerSize(f.sizeCode) && finals.some((o) => o.unitId !== id && sameFtRect(o, f));
+    return !!f && !f.outline && isLockerSize(f.sizeCode) && finals.some((o) => o.unitId !== id && !o.outline && sameFtRect(o, f));
   });
   if (stackedResized.length) {
     const sizes = await loadSizeTiers();
@@ -2559,8 +3011,9 @@ export async function applyFloorPlanBatch(floorId: string, input: FloorPlanBatch
             name: r.name,
             sqft: r.sqft,
             // Drawn rect → recorded L × W (length = y-extent, width = x-extent).
-            lengthFt: r.geom.height,
-            widthFt: r.geom.width,
+            // D4: a shaped unit carries no L×W — the Units form shows "Custom shape".
+            lengthFt: r.outline ? null : r.geom.height,
+            widthFt: r.outline ? null : r.geom.width,
             monthlyRate: r.monthlyRate,
             status: 'DRAFT',
             hasAC: r.hasAC,
@@ -2569,7 +3022,7 @@ export async function applyFloorPlanBatch(floorId: string, input: FloorPlanBatch
         });
         const { doorEdges, doorOffsets, ...g } = r.geom;
         await tx.unitPlacement.create({
-          data: { floorPlanId: plan.id, unitId: unit.id, ...g, ...(doorEdges !== undefined ? { doorEdges } : {}), ...(doorOffsets !== undefined ? { doorOffsets: doorOffsets as unknown as Prisma.InputJsonValue } : {}) },
+          data: { floorPlanId: plan.id, unitId: unit.id, ...g, outline: r.outline ?? Prisma.JsonNull, ...(doorEdges !== undefined ? { doorEdges } : {}), ...(doorOffsets !== undefined ? { doorOffsets: doorOffsets as unknown as Prisma.InputJsonValue } : {}) },
         });
         created[r.tempId] = { id: unit.id, unitCode: unit.unitCode };
       }
@@ -2578,11 +3031,12 @@ export async function applyFloorPlanBatch(floorId: string, input: FloorPlanBatch
     if (del.markers?.length) await tx.floorPlanMarker.deleteMany({ where: { floorPlanId: plan.id, id: { in: del.markers } } });
     if (del.boundaries?.length) await tx.floorPlanBoundary.deleteMany({ where: { floorPlanId: plan.id, id: { in: del.boundaries } } });
     for (const w of placementWrites) {
-      const { doorEdges, doorOffsets, areaDirty, ...g } = w;
+      const { doorEdges, doorOffsets, areaDirty, outline, ...g } = w;
+      const outlineData = outline === undefined ? {} : { outline: outline ?? Prisma.JsonNull };
       await tx.unitPlacement.upsert({
         where: { unitId: w.unitId },
-        create: { floorPlanId: plan.id, ...g, ...(doorEdges !== undefined ? { doorEdges } : {}), ...(doorOffsets !== undefined ? { doorOffsets: doorOffsets as unknown as Prisma.InputJsonValue } : {}), ...(areaDirty !== undefined ? { areaDirty } : {}) },
-        update: { floorPlanId: plan.id, ...g, ...(doorEdges !== undefined ? { doorEdges } : {}), ...(doorOffsets !== undefined ? { doorOffsets: doorOffsets as unknown as Prisma.InputJsonValue } : {}), ...(areaDirty !== undefined ? { areaDirty } : {}) },
+        create: { floorPlanId: plan.id, ...g, ...outlineData, ...(doorEdges !== undefined ? { doorEdges } : {}), ...(doorOffsets !== undefined ? { doorOffsets: doorOffsets as unknown as Prisma.InputJsonValue } : {}), ...(areaDirty !== undefined ? { areaDirty } : {}) },
+        update: { floorPlanId: plan.id, ...g, ...outlineData, ...(doorEdges !== undefined ? { doorEdges } : {}), ...(doorOffsets !== undefined ? { doorOffsets: doorOffsets as unknown as Prisma.InputJsonValue } : {}), ...(areaDirty !== undefined ? { areaDirty } : {}) },
       });
     }
     for (const { id, doorEdges, ...b } of blockWrites) {

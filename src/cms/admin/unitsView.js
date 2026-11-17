@@ -1006,6 +1006,9 @@ export function markUnitDimsEdited() {
   dimsEdited = true;
 }
 let planOwned = false;
+// Odd-shaped units (D4): a shaped placement owns the whole footprint — the
+// form locks length × width AND sqft (read-only) with a "Custom shape" hint.
+let shapedOwned = false;
 
 // Bound by the entry on input of #f-length / #f-width / #f-height.
 export function onUnitDimsInput() {
@@ -1024,7 +1027,9 @@ export function onUnitDimsInput() {
     if (tier) $('#f-size').value = tier.id;
   }
   if (!hint) return;
-  if (planOwned) {
+  if (shapedOwned) {
+    hint.innerHTML = 'Custom shape — edit in Floor Plan Designer. Length × width don\'t apply to shaped units; the size follows the outline area on publish.';
+  } else if (planOwned) {
     hint.innerHTML = 'Length × width are set by the floor plan drawing — resize the unit in the Floor Plan Designer. Height stays editable.';
   } else if (area != null) {
     const vol = h > 0 ? round2(l * w * h) : null;
@@ -1101,6 +1106,7 @@ export async function openCreateForm() {
   dimsEdited = false;
   legacySqft = null;
   planOwned = false;
+  shapedOwned = false;
   setDimInputs(null);
   onUnitDimsInput();
   $('#f-monthlyRate').value = '';
@@ -1130,11 +1136,15 @@ export async function openEditForm(code) {
     setDimInputs(u);
     legacySqft = u.sqft ?? null;
     // Floor-plan unit sync: a placed unit's size is set by its drawing, so
-    // length/width lock (height stays editable).
+    // length/width lock (height stays editable). A shaped placement locks the
+    // whole footprint: "Custom shape — edit in Floor Plan Designer".
     planOwned = !!d.sizeOwnedByPlan;
+    shapedOwned = !!d.shapedPlacement;
     for (const sel of ['#f-length', '#f-width']) {
-      $(sel).disabled = planOwned;
-      $(sel).title = planOwned ? 'Set by the floor plan — resize this unit in the Floor Plan Designer and publish.' : '';
+      $(sel).disabled = planOwned || shapedOwned;
+      $(sel).title = shapedOwned
+        ? 'Custom shape — edit in Floor Plan Designer (length × width don\'t apply to shaped units).'
+        : planOwned ? 'Set by the floor plan — resize this unit in the Floor Plan Designer and publish.' : '';
     }
     onUnitDimsInput();
     $('#f-monthlyRate').value = u.rate ?? '';
@@ -1160,6 +1170,7 @@ export function closeUnitModal() {
   $('#f-length').title = '';
   $('#f-width').title = '';
   planOwned = false;
+  shapedOwned = false;
   editOrig = null;
   clearFieldErrors();
 }

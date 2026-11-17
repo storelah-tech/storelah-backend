@@ -5,10 +5,12 @@ import {
   CANVAS_DEFAULTS,
   FP_MARKER_KINDS,
   MAX_GFA_SQFT,
+  bboxOfRawOutline,
   boundaryPointsOf,
   doorOffsetsToObject,
   normalizeDoorEdges,
   normalizeDoorOffsets,
+  resolveOutlineInput,
   PUBLISH_TX_OPTIONS,
   assertPublishPermission,
   ensurePublishedSnapshotTx,
@@ -20,7 +22,7 @@ import {
   type PublicPlanView,
   type PublishFloorPlanOptions,
 } from './floorPlans';
-import { loadContractedUnits, sameSqft, sqftForRect } from './unitSizing';
+import { loadContractedUnits, placementAreaSqft, sameSqft, sqftForPlacement } from './unitSizing';
 import {
   DEFAULT_WALL_THICKNESS_FT,
   MAX_WALL_THICKNESS_FT,
@@ -28,10 +30,11 @@ import {
   MIN_WALL_THICKNESS_FT,
   clampFt,
   isPlanNumber,
+  outlineBBox,
+  outlineOf,
   pointOnCanvas,
   quantizeFt,
   quantizeRect,
-  rectAreaSqft,
   rectFitsCanvas,
 } from './planGeometry';
 
@@ -79,6 +82,9 @@ export interface DraftPlacementSnapshot {
   y: number;
   width: number;
   height: number;
+  // Odd-shaped units (D1): outline polygon [[x,y],...] or null for rectangles
+  // (absent in pre-outline snapshots, which read as rectangles).
+  outline?: Array<[number, number]> | null;
   stackTier: 0 | 1;
   doorEdges: string[] | null;
   // Authored door positions (door-move tool fractions per edge); null = all
@@ -137,6 +143,9 @@ export interface DraftPlacementInput {
   y: number;
   width: number;
   height: number;
+  // Odd-shaped units (D1): authored outline; x/y/width/height are ignored when
+  // set (the bbox derives server-side). Omitted falls back to the live shape.
+  outline?: Array<[number, number]> | null;
   stackTier?: number;
   doorEdges?: string[] | null;
   // Authored door positions (door-move tool); pruned to the authored edges on
@@ -305,9 +314,15 @@ function liveSnapshotOf(live: LivePlan | null) {
       y: p.y,
       width: p.width,
       height: p.height,
+      // Shaped placements round-trip their outline; rects serialize null so
+      // old readers (which ignore the key) keep working.
+      outline: outlineOf(p.outline),
       stackTier: (p.stackTier === 1 ? 1 : 0) as 0 | 1,
       doorEdges: p.doorEdges ? String(p.doorEdges).split(',') : null,
-      doorOffsets: doorOffsetsToObject(p.doorOffsets),
+      doorOffsets: (() => {
+        const o = outlineOf(p.outline);
+        return doorOffsetsToObject(p.doorOffsets, o ? { edgeCount: o.length } : {});
+      })(),
     })),
     blocks: (live?.blocks ?? []).map((b): DraftBlockSnapshot => ({
       id: b.id,
@@ -367,7 +382,23 @@ export async function saveDraft(floorId: string, input: SaveDraftInput = {}) {
     if (!Array.isArray(input.placements)) throw new AppError(400, 'VALIDATION', 'Draft placements must be an array');
     placements = [];
     for (const raw of input.placements) {
-      const p = checkDraftRect(raw, 'placement');
+      // Odd-shaped units: an authored outline validates like a live write and
+      // derives the bbox (x/y/width/height ignored when set); omitted falls
+      // back to the live shape below via the keep path (resolveOutlineInput
+      // returns undefined, and the snapshot keeps the live row's outline).
+      // A bbox-filling outline is that bbox as a rectangle.
+      const liveOutline = outlineOf(live?.placements.find((l) => l.unitId === raw.unitId)?.outline);
+      const resolved = resolveOutlineInput(raw.outline);
+      const rawBb = raw.outline != null && resolved === null ? bboxOfRawOutline(raw.outline) : null;
+      const draftOutline = resolved === undefined ? liveOutline : resolved;
+      const p = draftOutline
+        ? (() => {
+            const bb = outlineBBox(draftOutline)!;
+            return { ...raw, x: bb.x, y: bb.y, width: bb.width, height: bb.height };
+          })()
+        : rawBb
+          ? { ...raw, ...rawBb }
+          : checkDraftRect(raw, 'placement');
       checkDraftFit(p, canvas, 'placement');
       const tier = p.stackTier === undefined ? 0 : p.stackTier;
       if (tier !== 0 && tier !== 1) {
@@ -378,10 +409,12 @@ export async function saveDraft(floorId: string, input: SaveDraftInput = {}) {
       // Offsets prune to the authored edges (toggling an edge off drops its
       // offset); omitted clears back to centred — same defaulting as doorEdges
       // (the editor always sends explicit values; the live fallback below is
-      // the keep path).
-      const doorCsv = normalizeDoorEdges(p.doorEdges);
+      // the keep path). Shaped door keys ("e0", …) validate against the
+      // outline's edge count.
+      const edgeCount = draftOutline ? draftOutline.length : undefined;
+      const doorCsv = normalizeDoorEdges(p.doorEdges, edgeCount != null ? { edgeCount } : {});
       const doorArr = doorCsv == null ? null : String(doorCsv).split(',');
-      const doorOffsets = normalizeDoorOffsets(p.doorOffsets, doorArr) ?? null;
+      const doorOffsets = normalizeDoorOffsets(p.doorOffsets, doorArr, edgeCount != null ? { edgeCount } : {}) ?? null;
       const unit = await prisma.unit.findUnique({ where: { id: p.unitId }, include: { size: true } });
       if (!unit) throw new AppError(404, 'NOT_FOUND', `Unit ${p.unitId} not found`);
       if (unit.floorId !== floorId) {
@@ -407,6 +440,7 @@ export async function saveDraft(floorId: string, input: SaveDraftInput = {}) {
         y: p.y,
         width: p.width,
         height: p.height,
+        outline: draftOutline,
         stackTier: tier as 0 | 1,
         doorEdges: doorArr,
         doorOffsets,
@@ -692,7 +726,7 @@ async function resolveDraftSnapshotRows(draft: SnapshotSource) {
   // unchanged stay unflagged (docs/FLOOR_PLAN_UNIT_SYNC_PLAN.md §5.3).
   const live = await prisma.unitPlacement.findMany({
     where: { floorPlan: { floorId }, unitId: { in: [...byUnit.keys()] } },
-    select: { unitId: true, width: true, height: true, areaDirty: true },
+    select: { unitId: true, width: true, height: true, outline: true, areaDirty: true },
   });
   const liveByUnit = new Map(live.map((l) => [l.unitId, l]));
   const sizeChanges: Array<{ unitId: string; unitCode: string; from: number; to: number }> = [];
@@ -710,7 +744,24 @@ async function resolveDraftSnapshotRows(draft: SnapshotSource) {
         skippedPlacements.push(label);
         continue;
       }
-      const r = quantizeRect(p);
+      // Old snapshots predate outlines (absent → rectangle); authored outlines
+      // re-validate like a live write and derive the bbox.
+      let snapshotOutline: Array<[number, number]> | null = null;
+      let r = quantizeRect(p);
+      if (p.outline !== undefined && p.outline !== null) {
+        try {
+          snapshotOutline = resolveOutlineInput(p.outline) ?? null;
+        } catch {
+          skippedPlacements.push(label);
+          continue;
+        }
+        if (!snapshotOutline) {
+          skippedPlacements.push(label);
+          continue;
+        }
+        const bb = outlineBBox(snapshotOutline)!;
+        r = { ...r, x: bb.x, y: bb.y, width: bb.width, height: bb.height };
+      }
       if (r.width <= 0 || r.height <= 0 || !rectFitsCanvas(r, canvas)) {
         skippedPlacements.push(label);
         continue;
@@ -722,14 +773,17 @@ async function resolveDraftSnapshotRows(draft: SnapshotSource) {
         y: r.y,
         width: r.width,
         height: r.height,
+        outline: snapshotOutline ?? Prisma.JsonNull,
         stackTier: p.stackTier === 1 ? 1 : 0,
-        doorEdges: (normalizeDoorEdges(p.doorEdges) ?? null) as string | null,
-        doorOffsets: (normalizeDoorOffsets(p.doorOffsets, p.doorEdges) ?? Prisma.JsonNull) as unknown as Prisma.InputJsonValue,
+        doorEdges: (normalizeDoorEdges(p.doorEdges, snapshotOutline ? { edgeCount: snapshotOutline.length } : {}) ?? null) as string | null,
+        doorOffsets: (normalizeDoorOffsets(p.doorOffsets, p.doorEdges, snapshotOutline ? { edgeCount: snapshotOutline.length } : {}) ?? Prisma.JsonNull) as unknown as Prisma.InputJsonValue,
         areaDirty: (() => {
           const prev = liveByUnit.get(unitId);
-          const changed = !prev || prev.areaDirty || rectAreaSqft(prev) !== rectAreaSqft(r);
-          const dirty = changed && !sameSqft(sqftForRect(r), unit.sqft);
-          if (dirty) sizeChanges.push({ unitId, unitCode: unit.unitCode, from: unit.sqft, to: sqftForRect(r) });
+          const prevGeom = prev ? { width: prev.width, height: prev.height, outline: outlineOf(prev.outline) } : null;
+          const nextGeom = { width: r.width, height: r.height, outline: snapshotOutline };
+          const changed = !prev || prev.areaDirty || !prevGeom || placementAreaSqft(prevGeom) !== placementAreaSqft(nextGeom);
+          const dirty = changed && !sameSqft(sqftForPlacement(nextGeom), unit.sqft);
+          if (dirty) sizeChanges.push({ unitId, unitCode: unit.unitCode, from: unit.sqft, to: sqftForPlacement(nextGeom) });
           return dirty;
         })(),
       });
@@ -1048,6 +1102,7 @@ export async function revertToPublished(floorId: string, createdBy?: string | nu
       y: pl.y,
       width: pl.width,
       height: pl.height,
+      outline: (pl as { outline?: unknown }).outline ?? null,
       stackTier: pl.stackTier,
       doorEdges: pl.doorEdges,
       doorOffsets: null,

@@ -2343,7 +2343,7 @@ function renderValidationResults(result) {
       return '<div class="risk ' + cls + '"><i>' + icon + '</i><div><b>' + escapeHtml(c.status.toUpperCase()) + '</b><small>' + escapeHtml(c.message) + '</small></div></div>';
     }).join('');
     (result.samples || []).slice(0, 3).forEach(function (s) {
-      html += '<div class="risk"><i>$</i><div><b>Sample: ' + escapeHtml(s.unitCode) + ' (' + escapeHtml(s.branch) + ')</b><small>$' + s.monthlyRate + '/mo × ' + s.months + 'm = $' + s.baseTotal + ' − $' + s.discountTotal.toFixed(2) + ' → $' + s.effectiveTotal.toFixed(2) + '. ' + escapeHtml(s.note) + '</small></div></div>';
+      html += '<div class="risk"><i>$</i><div><b>Sample: ' + escapeHtml(s.name || s.unitCode) + ' (' + escapeHtml(s.branch) + ')</b><small>$' + s.monthlyRate + '/mo × ' + s.months + 'm = $' + s.baseTotal + ' − $' + s.discountTotal.toFixed(2) + ' → $' + s.effectiveTotal.toFixed(2) + '. ' + escapeHtml(s.note) + '</small></div></div>';
     });
     list.innerHTML = html || '<div class="section-empty">No checks returned.</div>';
   }

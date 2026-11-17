@@ -1,7 +1,7 @@
 import type { Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { AppError } from '../lib/http';
-import { AREA_TOLERANCE, areaDeviation, formatFt, rectAreaSqft } from './planGeometry';
+import { AREA_TOLERANCE, formatFt, outlineArea, rectAreaSqft } from './planGeometry';
 import { MARKET_PSF } from './market';
 
 // Floor-plan ⇄ unit size sync (docs/FLOOR_PLAN_UNIT_SYNC_PLAN.md).
@@ -63,6 +63,33 @@ export function sqftForRect(r: { width: number; height: number }): number {
 }
 
 /**
+ * Unit.sqft for a drawn placement (odd-shaped units, D3): the outline polygon
+ * area when an outline is set, else the bbox w×h — rounded with wholeSqft
+ * like rects. Replaces sqftForRect at placement call sites (sqftForRect stays
+ * for rect-only callers).
+ */
+export function sqftForPlacement(p: { width: number; height: number; outline?: unknown }): number {
+  return wholeSqft(placementAreaSqft(p));
+}
+
+/** Drawn area of a placement in sq ft (outline polygon area, else w×h). */
+export function placementAreaSqft(p: { width: number; height: number; outline?: unknown }): number {
+  const o = p.outline;
+  if (Array.isArray(o) && o.length >= 3) {
+    const pts = (o as unknown[]).filter(
+      (v): v is [number, number] => Array.isArray(v) && typeof v[0] === 'number' && typeof v[1] === 'number',
+    );
+    if (pts.length >= 3) return Math.round(outlineArea(pts) * 10000) / 10000;
+  }
+  return rectAreaSqft(p);
+}
+
+/** Deviation of a placement's drawn area from `sqft` (0 = exact). */
+export function placementAreaDeviation(p: { width: number; height: number; outline?: unknown }, sqft: number): number {
+  return Math.abs(placementAreaSqft(p) - sqft) / Math.max(1, sqft);
+}
+
+/**
  * Unit ids (of `unitIds`) whose size is contractually fixed, with the reason:
  * status in CONTRACTED_STATUSES, or a booking awaiting payment (a Stripe
  * webhook can still confirm it). One query regardless of batch size.
@@ -94,48 +121,67 @@ export async function loadContractedUnits(
 
 type Rect = { width: number; height: number };
 
+/** Any rect-or-outline footprint the area rule accepts. */
+export type PlacementGeom = Rect & { outline?: unknown };
+
 /**
  * Area rule for one placement write. Returns the placement's next `areaDirty`.
- *  - area unchanged (move / 90° rotation / door toggle): keep the stored flag;
+ *  - area unchanged (move / 90° rotation / door toggle / outline vertex edit
+ *    that keeps the stored area): keep the stored flag;
  *  - contracted unit: legacy ±AREA_TOLERANCE vs Unit.sqft, never dirty
- *    (409 UNIT_CONTRACTED beyond it);
+ *    (409 UNIT_CONTRACTED beyond it) — changing a contracted unit's SHAPE is
+ *    the same as resizing it (D3);
  *  - otherwise: any area within [MIN_UNIT_SQFT, MAX_UNIT_SQFT] is accepted and
  *    dirty iff the drawn sqft differs from Unit.sqft by ≥ SQFT_EPSILON
  *    (resizing back clears it).
+ * Shaped placements compare the outline polygon area (sqftForPlacement);
+ * rect placements keep the exact w×h path. `existing` carries the stored
+ * outline so an outline redraw with the same area is grandfathered.
  */
 export function checkPlacementArea(input: {
   unit: { unitCode: string; sqft: number };
-  geom: Rect;
-  existing: (Rect & { areaDirty?: boolean | null }) | null | undefined;
+  geom: PlacementGeom;
+  existing: (PlacementGeom & { areaDirty?: boolean | null }) | null | undefined;
   contractedReason: string | undefined;
 }): boolean {
   const { unit, geom, existing, contractedReason } = input;
-  const area = rectAreaSqft(geom);
-  const areaChanged = !existing || rectAreaSqft(existing) !== area;
+  const area = placementAreaSqft(geom);
+  const existingArea = existing ? placementAreaSqft(existing) : null;
+  const areaChanged = existingArea == null || existingArea !== area;
+  // An outline set/cleared/redrawn that keeps the drawn area is a move-class
+  // edit (label/door anchor follows the drawing) — never dirty by itself.
   if (!areaChanged) return existing?.areaDirty === true;
 
   if (contractedReason) {
-    if (areaDeviation(geom, unit.sqft) > AREA_TOLERANCE) {
+    if (placementAreaDeviation(geom, unit.sqft) > AREA_TOLERANCE) {
+      const dims = describeGeom(geom);
       throw new AppError(
         409,
         'UNIT_CONTRACTED',
         `Unit ${unit.unitCode} is ${contractedReason.toLowerCase()} — its ${unit.sqft} sqft can't change while contracted. ` +
-          `${formatFt(geom.width)}×${formatFt(geom.height)} ft (= ${Math.round(area * 100) / 100} sq ft) is more than ` +
+          `${dims} (= ${Math.round(area * 100) / 100} sq ft) is more than ` +
           `${Math.round(AREA_TOLERANCE * 100)}% off; reshape within tolerance only.`,
       );
     }
     return false;
   }
 
-  const sqft = sqftForRect(geom);
+  const sqft = sqftForPlacement(geom);
   if (sqft < MIN_UNIT_SQFT || sqft > MAX_UNIT_SQFT) {
     throw new AppError(
       400,
       'VALIDATION',
-      `Unit ${unit.unitCode} ${formatFt(geom.width)}×${formatFt(geom.height)} ft would be ${sqft} sqft — units must be ${MIN_UNIT_SQFT}–${MAX_UNIT_SQFT} sqft`,
+      `Unit ${unit.unitCode} ${describeGeom(geom)} would be ${sqft} sqft — units must be ${MIN_UNIT_SQFT}–${MAX_UNIT_SQFT} sqft`,
     );
   }
   return !sameSqft(sqft, unit.sqft);
+}
+
+/** Human-readable footprint for error messages (outline or W×H). */
+function describeGeom(geom: PlacementGeom): string {
+  const o = geom.outline;
+  if (Array.isArray(o) && o.length >= 3) return `shaped outline (${(o as unknown[]).length} corners)`;
+  return `${formatFt(geom.width)}×${formatFt(geom.height)} ft`;
 }
 
 export type SizeTierRow = { id: string; code: string; name: string; sqftFrom: number; sqftTo: number; sortOrder: number };
@@ -182,15 +228,15 @@ export async function loadSizeTiers(): Promise<SizeTierRow[]> {
  * footprint into another tier (the pair would re-tier on publish). Uses the
  * same nearest-tier rule as publish (resolveSizeTier).
  */
-export function assertStackedLockerTier(unitCode: string, currentSizeId: string, geom: Rect, sizes: readonly SizeTierRow[]): void {
-  const sqft = sqftForRect(geom);
+export function assertStackedLockerTier(unitCode: string, currentSizeId: string, geom: PlacementGeom, sizes: readonly SizeTierRow[]): void {
+  const sqft = sqftForPlacement(geom);
   const tier = resolveSizeTier(sizes, currentSizeId, sqft);
   const code = tier ? tier.size.code.toUpperCase() : '';
   if (tier && code !== 'LOCKER' && code !== 'XS') {
     throw new AppError(
       400,
       'VALIDATION',
-      `Stacked locker ${unitCode} ${formatFt(geom.width)}×${formatFt(geom.height)} ft would be ${sqft} sqft — that sizes it as ${tier.size.name}, and stacked pairs must stay lockers. Unstack first to resize beyond the locker size.`,
+      `Stacked locker ${unitCode} ${describeGeom(geom)} would be ${sqft} sqft — that sizes it as ${tier.size.name}, and stacked pairs must stay lockers. Unstack first to resize beyond the locker size.`,
     );
   }
 }

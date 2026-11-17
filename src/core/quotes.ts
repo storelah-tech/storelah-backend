@@ -57,6 +57,9 @@ async function inventoryOptions(query: QuoteInventoryQuery) {
     const rate = toNum(u.monthlyRate);
     return {
       code: u.unitCode,
+      // Operator-facing unit number (rule 2 retired 2026-11-17) — code stays
+      // the lookup key.
+      name: u.name ?? u.unitCode,
       branchCode: u.branch.code,
       sizeCode: u.size.code,
       size: u.size.name,
@@ -701,6 +704,7 @@ export async function finalizeQuotation(
           leadName: lead.name,
           quoteNo: row!.quoteNo,
           unitCode: lead.unitCode,
+          unitDisplayName: unit?.name?.trim() ? unit.name : (lead.unitCode ?? null),
           branchName: lead.branch?.name ?? null,
           monthlyRateSgd: toNumOrNull(lead.monthlyRate),
           totalDueTodaySgd: toNumOrNull(lead.totalDueToday),

@@ -206,10 +206,9 @@ export async function buildQuotationPdfBytes(d: QuotationPdfData): Promise<Buffe
   if (d.branchAddress?.trim()) row('Facility address', d.branchAddress.trim());
   if (d.preferredSize?.trim()) row('Preferred size', d.preferredSize.trim());
   if (d.unitCode?.trim()) {
-    const unitBit =
-      d.unitDisplayName?.trim() && d.unitDisplayName.trim() !== d.unitCode.trim()
-        ? `${d.unitCode.trim()} (${d.unitDisplayName.trim()})`
-        : d.unitCode.trim();
+    // Operator-facing unit number (rule 2 retired 2026-11-17): the display
+    // name — unitCode stays the lookup key.
+    const unitBit = d.unitDisplayName?.trim() ? d.unitDisplayName.trim() : d.unitCode.trim();
     row('Unit', d.unitSqft ? `${unitBit} - ${d.unitSqft} sqft` : unitBit);
   } else {
     row('Unit', 'To be confirmed at viewing');

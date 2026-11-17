@@ -88,7 +88,7 @@ function renderInvoices(host) {
     (rows.length
       ? `<div class="table-wrap"><table class="lead-table" aria-label="Customer invoices"><thead><tr><th scope="col">Invoice</th><th scope="col">Customer</th><th scope="col">Unit</th><th scope="col">Due</th><th scope="col">Total</th><th scope="col">Paid</th><th scope="col">Balance</th><th scope="col">Status</th><th scope="col">Action</th></tr></thead><tbody>` +
         rows.map((inv) =>
-          `<tr><td>${escapeHtml(inv.no)}</td><td>${escapeHtml(inv.tenant || '—')}</td><td>${escapeHtml(inv.unit || '—')}</td>` +
+          `<tr><td>${escapeHtml(inv.no)}</td><td>${escapeHtml(inv.tenant || '—')}</td><td>${escapeHtml(inv.unitName || inv.unit || '—')}</td>` +
           `<td>${fmtDay(inv.dueDate)}</td><td><b>${money(inv.amount)}</b></td><td>${money(inv.amountPaid)}</td><td><b>${money(inv.balanceDue)}</b></td>` +
           `<td>${statusPill(inv.status)}</td><td>${actionsFor(inv)}</td></tr>`,
         ).join('') +

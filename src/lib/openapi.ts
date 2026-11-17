@@ -358,7 +358,7 @@ export const openapiSpec = {
         '(`details.counts`) unless the body carries the typed acknowledgement `{ confirmEmpty: true }` — ' +
         'applies to both `POST /cms/floor-plans/{floorId}/publish` and `POST /cms/drafts/{draftId}/publish` ' +
         '(acknowledged empty publishes behave as before). `GET /cms/drafts/{draftId}/publish-preview` gains ' +
-        '`emptyPlan` (boolean) and `blockers[]` (`{ unitId, unitCode, code: UNIT_CONTRACTED, from, to, reason }` — ' +
+        '`emptyPlan` (boolean) and `blockers[]` (`{ unitId, unitCode, name, code: UNIT_CONTRACTED, from, to, reason }` — ' +
         'the exact would-be contracted-unit publish blockers with from→to sqft, same semantics as the publish ' +
         'preflight; empty when clean; the 409 itself is unchanged), and the live ' +
         '`GET /cms/floor-plans/{floorId}/publish-preview` plan gains `placementCount` + `emptyPlan`. ' +
@@ -1721,7 +1721,7 @@ export const openapiSpec = {
             '(same skip semantics as the publish, so the popup can never promise units the publish drops). ' +
             '`emptyPlan` is true when the draft would put 0 placements live (the popup escalates to a ' +
             'danger confirm and the publish needs `{ confirmEmpty: true }`); `blockers` lists the ' +
-            'would-be contracted-unit publish blockers (`{ unitId, unitCode, code: UNIT_CONTRACTED, from, ' +
+            'would-be contracted-unit publish blockers (`{ unitId, unitCode, name, code: UNIT_CONTRACTED, from, ' +
             'to, reason }`, from→to sqft, same semantics as the publish preflight — empty when clean).',
           '',
           'Operator CMS endpoints are documented here for reference only; they are served on the CMS host under ',
@@ -1761,6 +1761,7 @@ export const openapiSpec = {
                   properties: {
                     unitId: { type: 'string' },
                     unitCode: { type: 'string' },
+                    name: { type: 'string', description: 'Operator-facing unit number (name ?? unitCode).' },
                     code: { type: 'string', enum: ['UNIT_CONTRACTED'] },
                     from: { type: 'number', description: 'Contracted Unit.sqft.' },
                     to: { type: 'number', description: 'Drawn sqft the draft would sync.' },

@@ -805,7 +805,8 @@ function fpNormalizeUnit(u) {
 }
 
 // Operator-facing unit number: the display name (server already falls back
-// to unitCode). unitCode stays the internal key for lookups and map cells.
+// to unitCode). unitCode stays the internal key for lookups; tiles show the
+// display name everywhere (rule 2 retired 2026-11-17).
 function fpUnitNo(u) {
   return (u && (u.name || u.unitCode)) || '';
 }
@@ -1853,7 +1854,7 @@ function fpRenderCanvas() {
   }
   const statusDot = null; // retired: tile colours come from fpStatusColor() (no grey unknown fallback)
   // Stacked pairs (same rect, tiers 0 + 1) render as ONE block split by a
-  // middle divider line: upper unit code above, lower code below.
+  // middle divider line: upper unit no. above, lower no. below.
   for (const group of fpGroupByRect(fpLayerHidden('units') ? [] : state.fp.placements)) {
     const r = group.rect;
     if (group.members.length >= 2) {
@@ -8672,7 +8673,7 @@ function fpViewRender() {
   const statusDot = null; // retired: tile colours come from fpStatusColor() (no grey unknown fallback)
   // Read-only mirror of the editor canvas: stacked pairs (same rect, tiers
   // 0 + 1) render as ONE block split by a middle divider line so booking-side
-  // consumers see the stack identically (upper code above, lower code below).
+  // consumers see the stack identically (upper no. above, lower no. below).
   for (const group of fpGroupByRect(fpView.placements)) {
     const r = group.rect;
     if (group.members.length >= 2) {

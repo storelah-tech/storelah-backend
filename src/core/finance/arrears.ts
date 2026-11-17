@@ -217,6 +217,9 @@ export async function listArrearsCandidates(branchId?: string) {
       branchId: i.unit.branchId,
       branch: i.unit.branch.name,
       unit: i.unit.unitCode,
+      // Operator-facing unit number (rule 2 retired 2026-11-17) — unitCode
+      // stays the lookup key.
+      unitName: i.unit.name ?? i.unit.unitCode,
       invoiceId: i.id,
       invoiceNo: i.invoiceNo,
       invoiceStatus: i.status,

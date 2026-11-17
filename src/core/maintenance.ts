@@ -4,7 +4,7 @@ import { AppError } from '../lib/http';
 import { Prisma, PreventiveCategory, WorkOrderStatus } from '@prisma/client';
 
 type WorkOrderRow = Prisma.WorkOrderGetPayload<{
-  include: { branch: { select: { code: true; name: true } }; unit: { select: { unitCode: true } } };
+  include: { branch: { select: { code: true; name: true } }; unit: { select: { unitCode: true; name: true } } };
 }>;
 
 function serializeWorkOrder(w: WorkOrderRow) {
@@ -17,6 +17,9 @@ function serializeWorkOrder(w: WorkOrderRow) {
     branchName: w.branch?.name ?? null,
     unitId: w.unitId,
     unitCode: w.unit?.unitCode ?? null,
+    // Operator-facing unit number (rule 2 retired 2026-11-17) — unitCode
+    // stays the lookup key.
+    unitName: w.unit?.name ?? w.unit?.unitCode ?? null,
     status: w.status,
     priority: w.priority,
     value: toNum(w.value),
@@ -66,7 +69,7 @@ async function assertWorkOrderRefs(branchId?: string | null, unitId?: string | n
 
 const WORK_ORDER_INCLUDE = {
   branch: { select: { code: true, name: true } },
-  unit: { select: { unitCode: true } },
+  unit: { select: { unitCode: true, name: true } },
 } as const;
 
 export async function listWorkOrders(query: { status?: string; branchId?: string } = {}) {

@@ -35,6 +35,8 @@ type SizeRow = { id: string; code: string; name: string; sqftFrom: number; sqftT
 export interface SizeSyncBlocker {
   unitId: string;
   unitCode: string;
+  /** Operator-facing unit number (name ?? unitCode) — unitCode stays the key. */
+  name: string;
   code: 'UNIT_CONTRACTED' | 'SIZE_OUT_OF_BAND';
   message: string;
 }
@@ -42,6 +44,8 @@ export interface SizeSyncBlocker {
 export interface SizeSyncChange {
   unitId: string;
   unitCode: string;
+  /** Operator-facing unit number (name ?? unitCode) — unitCode stays the key. */
+  name: string;
   status: string;
   widthFt: number;
   heightFt: number;
@@ -63,9 +67,9 @@ export interface SizeSyncPlan {
   token: string;
   changes: SizeSyncChange[];
   /** Dirty placements whose drawn sqft already matches Unit.sqft (< SQFT_EPSILON) — flag is just cleared. */
-  unchanged: Array<{ unitId: string; unitCode: string; widthFt?: number; heightFt?: number }>;
+  unchanged: Array<{ unitId: string; unitCode: string; name: string; widthFt?: number; heightFt?: number }>;
   /** DRAFT units on this floor's plan — promoted to AVAILABLE on publish. */
-  newUnits: Array<{ unitId: string; unitCode: string; sqft: number; size: { code: string; name: string }; rate: number }>;
+  newUnits: Array<{ unitId: string; unitCode: string; name: string; sqft: number; size: { code: string; name: string }; rate: number }>;
   blockers: SizeSyncBlocker[];
   /** Live placements customers would see (soft-deleted + INACTIVE filtered out;
    * DRAFT units count — publish promotes them). 0 means the publish would put
@@ -128,7 +132,7 @@ export async function buildSizeSyncPlan(
   for (const p of placements) {
     const u = p.unit;
     if (u.status === 'DRAFT') {
-      out.newUnits.push({ unitId: u.id, unitCode: u.unitCode, sqft: u.sqft, size: { code: u.size.code, name: u.size.name }, rate: toNum(u.monthlyRate) });
+      out.newUnits.push({ unitId: u.id, unitCode: u.unitCode, name: u.name ?? u.unitCode, sqft: u.sqft, size: { code: u.size.code, name: u.size.name }, rate: toNum(u.monthlyRate) });
       continue;
     }
     const newSqft = sqftForPlacement(p);
@@ -136,7 +140,7 @@ export async function buildSizeSyncPlan(
     if (sameSqft(newSqft, u.sqft)) {
       // Shaped drawings carry no L×W (D4: Units form shows "Custom shape"), so
       // the unchanged path skips dimension reconciliation for them.
-      out.unchanged.push(shaped ? { unitId: u.id, unitCode: u.unitCode } : { unitId: u.id, unitCode: u.unitCode, widthFt: p.width, heightFt: p.height });
+      out.unchanged.push(shaped ? { unitId: u.id, unitCode: u.unitCode, name: u.name ?? u.unitCode } : { unitId: u.id, unitCode: u.unitCode, name: u.name ?? u.unitCode, widthFt: p.width, heightFt: p.height });
       continue;
     }
     const reason = contracted.get(u.id);
@@ -144,27 +148,30 @@ export async function buildSizeSyncPlan(
       out.blockers.push({
         unitId: u.id,
         unitCode: u.unitCode,
+        name: u.name ?? u.unitCode,
         code: 'UNIT_CONTRACTED',
-        message: `Unit ${u.unitCode} is ${reason.toLowerCase()} — its ${u.sqft} sqft can't change to ${newSqft}. Resize it back (or fit the drawing to its size) before publishing.`,
+        message: `Unit ${u.name ?? u.unitCode} is ${reason.toLowerCase()} — its ${u.sqft} sqft can't change to ${newSqft}. Resize it back (or fit the drawing to its size) before publishing.`,
       });
     }
     const override = choiceBy.get(u.id)?.sizeId;
     const overrideSize = override ? sizes.find((s) => s.id === override) : undefined;
-    if (override && !overrideSize) throw new AppError(400, 'VALIDATION', `Unknown size ${override} chosen for unit ${u.unitCode}`);
+    if (override && !overrideSize) throw new AppError(400, 'VALIDATION', `Unknown size ${override} chosen for unit ${u.name ?? u.unitCode}`);
     const resolved = resolveSizeTier(sizes, u.sizeId, newSqft);
     const tier = overrideSize ?? resolved?.size ?? null;
     if (!tier) {
       out.blockers.push({
         unitId: u.id,
         unitCode: u.unitCode,
+        name: u.name ?? u.unitCode,
         code: 'SIZE_OUT_OF_BAND',
-        message: `Unit ${u.unitCode} would be ${newSqft} sqft, but no size tiers exist — add size tiers first.`,
+        message: `Unit ${u.name ?? u.unitCode} would be ${newSqft} sqft, but no size tiers exist — add size tiers first.`,
       });
     }
     const oldRate = toNum(u.monthlyRate);
     out.changes.push({
       unitId: u.id,
       unitCode: u.unitCode,
+      name: u.name ?? u.unitCode,
       status: u.status,
       widthFt: p.width,
       heightFt: p.height,
@@ -202,7 +209,7 @@ function rateFor(change: SizeSyncChange, choice: SizeSyncChoice | undefined): nu
   if (policy === 'SET') {
     const r = choice?.rate;
     if (typeof r !== 'number' || !Number.isFinite(r) || r < 0 || r > 1_000_000) {
-      throw new AppError(400, 'VALIDATION', `Unit ${change.unitCode}: ratePolicy SET needs a rate between 0 and 1,000,000`);
+      throw new AppError(400, 'VALIDATION', `Unit ${change.name ?? change.unitCode}: ratePolicy SET needs a rate between 0 and 1,000,000`);
     }
     return round2(r);
   }
@@ -329,6 +336,8 @@ export async function applySizeSync(
 export interface SizeMismatch {
   unitId: string;
   unitCode: string;
+  /** Operator-facing unit number (name ?? unitCode) — unitCode stays the key. */
+  name: string;
   status: string;
   sqft: number;
   drawnSqft: number;
@@ -352,7 +361,7 @@ export async function listSizeMismatches(floorId: string): Promise<SizeMismatch[
     // Prisma client predates the DRAFT enum value (migration 20261014000000).
     // Filtering post-fetch keeps the result identical on old and new clients.
     where: { floorPlanId: plan.id, areaDirty: false, unit: { deletedAt: null, status: { not: 'INACTIVE' } } },
-    include: { unit: { select: { id: true, unitCode: true, status: true, sqft: true } } },
+    include: { unit: { select: { id: true, unitCode: true, name: true, status: true, sqft: true } } },
     orderBy: { unit: { unitCode: 'asc' } },
   });
   // Draft-plan units are not inventory yet (see where clause above).
@@ -361,6 +370,7 @@ export async function listSizeMismatches(floorId: string): Promise<SizeMismatch[
   return mism.map((p) => ({
     unitId: p.unitId,
     unitCode: p.unit.unitCode,
+    name: p.unit.name ?? p.unit.unitCode,
     status: p.unit.status,
     sqft: p.unit.sqft,
     drawnSqft: round2(placementAreaSqft(p)),

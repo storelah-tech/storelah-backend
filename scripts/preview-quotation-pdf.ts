@@ -54,6 +54,7 @@ function fixtureEmail(quoteNo: string): QuotationEmailData {
     leadName: 'Alex Tan',
     quoteNo,
     unitCode: '1001',
+    unitDisplayName: 'S111',
     branchName: 'Sembawang',
     monthlyRateSgd: 280,
     totalDueTodaySgd: 848,

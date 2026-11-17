@@ -523,6 +523,9 @@ const quoteState = { search: '', status: '', facility: '', data: null };
 // is only known after GET /leads/:id, so the footer button stays disabled
 // with a tooltip until a lead with a mobile is picked (or locked via context).
 const quoteBuilderWa = { leadId: '', mobile: '', checked: false };
+// Last /units list loaded for the quote builder (display-name labels for the
+// draft preview + WhatsApp share — the select value stays unitCode).
+let quoteUnitsCache = [];
 
 function paintQuoteBuilderWa() {
   const btn = document.getElementById('lwQuoteWa');
@@ -703,8 +706,9 @@ async function loadQuoteUnits(lead) {
     const qs = new URLSearchParams({ status: 'AVAILABLE', perPage: '200' });
     if (lead.branchCode) qs.set('branch', lead.branchCode);
     const units = await get('/units?' + qs);
-    sel.innerHTML = '<option value="">Size recommendation only</option>' + (units || []).slice(0, 200).map((u) => option(u.unitCode, `${u.unitCode} · ${u.sqft} sq ft${u.rate ? ' · ' + money(u.rate) : ''}`, lead.unitCode || '')).join('');
-    sel.onchange = () => { const u = (units || []).find((x) => x.unitCode === sel.value); if (u?.rate) { document.getElementById('lwQuoteGross').value = u.rate; document.getElementById('lwQuoteGross').dispatchEvent(new Event('input')); } else refreshQuotePromos(); };
+    quoteUnitsCache = Array.isArray(units) ? units : [];
+    sel.innerHTML = '<option value="">Size recommendation only</option>' + quoteUnitsCache.slice(0, 200).map((u) => option(u.unitCode, `${u.name ?? u.unitCode} · ${u.sqft} sq ft${u.rate ? ' · ' + money(u.rate) : ''}`, lead.unitCode || '')).join('');
+    sel.onchange = () => { const u = quoteUnitsCache.find((x) => x.unitCode === sel.value); if (u?.rate) { document.getElementById('lwQuoteGross').value = u.rate; document.getElementById('lwQuoteGross').dispatchEvent(new Event('input')); } else refreshQuotePromos(); };
   } catch { /* unit list is optional — a size recommendation can still be quoted */ }
   paintQuoteBuilderWa();
 }
@@ -731,8 +735,12 @@ function quoteDraft() {
   const sp = selectedQuotePromo();
   const discount = sp ? sp.discountAmt : 0;
   const promo = gross > 0 && discount > 0 ? Math.round((discount / gross) * 10000) / 100 : 0;
+  const unitCode = val('lwQuoteUnit');
+  // Operator-facing unit number (rule 2 retired 2026-11-17): the display
+  // name — `unit` stays the unitCode key for the POST body.
+  const unitLabel = (quoteUnitsCache.find((x) => x.unitCode === unitCode)?.name ?? unitCode) || '';
   return {
-    leadId: val('lwQuoteLead'), enquiry: val('lwQuoteEnquiry'), unit: val('lwQuoteUnit'), facility: val('lwQbFacility'),
+    leadId: val('lwQuoteLead'), enquiry: val('lwQuoteEnquiry'), unit: unitCode, unitLabel, facility: val('lwQbFacility'),
     leadName: (document.getElementById('lwQuoteLeadSearch')?.value || document.querySelector('#v29Body input[readonly]')?.value || '').split(' · ').slice(1).join(' · '),
     gross, promo, promoCode: sp && !sp.planId ? sp.code : '', promoPlanId: sp && sp.planId ? sp.planId : '', promoLabel: sp ? (sp.planId ? sp.name : sp.code) : '', net: Math.round(Math.max(0, gross - discount) * 100) / 100, protection: Number(val('lwQuoteProtection')) || 0,
     commitment: Number(val('lwQuoteCommitment')), expiry: val('lwQuoteExpiry'),
@@ -770,6 +778,7 @@ async function shareQuoteBuilderForm(btn) {
     window.open(`https://wa.me/${normalizeWaDigits(mobile)}?text=${encodeURIComponent(buildQuoteWaMessage({
       quoteNo: null, name, mobile,
       unitCode: d.unit || null,
+      unitDisplayName: d.unitLabel || d.unit || null,
       branch: branch === '—' ? '' : branch,
       monthlyRate, totalDueToday,
       moveInDate: (lead && lead.moveInDate) || null,
@@ -781,7 +790,7 @@ async function shareQuoteBuilderForm(btn) {
 
 function quotePaper(d, number) {
   const total = d.net + d.protection;
-  return `<div class="v29-quote-paper"><header><div><h3>STORELAH</h3><span>AC SELF-STORAGE · SPACE MADE SIMPLE</span></div><div><b>QUOTATION</b><small>${esc(number)}</small></div></header><div class="v29-grid"><div><small>PREPARED FOR</small><h3>${esc(d.leadName)}</h3><span>${esc(d.enquiry)}</span></div><div><small>STORAGE OPTION</small><h3>${esc(d.facility || 'StoreLah')}</h3><span>${esc(d.unit || 'Size recommendation only')}</span></div></div><table><tr><th>Description</th><th>Monthly</th></tr><tr><td>Gross monthly rent</td><td>${money(d.gross)}</td></tr><tr><td>${d.promoLabel ? 'Promotion · ' + esc(d.promoLabel) : 'Promotion'}</td><td>−${money(d.gross - d.net)}</td></tr><tr><td>Net monthly rent</td><td>${money(d.net)}</td></tr><tr><td>Protection Plan</td><td>${money(d.protection)}</td></tr><tr class="total"><td>Estimated monthly payment</td><td>${money(total)}</td></tr></table><p><b>Commercial terms:</b> ${esc(d.commitment)} months commitment, billed monthly. Security deposit: $0 under the current launch policy. Valid until ${esc(humanDate(d.expiry))}.</p></div>`;
+  return `<div class="v29-quote-paper"><header><div><h3>STORELAH</h3><span>AC SELF-STORAGE · SPACE MADE SIMPLE</span></div><div><b>QUOTATION</b><small>${esc(number)}</small></div></header><div class="v29-grid"><div><small>PREPARED FOR</small><h3>${esc(d.leadName)}</h3><span>${esc(d.enquiry)}</span></div><div><small>STORAGE OPTION</small><h3>${esc(d.facility || 'StoreLah')}</h3><span>${esc(d.unitLabel || d.unit || 'Size recommendation only')}</span></div></div><table><tr><th>Description</th><th>Monthly</th></tr><tr><td>Gross monthly rent</td><td>${money(d.gross)}</td></tr><tr><td>${d.promoLabel ? 'Promotion · ' + esc(d.promoLabel) : 'Promotion'}</td><td>−${money(d.gross - d.net)}</td></tr><tr><td>Net monthly rent</td><td>${money(d.net)}</td></tr><tr><td>Protection Plan</td><td>${money(d.protection)}</td></tr><tr class="total"><td>Estimated monthly payment</td><td>${money(total)}</td></tr></table><p><b>Commercial terms:</b> ${esc(d.commitment)} months commitment, billed monthly. Security deposit: $0 under the current launch policy. Valid until ${esc(humanDate(d.expiry))}.</p></div>`;
 }
 
 function previewDraft() {

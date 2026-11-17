@@ -731,6 +731,9 @@ export async function getUnitMap(branchCode: string, level: number, opts?: UnitM
     units: visible.map((u) => ({
       id: u.unitCode,
       code: u.unitCode,
+      // Operator-facing unit number (rule 2 retired 2026-11-17): the display
+      // name, falling back to the code. Identity stays on `code`.
+      name: u.name ?? u.unitCode,
       // Legacy SS-01-01 codes (pre-rename SW-01-01 / BM-01-01 rows keep working) shorten
       // to the trailing segments; 4-digit codes have no dashes and shorten to themselves.
       short: u.unitCode.includes('-') ? u.unitCode.split('-').slice(1).join('-') : u.unitCode,

@@ -79,7 +79,7 @@ function renderArrears(host) {
     (cands.length
       ? `<div class="table-wrap"><table class="lead-table" aria-label="Overdue invoice candidates"><thead><tr><th scope="col">Customer · unit</th><th scope="col">Invoice</th><th scope="col">Balance</th><th scope="col">Overdue</th><th scope="col">Action</th></tr></thead><tbody>` +
         cands.slice(0, 50).map((c) =>
-          `<tr><td>${escapeHtml(c.tenant || '')}<br /><span class="sec-sub">${escapeHtml(c.unit || '')} · ${escapeHtml(c.branch || '')}${c.accessRestricted ? ' · <b>restricted</b>' : ''}</span></td>` +
+          `<tr><td>${escapeHtml(c.tenant || '')}<br /><span class="sec-sub">${escapeHtml(c.unitName || c.unit || '')} · ${escapeHtml(c.branch || '')}${c.accessRestricted ? ' · <b>restricted</b>' : ''}</span></td>` +
           `<td>${escapeHtml(c.invoiceNo || '')}<br /><span class="sec-sub">${escapeHtml(c.invoiceStatus || '')}</span></td>` +
           `<td><b>${money(c.balanceDue)}</b></td>` +
           `<td>${c.daysOverdue}d<br /><span class="sec-sub">due ${fmtDay(c.dueDate)}</span></td>` +

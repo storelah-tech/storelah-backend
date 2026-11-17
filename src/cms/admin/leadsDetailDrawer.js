@@ -117,7 +117,7 @@ function contactLine(l) {
 // rendered when at least one intent field is present.
 function intentHtml(l) {
   const rows = [];
-  if (l.unitCode) rows.push(infoRow('Unit', escapeHtml(l.unitCode)));
+  if (l.unitCode) rows.push(infoRow('Unit', escapeHtml(l.unitDisplayName || l.unitCode)));
   if (l.moveInDate) rows.push(infoRow('Move-in', escapeHtml(fmtDay(l.moveInDate))));
   if (l.durationMonths != null) rows.push(infoRow('Duration', escapeHtml(String(l.durationMonths)) + ' month' + (l.durationMonths === 1 ? '' : 's')));
   if (l.protectionTier || l.protectionCost != null) {

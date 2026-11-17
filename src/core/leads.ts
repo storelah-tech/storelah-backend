@@ -402,6 +402,26 @@ export function serializeLead(l: LeadWithBranch) {
   };
 }
 
+// Additive display-name enrichment (rule 2 retired 2026-11-17): Lead rows
+// store only the immutable unitCode (identity), so CMS reads resolve the
+// operator-facing Unit no. (name ?? code) in one batched lookup. Keys,
+// lookups and writes stay on unitCode.
+export async function withUnitDisplayNames<T extends { unitCode?: string | null }>(
+  rows: T[],
+): Promise<(T & { unitDisplayName: string | null })[]> {
+  const codes = [...new Set(rows.map((r) => r.unitCode?.trim()).filter((c): c is string => !!c))];
+  if (!codes.length) return rows.map((r) => ({ ...r, unitDisplayName: null }));
+  const units = await prisma.unit.findMany({
+    where: { unitCode: { in: codes }, deletedAt: null },
+    select: { unitCode: true, name: true },
+  });
+  const byCode = new Map(units.map((u) => [u.unitCode, u.name ?? u.unitCode]));
+  return rows.map((r) => {
+    const code = r.unitCode?.trim() || null;
+    return { ...r, unitDisplayName: code ? (byCode.get(code) ?? code) : null };
+  });
+}
+
 async function assertBranch(branchId: string | null | undefined) {
   if (!branchId) return;
   const branch = await prisma.branch.findUnique({ where: { id: branchId } });
@@ -500,7 +520,8 @@ export async function createLead(input: CreateLeadInput) {
   const stats = identity.leadGroupKey
     ? await groupStats(identity.leadGroupKey, identity.mobileNorm, lead.id)
     : { linked: false, groupCount: 1, phoneVariance: false };
-  return { ...serializeLead(lead), ...stats };
+  const [row] = await withUnitDisplayNames([serializeLead(lead)]);
+  return { ...row, ...stats };
 }
 
 // ---------------------------------------------------------------------------
@@ -727,7 +748,8 @@ export async function getLeadById(id: string) {
   await warmPipelineCache();
   const lead = await prisma.lead.findUnique({ where: { id }, include: { branch: true } });
   if (!lead) throw new AppError(404, 'NOT_FOUND', 'Lead not found');
-  return { ...serializeLead(lead), preferredBranchId: lead.preferredBranchId ?? null };
+  const [row] = await withUnitDisplayNames([serializeLead(lead)]);
+  return { ...row, preferredBranchId: lead.preferredBranchId ?? null };
 }
 
 export async function updateLead(id: string, input: UpdateLeadInput) {
@@ -818,7 +840,8 @@ export async function updateLead(id: string, input: UpdateLeadInput) {
     },
     include: { branch: true },
   });
-  return serializeLead(lead);
+  const [row] = await withUnitDisplayNames([serializeLead(lead)]);
+  return row;
 }
 
 export async function deleteLead(id: string) {
@@ -858,14 +881,14 @@ export async function listLeads(opts?: { from?: Date; to?: Date }) {
     if (group) group.push(row);
     else byEmail.set(email, [row]);
   }
-  const withMerge = serialized.map((row) => {
+  const withMerge = await withUnitDisplayNames(serialized.map((row) => {
     const email = String((row as { email?: string | null }).email ?? '').trim().toLowerCase();
     const group = (email && byEmail.get(email)) || [];
     const others = group
       .filter((g) => g.id !== row.id)
       .map((g) => ({ id: g.id, name: g.name, stage: g.stage, createdAt: g.createdAt }));
     return { ...row, sameEmailEnquiries: others };
-  });
+  }));
   const byId = new Map(withMerge.map((r) => [r.id, r]));
 
   return COLUMNS.map((stage) => ({
@@ -873,7 +896,7 @@ export async function listLeads(opts?: { from?: Date; to?: Date }) {
     count: leads.filter((l) => l.stage === stage).length,
     leads: leads
       .filter((l) => l.stage === stage)
-      .map((l) => byId.get(l.id) ?? serializeLead(l)),
+      .map((l) => byId.get(l.id) ?? { ...serializeLead(l), unitDisplayName: l.unitCode ?? null }),
   }));
 }
 

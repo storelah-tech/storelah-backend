@@ -43,6 +43,9 @@ function serializeTenant(t: TenantWithUnit, latestVerification: TenantLatestVeri
     email: t.email,
     mobile: t.mobile,
     unit: t.unit?.unitCode ?? null,
+    // Operator-facing unit number (rule 2 retired 2026-11-17) — unitCode
+    // stays the lookup key.
+    unitName: t.unit?.name ?? t.unit?.unitCode ?? null,
     size: t.unit?.size?.name ?? null,
     sqft: t.unit?.sqft ?? null,
     rate: toNum(t.monthlyRate),
@@ -365,6 +368,9 @@ export async function listTenants(opts?: { from?: Date; to?: Date }) {
     email: t.email,
     mobile: t.mobile,
     unit: t.unit?.unitCode ?? null,
+    // Operator-facing unit number (rule 2 retired 2026-11-17) — unitCode
+    // stays the lookup key.
+    unitName: t.unit?.name ?? t.unit?.unitCode ?? null,
     size: t.unit?.size?.name ?? null,
     sqft: t.unit?.sqft ?? null,
     // Facility attribution for the CMS sidebar facility filter ("All Facilities").
@@ -401,6 +407,8 @@ export interface MoveOutRow {
   mobile: string | null;
   status: TenantStatus;
   unitCode: string | null;
+  /** Operator-facing unit number (name ?? unitCode) — unitCode stays the key. */
+  unitName: string | null;
   branchCode: string | null;
   branchName: string | null;
   monthlyRate: number;
@@ -427,6 +435,7 @@ export async function listMoveOuts(): Promise<MoveOutRow[]> {
       mobile: t.mobile,
       status: t.status,
       unitCode: t.unit?.unitCode ?? null,
+      unitName: t.unit?.name ?? t.unit?.unitCode ?? null,
       branchCode: t.unit?.branch?.code ?? null,
       branchName: t.unit?.branch?.name ?? null,
       monthlyRate: toNum(t.monthlyRate),

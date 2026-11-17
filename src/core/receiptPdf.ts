@@ -195,7 +195,9 @@ export async function buildReceiptPdfBytes(d: BookingConfirmationData): Promise<
   drawText(page, regular, { text: ascii(d.toEmail), x: M, y: cur.y, size: 11 });
   cur.y -= 16;
   drawText(page, regular, {
-    text: ascii(`Unit ${d.unitCode} — ${unitBit}, ${d.branchName}`),
+    // Operator-facing unit number (rule 2 retired 2026-11-17): unitBit is
+    // already the display name — identity stays on unitCode elsewhere.
+    text: ascii(`Unit ${unitBit}, ${d.branchName}`),
     x: M,
     y: cur.y,
     size: 10,

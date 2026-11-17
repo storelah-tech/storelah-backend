@@ -89,8 +89,11 @@ function unitCellHtml(u) {
   const sizeCls = SIZE_CLASS[sizeCode] || 'size-OTHER';
   const psf = u.psf ? '$' + Number(u.psf).toFixed(2) : 'Maint.';
   const sizeName = (u.sizeInfo && u.sizeInfo.name) || u.size || sizeCode;
-  const tip = `${u.code} · ${sizeName} (${sizeCode}) · ${u.sqft} sq ft · ${u.status}`;
-  return `<div class="u-cell ${tone} ${sizeCls}" title="${escapeHtml(tip)}" onclick="selectUnit(this,'${escapeHtml(u.code)}')"><div class="u-dot"></div><div class="u-id">${escapeHtml(u.short)}</div><div class="u-size">${escapeHtml(sizeName)}</div><div class="u-psf">${psf}</div></div>`;
+  // Operator-facing unit number (rule 2 retired 2026-11-17): the display
+  // name — the tooltip and selectUnit() keep the immutable code (identity).
+  const unitNo = u.name ?? u.code;
+  const tip = `${unitNo} · ${sizeName} (${sizeCode}) · ${u.sqft} sq ft · ${u.status}`;
+  return `<div class="u-cell ${tone} ${sizeCls}" title="${escapeHtml(tip)}" onclick="selectUnit(this,'${escapeHtml(u.code)}')"><div class="u-dot"></div><div class="u-id">${escapeHtml(unitNo)}</div><div class="u-size">${escapeHtml(sizeName)}</div><div class="u-psf">${psf}</div></div>`;
 }
 
 function renderUnitMap(map) {

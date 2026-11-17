@@ -48,6 +48,8 @@ export interface InstructionRow {
   tenant: string;
   tenantEmail: string | null;
   unit: string;
+  /** Operator-facing unit number (name ?? unitCode) — unit stays the key. */
+  unitName: string;
   branch: string;
   branchId: string | null;
   amount: number;
@@ -91,7 +93,7 @@ type InstructionWithJoins = {
     amountPaid: unknown;
     balanceDue: unknown;
     status: string;
-    unit: { unitCode: string; branchId: string | null; branch: { name: string } };
+    unit: { unitCode: string; name: string | null; branchId: string | null; branch: { name: string } };
   };
   tenant: { id: string; name: string; email: string | null; autoDebit: boolean };
 };
@@ -110,6 +112,7 @@ export function serializeInstruction(x: InstructionWithJoins): InstructionRow {
     tenant: x.tenant.name,
     tenantEmail: x.tenant.email,
     unit: x.invoice.unit.unitCode,
+    unitName: x.invoice.unit.name ?? x.invoice.unit.unitCode,
     branch: x.invoice.unit.branch.name,
     branchId: x.invoice.unit.branchId,
     amount: toNum(x.amount as never),
@@ -440,7 +443,7 @@ export async function submitInstruction(id: string, opts: { expectedVersion?: nu
         payment_method_types: ['card'],
         confirm: true,
         off_session: true,
-        description: `StoreLah queued charge ${now.invoice.invoiceNo} — unit ${now.invoice.unit.unitCode}`,
+        description: `StoreLah queued charge ${now.invoice.invoiceNo} — unit ${now.invoice.unit.name ?? now.invoice.unit.unitCode}`,
         metadata: {
           kind: 'instruction',
           instructionId: now.id,

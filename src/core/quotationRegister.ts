@@ -42,11 +42,14 @@ export function effectiveStatus(q: { status: string; expiresAt: Date | null }, n
   return q.status;
 }
 
-function serializeRegisterRow(q: RegisterRow) {
+function serializeRegisterRow(q: RegisterRow, unitNames?: Map<string, string>) {
   const gross = num(q.grossRate) ?? num(q.monthlyRate);
   const promo = num(q.promoPct);
   const net = gross == null ? null : Math.round(gross * (1 - (promo ?? 0) / 100) * 100) / 100;
   const protection = num(q.protectionMonthly);
+  // Operator-facing unit number (rule 2 retired 2026-11-17): the display
+  // name — unitCode stays the lookup key (and keeps code search working).
+  const code = q.unitCode ?? q.lead.unitCode ?? null;
   return {
     id: q.id,
     number: q.quoteNo,
@@ -54,7 +57,8 @@ function serializeRegisterRow(q: RegisterRow) {
     leadDisplayId: displayLeadNo(q.lead.leadNo),
     leadName: q.lead.type === 'BUSINESS' && q.lead.companyName ? q.lead.companyName : q.lead.name,
     enquiry: displayLeadNo(q.lead.leadNo),
-    unit: q.unitCode ?? q.lead.unitCode ?? null,
+    unit: code ? (unitNames?.get(code) ?? code) : null,
+    unitCode: code,
     facility: q.lead.branch?.name ?? null,
     facilityCode: q.lead.branch?.code ?? null,
     gross,
@@ -78,15 +82,27 @@ const INCLUDE = {
   lead: { select: { id: true, leadNo: true, name: true, companyName: true, type: true, owner: true, unitCode: true, branch: { select: { code: true, name: true } } } },
 } as const;
 
+/** Batched unitCode → display-name lookup for the register (identity stays on code). */
+async function unitNamesFor(rows: RegisterRow[]): Promise<Map<string, string>> {
+  const uniq = [...new Set(rows.map((q) => q.unitCode ?? q.lead.unitCode ?? null).map((c) => c?.trim()).filter((c): c is string => !!c))];
+  if (!uniq.length) return new Map();
+  const units = await prisma.unit.findMany({
+    where: { unitCode: { in: uniq }, deletedAt: null },
+    select: { unitCode: true, name: true },
+  });
+  return new Map(units.map((u) => [u.unitCode, u.name ?? u.unitCode]));
+}
+
 export async function listQuotationRegister(q: { search?: string; status?: string; facility?: string }) {
   const rows = await prisma.quotation.findMany({ include: INCLUDE, orderBy: { createdAt: 'desc' } });
-  const all = rows.map(serializeRegisterRow);
+  const names = await unitNamesFor(rows);
+  const all = rows.map((r) => serializeRegisterRow(r, names));
   const term = q.search?.trim().toLowerCase();
   const filtered = all.filter((r) => {
     if (q.status && r.status !== q.status) return false;
     if (q.facility && r.facilityCode !== q.facility) return false;
     if (term) {
-      const hay = [r.number, r.leadName, r.leadDisplayId, r.enquiry, r.unit, r.owner].filter(Boolean).join(' ').toLowerCase();
+      const hay = [r.number, r.leadName, r.leadDisplayId, r.enquiry, r.unit, r.unitCode, r.owner].filter(Boolean).join(' ').toLowerCase();
       if (!hay.includes(term)) return false;
     }
     return true;
@@ -117,7 +133,7 @@ export async function voidQuotation(id: string, opts: { reason: string; actor: s
     data: { status: 'VOIDED', voidedAt: new Date(), voidedBy: opts.actor.slice(0, 120), voidReason: opts.reason.trim().slice(0, 500) },
     include: INCLUDE,
   });
-  return serializeRegisterRow(saved);
+  return serializeRegisterRow(saved, await unitNamesFor([saved]));
 }
 
 /** Only DRAFT rows are deletable; issued ones must be voided to keep the audit trail. */
@@ -152,7 +168,7 @@ export async function duplicateAsDraft(id: string, actor: string) {
     },
     include: INCLUDE,
   });
-  return serializeRegisterRow(saved);
+  return serializeRegisterRow(saved, await unitNamesFor([saved]));
 }
 
 /** Records a manual re-send of the issued PDF (delivery queued + logged). */
@@ -161,7 +177,7 @@ export async function resendQuotation(id: string, channels: string[]) {
   if (q.status === 'DRAFT' || q.status === 'VOIDED') throw new AppError(409, 'CONFLICT', `${q.quoteNo} cannot be sent in status ${q.status}.`);
   const label = channels.length ? channels.join(' + ') : 'Email';
   const saved = await prisma.quotation.update({ where: { id }, data: { delivery: `${label} · queued` }, include: INCLUDE });
-  return serializeRegisterRow(saved);
+  return serializeRegisterRow(saved, await unitNamesFor([saved]));
 }
 
 export async function getQuotationPdfById(id: string): Promise<{ bytes: Buffer; filename: string; quoteNo: string }> {

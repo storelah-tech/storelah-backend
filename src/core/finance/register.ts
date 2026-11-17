@@ -21,6 +21,8 @@ export interface RegisterRow {
   customer: string;
   tenantId: string | null;
   unit: string | null;
+  /** Operator-facing unit number (name ?? unitCode) — unit stays the key. */
+  unitName: string | null;
   facility: string | null;
   docType: (typeof REGISTER_DOC_TYPES)[number];
   purpose: string;
@@ -40,9 +42,9 @@ const PAYMENT_STATUS: Record<string, string> = { PENDING_APPROVAL: 'Pending appr
 const REFUND_STATUS: Record<string, string> = { REQUESTED: 'Pending approval', APPROVED: 'Approved', REJECTED: 'Rejected', PAID: 'Paid' };
 
 export async function listRegister(q: { search?: string; docType?: string; status?: string; facility?: string; from?: string; to?: string; branchIds?: string[] | null }) {
-  const tenantSel = { select: { name: true, unit: { select: { unitCode: true, branch: { select: { id: true, name: true, code: true } } } } } } as const;
+  const tenantSel = { select: { name: true, unit: { select: { unitCode: true, name: true, branch: { select: { id: true, name: true, code: true } } } } } } as const;
   const [invoices, payments, refunds, settlements] = await Promise.all([
-    prisma.invoice.findMany({ include: { tenant: { select: { name: true } }, unit: { select: { unitCode: true, branch: { select: { id: true, name: true, code: true } } } } }, orderBy: { createdAt: 'desc' }, take: 500 }),
+    prisma.invoice.findMany({ include: { tenant: { select: { name: true } }, unit: { select: { unitCode: true, name: true, branch: { select: { id: true, name: true, code: true } } } } }, orderBy: { createdAt: 'desc' }, take: 500 }),
     prisma.paymentInstruction.findMany({ include: { tenant: tenantSel, invoice: { select: { invoiceNo: true, billedMonth: true } } }, orderBy: { createdAt: 'desc' }, take: 500 }),
     prisma.refund.findMany({ include: { tenant: tenantSel }, orderBy: { createdAt: 'desc' }, take: 500 }),
     prisma.customerSettlement.findMany({ include: { tenant: tenantSel }, orderBy: { createdAt: 'desc' }, take: 500 }),
@@ -53,27 +55,27 @@ export async function listRegister(q: { search?: string; docType?: string; statu
       const status = i.voidedAt ? 'Void' : i.writtenOffAt ? 'Written off' : !i.approvedAt && i.status !== 'PAID' && i.createdBy ? 'Pending approval' : INVOICE_STATUS[i.status] ?? i.status;
       return {
         key: `invoice:${i.id}`, source: 'invoice' as const, id: i.id, date: ymd(i.issuedAt ?? i.billedMonth), recordId: i.invoiceNo,
-        customer: i.tenant.name, tenantId: i.tenantId, unit: i.unit.unitCode, facility: i.unit.branch?.name ?? null, facilityCode: i.unit.branch?.code ?? null, branchId: i.unit.branch?.id ?? null,
+        customer: i.tenant.name, tenantId: i.tenantId, unit: i.unit.unitCode, unitName: i.unit.name ?? i.unit.unitCode, facility: i.unit.branch?.name ?? null, facilityCode: i.unit.branch?.code ?? null, branchId: i.unit.branch?.id ?? null,
         docType: 'Invoice' as const, purpose: `Monthly AC self-storage rent · ${month(i.billedMonth)}`, method: i.method, amount: toNum(i.amount),
         status, pending: status === 'Pending approval', approver: i.approvedBy, processor: i.paymentIntentId, scheduled: ymd(i.dueDate),
       };
     }),
     ...payments.map((p) => ({
       key: `payment:${p.id}`, source: 'payment' as const, id: p.id, date: ymd(p.createdAt), recordId: `PAY-${p.id.slice(-8).toUpperCase()}`,
-      customer: p.tenant.name, tenantId: p.tenantId, unit: p.tenant.unit?.unitCode ?? null, facility: p.tenant.unit?.branch?.name ?? null, facilityCode: p.tenant.unit?.branch?.code ?? null, branchId: p.tenant.unit?.branch?.id ?? null,
+      customer: p.tenant.name, tenantId: p.tenantId, unit: p.tenant.unit?.unitCode ?? null, unitName: p.tenant.unit?.name ?? p.tenant.unit?.unitCode ?? null, facility: p.tenant.unit?.branch?.name ?? null, facilityCode: p.tenant.unit?.branch?.code ?? null, branchId: p.tenant.unit?.branch?.id ?? null,
       docType: 'Payment' as const, purpose: `Payment instruction · ${p.invoice.invoiceNo}`, method: p.method === 'SAVED_CARD' ? 'Saved card' : p.method,
       amount: toNum(p.amount), status: PAYMENT_STATUS[p.status] ?? p.status, pending: p.status === 'PENDING_APPROVAL',
       approver: p.approvedBy, processor: p.stripePaymentIntentId, scheduled: ymd(p.approvedAt),
     })),
     ...refunds.map((r) => ({
       key: `refund:${r.id}`, source: 'refund' as const, id: r.id, date: ymd(r.requestedAt), recordId: `RFD-${r.id.slice(-8).toUpperCase()}`,
-      customer: r.tenant.name, tenantId: r.tenantId, unit: r.tenant.unit?.unitCode ?? null, facility: r.tenant.unit?.branch?.name ?? null, facilityCode: r.tenant.unit?.branch?.code ?? null, branchId: r.tenant.unit?.branch?.id ?? null,
+      customer: r.tenant.name, tenantId: r.tenantId, unit: r.tenant.unit?.unitCode ?? null, unitName: r.tenant.unit?.name ?? r.tenant.unit?.unitCode ?? null, facility: r.tenant.unit?.branch?.name ?? null, facilityCode: r.tenant.unit?.branch?.code ?? null, branchId: r.tenant.unit?.branch?.id ?? null,
       docType: 'Refund' as const, purpose: r.reason, method: 'Original payment method', amount: -toNum(r.amount),
       status: REFUND_STATUS[r.status] ?? r.status, pending: r.status === 'REQUESTED', approver: r.approvedBy, processor: r.gatewayRef ?? r.bankRef, scheduled: ymd(r.decidedAt),
     })),
     ...settlements.map((s) => ({
       key: `settlement:${s.id}`, source: 'settlement' as const, id: s.id, date: ymd(s.createdAt), recordId: s.ref,
-      customer: s.tenant.name, tenantId: s.tenantId, unit: s.tenant.unit?.unitCode ?? null, facility: s.tenant.unit?.branch?.name ?? null, facilityCode: s.tenant.unit?.branch?.code ?? null, branchId: s.tenant.unit?.branch?.id ?? null,
+      customer: s.tenant.name, tenantId: s.tenantId, unit: s.tenant.unit?.unitCode ?? null, unitName: s.tenant.unit?.name ?? s.tenant.unit?.unitCode ?? null, facility: s.tenant.unit?.branch?.name ?? null, facilityCode: s.tenant.unit?.branch?.code ?? null, branchId: s.tenant.unit?.branch?.id ?? null,
       docType: s.docType as RegisterRow['docType'],
       purpose: s.kind === 'TRANSFER' ? 'Transfer settlement' : s.kind === 'MOVE_OUT' ? 'Move-out settlement' : 'Customer closing settlement',
       method: s.docType === 'Refund' ? 'Original payment method' : toNum(s.amount) >= 0 ? 'Customer payment method' : 'Customer account credit',

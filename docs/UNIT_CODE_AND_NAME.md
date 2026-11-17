@@ -29,10 +29,14 @@ Every `Unit` row has two identifiers:
 1. **Never use `name` for identity.** Lookups, uniqueness, relations, and URL params must always
    use `unitCode`. `name` never affects codegen — the next `unitCode` is derived solely from
    existing codes, never from names.
-2. **Never let `name` leak into the map.** Map cells show the short code (identity), never the
-   display name. Do not change map rendering to show names. (Short code = the
-   full code for 4-digit codes, which have no dashes; legacy `SS-01-01` codes
-   (pre-rename `SW-01-01` / `BM-01-01` rows alike) shorten to their trailing segments.)
+2. **Show the display name everywhere in the CMS.** Unit no. (`name ?? unitCode`)
+   renders on every operator surface, **including map cells and designer
+   canvas tiles** (designer tiles, read-only preview, drag ghost, dashboard
+   unit map, publish review, reconcile list, toasts, dialogs, finance views,
+   PDF labels, email text). Lookups, uniqueness, relations, URL params,
+   `data-*` attributes and `select` values stay on `unitCode` — only the
+   rendered label changes. (Retired 2026-11-17, see note at the bottom; the
+   old "never let name leak into the map" rule no longer applies.)
 3. **Normalize before storing:** `name` is trimmed; empty/whitespace-only values are stored as
    `NULL` (which triggers the code fallback). Max length 80.
 4. **Serialize with the fallback:** every API serializer returns `name: unit.name ?? unit.unitCode`
@@ -52,7 +56,7 @@ All endpoints are under `/api/v1/cms` (admin, Bearer JWT) unless noted.
 | `GET /units` (list)           | —                                    | Yes (per row)   |
 | `GET /units/:code` (detail)   | —                                    | Yes             |
 | `GET /api/v1/public/units`    | —                                    | Yes (additive)  |
-| `GET /units/map`              | —                                    | No (map = identity) |
+| `GET /units/map` (admin)      | —                                      | Yes (additive `name` + `short`) |
 
 - `POST /units` with no `name` (or empty) stores `NULL` → the returned `name` equals the new code.
 - `PUT /units/:code` with `name: null` clears the label → `name` falls back to the code.
@@ -65,7 +69,8 @@ All endpoints are under `/api/v1/cms` (admin, Bearer JWT) unless noted.
 > column/badge is gone from the Units table and detail panel, and the Floor
 > Plan Designer's drag-and-drop list shows `Unit <no.>`. `unitCode` is
 > unchanged underneath: still the immutable 4-digit key for URLs, lookups,
-> booking (`Lead.unitCode`, `/public/units`) and map cells (rule 2). The form
+> booking (`Lead.unitCode`, `/public/units`) and — until 2026-11-17 — map
+> cells (old rule 2; now retired, see note at the bottom). The form
 > field `#f-name` is labelled **Unit no.**; on edit it is pre-filled with the
 > current unit no., and saving it blank or equal to the code clears the label
 > back to the code fallback. The bullets below describe the pre-2026-11-11 UI
@@ -96,3 +101,15 @@ All endpoints are under `/api/v1/cms` (admin, Bearer JWT) unless noted.
 - Admin UI: `src/cms/admin/dashboard.html` (`#f-name`, Name `<th>`) and
   `src/cms/admin/admin.js` (`normalizeUnit`, `renderUnitsTable`, `showUnitDetail`,
   `openCreateForm`, `openEditForm`, `submitUnitForm`).
+
+## Note — 2026-11-17 (owner decision: short names, rule 2 retired)
+
+Unit display names are now **always short** (e.g. `S111` — no long custom
+names), so the old rule 2 ("never let name leak into the map") is retired:
+**Unit no. (`name ?? unitCode`) now shows everywhere in the CMS, including
+map tiles** (designer canvas, read-only preview, drag ghost, dashboard unit
+map). Keys, lookups, URLs and `data-*` attributes stay on `unitCode`;
+identity still never derives from `name` (rule 1 unchanged). Tile sizing was
+checked and left alone: names are short (e.g. `S111`), stacked tile labels
+already ellipsis-overflow, and single-tile `.fp-code` has no width guard —
+no truncation logic was added (dashboard CSS is frozen).

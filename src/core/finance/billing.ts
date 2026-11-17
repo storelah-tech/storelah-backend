@@ -114,6 +114,8 @@ export interface InvoiceRow {
   tenant: string;
   tenantEmail: string | null;
   unit: string;
+  /** Operator-facing unit number (name ?? unitCode) — unit stays the key. */
+  unitName: string;
   branch: string;
   branchId: string | null;
   amount: number;
@@ -157,6 +159,7 @@ export function serializeInvoice(i: InvoiceWithJoins): InvoiceRow {
     tenant: i.tenant.name,
     tenantEmail: i.tenant.email,
     unit: i.unit.unitCode,
+    unitName: i.unit.name ?? i.unit.unitCode,
     branch: i.unit.branch.name,
     branchId: i.unit.branchId,
     amount: total,
@@ -702,7 +705,7 @@ export async function runBilling(input: BillingRunInput): Promise<BillingRunResu
   for (const t of tenants) {
     const rate = toNum(t.monthlyRate);
     if (!(rate > 0)) {
-      result.skipped.push({ tenant: t.name, unit: t.unit?.unitCode ?? '—', reason: 'monthlyRate is zero' });
+      result.skipped.push({ tenant: t.name, unit: t.unit?.name ?? t.unit?.unitCode ?? '—', reason: 'monthlyRate is zero' });
       continue;
     }
     // Free months / move-in month: SKIP rather than issue a $0 invoice — a
@@ -712,7 +715,7 @@ export async function runBilling(input: BillingRunInput): Promise<BillingRunResu
     const agreement = await agreementMonthFor(t.id, t.unitId!, { year: Number(m[1]), month: Number(m[2]) });
     const exemption = billingRunExemption(agreement);
     if (exemption) {
-      result.skipped.push({ tenant: t.name, unit: t.unit?.unitCode ?? '—', reason: exemption });
+      result.skipped.push({ tenant: t.name, unit: t.unit?.name ?? t.unit?.unitCode ?? '—', reason: exemption });
       continue;
     }
     const key = `billing-run:${branch.id}:${input.billingMonth}:${t.id}`;
@@ -738,7 +741,7 @@ export async function runBilling(input: BillingRunInput): Promise<BillingRunResu
       else result.created += 1;
     } catch (e) {
       if (e instanceof AppError && e.status === 409) {
-        result.skipped.push({ tenant: t.name, unit: t.unit?.unitCode ?? '—', reason: e.message });
+        result.skipped.push({ tenant: t.name, unit: t.unit?.name ?? t.unit?.unitCode ?? '—', reason: e.message });
         continue;
       }
       throw e;

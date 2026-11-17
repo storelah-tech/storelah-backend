@@ -79,7 +79,9 @@ function unitOptions(units, currentId, branchId) {
           '"' +
           ((u.id || u.unitId) === currentId ? ' selected' : '') +
           '>' +
-          escapeHtml(u.code || u.unitCode || '') +
+          // Operator-facing unit number (rule 2 retired 2026-11-17): the
+          // display name — the option value stays the unit id (identity).
+          escapeHtml(u.name ?? u.code ?? u.unitCode ?? '') +
           '</option>',
       )
       .join('')
@@ -349,7 +351,7 @@ function renderWorkOrders(rows) {
         escapeHtml(w.title) +
         '</b></td><td>' +
         escapeHtml(w.branchCode || '—') +
-        (w.unitCode ? ' · ' + escapeHtml(w.unitCode) : '') +
+        ((w.unitName || w.unitCode) ? ' · ' + escapeHtml(w.unitName || w.unitCode) : '') +
         '</td><td><span class="pill ' +
         pillFor(w.status, WO_PILL) +
         '">' +
@@ -675,7 +677,7 @@ function renderIncidents(rows) {
         escapeHtml(i.status.replace('_', ' ')) +
         '</span></td><td>' +
         escapeHtml(i.branchCode || '—') +
-        (i.unitCode ? ' · ' + escapeHtml(i.unitCode) : '') +
+        ((i.unitName || i.unitCode) ? ' · ' + escapeHtml(i.unitName || i.unitCode) : '') +
         '</td><td>' +
         (steps.length ? '<b>' + (i.checklistProgress || 0) + '%</b> <small>(' + steps.filter((s) => s.done).length + '/' + steps.length + ')</small>' : '—') +
         '</td><td><small>' +

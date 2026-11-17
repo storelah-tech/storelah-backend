@@ -47,7 +47,10 @@ export function normalizeWaDigits(mobile) {
 export function buildQuoteWaMessage(q) {
   const name = ((q && q.name) || 'there').trim() || 'there';
   const what = q && q.quoteNo ? `Your quotation ${q.quoteNo}` : 'Your quotation';
-  const where = [q && q.unitCode ? `unit ${q.unitCode}` : '', q && q.branch ? `at ${q.branch}` : '']
+  // Operator/customer-facing unit number (rule 2 retired 2026-11-17): the
+  // display name — lookups stay on unitCode.
+  const unitNo = (q && (q.unitDisplayName || q.unitCode)) || '';
+  const where = [q && unitNo ? `unit ${unitNo}` : '', q && q.branch ? `at ${q.branch}` : '']
     .filter(Boolean).join(' ');
   let line = what + (where ? ` for ${where}` : '') + ' is ready';
   const amounts = [];
@@ -121,6 +124,7 @@ async function shareQuoteForm() {
     name: d.leadName,
     mobile,
     unitCode: d.unitCode || (lead && lead.unitCode) || null,
+    unitDisplayName: d.unitDisplayName || (lead && lead.unitDisplayName) || null,
     branch: d.branchName || '',
     monthlyRate: d.monthlyRate,
     totalDueToday: d.totalDueToday ?? (lead && lead.totalDueToday) ?? null,
@@ -228,7 +232,7 @@ async function showQuoteUnits(id) {
       : '<button class="act-btn" disabled title="Quotation not issued yet">Download PDF</button>';
     if (detail) {
       detail.innerHTML = `<div class="t-type" style="margin:8px 2px;">Live options for <b>${escapeHtml(q.quote?.name || '')}</b> — ${opts.length} unit(s): ` +
-        (opts.length ? opts.map((u) => `${escapeHtml(u.code)} (${escapeHtml(u.sizeCode)} · ${u.sqft} sqft · $${u.rate}/mo)`).join(' · ') : 'none match right now') + `</div>` +
+        (opts.length ? opts.map((u) => `${escapeHtml(u.name ?? u.code)} (${escapeHtml(u.sizeCode)} · ${u.sqft} sqft · $${u.rate}/mo)`).join(' · ') : 'none match right now') + `</div>` +
         `<div style="display:flex;gap:8px;margin:2px 2px 8px;flex-wrap:wrap;">${pdfBtn}</div>`;
     }
   } catch (e) {
@@ -260,7 +264,7 @@ function renderMoveouts(rows) {
   }
   tb.innerHTML = rows.map((m) =>
     `<tr><td><b>${escapeHtml(m.name)}</b><div class="t-type">${escapeHtml(m.email || m.mobile || '')}</div></td>` +
-    `<td>${m.unitCode ? escapeHtml(m.unitCode) : '—'}<div class="t-type">${escapeHtml(m.branchCode || '')}</div></td>` +
+    `<td>${m.unitName || m.unitCode ? escapeHtml(m.unitName || m.unitCode) : '—'}<div class="t-type">${escapeHtml(m.branchCode || '')}</div></td>` +
     `<td><b>${fmtMoney(m.monthlyRate)}</b></td>` +
     `<td>${fmtDay(m.lastDay)}<div class="t-type">filed ${fmtDay(m.submittedAt)}${m.noticeCount > 1 ? ` · ${m.noticeCount} notices` : ''}</div></td>` +
     `<td><span class="pill amber">Notice</span></td>` +
@@ -971,7 +975,9 @@ function quoteViewHtml(d, supportContact, quoteNoOverride) {
   const quoteNo = quoteNoOverride || 'Assigned on create';
   let unitVal;
   if (d.unitCode) {
-    const bit = d.unitDisplayName && d.unitDisplayName !== d.unitCode ? `${d.unitCode} (${d.unitDisplayName})` : d.unitCode;
+    // Operator-facing unit number (rule 2 retired 2026-11-17): the display
+    // name — lookups stay on unitCode.
+    const bit = d.unitDisplayName || d.unitCode;
     unitVal = row('Unit', d.unitSqft ? `${bit} - ${d.unitSqft} sqft` : bit);
   } else {
     unitVal = row('Unit', 'To be confirmed at viewing', true);
@@ -1080,7 +1086,7 @@ export async function openIssuedQuoteView(ctx) {
     leadMobile: ctx.mobile || null,
     leadType: null,
     unitCode: ctx.unitCode || null,
-    unitDisplayName: ctx.unitCode || null,
+    unitDisplayName: ctx.unitDisplayName || ctx.unitCode || null,
     unitSqft: null,
     branchName: ctx.branch || null,
     branchAddress: null,
@@ -1291,6 +1297,7 @@ export async function submitQuoteForm(e) {
         name: q.name || formData.leadName,
         mobile: q.mobile || formData.leadMobile,
         unitCode: formData.unitCode,
+        unitDisplayName: formData.unitDisplayName,
         branch: formData.branchName || q.branchCode || '',
         monthlyRate: q.monthlyRate ?? formData.monthlyRate,
         totalDueToday: formData.totalDueToday,

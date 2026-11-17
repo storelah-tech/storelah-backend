@@ -157,7 +157,7 @@ export async function getCustomerProfile(tenantId: string) {
   const tenantIds = group.map((g) => g.id);
   const [bookings, invoices, notices, settlements, account, notesCount] = await Promise.all([
     prisma.booking.findMany({ where: { tenantId: { in: tenantIds } }, orderBy: { createdAt: 'desc' } }),
-    prisma.invoice.findMany({ where: { tenantId: { in: tenantIds }, voidedAt: null }, include: { unit: { select: { unitCode: true } } }, orderBy: { billedMonth: 'desc' }, take: 60 }),
+    prisma.invoice.findMany({ where: { tenantId: { in: tenantIds }, voidedAt: null }, include: { unit: { select: { unitCode: true, name: true } } }, orderBy: { billedMonth: 'desc' }, take: 60 }),
     prisma.notice.findMany({ where: { tenantId: { in: tenantIds } }, orderBy: { createdAt: 'desc' } }),
     prisma.customerSettlement.findMany({ where: { tenantId: { in: tenantIds } }, orderBy: { createdAt: 'desc' } }),
     primary.email ? prisma.customer.findUnique({ where: { email: normalizeEmail(primary.email) }, select: { companyName: true, uen: true, type: true } }) : null,
@@ -175,6 +175,9 @@ export async function getCustomerProfile(tenantId: string) {
       tenantId: g.id,
       unitId: g.unitId,
       unitCode: g.unit!.unitCode,
+      // Operator-facing unit number (rule 2 retired 2026-11-17) — unitCode
+      // stays the lookup key.
+      unitName: g.unit!.name ?? g.unit!.unitCode,
       facility: g.unit!.branch?.name ?? g.branch?.name ?? null,
       level: g.unit!.floor?.level ?? null,
       size: g.unit!.size?.name ?? null,
@@ -201,18 +204,19 @@ export async function getCustomerProfile(tenantId: string) {
   }));
 
   const ledger = invoices.flatMap((inv) => {
+    const unitLabel = inv.unit.name ?? inv.unit.unitCode;
     const rows = [{
-      date: ymd(inv.issuedAt ?? inv.billedMonth), document: inv.invoiceNo, unit: inv.unit.unitCode,
+      date: ymd(inv.issuedAt ?? inv.billedMonth), document: inv.invoiceNo, unit: unitLabel,
       lineItem: `Monthly AC self-storage rent · ${inv.billedMonth.toLocaleDateString('en-SG', { month: 'short', year: 'numeric', timeZone: 'UTC' })}`,
       status: inv.status === 'PAID' ? 'Paid' : inv.status === 'OVERDUE' ? 'Overdue' : inv.approvedAt ? 'Issued' : 'Pending approval',
       debit: toNum(inv.amount), credit: null as number | null,
     }];
     if (inv.paidAt && inv.amountPaid != null) {
-      rows.push({ date: ymd(inv.paidAt), document: inv.invoiceNo, unit: inv.unit.unitCode, lineItem: 'Payment allocation', status: 'Allocated', debit: null as unknown as number, credit: toNum(inv.amountPaid) });
+      rows.push({ date: ymd(inv.paidAt), document: inv.invoiceNo, unit: unitLabel, lineItem: 'Payment allocation', status: 'Allocated', debit: null as unknown as number, credit: toNum(inv.amountPaid) });
     }
     return rows;
   }).concat(settlements.map((s) => ({
-    date: ymd(s.createdAt), document: s.ref, unit: units.find((u) => u.unitId === s.unitId)?.unitCode ?? '—',
+    date: ymd(s.createdAt), document: s.ref, unit: units.find((u) => u.unitId === s.unitId)?.unitName ?? '—',
     lineItem: s.docType, status: s.status === 'PENDING' ? 'Pending approval' : s.status === 'APPROVED' ? 'Approved' : 'Rejected',
     debit: toNum(s.amount) > 0 ? toNum(s.amount) : (null as unknown as number), credit: toNum(s.amount) < 0 ? -toNum(s.amount) : null,
   }))).sort((a, b) => String(b.date).localeCompare(String(a.date)));
@@ -285,7 +289,7 @@ async function buildSettlement(tenantId: string, req: SettlementRequest) {
     const dest = await prisma.unit.findUnique({ where: { id: req.toUnitId }, include: { branch: true, size: true } });
     if (!dest || dest.deletedAt) throw new AppError(404, 'NOT_FOUND', 'Choose a destination unit.');
     if (dest.id === t.unitId) throw new AppError(400, 'VALIDATION', 'The destination must be a different unit.');
-    if (dest.status !== 'AVAILABLE') throw new AppError(409, 'CONFLICT', `${dest.unitCode} is not available.`);
+    if (dest.status !== 'AVAILABLE') throw new AppError(409, 'CONFLICT', `${dest.name ?? dest.unitCode} is not available.`);
     const calc = calculateTransfer({
       date: dateOf(req.date), currentRent: await paidRentOn(dateOf(req.date)), currentDeposit: 0,
       destGross: toNum(dest.monthlyRate), destPromoPct: req.destPromoPct ?? 0, destDeposit: req.destDeposit ?? 0,
@@ -295,7 +299,7 @@ async function buildSettlement(tenantId: string, req: SettlementRequest) {
       tenant: t, kind: 'TRANSFER', docType: 'Transfer approval', prefix: 'TRF', unitId: t.unitId, toUnitId: dest.id,
       effectiveDate: dateOf(req.date), channel: null, reason: req.reason ?? null, note: null,
       lines: calc.lines, amount: calc.total, adjustment: req.adjustment ?? null,
-      preview: { ...calc, from: t.unit.unitCode, to: dest.unitCode, toFacility: dest.branch?.name ?? null, toSqft: dest.sqft },
+      preview: { ...calc, from: t.unit.name ?? t.unit.unitCode, to: dest.name ?? dest.unitCode, toFacility: dest.branch?.name ?? null, toSqft: dest.sqft },
     };
   }
   const notice = await prisma.notice.findFirst({ where: { tenantId: t.id }, orderBy: { createdAt: 'desc' } });
@@ -307,7 +311,7 @@ async function buildSettlement(tenantId: string, req: SettlementRequest) {
     unitId: t.unitId, toUnitId: null, effectiveDate: lastDay,
     channel: notice ? 'Customer portal' : (req.channel ?? null), reason: req.reason ?? null, note: req.note ?? null,
     lines: calc.lines, amount: calc.total, adjustment: req.adjustment ?? null,
-    preview: { ...calc, portalLocked: !!notice, lastDay: ymd(lastDay), unit: t.unit.unitCode },
+    preview: { ...calc, portalLocked: !!notice, lastDay: ymd(lastDay), unit: t.unit.name ?? t.unit.unitCode },
   };
 }
 
@@ -355,8 +359,8 @@ export async function decideSettlement(id: string, decision: 'APPROVED' | 'REJEC
 export async function listSettlements(q: { status?: string }) {
   const rows = await prisma.customerSettlement.findMany({
     where: q.status ? { status: q.status } : undefined,
-    include: { tenant: { select: { name: true, email: true, unit: { select: { unitCode: true, branch: { select: { name: true } } } } } } },
+    include: { tenant: { select: { name: true, email: true, unit: { select: { unitCode: true, name: true, branch: { select: { name: true } } } } } } },
     orderBy: { createdAt: 'desc' },
   });
-  return rows.map((r) => ({ ...serializeSettlement(r), customer: r.tenant.name, unitCode: r.tenant.unit?.unitCode ?? null, facility: r.tenant.unit?.branch?.name ?? null }));
+  return rows.map((r) => ({ ...serializeSettlement(r), customer: r.tenant.name, unitCode: r.tenant.unit?.unitCode ?? null, unitName: r.tenant.unit?.name ?? r.tenant.unit?.unitCode ?? null, facility: r.tenant.unit?.branch?.name ?? null }));
 }

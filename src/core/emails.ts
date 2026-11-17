@@ -174,7 +174,6 @@ export function buildBookingConfirmationEmail(d: BookingConfirmationData): Built
     name: escapeHtml(greetingName),
     ref: escapeHtml(d.bookingRef),
     unit: escapeHtml(unitLine),
-    unitCode: escapeHtml(d.unitCode),
     branch: escapeHtml(d.branchName),
     branchAddress: escapeHtml(d.branchAddress ?? ''),
     moveIn: escapeHtml(formatDay(d.moveInDate)),
@@ -258,7 +257,7 @@ export function buildBookingConfirmationEmail(d: BookingConfirmationData): Built
                 </tr>
                 <tr>
                   <td style="padding:8px 0;font-family:Arial,Helvetica,sans-serif;font-size:14px;color:${C.muted};">Unit</td>
-                  <td align="right" style="padding:8px 0;font-family:Arial,Helvetica,sans-serif;font-size:14px;color:${C.charcoal};">${e.unit} (${e.unitCode})</td>
+                  <td align="right" style="padding:8px 0;font-family:Arial,Helvetica,sans-serif;font-size:14px;color:${C.charcoal};">${e.unit}</td>
                 </tr>
                 <tr>
                   <td style="padding:8px 0;font-family:Arial,Helvetica,sans-serif;font-size:14px;color:${C.muted};">Branch</td>
@@ -347,7 +346,7 @@ export function buildBookingConfirmationEmail(d: BookingConfirmationData): Built
     ``,
     `YOUR BOOKING`,
     `  Booking ref : ${d.bookingRef}`,
-    `  Unit        : ${unitLine} (${d.unitCode})`,
+    `  Unit        : ${unitLine}`,
     `  Branch      : ${d.branchName}`,
     ...(d.branchAddress ? [`  Address     : ${d.branchAddress}`] : []),
     `  Move-in date: ${formatDay(d.moveInDate)}`,
@@ -739,6 +738,8 @@ export interface QuotationEmailData {
   leadName: string | null;
   quoteNo: string;
   unitCode: string | null;
+  /** Operator-facing unit number (name ?? unitCode) — unitCode stays the key. */
+  unitDisplayName: string | null;
   branchName: string | null;
   monthlyRateSgd: number | null;
   totalDueTodaySgd: number | null;
@@ -758,10 +759,15 @@ export interface BuiltQuotationEmail {
 export function buildQuotationEmail(d: QuotationEmailData): BuiltQuotationEmail {
   const subject = `Your StoreLah quotation ${d.quoteNo}`;
   const greetingName = d.leadName?.trim() ? d.leadName.trim() : 'there';
+  // Operator-facing unit number (rule 2 retired 2026-11-17): the display
+  // name — unitCode stays the lookup key.
+  const unitLabel = d.unitDisplayName?.trim()
+    ? d.unitDisplayName.trim()
+    : d.unitCode?.trim() ? d.unitCode.trim() : 'To be confirmed at viewing';
   const e = {
     name: escapeHtml(greetingName),
     quoteNo: escapeHtml(d.quoteNo),
-    unit: escapeHtml(d.unitCode?.trim() ? d.unitCode.trim() : 'To be confirmed at viewing'),
+    unit: escapeHtml(unitLabel),
     branch: escapeHtml(d.branchName?.trim() ? d.branchName.trim() : 'To be confirmed'),
     rate: escapeHtml(d.monthlyRateSgd != null ? formatSgd(d.monthlyRateSgd) : 'To be confirmed'),
     total: escapeHtml(d.totalDueTodaySgd != null ? formatSgd(d.totalDueTodaySgd) : 'To be confirmed'),
@@ -848,7 +854,7 @@ export function buildQuotationEmail(d: QuotationEmailData): BuiltQuotationEmail 
     ``,
     `Thank you for your enquiry — your storage quotation is attached (PDF). Summary:`,
     `  Quotation no. : ${d.quoteNo}`,
-    `  Unit          : ${d.unitCode?.trim() ? d.unitCode.trim() : 'To be confirmed at viewing'}`,
+    `  Unit          : ${unitLabel}`,
     `  Facility      : ${d.branchName?.trim() ? d.branchName.trim() : 'To be confirmed'}`,
     `  Monthly rate  : ${d.monthlyRateSgd != null ? formatSgd(d.monthlyRateSgd) : 'To be confirmed'}`,
     `  Total due today: ${d.totalDueTodaySgd != null ? formatSgd(d.totalDueTodaySgd) : 'To be confirmed'}`,

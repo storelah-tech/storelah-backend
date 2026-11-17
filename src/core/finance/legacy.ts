@@ -91,6 +91,9 @@ export async function listInvoices(status?: string, opts?: { from?: Date; to?: D
     no: i.invoiceNo,
     tenant: i.tenant.name,
     unit: i.unit.unitCode,
+    // Operator-facing unit number (rule 2 retired 2026-11-17) — unitCode
+    // stays the lookup key.
+    unitName: i.unit.name ?? i.unit.unitCode,
     amount: toNum(i.amount),
     dueDate: i.dueDate,
     billedMonth: i.billedMonth,

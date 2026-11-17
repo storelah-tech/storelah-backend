@@ -30,7 +30,7 @@ function normalizeTenant(t) {
     segment: t.segment,
     email: t.email,
     mobile: t.mobile,
-    unit: t.unit, // unitCode or null
+    unit: t.unit, // unitCode or null (identity); display uses t.unitName
     size: t.size,
     sqft: t.sqft,
     branchCode: t.branchCode, // facility attribution for the sidebar filter
@@ -87,7 +87,7 @@ function renderTenantRow(t) {
   return `<tr data-tid="${escapeHtml(t.id)}">
     <td><div class="t-name"><button class="v2-name" type="button" data-cust-open="${escapeHtml(t.id)}">${escapeHtml(t.name)}</button></div></td>
     <td><div class="t-type">${typeLbl}${t.segment ? ' · ' + escapeHtml(t.segment) : ''}</div></td>
-    <td><strong>${escapeHtml(t.unit || '—')}</strong></td>
+    <td><strong>${escapeHtml(t.unitName || t.unit || '—')}</strong></td>
     <td>${size}</td>
     <td><strong>${rate}</strong><div class="t-type">${psf}</div></td>
     <td><span class="badge ${tone}">${label}</span>${verif ? `<div style="margin-top:4px;display:flex;gap:4px;flex-wrap:wrap;">${verif}</div>` : ''}</td>
@@ -110,7 +110,7 @@ function applyTenantFilter(rows) {
     if (st && t.status !== st) return false;
     if (!q) return true;
     const lv = t.latestVerification;
-    const hay = [t.name, t.segment, t.unit, t.size, t.status, TENANT_STATUS_LABEL[t.status], t.branchName,
+    const hay = [t.name, t.segment, t.unit, t.unitName, t.size, t.status, TENANT_STATUS_LABEL[t.status], t.branchName,
       lv ? lv.status : null, lv ? lv.reviewStatus : null, lv ? lv.idType : null, lv ? lv.bookingRef : null,
       // Staff search words: "pending" finds every unreviewed mock row.
       lv ? 'verification id check' : null,
@@ -242,19 +242,21 @@ function toDateInputValue(iso) {
 }
 
 // Assignable units for the dropdown: AVAILABLE list (perPage 200) + the tenant's
-// current unit (may be OCCUPIED by them / non-AVAILABLE). Shows unitCode.
+// current unit (may be OCCUPIED by them / non-AVAILABLE). Labels show the
+// display name — values and matching stay on unitCode/id (identity).
 async function populateTenantUnitSelect(currentUnitCode) {
   const body = await request('/units?status=AVAILABLE&perPage=200');
   let units = (body.data || []).map((u) => ({
     id: u.id,
     code: u.code || u.unitCode,
+    name: u.name ?? u.code ?? u.unitCode,
     sqft: u.sqft,
     size: u.size && u.size.name,
   }));
   if (currentUnitCode && !units.some((u) => u.code === currentUnitCode)) {
     try {
       const cur = await get(`/units/${encodeURIComponent(currentUnitCode)}`);
-      units.unshift({ id: cur.id, code: cur.code, sqft: cur.sqft, size: cur.size });
+      units.unshift({ id: cur.id, code: cur.code, name: cur.name ?? cur.code, sqft: cur.sqft, size: cur.size });
     } catch (e) {
       /* current unit may be deleted — leave it out */
     }
@@ -267,7 +269,7 @@ async function populateTenantUnitSelect(currentUnitCode) {
     units
       .map(
         (u) =>
-          `<option value="${escapeHtml(u.id)}">${escapeHtml(u.code)}${u.size ? ' · ' + escapeHtml(u.size) + (u.sqft ? ' (' + u.sqft + ' sqft)' : '') : ''}</option>`,
+          `<option value="${escapeHtml(u.id)}">${escapeHtml(u.name || u.code)}${u.size ? ' · ' + escapeHtml(u.size) + (u.sqft ? ' (' + u.sqft + ' sqft)' : '') : ''}</option>`,
       )
       .join('');
   sel.value = currentId;
@@ -481,14 +483,14 @@ export async function deactivateTenant(id) {
   if (!t) return;
   const ok = await confirmDialog({
     title: `Deactivate ${t.name}?`,
-    message: t.unit ? `Their unit (${t.unit}) is released back to AVAILABLE.` : 'This tenant will be deactivated.',
+    message: t.unit ? `Their unit (${t.unitName || t.unit}) is released back to AVAILABLE.` : 'This tenant will be deactivated.',
     confirmLabel: 'Deactivate',
     danger: true,
   });
   if (!ok) return;
   try {
     const res = await request(`/tenants/${encodeURIComponent(id)}`, { method: 'DELETE' });
-    showBanner(`Deactivated ${t.name}${res.data && res.data.unitReleased ? ` — unit ${t.unit} released` : ''}`, true);
+    showBanner(`Deactivated ${t.name}${res.data && res.data.unitReleased ? ` — unit ${t.unitName || t.unit} released` : ''}`, true);
     await refreshAll();
   } catch (err) {
     showBanner('Deactivate: ' + describeError(err));
@@ -566,7 +568,7 @@ export async function openTenantHistory(id) {
     if (t.unit || t.since) {
       items.push({
         kindLabel: 'Current stay',
-        name: t.unit || 'No unit assigned',
+        name: t.unitName || t.unit || 'No unit assigned',
         contact: [t.size ? `${t.size}${t.sqft ? ' · ' + t.sqft + ' sqft' : ''}` : '', t.rate != null ? fmtMoney(t.rate) + '/mo' : ''].filter(Boolean).join(' · '),
         stage: t.status || 'ACTIVE',
         moveIn: t.since || null,
@@ -585,7 +587,7 @@ export async function openTenantHistory(id) {
         if (!r.ref && (r.unit || r.unitCode) === t.unit) return;
         items.push({
           kindLabel: kind,
-          name: `${r.ref || kind} · ${r.unit || r.unitCode || '—'}`,
+          name: `${r.ref || kind} · ${r.unitName || r.unit || r.unitCode || '—'}`,
           contact: [r.tenantType, r.tenantEmail, r.tenantMobile].filter(Boolean).join(' · '),
           stage: r.status || (r.invoiceStatus === 'OVERDUE' ? 'OVERDUE' : 'ACTIVE'),
           moveIn: r.moveInDate || null,

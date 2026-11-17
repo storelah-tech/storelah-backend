@@ -1736,10 +1736,10 @@ export async function reconcileUnitSizes(floorId: string, items: ReadonlyArray<{
       where: { floorPlanId: plan.id, unitId: { not: item.unitId }, x: row.x, y: row.y, width: row.width, height: row.height },
       select: { id: true },
     });
-    if (mate) throw new AppError(400, 'VALIDATION', `Unit ${m.unitCode} is in a stacked pair — unstack it before reconciling its size`);
+    if (mate) throw new AppError(400, 'VALIDATION', `Unit ${m.name ?? m.unitCode} is in a stacked pair — unstack it before reconciling its size`);
     if (item.action === 'MARK_FOR_SYNC') {
       if (m.contracted) {
-        throw new AppError(409, 'UNIT_CONTRACTED', `Unit ${m.unitCode} is ${m.contracted.toLowerCase()} — its size can't follow the drawing; use FIT_DRAWING instead`);
+        throw new AppError(409, 'UNIT_CONTRACTED', `Unit ${m.name ?? m.unitCode} is ${m.contracted.toLowerCase()} — its size can't follow the drawing; use FIT_DRAWING instead`);
       }
       await prisma.unitPlacement.update({ where: { unitId: item.unitId }, data: { areaDirty: true } });
       await markDraft(plan.id);

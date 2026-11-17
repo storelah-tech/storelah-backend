@@ -4,8 +4,8 @@ import { IncidentSeverity, IncidentStatus, Prisma } from '@prisma/client';
 
 type IncidentRow = Prisma.IncidentGetPayload<{
   include: {
-    branch: { select: { code: true; name: true } };
-    unit: { select: { unitCode: true } };
+    branch: { select: { code: true, name: true } };
+    unit: { select: { unitCode: true; name: true } };
   };
 }>;
 
@@ -26,6 +26,9 @@ function serializeIncident(i: IncidentRow) {
     branchName: i.branch?.name ?? null,
     unitId: i.unitId,
     unitCode: i.unit?.unitCode ?? null,
+    // Operator-facing unit number (rule 2 retired 2026-11-17) — unitCode
+    // stays the lookup key.
+    unitName: i.unit?.name ?? i.unit?.unitCode ?? null,
     checklist: i.checklist ?? [],
     checklistProgress: steps ? Math.round((doneSteps / steps) * 1000) / 10 : 0,
     reportedBy: i.reportedBy,
@@ -59,7 +62,7 @@ export interface UpdateIncidentInput {
 
 const INCIDENT_INCLUDE = {
   branch: { select: { code: true, name: true } },
-  unit: { select: { unitCode: true } },
+  unit: { select: { unitCode: true, name: true } },
 } as const;
 
 async function assertIncidentRefs(branchId?: string | null, unitId?: string | null) {

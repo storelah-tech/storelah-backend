@@ -329,8 +329,8 @@ interface BusinessPayload {
   entityName: string | null;
   uen: string | null;
   uenStatus: string | null;
-  entityType: string | null;
   registeredAddress: string | null;
+  principalName?: string | null;
   reviewTokenHash?: string;
   reviewExpiresAt?: string;
   confirmedAt?: string;
@@ -344,8 +344,9 @@ export interface BusinessReview {
     entityName: string | null;
     uen: string | null;
     uenStatus: string | null;
-    entityType: string | null;
     registeredAddress: string | null;
+    /** Corppass user's Principal Name — prefills the representative's name (editable there). */
+    principalName: string | null;
   };
 }
 
@@ -357,8 +358,8 @@ export async function createPendingBusinessVerification(draftRef: string, biz: M
     entityName: biz.entityName,
     uen: biz.uen,
     uenStatus: biz.uenStatus,
-    entityType: biz.entityType,
     registeredAddress: biz.registeredAddress,
+    principalName: biz.principalName,
     reviewTokenHash: sha256(secret),
     reviewExpiresAt: new Date(Date.now() + SINGPASS_REVIEW_TTL_MS).toISOString(),
   };
@@ -386,8 +387,8 @@ function businessReviewOf(row: Verification, payload: BusinessPayload): Business
       entityName: payload.entityName,
       uen: payload.uen,
       uenStatus: payload.uenStatus,
-      entityType: payload.entityType,
       registeredAddress: payload.registeredAddress,
+      principalName: payload.principalName ?? null,
     },
   };
 }
@@ -441,7 +442,6 @@ export interface ClaimedBusinessVerification {
   entityName: string | null;
   uen: string | null;
   uenStatus: string | null;
-  entityType: string | null;
   registeredAddress: string | null;
 }
 
@@ -481,7 +481,6 @@ export async function claimBusinessVerificationTx(
     entityName: payload.entityName,
     uen: payload.uen,
     uenStatus: payload.uenStatus,
-    entityType: payload.entityType,
     registeredAddress: payload.registeredAddress,
   };
 }

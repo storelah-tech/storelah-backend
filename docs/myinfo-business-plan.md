@@ -37,8 +37,9 @@ token. The Corppass work is mostly configuration plus a new data mapping.
 3. **Login:** Singpass login as a Corppass user (template page, unchanged).
 4. **Consent:** Corppass consent page in staging (screenshot), showing the purpose and the requested scopes.
 5. **Profile populated on form:** back on the Details step:
-   - read-only (government-verified): company name, UEN, entity type, UEN status, registered address;
-   - contact name, email and mobile are **not** Myinfo Business data: they stay mandatory fields the booker types in on the Details step;
+   - read-only (government-verified): company name, UEN, UEN status, registered address — shown in the review and kept as locked fields on the Details form;
+   - the representative's full name is prefilled from the Corppass user's Principal Name (`user.name`) and stays editable;
+   - contact email and mobile are **not** Myinfo Business data: they stay mandatory fields the booker types in on the Details step;
    - **Use these details** or **Cancel**. Cancel discards the retrieved data. Nothing is stored until the booking is submitted.
 6. **Form submission:** Pay → "Your space is booked." confirmation, showing the verified company.
 7. **Error handling:** Corppass/Myinfo Business unavailable, cancelled or expired → the Details step shows a message and the manual Company name / UEN fields.
@@ -53,10 +54,10 @@ individual Myinfo, which is already live. Business adds the company.
 | 1 | Entity | Basic profile | `entity.basic_profile.name` | Company's registered name on the rental agreement and invoices |
 | 2 | Entity | Basic profile | `entity.basic_profile.registration_number` | UEN, to identify the hirer company and record it on the agreement |
 | 3 | Entity | Basic profile | `entity.basic_profile.uen_status` | Confirm the company is live before renting a unit to it |
-| 4 | Entity | Basic profile | `entity.basic_profile.type` | Record the entity type (e.g. local company, sole proprietorship) on the agreement |
-| 5 | Entity | Address | `entity.address` | Registered address on the agreement and for notices about the unit |
+| 4 | Entity | Address | `entity.address` | Registered address on the agreement and for notices about the unit |
+| 5 | Person | Name | `user.name` (Principal Name) | Prefill the representative's full name (Corppass user, as on NRIC/FIN); editable on the form |
 
-Not requested: `corppass.email` (2026-10-28: contact email and mobile are typed in by the booker, mandatory), appointments, shareholders, capitals, financials, grants and
+Not requested: `entity.basic_profile.type` (2026-10-28: not selected in the SDP app), `corppass.email` (2026-10-28: contact email and mobile are typed in by the booker, mandatory), appointments, shareholders, capitals, financials, grants and
 licences. None are needed to rent a storage unit, and Singpass reviews data
 minimisation.
 
@@ -67,7 +68,7 @@ minimisation.
    - `corppass`: `CORPPASS_CLIENT_ID`, `CORPPASS_ISSUER` (default staging), `CORPPASS_REDIRECT_URI`, `CORPPASS_SCOPES`, `CORPPASS_RETURN_URL`;
    - shared: `SINGPASS_PRIVATE_JWKS` / JWKS endpoint, the session cookie (path per provider), PAR, DPoP and JWE code.
 2. **Routes:** `/api/v1/public/corppass/{status,start,callback,review,review/cancel}`, mirroring the Singpass ones. `start` takes a draft ref plus `returnPath`. **Do not send `authentication_context_type`**, because Corppass rejects it for Myinfo Business.
-3. **Mapping:** parse `entity_info` (`value` / `code`+`desc` / `unavailable` wrappers) into `{ name, uen, uenStatus, entityType, registeredAddress }`. `corppass_info` is not used.
+3. **Mapping:** parse `entity_info` (`value` / `code`+`desc` / `unavailable` wrappers) into `{ name, uen, uenStatus, registeredAddress }`. `corppass_info` is not used.
 4. **Pending prefill (built):** the existing `Verification` table, keyed by the booking **draft ref** (`DRAFT-…`). It uses method `myinfo-business`, idType `uen`, status `PENDING_CONFIRMATION` until **Use these details** (→ `VERIFIED`, provider `corppass`). Review tokens work as for Singpass: sha256-hashed, single-use, 30 min. **No migration needed for phases 1 and 3.**
 5. **Binding at submit (built):** `POST /customer/bookings` accepts optional `companyName`, `uen` and `myinfoBusiness: { verificationId, draftRef }` (the review token is already spent at confirm).
    - The row binds only if it is a confirmed `myinfo-business` row for that exact draft ref, still unbound, verified in the last 24h. The claim is a conditional update, so it binds once even under concurrent submits; the row is re-keyed to the real booking ref and `tenantId`/`customerId` set.

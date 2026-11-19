@@ -158,7 +158,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       const claims =
         prov === 'singpass'
           ? { sub: 'singpass-user-1', person_info: PERSON }
-          : { sub: 'corppass-user-1', entity_info: ENTITY, corppass_info: { email: { value: 'admin@sample-trading.test' } } };
+          : { sub: 'corppass-user-1', entity_info: ENTITY, person_info: { name: { value: 'TAN AH KOW' } } };
       return send(200, await nested(prov, claims), 'application/jwt');
     }
     send(404, { error: 'not_found' });
@@ -262,8 +262,8 @@ describe('Corppass Myinfo Business (company prefill)', () => {
         entityName: 'SAMPLE TRADING PTE. LTD.',
         uen: '201912345K',
         uenStatus: 'Live Company',
-        entityType: 'Local Company',
         registeredAddress: '1 RAFFLES PLACE #20-01 Singapore 048616',
+        principalName: 'TAN AH KOW', // person scope user.name
       },
     });
     expect(review.body.data.editable).toBeUndefined(); // contact details are not Myinfo Business data

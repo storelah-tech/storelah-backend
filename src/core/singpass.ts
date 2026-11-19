@@ -68,15 +68,17 @@ export const SINGPASS_SESSION_TTL_S = 15 * 60;
 const DEFAULT_ISSUER = 'https://stg-id.singpass.gov.sg/fapi';
 const DEFAULT_SCOPES = 'openid uinfin name dob regadd mobileno email';
 const DEFAULT_CORPPASS_ISSUER = 'https://stg-id.corppass.gov.sg';
-// Data minimisation: only what renting a unit to a company needs. Contact
-// email and mobile are not Myinfo Business data — the booker types them in.
+// Data minimisation: only what renting a unit to a company needs, plus the
+// Corppass user's Principal Name (person scope `user.name`) to prefill the
+// representative's name. Contact email and mobile are not requested — the
+// booker types them in.
 const DEFAULT_CORPPASS_SCOPES = [
   'openid',
   'entity.basic_profile.name',
   'entity.basic_profile.registration_number',
   'entity.basic_profile.uen_status',
-  'entity.basic_profile.type',
   'entity.address',
+  'user.name',
 ].join(' ');
 const ASSERTION_TTL_S = 60; // Singpass rejects client assertions / DPoP proofs older than 120s.
 const DISCOVERY_TTL_MS = 60 * 60 * 1000;
@@ -526,8 +528,9 @@ export interface MyinfoBusiness {
   entityName: string | null;
   uen: string | null;
   uenStatus: string | null;
-  entityType: string | null;
   registeredAddress: string | null;
+  /** Corppass user's Principal Name (`person_info.name`, scope `user.name`). */
+  principalName: string | null;
 }
 
 /**
@@ -561,13 +564,14 @@ function formatEntityAddress(v: unknown): string | null {
 export function parseMyinfoBusiness(claims: Record<string, unknown>): MyinfoBusiness {
   const entity = (claims.entity_info ?? {}) as Record<string, unknown>;
   const profile = (entity.basic_profile ?? {}) as Record<string, unknown>;
+  const person = (claims.person_info ?? {}) as Record<string, unknown>;
   return {
     sub: String(claims.sub ?? ''),
     entityName: businessAttr(profile.name),
     uen: businessAttr(profile.registration_number),
     uenStatus: businessAttr(profile.uen_status),
-    entityType: businessAttr(profile.type),
     registeredAddress: formatEntityAddress(entity.address),
+    principalName: businessAttr(person.name),
   };
 }
 

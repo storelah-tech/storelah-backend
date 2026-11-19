@@ -17,7 +17,6 @@ const ENTITY = {
   entityName: 'SAMPLE TRADING PTE. LTD.',
   uen: '201900001Z',
   uenStatus: 'Live Company',
-  entityType: 'Local Company',
   registeredAddress: '1 RAFFLES PLACE #20-01 Singapore 048616',
 };
 

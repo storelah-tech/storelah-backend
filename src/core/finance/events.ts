@@ -54,6 +54,23 @@ export const FINANCE_EVENT_TYPES = [
   'export.generated',
   // Lease-horizon P4: committed lease term updated (handoff §6.1).
   'financial_model.lease_horizon.updated',
+  // Master Rate Strategy (Track B, B3 — handoff §18): version lifecycle,
+  // batch lifecycle, manual-rate preservation and the due-batch sweep.
+  'rate.strategy.created',
+  'rate.strategy.updated',
+  'rate.strategy.submitted',
+  'rate.strategy.approved',
+  'rate.strategy.rejected',
+  'rate.strategy.superseded',
+  'rate.strategy.duplicated',
+  'rate.batch.created',
+  'rate.batch.applied',
+  'rate.batch.partially_applied',
+  'rate.batch.failed',
+  'rate.batch.cancelled',
+  'rate.batch.retried',
+  'rate.unit.preserved_manual',
+  'rate.due_batches.applied',
 ] as const;
 
 export type FinanceEventType = (typeof FINANCE_EVENT_TYPES)[number];

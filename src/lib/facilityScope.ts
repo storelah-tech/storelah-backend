@@ -34,7 +34,10 @@ export function currentBranchScope(): string[] | null {
 // Model → how it links to a facility.
 const DIRECT_REQUIRED = new Set(['Unit', 'Floor', 'FloorplanMetricsSnapshot', 'Budget', 'Expense', 'SizePriceRule',
   // Phase 4 close-and-controls tables with a required branch.
-  'MonthClose', 'ActualMetric', 'VarianceNote', 'ReconciliationBatch']);
+  'MonthClose', 'ActualMetric', 'VarianceNote', 'ReconciliationBatch',
+  // Master Rate Strategy (Track B, B3): strategy and batch headers carry
+  // the branch directly; versions/lines scope through their parents below.
+  'RateStrategy', 'UnitRateBatch']);
 const DIRECT_NULLABLE = new Set([
   'Tenant', 'AccessCredential', 'AccessDoor', 'AccessEvent', 'Asset', 'ComplianceCertificate',
   'InspectionChecklist', 'PreventiveTask', 'WorkOrder', 'Incident', 'Appointment', 'FacilityFee',
@@ -51,13 +54,18 @@ const VIA_WALLET = new Set(['CreditLedgerEntry']);
 const VIA_MONTH_CLOSE = new Set(['MonthCloseAdjustment']);
 const VIA_FLOOR = new Set(['FloorPlan', 'FloorPlanDraft']);
 const VIA_LEAD = new Set(['Quotation', 'Conversation']);
+// Master Rate Strategy (Track B, B3): versions scope through their strategy,
+// batch lines through their batch — so an out-of-scope record reads as "not
+// found" on every list, detail, update and delete without per-route code.
+const VIA_STRATEGY = new Set(['RateStrategyVersion']);
+const VIA_BATCH = new Set(['UnitRateBatchLine']);
 // Creating these with no facility affects every site — needs all-facility access.
 const CREATE_NEEDS_FACILITY = new Set(['FacilityFee']);
 
 export function isScopedModel(model: string): boolean {
   return model === 'Branch' || model === 'Lead' || DIRECT_REQUIRED.has(model) || DIRECT_NULLABLE.has(model)
     || VIA_UNIT.has(model) || VIA_INVOICE.has(model) || VIA_WALLET.has(model) || VIA_MONTH_CLOSE.has(model)
-    || VIA_FLOOR.has(model) || VIA_LEAD.has(model);
+    || VIA_FLOOR.has(model) || VIA_LEAD.has(model) || VIA_STRATEGY.has(model) || VIA_BATCH.has(model);
 }
 
 /** Prisma where-fragment limiting `model` to the scope (null = no filter). */
@@ -76,6 +84,8 @@ export function scopeWhere(model: string, branchIds: string[]): Record<string, u
   if (VIA_MONTH_CLOSE.has(model)) return { monthClose: { branchId: inScope } };
   if (VIA_FLOOR.has(model)) return { floor: { branchId: inScope } };
   if (VIA_LEAD.has(model)) return { lead };
+  if (VIA_STRATEGY.has(model)) return { strategy: { branchId: inScope } };
+  if (VIA_BATCH.has(model)) return { batch: { branchId: inScope } };
   return null;
 }
 

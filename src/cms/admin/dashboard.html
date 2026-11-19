@@ -1293,7 +1293,7 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
 
     <!-- ============ FACILITIES ============ -->
     <section class="page" id="facilities">
-      <div class="subtabs" data-tabs="facility"><button class="active" data-tab="facility-map">Units Information</button><button data-tab="facility-units">Units</button><button data-tab="facility-floors">Floors</button><button data-tab="facility-floorplans">Floor Plan Designer</button><button data-tab="facility-floorplan-library">Floor Plan Library</button><button data-tab="facility-maintenance">Maintenance</button><button data-tab="facility-assets">Assets &amp; Vendors</button><button data-tab="facility-incidents">Incidents</button><button data-tab="facility-access">Access Control</button><button data-tab="facility-inspections">Inspections</button></div>
+      <div class="subtabs" data-tabs="facility"><button class="active" data-tab="facility-map">Units Information</button><button data-tab="facility-units">Units</button><button data-tab="facility-floors">Floors</button><button data-tab="facility-floorplans">Floor Plan Designer</button><button data-tab="facility-floorplan-library">Floor Plan Library</button><button data-tab="facility-maintenance">Maintenance</button><button data-tab="facility-assets">Assets &amp; Vendors</button><button data-tab="facility-incidents">Incidents</button><button data-tab="facility-access">Access Control</button><button data-tab="facility-inspections">Inspections</button><button data-tab="facility-rate-strategy">Master rate strategy</button></div>
       <!-- Units Information -->
       <div class="module-panel active" id="facility-map">
         <div class="unit-map-card">
@@ -1678,6 +1678,10 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
           <div class="modal-alert" id="certificatesBanner" hidden></div>
           <table class="data-tbl" id="certificatesTable"><thead><tr><th>Certificate</th><th>Type</th><th>Branch</th><th>Expiry</th><th>Status</th><th></th></tr></thead><tbody id="certificatesBody"></tbody></table>
         </div>
+      </div>
+      <!-- Master rate strategy (B4 workspace; body self-mounted by rateStrategyView.js) -->
+      <div class="module-panel" id="facility-rate-strategy">
+        <div class="tbl-card"><div class="sec-hdr"><div><div class="sec-title">Master rate strategy</div><div class="sec-sub">Rack-rate strategies, approval, Units batches and activity.</div></div></div><div id="rateStrategyRoot"><div class="section-empty">Loading rate strategies…</div></div></div>
       </div>
     </section>
 
@@ -2166,6 +2170,7 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
         <div class="field"><label for="f-monthlyRate">Monthly Rate ($)</label><input type="number" id="f-monthlyRate" name="monthlyRate" min="0" step="0.01"><div class="field-err" id="e-monthlyRate"></div></div>
         <div class="field"><label for="f-hasAC">Air-con (AC)</label><select id="f-hasAC" name="hasAC"><option value="no">No — Non-AC</option><option value="yes">Yes — AC</option></select><div class="field-err" id="e-hasAC"></div></div>
         <div class="field"><label for="f-hasPillar">Pillar</label><select id="f-hasPillar" name="hasPillar"><option value="no">No</option><option value="yes">Yes</option></select><div class="field-err" id="e-hasPillar"></div></div>
+        <div class="field"><label for="f-restrictedAccess">Restricted access</label><select id="f-restrictedAccess" name="restrictedAccess"><option value="no">No</option><option value="yes">Yes — restricted</option></select><div class="field-err" id="e-restrictedAccess"></div></div>
       </div>
       <div class="modal-foot"><button class="act-btn" type="button" id="unitFormCancel">Cancel</button><button class="act-btn primary" type="submit" id="unitFormSubmit">Save Unit</button></div>
     </form>

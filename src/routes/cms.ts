@@ -73,6 +73,27 @@ import {
   getMonthClose, closeMonth, postCloseAdjustment, getPerformance as getFinancePerformance, getPerformanceSeries, addVarianceNote,
 } from '../core/finance';
 import { listBranches, getMoveIns, getPortfolio, createBranch, updateBranch, deleteBranch } from '../core/branches';
+import {
+  createDraft as createRateDraft,
+  updateDraft as updateRateDraft,
+  previewVersion as previewRateVersion,
+  previewVersionWithLevers as previewRateVersionWithLevers,
+  validateVersion as validateRateVersion,
+  submitVersion as submitRateVersion,
+  approveVersion as approveRateVersion,
+  rejectVersion as rejectRateVersion,
+  duplicateVersion as duplicateRateVersion,
+  listLibrary as listRateLibrary,
+  loadVersionDetail as loadRateVersion,
+  createBatch as createRateBatch,
+  listBatches as listRateBatches,
+  getBatch as getRateBatch,
+  applyBatch as applyRateBatch,
+  retryFailedBatch as retryFailedRateBatch,
+  cancelBatch as cancelRateBatch,
+  applyDueBatches as applyDueRateBatches,
+  type StrategyActor,
+} from '../core/pricing/rateStrategyService';
 import { getSettings, upsertSettings } from '../core/settings';
 import { listSiteContent, getSiteContentByKey, upsertSiteContent } from '../core/siteContent';
 import { adjustRate, getNetPsf } from '../core/rates';
@@ -331,6 +352,8 @@ const createUnitSchema = z.object({
   // note) instead of being silently stripped.
   hasAC: z.boolean().optional(),
   hasPillar: z.boolean().optional(),
+  // Master Rate Strategy (R15): restricted-access attribute flag.
+  restrictedAccess: z.boolean().optional(),
   name: z.string().trim().max(80).optional(),
 }).superRefine((v, ctx) => {
   if (v.floorId === undefined && v.floorLevel === undefined) {
@@ -356,6 +379,9 @@ const updateUnitSchema = z.object({
     .optional(),
   hasAC: z.boolean().optional(),
   hasPillar: z.boolean().optional(),
+  // Master Rate Strategy (R15): restricted-access attribute flag. rateSource
+  // is deliberately absent — it is system-stamped, never operator-edited.
+  restrictedAccess: z.boolean().optional(),
   name: z.string().trim().max(80).nullable().optional(),
 });
 
@@ -2136,6 +2162,305 @@ router.post('/finance/library/:id/set-current', requireAuth, async (req: Request
 
 router.get('/finance/library/:id/audit', requireAuth, async (req: Request, res: Response) => {
   ok(res, await modelAuditHistory(String(req.params.id)));
+});
+
+// ---- Master Rate Strategy (Track B, B3) ----
+// Read-only consumers: preview/validate/library (view). Draft edits: create/
+// update. Submit (+ warning override): update. Approve/reject: approve
+// (maker-checker: approver ≠ submitter, enforced in service). Batch apply/
+// retry/cancel/apply-due additionally need facility-units:update (checked in
+// service code, since the route table expresses one permission per route);
+// REPLACE_MANUAL additionally requires the Owner role (D9, service code).
+const rateCategoryFloorsSchema = z.object({
+  LOCKER: z.number().min(0).optional(),
+  XS: z.number().min(0).optional(),
+  S: z.number().min(0).optional(),
+  M: z.number().min(0).optional(),
+  L: z.number().min(0).optional(),
+  XL: z.number().min(0).optional(),
+});
+const rateLeversSchema = z.object({
+  referenceSize: z.number().int().min(1).optional(),
+  startingRate: z.number().positive().optional(),
+  method: z.enum(['SMOOTH', 'STEP']).optional(),
+  curveStrength: z.number().min(0).max(1).optional(),
+  stepEvery: z.number().int().min(1).optional(),
+  stepPsf: z.number().min(0).optional(),
+  psfFloor: z.number().min(0).optional(),
+  minMonthly: z.number().min(0).optional(),
+  lockerAdj: z.number().min(-0.95).max(1).optional(),
+  groundFloorAdj: z.number().min(-0.95).max(1).optional(),
+  restrictedAdj: z.number().min(-0.95).max(1).optional(),
+  facilityAdj: z.number().min(-0.5).max(1).optional(),
+  rounding: z.union([z.literal(1), z.literal(5), z.literal(10)]).optional(),
+  categoryFloors: rateCategoryFloorsSchema.optional(),
+  sizeOverrides: z.array(z.object({
+    size: z.number().int().min(1),
+    monthlyRate: z.number().positive(),
+    reason: z.string().trim().min(1).max(500),
+  })).max(200).optional(),
+});
+const rateDurationSchema = z.union([z.literal(1), z.literal(3), z.literal(6), z.literal(12)]);
+const rateMatrixSchema = z.enum(['Standard', 'Ground floor']);
+const ratePromotionPreviewSchema = z.object({
+  durationMonths: rateDurationSchema.optional(),
+  matrix: rateMatrixSchema.optional(),
+  planIds: z.array(z.string().min(1)).max(50).optional(),
+});
+function rateActorOf(req: Request): StrategyActor {
+  const admin = adminOf(req);
+  return {
+    email: admin?.email ?? 'unknown',
+    isOwner: admin?.isOwner ?? false,
+    permissions: admin?.permissions ?? [],
+  };
+}
+
+/** planIds from ?planIds=a,b or repeated ?planIds=a&planIds=b. */
+function ratePlanIdsOf(query: unknown): string[] | undefined {
+  const q = query as Record<string, unknown>;
+  const raw = q.planIds;
+  if (raw === undefined) return undefined;
+  const list = (Array.isArray(raw) ? raw : [raw])
+    .flatMap((v) => String(v).split(','))
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return [...new Set(list)];
+}
+
+router.get('/rate-strategy/library', requireAuth, async (req: Request, res: Response) => {
+  const parsed = z.object({ branchId: z.string().trim().min(1).optional(), status: z.string().trim().min(1).optional() }).safeParse(req.query);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid library filters', parsed.error.flatten());
+    return;
+  }
+  const rows = await listRateLibrary(parsed.data);
+  ok(res, rows, { count: rows.length });
+});
+
+router.post('/facilities/:branchId/rate-strategy', requireAuth, async (req: Request, res: Response) => {
+  const parsed = z.object({
+    name: z.string().trim().min(1).max(120),
+    owner: z.string().trim().min(1).max(120).optional(),
+    levers: rateLeversSchema.optional(),
+    effectiveFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+    promotionPreview: ratePromotionPreviewSchema.optional(),
+  }).safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid strategy draft payload', parsed.error.flatten());
+    return;
+  }
+  created(res, await createRateDraft({
+    branchId: String(req.params.branchId), name: parsed.data.name, owner: parsed.data.owner,
+    levers: parsed.data.levers, effectiveFrom: parsed.data.effectiveFrom,
+    promotionPreview: parsed.data.promotionPreview, actor: rateActorOf(req),
+    correlationId: newCorrelationId(),
+  }));
+});
+
+router.get('/rate-strategy/:id', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await loadRateVersion(String(req.params.id)));
+});
+
+router.patch('/rate-strategy/:id', requireAuth, async (req: Request, res: Response) => {
+  const parsed = z.object({
+    version: z.number().int(),
+    levers: rateLeversSchema.optional(),
+    effectiveFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+    promotionPreview: ratePromotionPreviewSchema.optional(),
+  }).safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid draft update payload (version + levers/effectiveFrom/promotionPreview)', parsed.error.flatten());
+    return;
+  }
+  ok(res, await updateRateDraft({
+    versionId: String(req.params.id), expectedVersion: parsed.data.version,
+    levers: parsed.data.levers, effectiveFrom: parsed.data.effectiveFrom,
+    promotionPreview: parsed.data.promotionPreview, actor: rateActorOf(req),
+    correlationId: newCorrelationId(),
+  }));
+});
+
+router.get('/rate-strategy/:id/preview', requireAuth, async (req: Request, res: Response) => {
+  const q = req.query as Record<string, unknown>;
+  const durationRaw = q.durationMonths === undefined ? undefined : Number(q.durationMonths);
+  if (durationRaw !== undefined && ![1, 3, 6, 12].includes(durationRaw)) {
+    fail(res, 400, 'VALIDATION', 'durationMonths must be 1, 3, 6 or 12.');
+    return;
+  }
+  const matrix = q.matrix === undefined ? undefined : String(q.matrix);
+  if (matrix !== undefined && matrix !== 'Standard' && matrix !== 'Ground floor') {
+    fail(res, 400, 'VALIDATION', "matrix must be 'Standard' or 'Ground floor'.");
+    return;
+  }
+  ok(res, await previewRateVersion(String(req.params.id), {
+    durationMonths: durationRaw as 1 | 3 | 6 | 12 | undefined,
+    matrix, planIds: ratePlanIdsOf(req.query),
+  }));
+});
+
+// B-4 live workbench: preview unsaved lever edits read-only (no draft
+// write, no version bump). Body levers validate like PATCH; duration/matrix
+// ride in the body so one debounced call recalculates the chart. view-only.
+router.post('/rate-strategy/:id/preview', requireAuth, async (req: Request, res: Response) => {
+  const parsed = z.object({
+    levers: rateLeversSchema.optional(),
+    durationMonths: rateDurationSchema.optional(),
+    matrix: rateMatrixSchema.optional(),
+    planIds: z.array(z.string().min(1)).max(50).optional(),
+  }).safeParse(req.body ?? {});
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid unsaved-levers preview payload', parsed.error.flatten());
+    return;
+  }
+  ok(res, await previewRateVersionWithLevers(String(req.params.id), parsed.data.levers, {
+    durationMonths: parsed.data.durationMonths,
+    matrix: parsed.data.matrix,
+    planIds: parsed.data.planIds,
+  }));
+});
+
+router.post('/rate-strategy/:id/validate', requireAuth, async (req: Request, res: Response) => {
+  const parsed = ratePromotionPreviewSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid validate payload', parsed.error.flatten());
+    return;
+  }
+  ok(res, await validateRateVersion(String(req.params.id), parsed.data));
+});
+
+router.post('/rate-strategy/:id/submit', requireAuth, async (req: Request, res: Response) => {
+  const parsed = z.object({
+    version: z.number().int(),
+    warningOverride: z.object({
+      reasons: z.array(z.string()).max(50).optional(),
+      note: z.string().trim().max(500).optional(),
+    }).optional(),
+    changeNote: z.string().trim().max(500).optional(),
+  }).safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid submit payload (version + warningOverride/changeNote)', parsed.error.flatten());
+    return;
+  }
+  ok(res, await submitRateVersion({
+    versionId: String(req.params.id), expectedVersion: parsed.data.version,
+    warningOverride: parsed.data.warningOverride, changeNote: parsed.data.changeNote,
+    actor: rateActorOf(req), correlationId: newCorrelationId(),
+  }));
+});
+
+router.post('/rate-strategy/:id/approve', requireAuth, async (req: Request, res: Response) => {
+  const parsed = z.object({
+    version: z.number().int(),
+    comment: z.string().trim().max(500).optional(),
+  }).safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid approve payload (version + comment)', parsed.error.flatten());
+    return;
+  }
+  ok(res, await approveRateVersion({
+    versionId: String(req.params.id), expectedVersion: parsed.data.version,
+    comment: parsed.data.comment, actor: rateActorOf(req), correlationId: newCorrelationId(),
+  }));
+});
+
+router.post('/rate-strategy/:id/reject', requireAuth, async (req: Request, res: Response) => {
+  const parsed = z.object({
+    version: z.number().int(),
+    reason: z.string().trim().min(1).max(500),
+  }).safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Reject requires a version and a reason.', parsed.error?.flatten());
+    return;
+  }
+  ok(res, await rejectRateVersion({
+    versionId: String(req.params.id), expectedVersion: parsed.data.version,
+    reason: parsed.data.reason, actor: rateActorOf(req), correlationId: newCorrelationId(),
+  }));
+});
+
+router.post('/rate-strategy/:id/duplicate', requireAuth, async (req: Request, res: Response) => {
+  const parsed = z.object({
+    destinationBranchId: z.string().trim().min(1),
+    name: z.string().trim().min(1).max(120),
+    upliftPct: z.number().min(-50).max(100).optional(),
+  }).safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Duplicate requires a destinationBranchId, a new name and an optional upliftPct.', parsed.error.flatten());
+    return;
+  }
+  created(res, await duplicateRateVersion({
+    versionId: String(req.params.id), destinationBranchId: parsed.data.destinationBranchId,
+    name: parsed.data.name, upliftPct: parsed.data.upliftPct,
+    actor: rateActorOf(req), correlationId: newCorrelationId(),
+  }));
+});
+
+router.post('/rate-strategy/:id/batches', requireAuth, async (req: Request, res: Response) => {
+  const parsed = z.object({
+    effectiveDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    conflictRule: z.enum(['PRESERVE_MANUAL', 'REPLACE_MANUAL', 'CANCEL_IF_MANUAL']).optional(),
+    idempotencyKey: z.string().trim().min(1).max(120).optional(),
+  }).safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid batch payload (effectiveDate YYYY-MM-DD + conflictRule)', parsed.error.flatten());
+    return;
+  }
+  const batch = await createRateBatch({
+    versionId: String(req.params.id), effectiveDate: parsed.data.effectiveDate,
+    conflictRule: parsed.data.conflictRule,
+    idempotencyKey: parsed.data.idempotencyKey ?? getIdempotencyKey(req.headers) ?? undefined,
+    actor: rateActorOf(req), correlationId: newCorrelationId(),
+  });
+  if ((batch as { replayed?: boolean }).replayed) ok(res, batch, { replayed: true });
+  else created(res, batch);
+});
+
+router.get('/rate-batches', requireAuth, async (req: Request, res: Response) => {
+  const parsed = z.object({
+    branchId: z.string().trim().min(1).optional(),
+    status: z.string().trim().min(1).optional(),
+    versionId: z.string().trim().min(1).optional(),
+    limit: z.coerce.number().int().min(1).max(500).default(100),
+  }).safeParse(req.query);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid batch filters', parsed.error.flatten());
+    return;
+  }
+  const rows = await listRateBatches(parsed.data);
+  ok(res, rows, { count: rows.length });
+});
+
+router.get('/rate-batches/:id', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await getRateBatch(String(req.params.id)));
+});
+
+router.post('/rate-batches/:id/apply', requireAuth, async (req: Request, res: Response) => {
+  const batch = await applyRateBatch({ batchId: String(req.params.id), actor: rateActorOf(req), correlationId: newCorrelationId() });
+  if ((batch as { replayed?: boolean }).replayed) ok(res, batch, { replayed: true });
+  else ok(res, batch);
+});
+
+router.post('/rate-batches/:id/retry-failed', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await retryFailedRateBatch({ batchId: String(req.params.id), actor: rateActorOf(req), correlationId: newCorrelationId() }));
+});
+
+router.post('/rate-batches/:id/cancel', requireAuth, async (req: Request, res: Response) => {
+  const parsed = z.object({ reason: z.string().trim().min(1).max(500) }).safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Cancelling a batch requires a reason.', parsed.error?.flatten());
+    return;
+  }
+  ok(res, await cancelRateBatch({
+    batchId: String(req.params.id), reason: parsed.data.reason,
+    actor: rateActorOf(req), correlationId: newCorrelationId(),
+  }));
+});
+
+// Units banner: apply every due scheduled batch (D10 — idempotent, safe to repeat).
+router.post('/units/rate-batches/apply-due', requireAuth, async (req: Request, res: Response) => {
+  const result = await applyDueRateBatches(rateActorOf(req), newCorrelationId());
+  ok(res, result, { count: result.results.length });
 });
 
 // ---- Budgets & Expenses (§13) ----

@@ -134,10 +134,11 @@ const RULE_DISPLAY = {
     description: 'Days of notice a tenant must give before the last day.',
   },
 };
-const RULE_CAT_TITLES = { booking: 'Booking rules', org: 'Policy' };
+const RULE_CAT_TITLES = { booking: 'Booking rules', org: 'Policy', ratestrategy: 'Master rate strategy defaults' };
 const RULE_CAT_SUBS = {
   booking: 'Stay, hold, identity and move-out policy — saved via Save rules',
   org: 'Organisation-wide policy — saved via Save rules',
+  ratestrategy: 'New-draft and batch-form defaults for the Master rate strategy workspace — saved via Save rules',
 };
 
 let rulesDraft = {};

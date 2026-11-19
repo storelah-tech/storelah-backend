@@ -60,6 +60,11 @@ export const RESOURCES: readonly ResourceDef[] = [
   { group: 'Facilities', key: 'facility-incidents', label: 'Incidents', actions: CRUD },
   { group: 'Facilities', key: 'facility-access', label: 'Access Control', actions: CRUD },
   { group: 'Facilities', key: 'facility-inspections', label: 'Inspections', actions: CRUD },
+  // Master Rate Strategy (Track B): draft edit/save = create/update, send for
+  // approval (+ warning override) = update, approve/reject = approve. Applying
+  // a batch additionally needs facility-units:update (checked in service
+  // code, B3); Replace-manual needs the Owner role (D9, service code).
+  { group: 'Facilities', key: 'facility-rate-strategy', label: 'Master Rate Strategy', actions: RCUA },
 
   { group: 'Protection & Addons', key: 'extras-plans', label: 'Protection plans', actions: CRUD },
   { group: 'Protection & Addons', key: 'extras-addons', label: 'Addons', actions: CRUD },
@@ -147,6 +152,9 @@ const MANAGER_DENY: Record<string, readonly Action[]> = {
   'settings-fees': ['create', 'update', 'delete'],
   'settings-facilities': ['create', 'update', 'delete'],
   'promo-library': ['approve'],
+  // Master Rate Strategy: Manager edits/saves drafts but never approves
+  // (maker-checker — approver ≠ submitter is enforced in service code, B3).
+  'facility-rate-strategy': ['approve'],
   'facility-floorplans': ['approve'],
   'site-builder': ['approve'],
   'customer-tenants': ['delete'],
@@ -180,6 +188,8 @@ const VIEWER_HIDDEN = new Set([
   'bill-overview', 'bill-invoices', 'bill-arrears', 'bill-transactions', 'bill-models', 'bill-lease', 'bill-performance',
   'bill-budgets', 'bill-pricing', 'bill-returns', 'bill-library', 'bill-credits', 'bill-reconciliation',
   'bill-investor',
+  // Master Rate Strategy levers are not viewer-surface by default (grantable).
+  'facility-rate-strategy',
 ]);
 
 // Finance role permission sets (FINANCE_MODULE_SPEC §§3–4, IMPLEMENTATION_PLAN §2c).
@@ -190,6 +200,10 @@ const FINANCE_VIEW_ALL = [
   'bill-lease:view',
   'bill-performance:view', 'bill-budgets:view', 'bill-pricing:view', 'bill-returns:view', 'bill-library:view',
   'bill-credits:view', 'bill-reconciliation:view', 'bill-investor:view',
+  // Master Rate Strategy: Finance Operator/Approver/Auditor see the target
+  // reconciliation surface read-only (Operator/Approver inherit via their
+  // spreads below; Auditor holds exactly this list).
+  'facility-rate-strategy:view',
 ] as const;
 const FINANCE_OPERATOR_PERMS = [
   ...FINANCE_VIEW_ALL,

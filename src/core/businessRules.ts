@@ -9,12 +9,15 @@
 // GET /business-rules.
 import { prisma } from '../lib/prisma';
 import { AppError } from '../lib/http';
+import { writeAuditEvent } from './finance/audit';
+import { publishFinanceEvent } from './finance/events';
+import { newCorrelationId } from './finance/idempotency';
 
 export type BusinessRuleKind = 'boolean' | 'number' | 'text';
 
 export interface BusinessRuleDef {
   key: string;
-  category: 'org' | 'booking';
+  category: 'org' | 'booking' | 'moveout';
   kind: BusinessRuleKind;
   label: string;
   description: string;
@@ -23,6 +26,10 @@ export interface BusinessRuleDef {
   max?: number;
   integer?: boolean;
   maxLength?: number;
+  // Track A: closed value set for text settings that are enums in practice
+  // (e.g. moveout.approvalRole). When present, coerceValue rejects anything
+  // outside the set.
+  allowed?: readonly string[];
 }
 
 export const BUSINESS_RULE_DEFS: BusinessRuleDef[] = [
@@ -78,6 +85,53 @@ export const BUSINESS_RULE_DEFS: BusinessRuleDef[] = [
     min: 0,
     max: 120,
     integer: true,
+  },
+  // --- Move-outs & refunds (handoff §14; Track A).
+  // The required-notice-days source stays `booking.moveOutNoticeDays` above
+  // (the notice-days source of truth — not duplicated here). These five are
+  // the remaining §14 rows; every new case snapshots the effective values at
+  // request time (R7), so policy edits never rewrite open cases.
+  {
+    key: 'moveout.allowDateChange',
+    category: 'moveout',
+    kind: 'boolean',
+    label: 'Allow requested move-out date changes',
+    description: 'Staff may change the final access date (a reason and recalculation are always required).',
+    default: true,
+  },
+  {
+    key: 'moveout.shortNoticeForfeitDeposit',
+    category: 'moveout',
+    kind: 'boolean',
+    label: 'Short notice may forfeit deposit',
+    description: 'A non-compliant notice forfeits the deposit. Affects the deposit only, never unused storage rent.',
+    default: true,
+  },
+  {
+    key: 'moveout.depositCollectionEnabled',
+    category: 'moveout',
+    kind: 'boolean',
+    label: 'Security deposit collection',
+    description: 'Whether deposits are collected at all. Off at launch (S$0 everywhere); authoritative source is Fees & deposits.',
+    default: false,
+  },
+  {
+    key: 'moveout.inspectionRequired',
+    category: 'moveout',
+    kind: 'boolean',
+    label: 'Physical inspection required',
+    description: 'Inspection is required before a settlement can be submitted and a unit released. Locked on.',
+    default: true,
+  },
+  {
+    key: 'moveout.approvalRole',
+    category: 'moveout',
+    kind: 'text',
+    label: 'Approval role',
+    description: 'Who may approve refunds/charges: ADMIN_OR_FINANCE (any holder of bill-transactions:approve) or ADMIN_ONLY (Owner only).',
+    default: 'ADMIN_OR_FINANCE',
+    maxLength: 32,
+    allowed: ['ADMIN_OR_FINANCE', 'ADMIN_ONLY'],
   },
   // --- Org ---
   {
@@ -145,6 +199,9 @@ function coerceValue(def: BusinessRuleDef, raw: unknown): boolean | number | str
   if (def.maxLength !== undefined && s.length > def.maxLength) {
     throw new AppError(400, 'VALIDATION', `Rule "${def.key}" must be at most ${def.maxLength} characters.`);
   }
+  if (def.allowed !== undefined && !def.allowed.includes(s)) {
+    throw new AppError(400, 'VALIDATION', `Rule "${def.key}" must be one of: ${def.allowed.join(', ')}.`);
+  }
   return s;
 }
 
@@ -183,8 +240,17 @@ export async function getBusinessRule(key: string) {
 }
 
 /** Batch upsert `{ key: value }` — unknown keys and invalid values 400 with
- * nothing written (validated before the transaction). */
-export async function upsertBusinessRules(input: unknown) {
+ * nothing written (validated before the transaction).
+ *
+ * A-19 (handoff §14): every key whose value actually changes writes one
+ * FinanceAuditEvent (actor, key, before value, after value, source) plus a
+ * matching FinanceEvent outbox row, in the same transaction as the upsert —
+ * the writeAuditEvent → publishFinanceEvent path used by other Track A
+ * mutations. Unchanged keys write nothing. */
+export async function upsertBusinessRules(
+  input: unknown,
+  opts?: { actor?: string; source?: string; correlationId?: string },
+) {
   if (typeof input !== 'object' || input === null || Array.isArray(input)) {
     throw new AppError(400, 'VALIDATION', 'Business-rules payload must be an object of { key: value }.');
   }
@@ -197,14 +263,47 @@ export async function upsertBusinessRules(input: unknown) {
     if (!def) throw new AppError(400, 'VALIDATION', `Unknown business rule "${key}".`);
     return { key, value: coerceValue(def, raw), def };
   });
-  await prisma.$transaction(
-    coerced.map(({ key, value, def }) =>
-      prisma.businessRule.upsert({
+  // Before-values for the audit trail: stored row, else the code default.
+  const stored = await prisma.businessRule.findMany({ where: { key: { in: coerced.map((c) => c.key) } } });
+  const beforeByKey = new Map<string, boolean | number | string>();
+  for (const c of coerced) {
+    const row = stored.find((r) => r.key === c.key);
+    const v = row?.value as unknown;
+    beforeByKey.set(
+      c.key,
+      typeof v === 'boolean' || typeof v === 'number' || typeof v === 'string' ? v : c.def.default,
+    );
+  }
+  const actor = (opts?.actor ?? 'cms-operator').slice(0, 120);
+  const source = opts?.source ?? 'cms';
+  const correlationId = opts?.correlationId ?? newCorrelationId();
+  await prisma.$transaction(async (tx) => {
+    for (const { key, value, def } of coerced) {
+      await tx.businessRule.upsert({
         where: { key },
         update: { value, category: def.category },
         create: { key, category: def.category, value, description: def.description },
-      }),
-    ),
-  );
+      });
+    }
+    for (const { key, value } of coerced) {
+      const before = beforeByKey.get(key);
+      if (before === value) continue; // no change — no audit event
+      await writeAuditEvent(tx, {
+        actor,
+        action: 'business_rule.updated',
+        entityType: 'BusinessRule',
+        entityId: key,
+        before: { key, value: before },
+        after: { key, value },
+        source,
+        correlationId,
+      });
+      await publishFinanceEvent(tx, {
+        type: 'business_rule.updated',
+        payload: { key, before, after: value, actor },
+        correlationId,
+      });
+    }
+  });
   return listBusinessRules();
 }

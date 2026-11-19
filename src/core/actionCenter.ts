@@ -2,6 +2,8 @@ import { prisma } from '../lib/prisma';
 import { toNum } from '../lib/format';
 import { MARKET_PSF } from './market';
 
+const ymd = (d: Date | null | undefined) => (d ? d.toISOString().slice(0, 10) : null);
+
 export async function getActionItems() {
   const now = new Date();
   const startTomorrow = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
@@ -30,7 +32,43 @@ export async function getActionItems() {
         .slice(0, 8),
     );
 
+  // A-21: open Finance change requests (transfers, move-out settlements and
+  // manual refunds returned to Operations). Newest first, capped so one
+  // backlog never crowds out the other queues.
+  const changeRequests = await prisma.settlementChangeRequest.findMany({
+    where: { status: 'OPEN', settlement: { status: 'CHANGES_REQUESTED' } },
+    include: { settlement: { select: { ref: true, tenant: { select: { name: true } } } } },
+    orderBy: { requestedAt: 'desc' },
+    take: 8,
+  });
+  const assigneeIds = [...new Set(changeRequests.map((c) => c.assigneeId).filter((v): v is string => !!v))];
+  const assigneeNames = new Map(
+    assigneeIds.length
+      ? (
+          await prisma.adminUser.findMany({ where: { id: { in: assigneeIds } }, select: { id: true, name: true } })
+        ).map((u) => [u.id, u.name] as const)
+      : [],
+  );
+
   const items = [
+    // A-21: Finance change requests are Operations work items too — the
+    // Command centre queue lists every open return (transfers, move-out
+    // settlements and manual refunds) alongside the existing action items.
+    // The chosen assignee additionally gets a StaffNotification (their
+    // Overview notification queue); team-only returns surface here with no
+    // user pinged.
+    ...changeRequests.map((c) => {
+      const due = ymd(c.dueDate);
+      const who = assigneeNames.get(c.assigneeId ?? '') ?? c.assignTeam ?? 'Operations';
+      return {
+        icon: '📋',
+        tone: 'red',
+        title: `Finance change requested · ${c.settlement.ref} — ${c.settlement.tenant.name}`,
+        desc: `${c.category} · ${who}${due ? ` · due ${due}` : ''} · asked by ${c.requestedBy}. ${c.reason}`.slice(0, 300),
+        time: due ? `Due ${due}` : 'No due date',
+        action: 'Review',
+      };
+    }),
     ...overdueTenants.map((t) => ({
       icon: '🚨',
       tone: 'red',

@@ -43,6 +43,7 @@ import {
   applyInstructionPaymentSucceeded,
   applyInstructionPaymentFailed,
 } from '../core/finance/payments';
+import { applyStripeRefundEvent } from '../core/lifecycle/settleFinance';
 import {
   createCardSetupIntent,
   listSavedCards,
@@ -503,6 +504,15 @@ router.post('/stripe/webhook', async (req: Request, res: Response) => {
       ok(res, { received: true, ...(await applyInstructionPaymentFailed(pi, { eventId: event.id })) });
       return;
     }
+  }
+  // Track A settlement refunds (core/lifecycle/settleFinance.ts, D6): the
+  // process endpoint issues the Stripe refund on the source PaymentIntent;
+  // the provider confirms asynchronously here. Additive branches only — no
+  // existing shape changes.
+  if (event.type === 'refund.created' || event.type === 'refund.updated' || event.type === 'charge.refunded') {
+    const refund = event.data.object as Stripe.Refund;
+    ok(res, { received: true, ...(await applyStripeRefundEvent(refund, { eventId: event.id })) });
+    return;
   }
   ok(res, { received: true, applied: false });
 });

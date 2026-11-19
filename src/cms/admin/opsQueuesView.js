@@ -1,14 +1,17 @@
-// StoreLah CMS admin UI — quotes + move-outs ops queues (P1 item 4).
+// StoreLah CMS admin UI — quotes + move-outs ops queues.
 // Quotes: PROPOSAL_SENT leads with live inventory (GET /quotes); stage moves
-// stay in Leads (PATCH /leads/:id). Move-outs: NOTICE tenants with their
-// latest Notice row (GET /move-outs); explicit complete/cancel via
-// PATCH /move-outs/:tenantId — nothing auto-flips tenant status.
+// stay in Leads (PATCH /leads/:id). Move-outs (Track A A7): the canonical
+// move-out case queue from src/cms/admin/moveoutWorkspace.js — inspection
+// gated, Finance-approved. The D14-retired PATCH /move-outs/:tenantId
+// complete/cancel path has NO UI trigger left (server answers 410); every
+// row jumps to the canonical case instead.
 
 import { $, $$, escapeHtml, showBanner } from './dom.js';
 import { ApiError, get, post, patch, downloadFile, describeError } from './api.js';
 import { state } from './state.js';
 import { sizeRangeLabel } from './constants.js';
 import { confirmDialog } from './confirmDialog.js';
+import { bindMovesQueue, bindOpsChangeRequests } from './moveoutWorkspace.js';
 
 const fmtMoney = (n) => n == null ? '—' : '$' + Number(n).toLocaleString('en-SG', { maximumFractionDigits: 2 });
 const fmtDay = (d) => d ? new Date(d).toLocaleDateString('en-SG', { day: '2-digit', month: 'short', year: 'numeric' }) : '—';
@@ -240,50 +243,17 @@ async function showQuoteUnits(id) {
   }
 }
 
-// ---------- move-outs ----------
+// ---------- move-outs (Track A canonical queue) ----------
+// §27 legacy removal: no Complete/Withdraw buttons, no PATCH /move-outs
+// calls — every row jumps to its canonical case (Open case) or Finance
+// approval. Renders through the shared Track A queue binder so the tab and
+// the Move-out notices register never drift.
 
 export async function bindMoveouts() {
-  const tb = $('#moveoutsBody');
-  if (!tb) return;
-  try {
-    const rows = await get('/move-outs');
-    renderMoveouts(rows || []);
-    const sub = $('#moveoutsSub');
-    if (sub) sub.textContent = `${(rows || []).length} tenant(s) on notice · explicit complete/cancel only`;
-  } catch (e) {
-    tb.innerHTML = '<tr><td colspan="7"><div class="section-empty">Move-outs failed to load: ' + escapeHtml(describeError(e)) + '</div></td></tr>';
-  }
-}
-
-function renderMoveouts(rows) {
-  const tb = $('#moveoutsBody');
-  if (!tb) return;
-  if (!rows.length) {
-    tb.innerHTML = '<tr><td colspan="7"><div class="section-empty">No tenants on notice.</div></td></tr>';
-    return;
-  }
-  tb.innerHTML = rows.map((m) =>
-    `<tr><td><b>${escapeHtml(m.name)}</b><div class="t-type">${escapeHtml(m.email || m.mobile || '')}</div></td>` +
-    `<td>${m.unitName || m.unitCode ? escapeHtml(m.unitName || m.unitCode) : '—'}<div class="t-type">${escapeHtml(m.branchCode || '')}</div></td>` +
-    `<td><b>${fmtMoney(m.monthlyRate)}</b></td>` +
-    `<td>${fmtDay(m.lastDay)}<div class="t-type">filed ${fmtDay(m.submittedAt)}${m.noticeCount > 1 ? ` · ${m.noticeCount} notices` : ''}</div></td>` +
-    `<td><span class="pill amber">Notice</span></td>` +
-    `<td class="unit-actions"><button class="act-btn primary" data-mo-act="complete" data-mo-id="${escapeHtml(m.tenantId)}">Complete</button> ` +
-    `<button class="act-btn" data-mo-act="cancel" data-mo-id="${escapeHtml(m.tenantId)}">Withdraw</button></td></tr>`,
-  ).join('');
-}
-
-async function transitionMoveOut(id, action) {
-  const verb = action === 'complete' ? 'Complete this move-out (tenant → INACTIVE, unit released)?' : 'Withdraw this notice (tenant back to ACTIVE)?';
-  const okConfirm = await confirmDialog({ title: action === 'complete' ? 'Complete move-out?' : 'Withdraw notice?', message: verb, confirmLabel: action === 'complete' ? 'Complete' : 'Withdraw', danger: action === 'complete' });
-  if (!okConfirm) return;
-  try {
-    const res = await patch(`/move-outs/${encodeURIComponent(id)}`, { action });
-    showBanner(`Move-out ${action}d — tenant now ${res.status}`, true);
-    await bindMoveouts();
-  } catch (e) {
-    showBanner('Move-out: ' + describeError(e));
-  }
+  // A-21: the Move-ins & move-outs queue also lists open Finance change
+  // requests (transfers + refunds) above the case queue — the same returns
+  // Finance lists in its register are an Operations work item.
+  await Promise.allSettled([bindMovesQueue(), bindOpsChangeRequests()]);
 }
 
 let queuesWired = false;
@@ -301,11 +271,8 @@ export function wireOpsQueues() {
     if (!btn || btn.disabled) return;
     if (btn.dataset.qdAct === 'pdf') downloadQuotePdf(btn.dataset.qdId).catch((err) => showBanner('Quotation PDF: ' + describeError(err)));
   });
-  $('#moveoutsBody')?.addEventListener('click', (e) => {
-    const btn = e.target.closest('button[data-mo-act]');
-    if (!btn) return;
-    transitionMoveOut(btn.dataset.moId, btn.dataset.moAct).catch(() => {});
-  });
+  // Move-out rows carry [data-mo-case]/[data-mo-approval] handled by the
+  // Track A workspace delegation (moveoutWorkspace.js) — no local handler.
   // Customer Management header entry point — the single quotation
   // modal/route (replaces the dead "+ New customer" header button).
   $('#addQuoteHeaderBtn')?.addEventListener('click', () => { openQuoteModal().catch((e) => showBanner('Quotes: ' + describeError(e))); });

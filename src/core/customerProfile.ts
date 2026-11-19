@@ -54,76 +54,28 @@ export function remainingText(end: Date, today = new Date()): string {
 // Settlement calculations (pure; exported for tests)
 // ---------------------------------------------------------------------------
 
-export const ADJUSTMENT_CATEGORIES = [
-  'Service recovery', 'Duplicate payment correction', 'Early termination fee', 'Damage to unit / door',
-  'Cleaning fee', 'Lock replacement', 'Merchandise or moving service', 'Other',
-] as const;
+// Settlement maths live in the pure lifecycle engines (Track A, phase A1):
+// src/core/lifecycle/moveOutCalc.ts (notice, settlement, status derivation)
+// and src/core/lifecycle/transferCalc.ts (snapshot builder). The names and
+// signatures below are re-exported unchanged so the customer/public API
+// response shapes never change.
+import {
+  ADJUSTMENT_CATEGORIES,
+  calculateMoveOut,
+  type Adjustment,
+  type SettlementLine,
+} from './lifecycle/moveOutCalc';
+import { calculateTransfer } from './lifecycle/transferCalc';
+import { resolveDestinationPromo } from './lifecycle/transferPromo';
+import { getCustomerRollup } from './lifecycle/customerRollup';
 
-export interface Adjustment {
-  type: 'CHARGE' | 'CREDIT';
-  category: (typeof ADJUSTMENT_CATEGORIES)[number];
-  amount: number;
-  reason: string;
-}
-
-export interface SettlementLine { label: string; amount: number; detail?: string }
-
-function adjustmentLines(adj: Adjustment | null | undefined): { lines: SettlementLine[]; charge: number; credit: number } {
-  if (!adj || !(adj.amount > 0)) return { lines: [], charge: 0, credit: 0 };
-  if (!adj.reason?.trim()) throw new AppError(400, 'VALIDATION', 'Add a reason for the special refund or charge.');
-  const amount = r2(adj.amount);
-  return adj.type === 'CHARGE'
-    ? { lines: [{ label: `Special charge · ${adj.category}`, amount, detail: adj.reason.trim() }], charge: amount, credit: 0 }
-    : { lines: [{ label: `Special credit · ${adj.category}`, amount: -amount, detail: adj.reason.trim() }], charge: 0, credit: amount };
-}
-
-/**
- * Transfer: remaining days = days in month − transfer day + 1. The unused
- * current-unit rent is credited and the destination rent charged for the same
- * days; destination pricing/promotion wins. Positive total = customer pays.
- */
-export function calculateTransfer(i: {
-  date: Date; currentRent: number; currentDeposit: number;
-  destGross: number; destPromoPct: number; destDeposit: number; destProtection: number;
-  adjustment?: Adjustment | null;
-}) {
-  const dim = daysInMonth(i.date);
-  const remaining = dim - i.date.getUTCDate() + 1;
-  const sourceCredit = r2((i.currentRent * remaining) / dim);
-  const destNet = r2(i.destGross * (1 - i.destPromoPct / 100));
-  const destCharge = r2((destNet * remaining) / dim);
-  const depositDelta = r2(i.destDeposit - i.currentDeposit);
-  const adj = adjustmentLines(i.adjustment);
-  const lines: SettlementLine[] = [
-    { label: `Unused current-unit rent credit (${remaining}/${dim} days)`, amount: -sourceCredit },
-    { label: `Destination-unit rent for the same ${remaining} days`, amount: destCharge, detail: `Net ${destNet.toFixed(2)}/month after destination pricing` },
-    { label: 'Security deposit difference', amount: depositDelta },
-    { label: 'Protection Plan', amount: 0, detail: 'Not prorated — the destination plan starts on the next billing cycle' },
-    ...adj.lines,
-  ];
-  const total = r2(destCharge - sourceCredit + depositDelta + adj.charge - adj.credit);
-  return { lines, total, remainingDays: remaining, daysInMonth: dim, destNet, nextFullDeduction: r2(destNet + i.destProtection) };
-}
-
-/**
- * Move-out: the last day of access is charged; refund only the days after
- * it. closing = unused rent + deposit + special credit − special charge.
- * Returned total uses the settlement sign: negative = refund to the customer.
- */
-export function calculateMoveOut(i: { lastDay: Date; rent: number; deposit: number; adjustment?: Adjustment | null }) {
-  const dim = daysInMonth(i.lastDay);
-  const unused = dim - i.lastDay.getUTCDate();
-  const credit = r2((i.rent * unused) / dim);
-  const adj = adjustmentLines(i.adjustment);
-  const lines: SettlementLine[] = [
-    { label: `Unused rent after the last day of access (${unused}/${dim} days)`, amount: -credit },
-    { label: 'Security deposit returned', amount: -r2(i.deposit) },
-    { label: 'Protection Plan', amount: 0, detail: 'Never prorated — no refund' },
-    ...adj.lines,
-  ];
-  const closing = r2(credit + i.deposit + adj.credit - adj.charge); // >= 0 refund, < 0 charge
-  return { lines, closing, total: r2(-closing), outcome: closing >= 0 ? 'REFUND' as const : 'CHARGE' as const, unusedDays: unused, daysInMonth: dim };
-}
+export {
+  ADJUSTMENT_CATEGORIES,
+  calculateMoveOut,
+  calculateTransfer,
+  type Adjustment,
+  type SettlementLine,
+};
 
 // ---------------------------------------------------------------------------
 // Profile
@@ -155,13 +107,16 @@ export async function getCustomerProfile(tenantId: string) {
   const group = await identityGroup(tenantId);
   const primary = group[0];
   const tenantIds = group.map((g) => g.id);
-  const [bookings, invoices, notices, settlements, account, notesCount] = await Promise.all([
+  const [bookings, invoices, notices, settlements, account, notesCount, rollup] = await Promise.all([
     prisma.booking.findMany({ where: { tenantId: { in: tenantIds } }, orderBy: { createdAt: 'desc' } }),
     prisma.invoice.findMany({ where: { tenantId: { in: tenantIds }, voidedAt: null }, include: { unit: { select: { unitCode: true, name: true } } }, orderBy: { billedMonth: 'desc' }, take: 60 }),
     prisma.notice.findMany({ where: { tenantId: { in: tenantIds } }, orderBy: { createdAt: 'desc' } }),
     prisma.customerSettlement.findMany({ where: { tenantId: { in: tenantIds } }, orderBy: { createdAt: 'desc' } }),
     primary.email ? prisma.customer.findUnique({ where: { email: normalizeEmail(primary.email) }, select: { companyName: true, uen: true, type: true } }) : null,
     prisma.recordNote.count({ where: { entityType: 'tenant', entityId: primary.id } }),
+    // Track A (roll-up, R5): additive read model — every key below is new;
+    // every key above keeps its name/type/order (customer shape freeze).
+    getCustomerRollup(tenantId),
   ]);
 
   const units = await Promise.all(group.filter((g) => g.unit).map(async (g) => {
@@ -239,6 +194,17 @@ export async function getCustomerProfile(tenantId: string) {
     settlements: settlements.map(serializeSettlement),
     notesCount,
     adjustmentCategories: ADJUSTMENT_CATEGORIES,
+    // Track A (roll-up + former customers + rental history, R5/R11): all
+    // additive — portal/customer shapes are untouched.
+    derivedStatus: rollup.derivedStatus,
+    derivedStatusLabel: rollup.derivedStatusLabel,
+    rentals: rollup.rentals,
+    previousRentals: rollup.previousRentals,
+    transferHistory: rollup.transferHistory,
+    ledgerLines: rollup.ledgerLines,
+    documents: rollup.documents,
+    openSettlements: rollup.openSettlements,
+    totals: rollup.totals,
   };
 }
 
@@ -259,6 +225,7 @@ export interface TransferRequest {
   kind: 'TRANSFER';
   date: string; // YYYY-MM-DD
   toUnitId: string;
+  /** A-23: accepted but IGNORED — derived from the destination unit. */
   destPromoPct?: number;
   destProtection?: number;
   destDeposit?: number;
@@ -290,9 +257,12 @@ async function buildSettlement(tenantId: string, req: SettlementRequest) {
     if (!dest || dest.deletedAt) throw new AppError(404, 'NOT_FOUND', 'Choose a destination unit.');
     if (dest.id === t.unitId) throw new AppError(400, 'VALIDATION', 'The destination must be a different unit.');
     if (dest.status !== 'AVAILABLE') throw new AppError(409, 'CONFLICT', `${dest.name ?? dest.unitCode} is not available.`);
+    // A-23: legacy settlement preview also derives the destination promotion
+    // from the destination unit — a client destPromoPct is never trusted.
+    const derived = await resolveDestinationPromo(dest.id);
     const calc = calculateTransfer({
       date: dateOf(req.date), currentRent: await paidRentOn(dateOf(req.date)), currentDeposit: 0,
-      destGross: toNum(dest.monthlyRate), destPromoPct: req.destPromoPct ?? 0, destDeposit: req.destDeposit ?? 0,
+      destGross: toNum(dest.monthlyRate), destPromoPct: derived.promoPct, destDeposit: req.destDeposit ?? 0,
       destProtection: req.destProtection ?? 0, adjustment: req.adjustment,
     });
     return {

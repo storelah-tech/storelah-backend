@@ -311,6 +311,8 @@ export async function updateTenant(id: string, input: UpdateTenantInput) {
         psf: sqft != null ? rate / sqft : undefined,
         status: input.status,
         autoDebit: input.autoDebit,
+        // Track A (A6): every tenant write bumps the status-editor version.
+        version: { increment: 1 },
       },
     });
     // Release the tenant's previous unit back to AVAILABLE (consistent with deactivateTenant).
@@ -337,7 +339,7 @@ export async function deactivateTenant(id: string) {
 
   const unitId = tenant.unitId;
   const updated = await prisma.$transaction([
-    prisma.tenant.update({ where: { id }, data: { status: 'INACTIVE', unitId: null } }),
+    prisma.tenant.update({ where: { id }, data: { status: 'INACTIVE', unitId: null, version: { increment: 1 } } }),
     ...(unitId
       ? [prisma.unit.update({ where: { id: unitId }, data: { status: 'AVAILABLE' } })]
       : []),
@@ -464,7 +466,7 @@ export async function transitionMoveOut(tenantId: string, action: MoveOutAction)
   if (action === 'complete') {
     // Explicit operator action: end the tenancy and release the unit.
     await prisma.$transaction([
-      prisma.tenant.update({ where: { id: tenantId }, data: { status: 'INACTIVE', unitId: null } }),
+      prisma.tenant.update({ where: { id: tenantId }, data: { status: 'INACTIVE', unitId: null, version: { increment: 1 } } }),
       ...(tenant.unitId
         ? [prisma.unit.update({ where: { id: tenant.unitId }, data: { status: 'AVAILABLE' } })]
         : []),
@@ -474,7 +476,7 @@ export async function transitionMoveOut(tenantId: string, action: MoveOutAction)
   // cancel: withdraw the notice, tenancy continues, unit untouched.
   const updated = await prisma.tenant.update({
     where: { id: tenantId },
-    data: { status: 'ACTIVE' },
+    data: { status: 'ACTIVE', version: { increment: 1 } },
   });
   return { tenantId, action, status: updated.status, unitReleased: false };
 }

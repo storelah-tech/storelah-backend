@@ -200,19 +200,37 @@ export async function bindBusinessRulesSection() {
   }
 }
 
+// A-19 hardening (same pattern as the move-out policy save): the button is
+// disabled with a "Saving…" label for the whole save and the label is ALWAYS
+// restored in `finally` — success, validation early-returns and thrown errors
+// (from the PUT or the re-bind) — so a second save never needs a reload.
 async function saveBusinessRules() {
-  if (!rulesLoaded) return;
   const btn = $('#businessRulesSaveBtn');
+  if (!rulesLoaded) {
+    if (btn) btn.textContent = 'Save rules';
+    return;
+  }
   if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+  let savedOk = false;
   try {
     const saved = await put('/business-rules', rulesDraft);
     rulesDraft = Object.fromEntries((saved || []).map((r) => [r.key, r.value]));
     showBanner('Business rules saved', true);
     await bindBusinessRulesSection();
+    savedOk = true;
   } catch (e) {
     showBanner('Business rules: ' + describeError(e));
-    if (btn) btn.textContent = 'Save rules';
-    markRulesDirty();
+  } finally {
+    const b = $('#businessRulesSaveBtn') || btn;
+    if (b) {
+      b.textContent = 'Save rules';
+      // Success → bindBusinessRulesSection left it clean-disabled; keep that.
+      // Failure (or a re-bind that threw) → re-enable for retry.
+      if (!savedOk) {
+        b.disabled = false;
+        $('#businessRulesDirty')?.classList.add('show');
+      }
+    }
   }
 }
 

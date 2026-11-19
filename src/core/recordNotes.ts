@@ -2,6 +2,7 @@
 // notes, task instructions). The note editor's typeahead sends the mentioned
 // operators' ids; each one gets a StaffNotification shown in the top bar.
 
+import { Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { AppError } from '../lib/http';
 
@@ -79,4 +80,35 @@ export async function markNotificationsRead(userId: string, ids?: string[]) {
     data: { readAt: new Date() },
   });
   return { updated: res.count };
+}
+
+/**
+ * Operations work-item notification for a Finance change request (A-21).
+ * Uses the existing StaffNotification path — the assignee's Overview
+ * notification queue (GET /notifications) lists it until acknowledged; no
+ * new delivery channel. Team-only change requests (no assigneeId) create no
+ * notification: they stay visible in the team queues (ops queue / Finance
+ * register) with no user pinged.
+ */
+export async function notifyChangeRequestAssignee(
+  tx: Prisma.TransactionClient,
+  opts: { assigneeId: string; title: string; body: string; entityType: string; entityId: string; actor: string },
+): Promise<string> {
+  const user = await tx.adminUser.findFirst({
+    where: { id: opts.assigneeId },
+    select: { id: true, name: true },
+  });
+  if (!user) throw new AppError(400, 'VALIDATION', 'Unknown assignee — choose an operator who can receive the Operations work item.');
+  await tx.staffNotification.create({
+    data: {
+      recipientId: user.id,
+      kind: 'CHANGE_REQUEST',
+      title: opts.title.slice(0, 200),
+      body: opts.body.slice(0, 500),
+      entityType: opts.entityType,
+      entityId: opts.entityId,
+      actor: opts.actor.slice(0, 120),
+    },
+  });
+  return user.name;
 }

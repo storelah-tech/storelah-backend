@@ -27,7 +27,7 @@ const FLOORPLAN_VIEW = v('facility-floorplans', 'facility-floorplan-library');
 const FP_EDIT = 'facility-floorplans:update';
 const UNIT_READERS = v(
   'facility-units', 'facility-map', 'facility-floorplans', 'facility-maintenance', 'facility-assets', 'facility-incidents',
-  'facility-access', 'facility-inspections', 'customer-tenants', 'customer-bookings', 'customer-moveins', 'quotes', 'command',
+  'facility-access', 'facility-inspections', 'customer-tenants', 'customer-bookings', 'customer-moveins', 'customer-transfers', 'quotes', 'command',
 );
 const TENANT_READERS = v('customer-tenants', 'customer-bookings', 'customer-moveins', 'customer-moveouts', 'facility-units', 'settings-fees', 'bill-invoices', 'bill-arrears');
 const LEAD_READERS = v('leads', 'pipeline', 'quotes', 'inbox', 'calendar', 'command', 'analytics');
@@ -89,6 +89,30 @@ export const ROUTE_PERMISSIONS: Record<string, PermissionSpec> = {
   'GET /move-ins': v('customer-moveins', 'customer-tenants', 'facility-units'),
   'GET /move-outs': v('customer-moveouts'),
   'PATCH /move-outs/:tenantId': 'customer-moveouts:update',
+  // Track A (move-out workflow): create/change/reverse case = create/update,
+  // inspection sign-off = update (approval itself is A4).
+  'POST /move-out-cases': 'customer-moveouts:create',
+  'GET /move-out-cases': v('customer-moveouts'),
+  'GET /move-out-cases/:id': v('customer-moveouts'),
+  'GET /move-out-cases/:id/preview': v('customer-moveouts'),
+  'POST /move-out-cases/request-preview': v('customer-moveouts'),
+  'PATCH /move-out-cases/:id/date': 'customer-moveouts:update',
+  'POST /move-out-cases/:id/reverse': 'customer-moveouts:update',
+  'POST /move-out-cases/:id/inspection': 'customer-moveouts:update',
+  'POST /move-out-cases/:id/inspection-preview': v('customer-moveouts'),
+  // Track A (unit transfers, A5): preview is a read; submit = create;
+  // Operations correction = update; manual destination replace = Owner-only
+  // (D9); Finance change-request/approve/execute ride on
+  // bill-transactions:approve (approval-and-post precedent).
+  'POST /transfers/preview': v('customer-transfers'),
+  'GET /transfers': v('customer-transfers'),
+  'POST /transfers': 'customer-transfers:create',
+  'GET /transfers/:id': v('customer-transfers'),
+  'POST /transfers/:id/correct': 'customer-transfers:update',
+  'POST /transfers/:id/replace-destination': 'OWNER',
+  'POST /transfers/:id/changes': 'bill-transactions:approve',
+  'POST /transfers/:id/approve': 'bill-transactions:approve',
+  'POST /transfers/:id/execute': 'bill-transactions:approve',
 
   // ---- leads ----
   'GET /leads': LEAD_READERS,
@@ -108,6 +132,10 @@ export const ROUTE_PERMISSIONS: Record<string, PermissionSpec> = {
   'GET /tenants/:id/notes': TENANT_READERS,
   'POST /tenants/:id/notes': 'customer-tenants:update',
   'GET /tenants/:id/profile': TENANT_READERS,
+  // Track A A6 (R5): roll-up read model rides on the profile readers;
+  // the guarded status editor reuses the rental write permission.
+  'GET /tenants/:id/rollup': TENANT_READERS,
+  'POST /tenants/:id/status': 'customer-tenants:update',
   'POST /tenants/:id/settlements/preview': ['customer-tenants:update', 'customer-moveouts:update'],
   'POST /tenants/:id/settlements': ['customer-tenants:update', 'customer-moveouts:update'],
   'POST /tenants/:id/service-requests': 'customer-tenants:update',
@@ -115,6 +143,19 @@ export const ROUTE_PERMISSIONS: Record<string, PermissionSpec> = {
   'GET /finance/register': v('bill-transactions'),
   'POST /finance/settlements/:id/approve': 'bill-transactions:approve',
   'POST /finance/settlements/:id/reject': 'bill-transactions:approve',
+  // Track A A4 (settlement finance): manual refund create = create; correct =
+  // update; process/post = approve (three-party actor separation enforced in
+  // service code, brief §6). The refunds register rides on bill-transactions
+  // (Phase 4 /finance/refunds/* rows for the legacy Refund table are
+  // untouched — same prefix, distinct paths).
+  'POST /finance/settlements': 'bill-transactions:create',
+  'GET /finance/settlements/refunds': v('bill-transactions'),
+  // Track A A7: single-settlement readout for the review drawer + jump
+  // actions. Literal sibling /refunds stays above; Express matches it first.
+  'GET /finance/settlements/:id': v('bill-transactions'),
+  'POST /finance/settlements/:id/correct': 'bill-transactions:update',
+  'POST /finance/settlements/:id/cancel': 'bill-transactions:approve',
+  'POST /finance/settlements/:id/process': 'bill-transactions:approve',
   'GET /mentionable-users': 'AUTH',
   'GET /notifications': 'AUTH',
   'POST /notifications/read': 'AUTH',
@@ -472,8 +513,12 @@ export const ROUTE_PERMISSIONS: Record<string, PermissionSpec> = {
   'POST /fees': 'settings-fees:create',
   'PATCH /fees/:id': 'settings-fees:update',
   'DELETE /fees/:id': 'settings-fees:delete',
-  'GET /business-rules': v('settings-booking', 'settings-general'),
-  'PUT /business-rules': 'settings-booking:update',
+  'GET /business-rules': [...v('settings-booking', 'settings-general'), 'settings-moveouts:view'],
+  // Track A A7: the Move-outs & refunds policy surface saves through this
+  // route. settings-moveouts holders may write ONLY moveout.* keys (key
+  // scoping enforced in the handler); booking.* + org.* stay behind
+  // settings-booking:update.
+  'PUT /business-rules': ['settings-booking:update', 'settings-moveouts:update'],
 
   // ---- team & access (Owner only) ----
   'GET /users': 'OWNER',

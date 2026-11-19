@@ -26,6 +26,7 @@ import { bindPortfolio, wirePortfolio } from './portfolioView.js';
 import { bindQuotes, bindMoveouts, wireOpsQueues } from './opsQueuesView.js';
 import { openLeadForm, openLeadPage, renderAppointments, renderQuotes, leadDisplayName } from './leadsWorkspace.js';
 import './customerWorkspace.js';
+import { bindMoveoutNoticesPage, wireMoveoutWorkspace, injectMoveoutSettingsTab } from './moveoutWorkspace.js';
 import { bindFeesSection, bindBusinessRulesSection, bindUsersSection, wireSettingsExt } from './settingsExtView.js';
 import { bindExtrasSection, wireExtras } from './extrasView.js';
 import { bindContentSection, wireContent } from './contentView.js';
@@ -64,7 +65,7 @@ const coreMap = {
   portfolio: 'command',
   leads: 'leads', pipeline: 'leads', quotes: 'leads', inbox: 'leads', calendar: 'leads', automation: 'leads', 'lead-profile': 'leads',
   analytics: 'command',
-  customers: 'customers', 'customer-profile': 'customers',
+  customers: 'customers', 'customer-profile': 'customers', 'moveout-notices': 'customers', 'moveout-case': 'customers',
   facilities: 'facilities',
   extras: 'extras',
   content: 'content',
@@ -79,7 +80,9 @@ const sideNav = {
     ['Appointments', 'calendar'], ['Automation', 'automation']],
   customers: [['Tenants', 'customers', 'customer-tenants'], ['Bookings', 'customers', 'customer-bookings'],
     ['Move-ins', 'customers', 'customer-moveins'],
-    ['Move-outs', 'customers', 'customer-moveouts']],
+    ['Move-outs', 'customers', 'customer-moveouts'],
+    // Track A A7: canonical move-out case register (handoff §3 #moveout-notices).
+    ['Move-out notices', 'moveout-notices']],
   facilities: [['Units Information', 'facilities', 'facility-map'], ['Units', 'facilities', 'facility-units'],
     ['Floors', 'facilities', 'facility-floors'],
     ['Floor Plan Designer', 'facilities', 'facility-floorplans'], ['Floor Plan Library', 'facilities', 'facility-floorplan-library'], ['Maintenance', 'facilities', 'facility-maintenance'],
@@ -186,6 +189,8 @@ function openPage(id) {
     const firstTab = document.querySelector('[data-tabs="customer"] button:not(.perm-hidden)');
     if (firstTab) firstTab.click();
   }
+  // Track A A7: canonical move-out case register (dynamic page, handoff §3).
+  else if (id === 'moveout-notices') { bindMoveoutNoticesPage().catch((err) => showBanner('Move-out notices: ' + describeError(err))); }
   else if (id === 'promotions') { bootPromotions(); bindPromotionsOverview(); }
   else if (id === 'billing') bindFinanceTab('bill-overview').catch(() => {});
   else if (id === 'settings') {
@@ -4480,6 +4485,10 @@ function wireEvents() {
   // P1: portfolio cards, quotes/move-outs queues, settings extensions
   wirePortfolio();
   wireOpsQueues();
+  // Track A A7: move-out / refund / transfer workspace (delegated actions,
+  // register page, settings tab injection — dashboard.html stays frozen).
+  wireMoveoutWorkspace();
+  injectMoveoutSettingsTab();
   wireSettingsExt();
   // Booking extras catalog (protection plans + addons).
   wireExtras();
@@ -4909,12 +4918,14 @@ async function boot() {
     // Navigate to initial page from hash (unknown hashes fall back to command,
     // which covers retired views without a dedicated route).
     const hash = location.hash ? location.hash.slice(1) : 'command';
-    if (['command', 'portfolio', 'leads', 'pipeline', 'inbox', 'calendar', 'analytics', 'automation', 'customers', 'facilities', 'extras', 'content', 'promotions', 'billing', 'settings'].includes(hash)) {
+    if (['command', 'portfolio', 'leads', 'pipeline', 'inbox', 'calendar', 'analytics', 'automation', 'customers', 'moveout-notices', 'facilities', 'extras', 'content', 'promotions', 'billing', 'settings'].includes(hash)) {
       if (hash === 'command') openPage('command');
       else if (hash === 'portfolio') openPage('portfolio');
       else if (hash === 'analytics') openPage('analytics');
       else if (['leads', 'pipeline', 'inbox', 'calendar', 'automation'].includes(hash)) openCoreDefault('leads');
       else if (hash === 'customers') openCoreDefault('customers');
+      // Track A A7: deep link into the move-out notices register.
+      else if (hash === 'moveout-notices') openPage('moveout-notices');
       else if (hash === 'facilities') openCoreDefault('facilities');
       else if (hash === 'extras') openCoreDefault('extras');
       else if (hash === 'content') openCoreDefault('content');

@@ -48,7 +48,12 @@ export const RESOURCES: readonly ResourceDef[] = [
   { group: 'Customers', key: 'customer-tenants', label: 'Tenants', actions: CRUD },
   { group: 'Customers', key: 'customer-bookings', label: 'Bookings', actions: R },
   { group: 'Customers', key: 'customer-moveins', label: 'Move-ins', actions: R },
-  { group: 'Customers', key: 'customer-moveouts', label: 'Move-outs', actions: RU },
+  // Track A (move-out workflow): create/change/reverse case = create/update
+  // (inspection sign-off = update); settlement approval = approve.
+  { group: 'Customers', key: 'customer-moveouts', label: 'Move-outs', actions: RCUA },
+  // Track A (unit transfers): preview/submit = create, Operations correction
+  // = update. Approval-and-post rides on bill-transactions:approve (A5).
+  { group: 'Customers', key: 'customer-transfers', label: 'Unit transfers', actions: RCU },
 
   { group: 'Facilities', key: 'facility-map', label: 'Units Information', actions: R },
   { group: 'Facilities', key: 'facility-units', label: 'Units', actions: CRUD },
@@ -112,6 +117,9 @@ export const RESOURCES: readonly ResourceDef[] = [
   { group: 'Global Settings', key: 'settings-lead-sla', label: 'Lead & response SLA', actions: RU },
   { group: 'Global Settings', key: 'settings-fees', label: 'Fees & deposits', actions: CRUD },
   { group: 'Global Settings', key: 'settings-facilities', label: 'Facilities', actions: CRUD },
+  // Track A (handoff §14): Global Settings › Move-outs & refunds — the
+  // moveout.* policy surface. View = read policy; update = save policy.
+  { group: 'Global Settings', key: 'settings-moveouts', label: 'Move-outs & refunds', actions: RU },
 ];
 
 const RESOURCE_BY_KEY = new Map(RESOURCES.map((r) => [r.key, r]));
@@ -146,6 +154,12 @@ const MANAGER_DENY: Record<string, readonly Action[]> = {
   'settings-booking': ['update'],
   'settings-fees': ['create', 'update', 'delete'],
   'settings-facilities': ['create', 'update', 'delete'],
+  // Track A: Manager keeps the pre-existing move-outs view/update but gets
+  // none of the new grants (no case creation, no settlement approval, no
+  // transfers surface, no move-out policy edits).
+  'customer-moveouts': ['create', 'approve'],
+  'customer-transfers': ['view', 'create', 'update'],
+  'settings-moveouts': ['view', 'update'],
   'promo-library': ['approve'],
   'facility-floorplans': ['approve'],
   'site-builder': ['approve'],
@@ -180,6 +194,9 @@ const VIEWER_HIDDEN = new Set([
   'bill-overview', 'bill-invoices', 'bill-arrears', 'bill-transactions', 'bill-models', 'bill-lease', 'bill-performance',
   'bill-budgets', 'bill-pricing', 'bill-returns', 'bill-library', 'bill-credits', 'bill-reconciliation',
   'bill-investor',
+  // Track A: transfers + move-out policy are hidden from Viewer by default
+  // (grantable). Move-outs keeps its pre-existing view grant.
+  'customer-transfers', 'settings-moveouts',
 ]);
 
 // Finance role permission sets (FINANCE_MODULE_SPEC §§3–4, IMPLEMENTATION_PLAN §2c).
@@ -211,6 +228,13 @@ const FINANCE_OPERATOR_PERMS = [
   'bill-library:update',
   'bill-credits:create', 'bill-credits:update',
   'bill-reconciliation:create', 'bill-reconciliation:update',
+  // Track A (move-out / refund / transfer): operators run the workflow —
+  // move-out cases (view/update), transfers (preview/submit/correct), policy
+  // reads. Approval (moveouts:approve, bill-transactions:approve) stays
+  // approver-only; policy edits stay approver-only.
+  'customer-moveouts:view', 'customer-moveouts:update',
+  'customer-transfers:view', 'customer-transfers:create', 'customer-transfers:update',
+  'settings-moveouts:view',
 ] as const;
 const FINANCE_APPROVER_PERMS = [
   ...FINANCE_OPERATOR_PERMS,
@@ -226,6 +250,11 @@ const FINANCE_APPROVER_PERMS = [
   'bill-credits:approve',
   'bill-library:approve',
   'bill-reconciliation:approve',
+  // Track A: approvers hold the settlement-approval grant plus move-out
+  // policy edits (handoff §14; ties to D1/D2 — policy edits never rewrite
+  // open cases, enforced via R7 snapshots in A3).
+  'customer-moveouts:approve',
+  'settings-moveouts:update',
 ] as const;
 
 export const SYSTEM_ROLES: ReadonlyArray<{ key: string; name: string; description: string; locked: boolean; permissions: readonly string[] }> = [

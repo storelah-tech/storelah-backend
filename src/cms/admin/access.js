@@ -26,7 +26,15 @@ const CORE_CHILDREN = {
     'bill-pricing', 'bill-returns', 'bill-library', 'bill-invoices', 'bill-arrears', 'bill-credits', 'bill-reconciliation',
     'bill-investor'],
   content: ['content-list', 'site-builder'],
-  settings: ['settings-general', 'settings-booking', 'settings-fees', 'settings-team', 'settings-facilities'],
+  // Track A A7: Global Settings › Move-outs & refunds (real resource —
+  // view/update enforced server-side via routePermissions).
+  settings: ['settings-general', 'settings-booking', 'settings-fees', 'settings-team', 'settings-facilities', 'settings-moveouts'],
+};
+// Track A A7: dynamic pages keyed by page id (no data-tab resource of their
+// own) inherit the view permission of their canonical resource.
+const PAGE_VIEW_ALIAS = {
+  'moveout-notices': 'customer-moveouts',
+  'moveout-case': 'customer-moveouts',
 };
 // Cores whose children are separate pages (the rest are one page with tabs).
 const PAGE_CORES = new Set(['command', 'leads']);
@@ -40,6 +48,7 @@ function isOwner() {
 /** Can the operator open this sidebar item / tab? (Team & access = Owner only.) */
 export function canView(key) {
   if (key === 'settings-team') return isOwner();
+  if (PAGE_VIEW_ALIAS[key]) return can(PAGE_VIEW_ALIAS[key] + ':view');
   return can(key + ':view');
 }
 

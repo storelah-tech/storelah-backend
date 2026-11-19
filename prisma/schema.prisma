@@ -39,6 +39,10 @@ enum TenantStatus {
   OVERDUE
   NOTICE
   INACTIVE
+  // Track A (move-out workflow, R5): rental suspended (e.g. access or billing
+  // hold) without ending the tenancy. Additive enum value; existing rows keep
+  // their values.
+  SUSPENDED
 }
 
 enum AccountType {
@@ -294,6 +298,9 @@ model Branch {
   refunds               Refund[]
   arrearsCases          ArrearsCase[]
   lateFeeWaivers        LateFeeWaiver[]
+  // Track A (move-out / refund / transfer): cases opened at this facility.
+  // Additive back-ref only.
+  moveOutCases          MoveOutCase[]
   settlementImports     SettlementImport[]
   reconciliationBatches ReconciliationBatch[]
   monthCloses           MonthClose[]
@@ -648,6 +655,11 @@ model Unit {
   bookings    Booking[]
   invoices    Invoice[]
   notices     Notice[]
+  // Track A (move-out / refund / transfer): cases, ledger lines and history
+  // rows that reference this unit. Additive back-refs only.
+  moveOutCases  MoveOutCase[]
+  ledgerEntries CustomerLedgerEntry[]
+  unitHistory   RentalUnitHistory[]
   placement   UnitPlacement? // one-to-one: a unit appears on its floor's plan at most once
   workOrders  WorkOrder[]
   incidents   Incident[]
@@ -765,6 +777,15 @@ model Tenant {
   arrearsCases           ArrearsCase[]
   lateFeeWaivers         LateFeeWaiver[]
   settlements            CustomerSettlement[]
+  // Track A (move-out / refund / transfer): per-rental case history, ledger
+  // lines, unit history and status audit. All additive back-refs.
+  moveOutCases           MoveOutCase[]
+  ledgerEntries          CustomerLedgerEntry[]
+  unitHistory            RentalUnitHistory[]
+  statusChanges          RentalStatusChange[]
+  // Track A (rental status editor, R5): optimistic locking for operator
+  // status writes (409 STALE via assertFreshVersion). Additive, defaulted.
+  version                Int                  @default(0)
   createdAt              DateTime             @default(now())
   updatedAt              DateTime             @updatedAt
 }
@@ -780,9 +801,12 @@ model Notice {
   tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   unitId    String
   unit      Unit     @relation(fields: [unitId], references: [id])
-  lastDay   DateTime // the customer-declared final day of tenancy
+  lastDay     DateTime // the customer-declared final day of tenancy
   createdAt DateTime @default(now()) // submission time
   updatedAt DateTime @updatedAt
+  // Track A: move-out cases linked to the portal submission that raised them
+  // (R2 bridge). Additive back-ref only.
+  moveOutCases MoveOutCase[]
 
   @@index([tenantId])
 }
@@ -857,6 +881,9 @@ model Invoice {
   version         Int                  @default(0)
   lines           InvoiceLine[]
   instructions    PaymentInstruction[]
+  // Track A: append-only customer ledger lines posted against this invoice.
+  // Additive back-ref only.
+  ledgerEntries   CustomerLedgerEntry[]
 
   @@index([status])
   @@index([stripeSessionId])
@@ -2522,9 +2549,17 @@ model StaffNotification {
 // approvals. amount is signed: negative = owed to the customer (refund /
 // credit), positive = the customer pays.
 // ---------------------------------------------------------------------------
+// Track A (move-out / refund / transfer, brief §5): the canonical Finance
+// record for move-out settlements, manual refunds and transfer approvals.
+// Extended from the 2026-11-04 prototype shape (ref/kind/docType/lines/amount)
+// with origin + case linkage, versioned calc snapshots, optimistic locking,
+// idempotency and the approval → processing lifecycle. Status stays a String
+// (no DB enum change): legacy PENDING/APPROVED/REJECTED rows are remapped by
+// the A2 migration data step to PENDING_APPROVAL/APPROVED/CHANGES_REQUESTED.
+// ---------------------------------------------------------------------------
 model CustomerSettlement {
   id            String    @id @default(cuid())
-  ref           String    @unique // TRF-/RF-/CH- + 7 digits
+  ref           String    @unique // TRF-/RF-/CH- + 7 digits (+ CL- zero-settlement close records)
   kind          String // TRANSFER | MOVE_OUT | REFUND
   docType       String // Transfer approval | Refund | Charge
   tenantId      String
@@ -2538,14 +2573,264 @@ model CustomerSettlement {
   lines         Json // [{ label, amount, detail? }]
   amount        Decimal   @db.Decimal(10, 2)
   adjustment    Json? // { type: CHARGE|CREDIT, category, amount, reason }
-  status        String    @default("PENDING") // PENDING | APPROVED | REJECTED
+  // PENDING_APPROVAL | CHANGES_REQUESTED | APPROVED | PROCESSING | REFUNDED |
+  // POSTED | FAILED | CANCELLED (legacy PENDING/APPROVED/REJECTED remapped in
+  // the A2 migration; legacy APPROVED stays APPROVED and flows through
+  // processing — nothing was ever posted, so it must not become POSTED).
+  // Default stays "PENDING" until A3 rewrites the settlement service to write
+  // explicit lifecycle statuses.
+  status        String    @default("PENDING") // PENDING | APPROVED | REJECTED → remapped by the A2 data step
   requestedBy   String
   decidedBy     String?
   decidedAt     DateTime?
   decisionNote  String?
+  // Track A additions (all nullable/defaulted — additive only):
+  origin        String? // MOVE_OUT | MANUAL | TRANSFER
+  moveOutCaseId String?   @unique // one Finance record per move-out case
+  moveOutCase   MoveOutCase? @relation(fields: [moveOutCaseId], references: [id], onDelete: SetNull)
+  sourceRef     String? // source transaction / invoice for MANUAL billing refunds
+  reasonCode    String? // duplicate-payment | overcharge | ... | move-out reason
+  returnMethod  String? // ORIGINAL | BANK | WALLET
+  calcVersion   Int       @default(1) // incremented on every correction (R6)
+  calcSnapshot  Json? // versioned calculation snapshot (R6); previous snapshots live in the audit trail
+  version       Int       @default(0) // optimistic locking (409 STALE)
+  idempotencyKey String?  @unique // process-refund / post-charge replay key
+  approvedBy    String?
+  approvedAt    DateTime?
+  processedBy   String?
+  processedAt   DateTime?
+  processorRef  String?
+  postingRef    String?
+  processingError String?
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
+  changeRequests   SettlementChangeRequest[]
+  processorAttempts ProcessorAttempt[]
+  ledgerEntries    CustomerLedgerEntry[]
+  rentalHistories  RentalUnitHistory[]
+
   @@index([tenantId])
   @@index([status])
+}
+
+// ---------------------------------------------------------------------------
+// Track A (move-out / refund / transfer, brief §5) — new tables. All additive:
+// brand-new tables, no changes to existing table shapes beyond the
+// CustomerSettlement extension above. Money is Decimal; JSON snapshots carry
+// cents-exact 2dp numbers. Ledger/history rows are append-only — no
+// update/delete code path exists for them (same precedent as
+// CreditLedgerEntry / FinanceAuditEvent).
+// ---------------------------------------------------------------------------
+
+// Move-out case: one row per move-out request with the 7-state workflow
+// (PENDING_MOVE_OUT | AWAITING_INSPECTION | SETTLEMENT_REVIEW |
+//  REFUND_PROCESSING | CHARGE_PROCESSING | COMPLETED | REVERSED). Status is a
+// String with a code-level allow-list (brief §5). The settlement link lives on
+// CustomerSettlement.moveOutCaseId (@unique); this side carries the back-ref.
+model MoveOutCase {
+  id                 String    @id @default(cuid())
+  caseNumber         String    @unique // MO-#######, server-generated
+  tenantId           String
+  tenant             Tenant    @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  unitId             String
+  unit               Unit      @relation(fields: [unitId], references: [id], onDelete: Restrict)
+  branchId           String?
+  branch             Branch?   @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  requestReceivedAt  DateTime
+  requestChannel     String // Customer portal | WhatsApp | Phone | Email | Onsite
+  reasonCode         String
+  requestNotes       String?
+  finalAccessDate    DateTime  @db.Date
+  noticeDays         Int
+  noticeRequiredDays Int
+  noticeCompliant    Boolean
+  status             String // 7-state workflow (see header comment)
+  policySnapshot     Json // effective moveout.* policy at request time (R7)
+  noticeId           String?
+  notice             Notice?   @relation(fields: [noticeId], references: [id], onDelete: SetNull)
+  reversedAt         DateTime?
+  reversedBy         String?
+  reversalReason     String?
+  createdBy          String
+  version            Int       @default(0) // optimistic locking (409 STALE)
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  settlement  CustomerSettlement?
+  dateChanges MoveOutDateChange[]
+  inspection  MoveOutInspection?
+
+  @@index([tenantId])
+  @@index([unitId])
+  @@index([branchId])
+  @@index([status])
+}
+
+// Move-out date change history: every change keeps previous + new date,
+// reason, actor and before/after calc snapshots. Append-only.
+model MoveOutDateChange {
+  id           String     @id @default(cuid())
+  caseId       String
+  moveOutCase  MoveOutCase @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  previousDate DateTime   @db.Date
+  newDate      DateTime   @db.Date
+  reason       String
+  byCustomer   Boolean    @default(false)
+  actor        String
+  beforeCalc   Json?
+  afterCalc    Json?
+  createdAt    DateTime   @default(now())
+
+  @@index([caseId])
+}
+
+// Mandatory physical inspection (handoff §8.9): all four release checks +
+// financial inputs. Exactly one inspection per case; submitting it creates
+// exactly one Finance record unless the result is zero (R12/R13).
+model MoveOutInspection {
+  id                        String     @id @default(cuid())
+  caseId                    String     @unique
+  moveOutCase               MoveOutCase @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  unitEmpty                 Boolean
+  doorLockWallsFloorChecked Boolean
+  accessRevoked             Boolean
+  releaseConfirmed          Boolean
+  releaseStatus             String // READY | CLEANING_REQUIRED | MAINTENANCE_REQUIRED | BLOCKED
+  // D7: operator-entered early-termination charge (commitment end is shown
+  // for reference only via the calc snapshot — it never drives the maths).
+  earlyTerminationCharge  Decimal    @default(0) @db.Decimal(10, 2)
+  damageCharge              Decimal    @default(0) @db.Decimal(10, 2)
+  cleaningCharge            Decimal    @default(0) @db.Decimal(10, 2)
+  disposalCharge            Decimal    @default(0) @db.Decimal(10, 2)
+  otherCharge               Decimal    @default(0) @db.Decimal(10, 2)
+  arrearsAmount             Decimal    @default(0) @db.Decimal(10, 2)
+  specialCredit             Decimal    @default(0) @db.Decimal(10, 2)
+  notes                     String // inspection notes/evidence — required (handoff §8.9)
+  evidenceRefs              Json?
+  inspector                 String
+  completedAt               DateTime   @default(now())
+  version                   Int        @default(0)
+  createdAt                 DateTime   @default(now())
+  updatedAt                 DateTime   @updatedAt
+}
+
+// Finance change request: correction required on a settlement or transfer,
+// with assignee, due date and response. One row per request round-trip.
+model SettlementChangeRequest {
+  id          String             @id @default(cuid())
+  settlementId String
+  settlement  CustomerSettlement @relation(fields: [settlementId], references: [id], onDelete: Cascade)
+  category    String // Unit or transfer date | Pricing or promotion | ...
+  reason      String
+  assignTeam  String?
+  assigneeId  String?
+  dueDate     DateTime?
+  requestedBy String
+  requestedAt DateTime           @default(now())
+  response    String?
+  respondedBy String?
+  respondedAt DateTime?
+  status      String             @default("OPEN") // OPEN | ADDRESSED
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+
+  @@index([settlementId])
+  @@index([status])
+}
+
+// Processor attempt: every call to the payment/refund provider, keyed by an
+// idempotency key so a retry returns the first result (no double refund).
+model ProcessorAttempt {
+  id              String             @id @default(cuid())
+  settlementId    String
+  settlement      CustomerSettlement @relation(fields: [settlementId], references: [id], onDelete: Cascade)
+  idempotencyKey  String             @unique
+  provider        String // STRIPE | BANK | WALLET
+  providerRef     String?
+  attemptNo       Int                @default(1)
+  amount          Decimal            @db.Decimal(10, 2)
+  status          String             @default("PENDING") // PENDING | SUCCEEDED | FAILED
+  errorCode       String?
+  errorMessage    String?
+  rawEventRef     String?
+  attemptedAt     DateTime           @default(now())
+  confirmedAt     DateTime?
+  reconciliation  String             @default("PENDING")
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+
+  @@index([settlementId])
+  @@index([status])
+}
+
+// Customer ledger entry (D4): append-only lines for refunds, charges and
+// transfers. Corrections use reversal/correcting entries, never overwrites.
+model CustomerLedgerEntry {
+  id           String              @id @default(cuid())
+  tenantId     String
+  tenant       Tenant              @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  unitId       String?
+  unit         Unit?               @relation(fields: [unitId], references: [id], onDelete: SetNull)
+  settlementId String?
+  settlement   CustomerSettlement? @relation(fields: [settlementId], references: [id], onDelete: SetNull)
+  invoiceId    String?
+  invoice      Invoice?            @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
+  entryType    String // REFUND | CHARGE | TRANSFER_CREDIT | TRANSFER_DEBIT | ...
+  label        String
+  debit        Decimal?            @db.Decimal(10, 2)
+  credit       Decimal?            @db.Decimal(10, 2)
+  currency     String              @default("SGD")
+  status       String              @default("POSTED")
+  postedAt     DateTime            @default(now())
+  reversalOfId String?
+  processorRef String?
+  createdBy    String
+  createdAt    DateTime            @default(now())
+
+  @@index([tenantId])
+  @@index([settlementId])
+  @@index([invoiceId])
+  @@index([status])
+}
+
+// Rental unit history: immutable per-rental segments (R11). Written when a
+// rental ends via transfer or move-out; invoices stay keyed by
+// (tenantId, unitId) so history is intact.
+model RentalUnitHistory {
+  id                String              @id @default(cuid())
+  tenantId          String
+  tenant            Tenant              @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  unitId            String
+  unit              Unit                @relation(fields: [unitId], references: [id], onDelete: Restrict)
+  startedAt         DateTime            @db.Date
+  endedAt           DateTime            @db.Date
+  endReason         String // TRANSFER | MOVE_OUT
+  replacementUnitId String?
+  pricingSnapshot   Json
+  billedTotals      Json
+  transferCredit    Decimal?            @db.Decimal(10, 2)
+  sourceSettlementId String?
+  sourceSettlement  CustomerSettlement? @relation(fields: [sourceSettlementId], references: [id], onDelete: SetNull)
+  createdAt         DateTime            @default(now())
+
+  @@index([tenantId])
+  @@index([unitId])
+}
+
+// Rental status change audit (R5): every status edit with mandatory reason,
+// actor and source. Append-only.
+model RentalStatusChange {
+  id               String   @id @default(cuid())
+  tenantId         String
+  tenant           Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  fromStatus       String?
+  toStatus         String
+  accessRestricted Boolean?
+  reason           String
+  actor            String
+  source           String // CMS | MOVE_OUT_WORKFLOW | ...
+  createdAt        DateTime @default(now())
+
+  @@index([tenantId])
 }

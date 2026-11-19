@@ -11,6 +11,7 @@
 // bill-library) so RBAC resource keys are unchanged.
 
 import { get, post, put, del, can, describeError, downloadFile, request, getMe, getCurrentUser } from './api.js';
+import { openManualRefund, changeRequestsCard } from './moveoutWorkspace.js';
 import { getFinMount, finState } from './financeShared.js';
 import { state as cmsState } from './state.js';
 import { isRangeActive, rangeLabel, rangeEmptyText } from './dateFilter.js';
@@ -24,6 +25,61 @@ export function initFinanceWorkspace() {
   const billing=document.getElementById('billing');
   if(!billing)return null;
   const finMount=id=>getFinMount(id)||finMount(id);
+  ensureRegisterStyles();
+
+  // A-1: Finance register must fit 1440px with Status, Approval/owner and
+  // Action visible (no page-level horizontal scroll). The shared .fm-table
+  // rule sets min-width:1040px + nowrap on every cell, so the 10-column
+  // register overflows the billing panel. These runtime rules scope a fixed
+  // layout to the register table only: flexible customer/purpose columns
+  // truncate with ellipsis (full text in title tooltips) and the Action
+  // column stays pinned right so Review/Open is always mouse-reachable.
+  // Small screens fall back to inner horizontal scroll (action still pinned).
+  function ensureRegisterStyles(){
+    if(document.querySelector('style[data-fm-register]'))return;
+    const st=document.createElement('style');
+    st.setAttribute('data-fm-register','1');
+    st.textContent=
+      '#bill-transactions .fm-register-card{min-width:0;overflow:hidden}'+
+      '#bill-transactions .fm-register-card .table-wrap{overflow-x:auto;max-width:100%}'+
+      '#bill-transactions table.fm-table.fm-register-table{table-layout:fixed;width:100%;min-width:0}'+
+      '#bill-transactions table.fm-table.fm-register-table th,#bill-transactions table.fm-table.fm-register-table td{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:left}'+
+      '#bill-transactions table.fm-table.fm-register-table th:first-child,#bill-transactions table.fm-table.fm-register-table td:first-child{position:static}'+
+      '#bill-transactions table.fm-table.fm-register-table th:nth-child(7),#bill-transactions table.fm-table.fm-register-table td:nth-child(7){text-align:right}'+
+      '#bill-transactions table.fm-table.fm-register-table th:nth-child(8),#bill-transactions table.fm-table.fm-register-table td:nth-child(8),'+
+      '#bill-transactions table.fm-table.fm-register-table th:nth-child(10),#bill-transactions table.fm-table.fm-register-table td:nth-child(10){text-align:center}'+
+      '#bill-transactions table.fm-table.fm-register-table th .v2-name{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}'+
+      '#bill-transactions .fm-reg-cell{display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}'+
+      '#bill-transactions table.fm-table.fm-register-table td:nth-child(3){white-space:normal}'+
+      '#bill-transactions .fm-reg-main{display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}'+
+      '#bill-transactions .fm-reg-main .v2-name{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}'+
+      '#bill-transactions .fm-reg-sub{display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10px;color:var(--muted)}'+
+      '#bill-transactions table.fm-table.fm-register-table td:nth-child(10){overflow:visible;position:sticky;right:0;background:var(--paper,#fff);z-index:3;box-shadow:-8px 0 12px -8px rgba(0,0,0,.14);text-align:center}'+
+      '#bill-transactions table.fm-table.fm-register-table th:nth-child(10){position:sticky;right:0;background:var(--paper,#fff);z-index:4;text-align:center}'+
+      '@media(max-width:760px){#bill-transactions table.fm-table.fm-register-table{min-width:720px;width:720px}}'+
+      // A-3: register header must stay usable at 375px — title stacks above
+      // the three actions (Export / Manual refund / New document) instead of
+      // squeezing beside them. Scoped to #billing; shared layout untouched.
+      '@media(max-width:760px){#billing>.head{flex-direction:column;align-items:stretch}#billing>.head .actions{width:100%}}'+
+      // A-4: review drawer breakdown must fit the modal width at 1440px with
+      // Basis + Amount fully readable and no inner horizontal scroll. The
+      // shared .fm-table rule (min-width:1040px + nowrap on every cell)
+      // overflows the review modal and clips Amount. These runtime rules
+      // scope a fixed layout to the breakdown table only: component/basis
+      // wrap, Amount stays right-aligned tabular nowrap. Scoped to #fmModal;
+      // shared tables untouched. 375px: modal goes near full-width so no
+      // amount is clipped.
+      '#fmModal .fm-breakdown-wrap{overflow:visible;overflow-x:visible;max-width:100%}'+
+      '#fmModal table.fm-table.fm-breakdown-table{table-layout:fixed;width:100%;min-width:0}'+
+      '#fmModal table.fm-table.fm-breakdown-table th,#fmModal table.fm-table.fm-breakdown-table td{white-space:normal;overflow:visible;text-overflow:clip}'+
+      '#fmModal table.fm-table.fm-breakdown-table th:first-child,#fmModal table.fm-table.fm-breakdown-table td:first-child{position:static;background:transparent;text-align:left}'+
+      '#fmModal table.fm-table.fm-breakdown-table th:nth-child(1){width:32%}'+
+      '#fmModal table.fm-table.fm-breakdown-table th:nth-child(2),#fmModal table.fm-table.fm-breakdown-table td:nth-child(2){text-align:left;overflow-wrap:break-word;word-break:break-word}'+
+      '#fmModal table.fm-table.fm-breakdown-table th:nth-child(3){width:7.5rem}'+
+      '#fmModal table.fm-table.fm-breakdown-table th:nth-child(3),#fmModal table.fm-table.fm-breakdown-table td:nth-child(3){text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}'+
+      '@media(max-width:480px){#fmModal{padding:8px}#fmModal .fm-modal-card{width:100%;max-width:100%}#fmModal .fm-modal-card section{padding:12px}#fmModal table.fm-table.fm-breakdown-table th,#fmModal table.fm-table.fm-breakdown-table td{padding:8px 8px}#fmModal table.fm-table.fm-breakdown-table th:nth-child(1){width:30%}#fmModal table.fm-table.fm-breakdown-table th:nth-child(3){width:5.75rem}}';
+    document.head.appendChild(st);
+  }
 
   const money=n=>new Intl.NumberFormat('en-SG',{style:'currency',currency:'SGD',maximumFractionDigits:0}).format(Number.isFinite(n)?n:0);
   const num=(n,d=0)=>new Intl.NumberFormat('en-SG',{maximumFractionDigits:d,minimumFractionDigits:d}).format(Number.isFinite(n)?n:0);
@@ -215,7 +271,12 @@ export function initFinanceWorkspace() {
     };
     if(meta[id]){
       head.querySelector('h1').textContent=meta[id][0];head.querySelector('p').textContent=meta[id][1];
-      headActions.innerHTML=id==='bill-transactions'?'<button class="btn" data-fm-action="payment-policy">Payment policy</button><button class="btn" data-fm-action="transaction-export">Export</button><button class="primary" data-fm-action="refund-calculator">＋ Calculate refund</button>':'<button class="btn" data-fm-action="compare">Compare scenarios</button><button class="btn" data-fm-action="export">Export</button><button class="btn" data-fm-action="projection-report" title="Investor projection report for the loaded model (calculations only)">Projection report (PDF)</button><span data-fm-publish-slot></span>';
+      // A-3: register header is exactly Export (live register CSV) +
+      // Manual refund (canonical CustomerSettlement MANUAL flow) + New
+      // document (invoice workspace). The legacy Phase-4 refund calculator
+      // is retired here — its modal/handlers remain for other surfaces but
+      // no live register surface renders a trigger for them.
+      headActions.innerHTML=id==='bill-transactions'?'<button class="btn" data-fm-action="register-export">Export</button>'+(can('bill-transactions:create')?'<button class="btn" data-fm-action="manual-refund" data-perm="bill-transactions:create">＋ Manual refund</button>':'')+(can('bill-invoices:create')?'<button class="primary" data-fm-action="create-invoice" data-perm="bill-invoices:create">＋ New document</button>':''):'<button class="btn" data-fm-action="compare">Compare scenarios</button><button class="btn" data-fm-action="export">Export</button><button class="btn" data-fm-action="projection-report" title="Investor projection report for the loaded model (calculations only)">Projection report (PDF)</button><span data-fm-publish-slot></span>';
     }else{
       head.querySelector('h1').textContent='Finance Management';head.querySelector('p').textContent='Financial planning, budgets, performance tracking, billing and cash control.';headActions.innerHTML=originalActions;
     }
@@ -1991,13 +2052,30 @@ export function initFinanceWorkspace() {
   // settlements (GET /finance/register). Review calls the source record's
   // own approval endpoint; the processor reference stays in the detail.
   const regMoney=v=>new Intl.NumberFormat('en-SG',{style:'currency',currency:'SGD'}).format(Number(v)||0);
-  const regState={search:'',docType:'',status:'',facility:'',sort:'date',dir:-1,data:null,error:null};
+  const regState={search:'',docType:'',status:'',facility:'',period:'mtd',unitType:'',customFrom:'',customTo:'',sort:'date',dir:-1,data:null,error:null};
   const REG_DOCS=['Invoice','Payment','Refund','Charge','Credit note','Transfer approval','Adjustment'];
-  async function loadRegister(){const q=new URLSearchParams();if(regState.search)q.set('search',regState.search);if(regState.docType)q.set('docType',regState.docType);if(regState.status)q.set('status',regState.status);if(regState.facility)q.set('facility',regState.facility);try{regState.data=await get('/finance/register'+(q.toString()?'?'+q:''));regState.error=null}catch(e){regState.data={summary:{total:0,pending:0,failed:0,refundsPending:0},rows:[]};regState.error=describeError(e)}}
+  // A-2 register filters (handoff 12): Period presets resolve to ?from=&to=
+  // (UTC YYYY-MM-DD, inclusive — the register's server contract) and Unit type
+  // filters on the UnitSize code carried per row (LOCKER/XS/SMALL/MEDIUM/LARGE/
+  // XLBIZ). Facility scope stays server-side (branchIds in listRegister).
+  const REG_PERIODS=[['mtd','MTD'],['today','Today'],['7d','Last 7 days'],['lastMonth','Last month'],['custom','Custom range']];
+  const REG_UNIT_TYPES=[['LOCKER','Locker'],['XS','XS'],['SMALL','S'],['MEDIUM','M'],['LARGE','L'],['XLBIZ','XL']];
+  const regDayUTC=(d)=>d.toISOString().slice(0,10);
+  function regPeriodRange(){const t=new Date(),today=regDayUTC(t);
+    if(regState.period==='today')return {from:today,to:today};
+    if(regState.period==='7d'){const s=new Date(t);s.setUTCDate(s.getUTCDate()-6);return {from:regDayUTC(s),to:today}}
+    if(regState.period==='lastMonth'){const y=t.getUTCFullYear(),m=t.getUTCMonth();return {from:regDayUTC(new Date(Date.UTC(y,m-1,1))),to:regDayUTC(new Date(Date.UTC(y,m,0)))}}
+    if(regState.period==='custom')return {from:regState.customFrom||null,to:regState.customTo||null};
+    return {from:today.slice(0,7)+'-01',to:today};
+  }
+  async function loadRegister(){const q=new URLSearchParams();if(regState.search)q.set('search',regState.search);if(regState.docType)q.set('docType',regState.docType);if(regState.status)q.set('status',regState.status);if(regState.facility)q.set('facility',regState.facility);if(regState.unitType)q.set('unitType',regState.unitType);const r=regPeriodRange();if(r.from)q.set('from',r.from);if(r.to)q.set('to',r.to);try{regState.data=await get('/finance/register'+(q.toString()?'?'+q:''));regState.error=null}catch(e){regState.data={summary:{total:0,pending:0,failed:0,refundsPending:0},rows:[]};regState.error=describeError(e)}}
   const regDate=v=>v?new Date(v+'T00:00:00Z').toLocaleDateString('en-SG',{day:'numeric',month:'short',year:'numeric',timeZone:'UTC'}):'—';
-  function regPill(s){return /^(Paid|Posted|Resolved|Approved)$/.test(s)?'green':/^(Failed|Rejected|Overdue|Void|Written off)$/.test(s)?'red':/Pending|Awaiting|Due|Draft/.test(s)?'amber':'blue'}
+  function regPill(s){return /^(Paid|Posted|Resolved|Approved)$/.test(s)?'green':/^(Failed|Rejected|Overdue|Void|Written off)$/.test(s)?'red':/Pending|Awaiting|Due|Draft|Part paid/.test(s)?'amber':'blue'}
   function renderTransactions(){
     const panel=finMount('bill-transactions');if(!panel)return;
+    // A-3: the register's actions (Export, Manual refund, New document) live
+    // in the top header (updateHeader) — the filter bar keeps filters only
+    // (A-2) so Export appears exactly once on the register.
     if(!regState.data){panel.innerHTML='<div class="card"><div class="card-body"><div class="section-empty">Loading the register…</div></div></div>';loadRegister().then(()=>{if(isActive('bill-transactions'))renderTransactions()});return}
     const d=regState.data,sum=d.summary,cols=[['date','Date'],['recordId','Record ID'],['customer','Customer / unit'],['docType','Document'],['purpose','Purpose'],['method','Payment method'],['amount','Amount'],['status','Status'],['approver','Approval / owner']];
     const rows=d.rows.slice().sort((a,b)=>{const x=a[regState.sort],y=b[regState.sort];return (typeof x==='number'?x-y:String(x??'').localeCompare(String(y??'')))*regState.dir});
@@ -2005,32 +2083,216 @@ export function initFinanceWorkspace() {
     panel.innerHTML=`<div class="fm-note" style="margin-bottom:12px"><b>One register for payment-related records</b> Invoices, payment instructions, receipts, refunds, credit notes, adjustments and unit-transfer approvals are searchable here. A processor reference is kept inside transaction detail because it is evidence—not a useful primary table column.</div>
     ${regState.error?`<div class="fm-note" role="alert"><b>Couldn’t load the register.</b> ${escapeHtml(regState.error)}</div>`:''}
     <div class="fm-kpis"><div class="fm-kpi"><small>Records</small><strong>${num(sum.total)}</strong><span>All document types</span></div><div class="fm-kpi"><small>Awaiting approval</small><strong>${num(sum.pending)}</strong><span>No provider instruction yet</span></div><div class="fm-kpi"><small>Failed payments</small><strong>${num(sum.failed)}</strong><span>Need recovery</span></div><div class="fm-kpi"><small>Refunds, charges &amp; transfers</small><strong>${num(sum.refundsPending)}</strong><span>Pending Finance decision</span></div></div>
-    <div class="fm-filter-bar"><label class="fm-select-wrap" style="flex:1 1 260px"><small>Search</small><input class="fm-select" data-reg-search value="${escapeHtml(regState.search)}" placeholder="ID, document, customer, unit, facility or payment method"></label><label class="fm-select-wrap"><small>Facility</small><select class="fm-select" data-reg-facility><option value="">All facilities</option>${srv.branches.map(b=>`<option value="${escapeHtml(b.code)}" ${regState.facility===b.code?'selected':''}>StoreLah ${escapeHtml(b.name)}</option>`).join('')}</select></label><label class="fm-select-wrap"><small>Document type</small><select class="fm-select" data-reg-doc><option value="">All documents</option>${REG_DOCS.map(x=>`<option ${regState.docType===x?'selected':''}>${x}</option>`).join('')}</select></label><label class="fm-select-wrap"><small>Status</small><select class="fm-select" data-reg-status><option value="">All statuses</option>${statuses.map(x=>`<option ${regState.status===x?'selected':''}>${escapeHtml(x)}</option>`).join('')}</select></label><span class="spacer"></span><button class="btn" data-fm-action="register-export">Export</button></div>
-    <div class="card"><div class="table-wrap"><table class="fm-table"><thead><tr>${cols.map(([k,l])=>`<th><button class="v2-name" data-reg-sort="${k}" aria-label="Sort by ${l}">${l}${regState.sort===k?(regState.dir>0?' ▲':' ▼'):''}</button></th>`).join('')}<th></th></tr></thead><tbody>${rows.map(r=>`<tr><td>${escapeHtml(regDate(r.date))}</td><td><b>${escapeHtml(r.recordId)}</b></td><td>${r.tenantId?`<button class="v2-name" data-cust-open="${escapeHtml(r.tenantId)}">${escapeHtml(r.customer)}</button>`:escapeHtml(r.customer)}<small style="display:block">${escapeHtml(r.unitName||r.unit||'—')}${r.facility?' · '+escapeHtml(r.facility):''}</small></td><td>${escapeHtml(r.docType)}</td><td>${escapeHtml(r.purpose)}</td><td>${escapeHtml(r.method||'—')}</td><td>${r.amount<0?'−':''}${regMoney(Math.abs(r.amount))}</td><td><span class="pill ${regPill(r.status)}">${escapeHtml(r.status)}</span></td><td>${escapeHtml(r.approver||'—')}</td><td><button class="${r.pending?'primary':'btn'}" data-fm-action="register-open" data-reg-key="${escapeHtml(r.key)}">${r.pending?'Review':'Open'}</button></td></tr>`).join('')||'<tr><td colspan="10" style="text-align:center;padding:28px">No records match these filters.</td></tr>'}</tbody></table></div></div>`;
+    <div class="fm-filter-bar"><label class="fm-select-wrap" style="flex:1 1 260px"><small>Search</small><input class="fm-select" data-reg-search value="${escapeHtml(regState.search)}" placeholder="ID, document, customer, unit, facility or payment method"></label><label class="fm-select-wrap"><small>Facility</small><select class="fm-select" data-reg-facility><option value="">All facilities</option>${srv.branches.map(b=>`<option value="${escapeHtml(b.code)}" ${regState.facility===b.code?'selected':''}>StoreLah ${escapeHtml(b.name)}</option>`).join('')}</select></label><label class="fm-select-wrap"><small>Document type</small><select class="fm-select" data-reg-doc><option value="">All documents</option>${REG_DOCS.map(x=>`<option ${regState.docType===x?'selected':''}>${x}</option>`).join('')}</select></label><label class="fm-select-wrap"><small>Status</small><select class="fm-select" data-reg-status><option value="">All statuses</option>${statuses.map(x=>`<option ${regState.status===x?'selected':''}>${escapeHtml(x)}</option>`).join('')}</select></label><label class="fm-select-wrap"><small>Period</small><select class="fm-select" data-reg-period>${REG_PERIODS.map(([v,l])=>`<option value="${v}" ${regState.period===v?'selected':''}>${l}</option>`).join('')}</select></label>${regState.period==='custom'?`<label class="fm-select-wrap"><small>From</small><input class="fm-select" type="date" data-reg-from value="${escapeHtml(regState.customFrom)}" max="${escapeHtml(regDayUTC(new Date()))}"></label><label class="fm-select-wrap"><small>To</small><input class="fm-select" type="date" data-reg-to value="${escapeHtml(regState.customTo)}" max="${escapeHtml(regDayUTC(new Date()))}"></label>`:''}<label class="fm-select-wrap"><small>Unit type</small><select class="fm-select" data-reg-unittype><option value="">All unit types</option>${REG_UNIT_TYPES.map(([v,l])=>`<option value="${v}" ${regState.unitType===v?'selected':''}>${l}</option>`).join('')}</select></label></div>
+    ${changeRequestsCard(d.rows)}
+    <div class="card fm-register-card"><div class="table-wrap"><table class="fm-table fm-register-table"><colgroup><col style="width:104px"><col style="width:128px"><col><col style="width:98px"><col><col style="width:102px"><col style="width:94px"><col style="width:136px"><col style="width:118px"><col style="width:96px"></colgroup><thead><tr>${cols.map(([k,l])=>`<th scope="col"><button class="v2-name" data-reg-sort="${k}" aria-label="Sort by ${l}" title="Sort by ${escapeHtml(l)}">${l}${regState.sort===k?(regState.dir>0?' ▲':' ▼'):''}</button></th>`).join('')}<th scope="col" aria-label="Action">Action</th></tr></thead><tbody>${rows.map(r=>{const custLabel=r.customer||'—',unitLabel=[r.unitName||r.unit||'—',r.facility].filter(Boolean).join(' · '),recordLabel=r.recordId||'',purposeLabel=r.purpose||'',methodLabel=r.method||'—',approverLabel=r.approver||'—',statusLabel=r.status||'';return `<tr><td><span class="fm-reg-cell" title="${escapeHtml(regDate(r.date))}">${escapeHtml(regDate(r.date))}</span></td><td><b class="fm-reg-cell" title="${escapeHtml(recordLabel)}">${escapeHtml(recordLabel)}</b></td><td><span class="fm-reg-main" title="${escapeHtml(custLabel)}">${r.tenantId?`<button class="v2-name" data-cust-open="${escapeHtml(r.tenantId)}" title="${escapeHtml(custLabel)}">${escapeHtml(custLabel)}</button>`:escapeHtml(custLabel)}</span><small class="fm-reg-sub" title="${escapeHtml(unitLabel)}">${escapeHtml(unitLabel)}</small></td><td><span class="fm-reg-cell" title="${escapeHtml(r.docType||'')}">${escapeHtml(r.docType)}</span></td><td><span class="fm-reg-cell" title="${escapeHtml(purposeLabel)}">${escapeHtml(purposeLabel)}</span></td><td><span class="fm-reg-cell" title="${escapeHtml(methodLabel)}">${escapeHtml(methodLabel)}</span></td><td><span class="fm-reg-cell" title="${r.amount<0?'−':''}${regMoney(Math.abs(r.amount))}">${r.amount<0?'−':''}${regMoney(Math.abs(r.amount))}</span></td><td><span class="pill ${regPill(r.status)}" title="${escapeHtml(statusLabel)}">${escapeHtml(statusLabel)}</span></td><td><span class="fm-reg-cell" title="${escapeHtml(approverLabel)}">${escapeHtml(approverLabel)}</span></td><td><button class="${r.pending?'primary':'btn'}" data-fm-action="register-open" data-reg-key="${escapeHtml(r.key)}" title="${r.pending?'Review':'Open'} ${escapeHtml(recordLabel)}">${r.pending?'Review':'Open'}</button></td></tr>`}).join('')||'<tr><td colspan="10" style="text-align:center;padding:28px">No records match these filters.</td></tr>'}</tbody></table></div></div>`;
     let t;panel.querySelector('[data-reg-search]')?.addEventListener('input',e=>{clearTimeout(t);t=setTimeout(()=>{regState.search=e.target.value.trim();regState.data=null;renderTransactions()},300)});
     panel.querySelector('[data-reg-doc]')?.addEventListener('change',e=>{regState.docType=e.target.value;regState.data=null;renderTransactions()});
     panel.querySelector('[data-reg-status]')?.addEventListener('change',e=>{regState.status=e.target.value;regState.data=null;renderTransactions()});
     panel.querySelector('[data-reg-facility]')?.addEventListener('change',e=>{regState.facility=e.target.value;regState.data=null;renderTransactions()});
+    panel.querySelector('[data-reg-period]')?.addEventListener('change',e=>{regState.period=e.target.value;if(regState.period!=='custom'){regState.customFrom='';regState.customTo=''}regState.data=null;renderTransactions()});
+    panel.querySelector('[data-reg-from]')?.addEventListener('change',e=>{regState.customFrom=e.target.value;regState.data=null;renderTransactions()});
+    panel.querySelector('[data-reg-to]')?.addEventListener('change',e=>{regState.customTo=e.target.value;regState.data=null;renderTransactions()});
+    panel.querySelector('[data-reg-unittype]')?.addEventListener('change',e=>{regState.unitType=e.target.value;regState.data=null;renderTransactions()});
     panel.querySelectorAll('[data-reg-sort]').forEach(b=>b.addEventListener('click',()=>{const k=b.dataset.regSort;if(regState.sort===k)regState.dir*=-1;else{regState.sort=k;regState.dir=k==='date'||k==='amount'?-1:1}renderTransactions()}));
+    // Jump-action handoff (§3): profile / case / transfer "Open Finance
+    // approval" lands here with a record key to pre-open in the drawer.
+    try {
+      const jump = sessionStorage.getItem('storelah.openRegister');
+      if (jump && regState.data?.rows.some((x) => x.key === jump)) {
+        sessionStorage.removeItem('storelah.openRegister');
+        setTimeout(() => openRegisterRecord(jump), 30);
+      }
+    } catch (e) { /* private mode: operator uses manual Review instead */ }
   }
   const REG_APPROVE={invoice:id=>`/finance/invoices/${id}/approve`,payment:id=>`/finance/transactions/${id}/approve`,refund:id=>`/finance/refunds/${id}/approve`,settlement:id=>`/finance/settlements/${id}/approve`};
   const REG_REJECT={refund:id=>`/finance/refunds/${id}/reject`,settlement:id=>`/finance/settlements/${id}/reject`,payment:id=>`/finance/transactions/${id}/cancel`};
-  async function openRegisterRecord(key){
-    const r=regState.data?.rows.find(x=>x.key===key);if(!r)return;
-    let lines='';if(r.source==='settlement'){try{const s=(await get('/finance/settlements')).find(x=>x.id===r.id);if(s)lines=`<div class="table-wrap" style="margin-top:12px"><table class="fm-table"><thead><tr><th>System-calculated component</th><th>Basis</th><th>Amount</th></tr></thead><tbody>${s.lines.map(l=>`<tr><td>${escapeHtml(l.label)}</td><td>${escapeHtml(l.detail||'')}</td><td>${l.amount<0?'−':''}${regMoney(Math.abs(l.amount))}</td></tr>`).join('')}</tbody></table></div>${s.adjustment?`<p class="fm-note" style="margin-top:8px"><b>Special adjustment:</b> ${escapeHtml(s.adjustment.category)} · ${escapeHtml(s.adjustment.reason)}</p>`:''}`}catch{}}
-    const canApprove=can('bill-transactions:approve')&&r.pending&&REG_APPROVE[r.source];
-    showModal((r.pending?'Review ':'')+r.recordId,r.pending?'No provider instruction created yet.':'Record detail and evidence.',`<div class="info-grid"><div class="info"><small>Customer</small><b>${escapeHtml(r.customer)}</b></div><div class="info"><small>Unit</small><b>${escapeHtml(r.unitName||r.unit||'—')}</b></div><div class="info"><small>Document</small><b>${escapeHtml(r.docType)}</b></div><div class="info"><small>Purpose</small><b>${escapeHtml(r.purpose)}</b></div><div class="info"><small>Amount</small><b>${r.amount<0?'Refund / credit ':''}${regMoney(Math.abs(r.amount))}</b></div><div class="info"><small>Method</small><b>${escapeHtml(r.method||'—')}</b></div><div class="info"><small>Status</small><b>${escapeHtml(r.status)}</b></div><div class="info"><small>Approval / owner</small><b>${escapeHtml(r.approver||'—')}</b></div><div class="info"><small>Processor reference</small><b>${escapeHtml(r.processor||'—')}</b></div><div class="info"><small>Scheduled / posted</small><b>${escapeHtml(regDate(r.scheduled))}</b></div></div>${lines}${canApprove&&REG_REJECT[r.source]?`<label class="field" style="margin-top:12px"><span>Note (required to request changes)</span><textarea id="fmRegNote" rows="2"></textarea></label>`:''}`,canApprove?'Approve':'',canApprove?()=>{regDecide(r,'approve');return true}:null);
-    const foot=document.getElementById('fmModalConfirm')?.parentElement;foot?.querySelector('[data-reg-reject]')?.remove();if(canApprove&&REG_REJECT[r.source]&&foot&&!foot.querySelector('[data-reg-reject]'))foot.insertAdjacentHTML('afterbegin',`<button class="btn" data-reg-reject="${escapeHtml(r.key)}">Request changes</button>`);
+  // ----- Track A review drawer: settlements + transfers (handoff §§10.5–10.7, 11.8) -----
+  // Canonical Finance review for move-out settlements, manual refunds/charges
+  // and unit transfers. Every money-moving action is perm-gated
+  // (data-perm) and every mutation runs server-side with optimistic locking.
+  async function openRegisterRecord(key) {
+    const r = regState.data?.rows.find((x) => x.key === key);
+    if (!r) return;
+    // SessionStorage jump (profile / register / case workspace "Open Finance
+    // approval") lands here through the same drawer as a manual Review click.
+    if (r.source === 'settlement') { openSettlementDrawer(r); return; }
+    const canApprove = can('bill-transactions:approve') && r.pending && REG_APPROVE[r.source];
+    showModal((r.pending ? 'Review ' : '') + r.recordId, r.pending ? 'No provider instruction created yet.' : 'Record detail and evidence.', `<div class="info-grid"><div class="info"><small>Customer</small><b>${escapeHtml(r.customer)}</b></div><div class="info"><small>Unit</small><b>${escapeHtml(r.unitName || r.unit || '—')}</b></div><div class="info"><small>Document</small><b>${escapeHtml(r.docType)}</b></div><div class="info"><small>Purpose</small><b>${escapeHtml(r.purpose)}</b></div><div class="info"><small>Amount</small><b>${r.amount < 0 ? 'Refund / credit ' : ''}${regMoney(Math.abs(r.amount))}</b></div><div class="info"><small>Method</small><b>${escapeHtml(r.method || '—')}</b></div><div class="info"><small>Status</small><b>${escapeHtml(r.status)}</b></div><div class="info"><small>Approval / owner</small><b>${escapeHtml(r.approver || '—')}</b></div><div class="info"><small>Processor reference</small><b>${escapeHtml(r.processor || '—')}</b></div><div class="info"><small>Scheduled / posted</small><b>${escapeHtml(regDate(r.scheduled))}</b></div></div>${canApprove && REG_REJECT[r.source] ? `<label class="field" style="margin-top:12px"><span>Note (required to request changes)</span><textarea id="fmRegNote" rows="2"></textarea></label>` : ''}`, canApprove ? 'Approve' : '', canApprove ? () => { regDecide(r, 'approve'); return true; } : null);
+    const foot = document.getElementById('fmModalConfirm')?.parentElement;
+    foot?.querySelector('[data-reg-reject]')?.remove();
+    if (canApprove && REG_REJECT[r.source] && foot && !foot.querySelector('[data-reg-reject]')) foot.insertAdjacentHTML('afterbegin', `<button class="btn" data-reg-reject="${escapeHtml(r.key)}">Request changes</button>`);
   }
-  async function regDecide(r,how){
-    const note=document.getElementById('fmRegNote')?.value.trim()||'';
-    try{
-      if(how==='reject'){if(!note){notify('Say what needs to change.');return}await post(REG_REJECT[r.source](encodeURIComponent(r.id)),r.source==='refund'?{reason:note}:{note})}
-      else{await post(REG_APPROVE[r.source](encodeURIComponent(r.id)),{})}
-      modal.classList.remove('open');notify(`${r.recordId} ${how==='reject'?'returned to the initiator':'approved'}.`);regState.data=null;renderTransactions();
-    }catch(err){notify(describeError(err))}
+  async function regDecide(r, how) {
+    const note = document.getElementById('fmRegNote')?.value.trim() || '';
+    try {
+      if (how === 'reject') { if (!note) { notify('Say what needs to change.'); return; } await post(REG_REJECT[r.source](encodeURIComponent(r.id)), r.source === 'refund' ? { reason: note } : { note }); }
+      else { await post(REG_APPROVE[r.source](encodeURIComponent(r.id)), {}); }
+      modal.classList.remove('open'); notify(`${r.recordId} ${how === 'reject' ? 'returned to the initiator' : 'approved'}.`); regState.data = null; renderTransactions();
+    } catch (err) { notify(describeError(err)); }
   }
-  document.addEventListener('click',e=>{const b=e.target.closest('[data-reg-reject]');if(!b)return;const r=regState.data?.rows.find(x=>x.key===b.dataset.regReject);if(r)regDecide(r,'reject')});
+  document.addEventListener('click', (e) => { const b = e.target.closest('[data-reg-reject]'); if (!b) return; const r = regState.data?.rows.find((x) => x.key === b.dataset.regReject); if (r) regDecide(r, 'reject'); });
+  let regCurrent = null; // { key, id, isTransfer, status, recordId }
+  const TA_CATS = ['Unit or transfer date', 'Pricing or promotion', 'Proration calculation', 'Security deposit', 'Protection Plan', 'Customer authorisation', 'Other'];
+  const TA_ASSIGN = ['Operations · named requestor', 'Operations · Facility team', 'Operations · Sales owner'];
+  async function openSettlementDrawer(r) {
+    const isTransfer = r.docType === 'Transfer approval';
+    let d = null;
+    try {
+      d = isTransfer ? await get('/transfers/' + encodeURIComponent(r.id)) : await get('/finance/settlements/' + encodeURIComponent(r.id));
+    } catch (err) { notify(describeError(err)); return; }
+    const st = d.status;
+    regCurrent = { key: r.key, id: r.id, isTransfer, status: st, recordId: r.recordId, tenantId: r.tenantId };
+    const pend = st === 'PENDING_APPROVAL' || st === 'PENDING';
+    const changes = st === 'CHANGES_REQUESTED';
+    const approved = st === 'APPROVED';
+    const failed = st === 'FAILED' || st === 'PROCESSING';
+    const isRefund = !isTransfer && (d.docType === 'Refund' || Number(d.amount) < 0);
+    const canA = can('bill-transactions:approve');
+    const canU = can(isTransfer ? 'customer-transfers:update' : 'bill-transactions:update');
+    const lines = (d.lines || []).map((l) => `<tr><td>${escapeHtml(l.label)}</td><td>${escapeHtml(l.detail || '')}</td><td>${Number(l.amount) < 0 ? '−' : ''}${regMoney(Math.abs(Number(l.amount)))}</td></tr>`).join('');
+    const hist = (d.changeRequests || []).map((c) => `<div class="exception"><span class="severity">!</span><div><b>${escapeHtml(c.category || 'Changes requested')}</b><br><small>${escapeHtml(c.reason || '')} · ${escapeHtml(c.requestedBy || '')}${c.dueDate ? ' · due ' + escapeHtml(String(c.dueDate).slice(0, 10)) : ''}${c.response ? ' · responded: ' + escapeHtml(c.response) : ' · awaiting correction'}</small></div></div>`).join('');
+    const attempts = (d.attempts || []).map((a) => `<div class="fm-note-cell">${escapeHtml(a.provider || '')} · ${escapeHtml(a.providerRef || a.status || '')}${a.failureReason ? ' · ' + escapeHtml(a.failureReason) : ''}</div>`).join('');
+    const dest = isTransfer && d.destUnit ? `<div class="info"><small>Destination</small><b>${escapeHtml(d.destUnit.unitName || d.destUnit.unitCode)}</b></div><div class="info"><small>Effective date</small><b>${escapeHtml(regDate(d.effectiveDate))}</b></div>` : '';
+    const failNote = d.processingError ? `<div class="fm-note" role="alert"><b>Processor result:</b> ${escapeHtml(d.processingError)} — still ${escapeHtml(st === 'APPROVED' ? 'Approved' : 'Processing')}, never a completed credit.${st === 'APPROVED' ? ' <b>Return for changes</b> to switch the return method, or <b>Cancel</b> this refund with a reason.' : ''}</div>` : '';
+    // A-17: a future-dated approved transfer cannot post early — the Post
+    // button is disabled until the SG effective date, with the date in copy.
+    const trEffYmd = isTransfer && d && d.effectiveDate ? String(d.effectiveDate).slice(0, 10) : '';
+    const sgTodayYmd = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Singapore', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+    const trFuture = !!(isTransfer && approved && trEffYmd && trEffYmd > sgTodayYmd);
+    const futureNote = trFuture ? `<div class="fm-note" style="margin-top:12px"><b>Takes effect on ${escapeHtml(regDate(trEffYmd))} (Singapore).</b> Posting unlocks on/after that date — the source unit stays active until then.</div>` : '';
+    showModal((r.pending ? 'Review ' : '') + r.recordId, r.pending ? 'No provider instruction created yet.' : 'Record detail and evidence.',
+      `<div class="info-grid"><div class="info"><small>Customer</small><b>${r.tenantId ? `<button class="v2-name" data-cust-open="${escapeHtml(r.tenantId)}">${escapeHtml(r.customer)}</button>` : escapeHtml(r.customer)}</b></div><div class="info"><small>Unit</small><b>${escapeHtml(r.unitName || r.unit || '—')}</b></div>${dest}<div class="info"><small>Document</small><b>${escapeHtml(r.docType)}</b></div><div class="info"><small>Purpose</small><b>${escapeHtml(r.purpose)}</b></div><div class="info"><small>Amount</small><b>${isRefund || Number(d.amount) < 0 ? 'Refund / credit ' : ''}${regMoney(Math.abs(Number(d.amount)))}</b></div><div class="info"><small>Method</small><b>${escapeHtml(d.returnMethodLabel || d.returnMethod || r.method || '—')}</b></div><div class="info"><small>Status</small><b>${escapeHtml(r.status)}${approved ? ' · Approved; awaiting processor submission.' : ''}</b></div><div class="info"><small>Approval / owner</small><b>${escapeHtml(d.approvedBy || r.approver || '—')}</b></div><div class="info"><small>Processor reference</small><b>${escapeHtml(d.processorRef || '—')}</b></div><div class="info"><small>Scheduled / posted</small><b>${escapeHtml(regDate(d.effectiveDate))}</b></div></div>` +
+      (lines ? `<div class="table-wrap fm-breakdown-wrap" style="margin-top:12px"><table class="fm-table fm-breakdown-table"><thead><tr><th>System-calculated component</th><th>Basis</th><th>Amount</th></tr></thead><tbody>${lines}</tbody></table></div>` : '') +
+      (d.adjustment ? `<p class="fm-note" style="margin-top:8px"><b>Special adjustment:</b> ${escapeHtml(d.adjustment.category)} · ${escapeHtml(d.adjustment.reason)}</p>` : '') +
+      (hist ? `<div style="margin-top:12px"><b>Finance change requests</b>${hist}</div>` : '') +
+      (attempts ? `<div style="margin-top:8px"><b>Processor attempts</b>${attempts}</div>` : '') + failNote + futureNote +
+      (changes ? `<div class="fm-note" style="margin-top:12px"><b>Awaiting Operations correction.</b> Correct and resubmit from the same record — the request keeps its ID and history.</div>` : '') +
+      (pend && !canA ? `<div class="fm-note" style="margin-top:12px">You can view this record, but approval needs the Transactions approve permission.</div>` : ''),
+      '', null);
+    const foot = document.getElementById('fmModalConfirm')?.parentElement;
+    if (foot) {
+      const btns = [];
+      if (pend && canA) {
+        btns.push(`<button class="btn" data-fm-action="ta-changes">Request changes</button>`);
+        btns.push(isTransfer
+          ? `<button class="primary" data-fm-action="ta-approve-transfer">Approve &amp; post transfer</button>`
+          : `<button class="primary" data-fm-action="ta-approve">Approve</button>`);
+      }
+      if (approved && canA && !isTransfer) btns.push(isRefund ? `<button class="primary" data-fm-action="ta-process">Process refund</button>` : `<button class="primary" data-fm-action="ta-process">Post customer charge</button>`);
+      if (approved && canA && isTransfer) btns.push(trFuture
+        ? `<button class="primary" disabled title="Takes effect on ${escapeHtml(regDate(trEffYmd))} (Singapore) — posting unlocks on/after that date.">Post transfer (effective ${escapeHtml(regDate(trEffYmd))})</button>`
+        : `<button class="primary" data-fm-action="ta-execute">Post transfer</button>`);
+      if (failed && canA && !isTransfer) btns.push(`<button class="primary" data-fm-action="ta-process">Retry processing</button>`);
+      // A-16: a blocked APPROVED (or failed) settlement is never stuck — it
+      // can be returned for changes or cancelled with a reason.
+      if ((approved || failed) && canA && !isTransfer) {
+        btns.push(`<button class="btn" data-fm-action="ta-changes">Return for changes</button>`);
+        btns.push(`<button class="btn" data-fm-action="ta-cancel">Cancel</button>`);
+      }
+      if (changes && canU) btns.push(`<button class="primary" data-fm-action="ta-correct">Submit correction</button>`);
+      btns.push(`<button class="btn" data-fm-action="ta-close">Close</button>`);
+      foot.innerHTML = btns.join('');
+    }
+  }
+  async function refreshAfterReg(msg) {
+    modal.classList.remove('open');
+    if (msg) notify(msg);
+    regState.data = null;
+    renderTransactions();
+    if (regCurrent) openRegisterRecord(regCurrent.key);
+  }
+  function taChangesModal() {
+    const c = regCurrent;
+    if (!c) return;
+    const cats = c.isTransfer ? TA_CATS : ['Amount or calculation', 'Source transaction', 'Return method', 'Evidence / notes', 'Other'];
+    showModal('Request changes · ' + c.recordId, 'The record returns to Operations — no approval or processor instruction while returned.',
+      `<div class="form-grid"><label class="field"><span>Issue category *</span><select id="taCat">${cats.map((x) => `<option>${escapeHtml(x)}</option>`).join('')}</select></label><label class="field"><span>Assign to *</span><select id="taAssign">${TA_ASSIGN.map((x) => `<option>${escapeHtml(x)}</option>`).join('')}</select></label><label class="field"><span>Due date *</span><input id="taDue" type="date" value="${new Date(Date.now() + 3 * 864e5).toISOString().slice(0, 10)}"></label><label class="field full"><span>What Operations must correct *</span><textarea id="taNote" rows="3" placeholder="Mandatory — kept in the audit history…"></textarea></label></div>`,
+      'Send change request', async () => {
+        const note = document.getElementById('taNote')?.value.trim() || '';
+        if (!note) { notify('Say what needs to change.'); return false; }
+        // A-25: name the missing field inline instead of posting into a
+        // generic server 400 — the same copy the route returns.
+        const due = document.getElementById('taDue')?.value || '';
+        if (!due) { notify('Due date is required — set a due date for the Operations correction.'); return false; }
+        try {
+          if (c.isTransfer) await post(`/transfers/${encodeURIComponent(c.id)}/changes`, { note, category: document.getElementById('taCat')?.value || null, assignTeam: document.getElementById('taAssign')?.value || null, dueDate: document.getElementById('taDue')?.value });
+          else await post(`/finance/settlements/${encodeURIComponent(c.id)}/reject`, { reason: note, category: document.getElementById('taCat')?.value || null, assignTeam: document.getElementById('taAssign')?.value || null, dueDate: document.getElementById('taDue')?.value || null });
+          refreshAfterReg(`${c.recordId} returned to Operations.`);
+        } catch (err) { notify(describeError(err)); }
+      });
+  }
+  function taProcessModal() {
+    const c = regCurrent;
+    if (!c) return;
+    showModal('Process refund · ' + c.recordId, 'Idempotent — retrying the same approval never issues two refunds.',
+      `<div class="form-grid"><label class="field"><span>Bank reference (bank transfers only)</span><input id="taBankRef" placeholder="Optional — recorded on the instruction"></label><label class="field"><span>Processing note</span><input id="taProcNote" placeholder="Optional"></label></div><div class="fm-note">Mark Refunded only after provider confirmation. A failed call leaves the request Approved or Processing — never a completed credit.</div>`,
+      'Process refund', async () => {
+        try {
+          await post(`/finance/settlements/${encodeURIComponent(c.id)}/process`, { bankReference: document.getElementById('taBankRef')?.value.trim() || null, reason: document.getElementById('taProcNote')?.value.trim() || null });
+          refreshAfterReg(`${c.recordId} submitted for processing.`);
+        } catch (err) { notify(describeError(err)); }
+      });
+  }
+  function taCorrectModal() {
+    const c = regCurrent;
+    if (!c) return;
+    if (c.isTransfer) {
+      showModal('Submit correction · ' + c.recordId, 'The full transfer recalculates from corrected inputs — the amount is never keyed by hand.',
+        `<div class="form-grid"><label class="field"><span>Transfer effective date</span><input id="taEffDate" type="date"></label><label class="field"><span>Destination unit ID</span><input id="taDestUnit" placeholder="Leave blank to keep the current destination"></label><label class="field"><span>Destination Protection Plan</span><input id="taDestProt" type="number" min="0" step="0.5"></label><label class="field"><span>Destination deposit</span><input id="taDestDep" type="number" min="0" step="0.01"></label><label class="field full"><span>Operations response / evidence *</span><textarea id="taResp" rows="3"></textarea></label></div>`,
+        'Correct & resubmit', async () => {
+          const response = document.getElementById('taResp')?.value.trim() || '';
+          if (!response) { notify('Add the Operations response and evidence.'); return false; }
+          try {
+            const body = { response };
+            const ed = document.getElementById('taEffDate')?.value; if (ed) body.effectiveDate = ed;
+            const du = document.getElementById('taDestUnit')?.value.trim(); if (du) body.toUnitId = du;
+            const dp = document.getElementById('taDestProt')?.value; if (dp !== '' && dp != null) body.destProtection = Number(dp);
+            const dd = document.getElementById('taDestDep')?.value; if (dd !== '' && dd != null) body.destDeposit = Number(dd);
+            await post(`/transfers/${encodeURIComponent(c.id)}/correct`, body);
+            refreshAfterReg(`${c.recordId} corrected — back to Pending approval.`);
+          } catch (err) { notify(describeError(err)); }
+        });
+      return;
+    }
+    showModal('Submit correction · ' + c.recordId, 'Recalculates the same record — a zero result closes it without a processor call.',
+      `<div class="form-grid"><label class="field"><span>Refund amount</span><input id="taAmount" type="number" min="0" step="0.01" placeholder="Manual refunds only"></label><label class="field"><span>Source transaction / invoice</span><input id="taSource" placeholder="Manual refunds only"></label><label class="field"><span>Return method</span><select id="taMethod"><option value="">Keep current</option><option value="ORIGINAL">Original payment method</option><option value="BANK">Bank transfer</option><option value="WALLET">Customer account credit</option></select></label><label class="field"><span>Damage charge</span><input id="taDamage" type="number" min="0" step="0.01" placeholder="Move-out settlements"></label><label class="field"><span>Cleaning charge</span><input id="taCleaning" type="number" min="0" step="0.01" placeholder="Move-out settlements"></label><label class="field"><span>Disposal charge</span><input id="taDisposal" type="number" min="0" step="0.01" placeholder="Move-out settlements"></label><label class="field"><span>Other charge</span><input id="taOther" type="number" min="0" step="0.01" placeholder="Move-out settlements"></label><label class="field"><span>Outstanding balance</span><input id="taArrears" type="number" min="0" step="0.01" placeholder="Move-out settlements"></label><label class="field"><span>Approved special credit</span><input id="taCredit" type="number" min="0" step="0.01"></label><label class="field full"><span>Corrected reason, evidence and response</span><textarea id="taNotes" rows="2"></textarea></label></div>`,
+      'Correct & resubmit', async () => {
+        try {
+          const num = (id) => { const v = document.getElementById(id)?.value; return v === '' || v == null ? undefined : Number(v); };
+          const body = {};
+          const amt = num('taAmount'); if (amt !== undefined) body.amount = amt;
+          const src = document.getElementById('taSource')?.value.trim(); if (src) body.sourceRef = src;
+          const m = document.getElementById('taMethod')?.value; if (m) body.returnMethod = m;
+          const charges = {};
+          const dg = num('taDamage'); if (dg !== undefined) charges.damage = dg;
+          const cl = num('taCleaning'); if (cl !== undefined) charges.cleaning = cl;
+          const dp2 = num('taDisposal'); if (dp2 !== undefined) charges.disposal = dp2;
+          const ot = num('taOther'); if (ot !== undefined) charges.other = ot;
+          const ar = num('taArrears'); if (ar !== undefined) charges.arrears = ar;
+          if (Object.keys(charges).length) body.charges = charges;
+          const cr = num('taCredit'); if (cr !== undefined) body.specialCredit = cr;
+          const nt = document.getElementById('taNotes')?.value.trim(); if (nt) body.notes = nt;
+          await post(`/finance/settlements/${encodeURIComponent(c.id)}/correct`, body);
+          refreshAfterReg(`${c.recordId} corrected — back to Pending approval.`);
+        } catch (err) { notify(describeError(err)); }
+      });
+  }
+  function taCancelModal() {
+    const c = regCurrent;
+    if (!c || c.isTransfer) return;
+    showModal('Cancel settlement · ' + c.recordId, 'The record stays in history as Cancelled — no money moves.',
+      `<div class="form-grid"><label class="field full"><span>Cancellation reason *</span><textarea id="taCancelReason" rows="3" placeholder="Mandatory — kept in the audit history…"></textarea></label></div>`,
+      'Cancel settlement', async () => {
+        const reason = document.getElementById('taCancelReason')?.value.trim() || '';
+        if (!reason) { notify('A reason is required to cancel this settlement.'); return false; }
+        try {
+          await post(`/finance/settlements/${encodeURIComponent(c.id)}/cancel`, { reason });
+          refreshAfterReg(`${c.recordId} cancelled.`);
+        } catch (err) { notify(describeError(err)); }
+      });
+  }
+
   function exportTransactions(){const rows=srv.transactions||[];downloadCsv('StoreLah_Payment_Transactions.csv',[['Transaction ID','Processor reference','Invoice','Customer','Unit','Created','Amount','Status','Payment method','Approved by','Attempts'],...rows.map(x=>[x.id,x.paymentIntentId||'',x.invoiceNo,x.tenant,x.unitName||x.unit,x.createdAt,x.amount,TX_LABEL[x.status]||x.status,x.method||'',x.approvedBy||'',x.attempts])]);notify('Payment transaction register downloaded')}
   function reviewPaymentTransaction(id){const x=(srv.transactions||[]).find(t=>t.id===id);if(!x)return;const pending=x.status==='PENDING_APPROVAL',failed=x.status==='FAILED',canApprove=can('bill-transactions:approve');showModal((pending?'Approve ':'Review ')+x.id.slice(-10).toUpperCase(),pending?'No charge has been submitted yet.':'Processor and approval evidence for this transaction.',`<div class="info-grid"><div class="info"><small>Customer</small><b>${escapeHtml(x.tenant)}</b></div><div class="info"><small>Unit</small><b>${escapeHtml(x.unitName||x.unit)}</b></div><div class="info"><small>Invoice</small><b>${escapeHtml(x.invoiceNo)}</b></div><div class="info"><small>Processor reference</small><b>${escapeHtml(x.paymentIntentId||'Not submitted')}</b></div><div class="info"><small>Facility</small><b>${escapeHtml(x.branch||'—')}</b></div><div class="info"><small>Amount</small><b>${money(x.amount)}</b></div></div><div class="fm-health" style="margin-top:12px"><div class="fm-check"><i>✓</i><div><b>Invoice issued</b><small>The server re-checks the invoice balance and version when you approve.</small></div></div><div class="fm-check"><i>✓</i><div><b>Customer payment authority</b><small>${escapeHtml(x.method||'Saved card')} on the tenant’s agreement; card details are never shown here.</small></div></div><div class="fm-check ${failed?'warn':''}"><i>${failed?'!':'✓'}</i><div><b>${failed?'Payment failed':pending?'No charge submitted':escapeHtml(TX_LABEL[x.status]||x.status)}</b><small>${failed?escapeHtml(x.failureReason||'Review decline reason and recovery options.'):pending?'Approval queues this one transaction; nothing is charged in bulk.':'Approved by '+escapeHtml(x.approvedBy||'—')+(x.approvedAt?' · '+new Date(x.approvedAt).toLocaleString('en-SG'):'')}</small></div></div></div>${pending&&!canApprove?'<div class="fm-note" style="margin-top:12px">You can view this instruction but approving a charge needs the Transactions approve permission.</div>':''}`,pending&&canApprove?'Approve this charge':failed?'Open arrears':'',async()=>{if(pending){try{await post(`/finance/transactions/${x.id}/approve`,{version:x.version});await loadTransactions();renderTransactions();notify(x.invoiceNo+' charge approved and queued')}catch(err){notify(describeError(err))}}else if(failed)showPanel('bill-arrears')})}
 
@@ -2058,6 +2320,15 @@ export function initFinanceWorkspace() {
     const H={
       'retry-boot':()=>{srv.booted=false;renderActive()},
       'register-open':()=>openRegisterRecord(b.dataset.regKey),
+      'manual-refund':()=>openManualRefund({}),
+      'ta-changes':()=>taChangesModal(),
+      'ta-approve':()=>{const c=regCurrent;if(!c)return;post(`/finance/settlements/${encodeURIComponent(c.id)}/approve`,{}).then(()=>refreshAfterReg(`${c.recordId} approved. Approved; awaiting processor submission.`)).catch((err)=>notify(describeError(err)))},
+      'ta-approve-transfer':()=>{const c=regCurrent;if(!c)return;post(`/transfers/${encodeURIComponent(c.id)}/approve`,{}).then(()=>post(`/transfers/${encodeURIComponent(c.id)}/execute`,{})).then(()=>refreshAfterReg(`${c.recordId} approved and posted.`)).catch((err)=>notify(describeError(err)))},
+      'ta-execute':()=>{const c=regCurrent;if(!c)return;post(`/transfers/${encodeURIComponent(c.id)}/execute`,{}).then(()=>refreshAfterReg(`${c.recordId} posted.`)).catch((err)=>notify(describeError(err)))},
+      'ta-process':()=>taProcessModal(),
+      'ta-correct':()=>taCorrectModal(),
+      'ta-cancel':()=>taCancelModal(),
+      'ta-close':()=>modal.classList.remove('open'),
       'register-export':()=>{const rows=regState.data?.rows||[];downloadCsv('StoreLah_Transactions_Documents.csv',[['Date','Record ID','Customer','Unit','Facility','Document','Purpose','Payment method','Amount','Status','Approval / owner','Processor reference'],...rows.map(r=>[r.date,r.recordId,r.customer,r.unitName||r.unit||'',r.facility||'',r.docType,r.purpose,r.method||'',r.amount,r.status,r.approver||'',r.processor||''])]);notify('Register CSV downloaded')},
       'retry-overview':()=>{srv.overviewKey='';renderFinanceOverview()},
       'save':()=>{if(!srv.model)return;showModal('Name and save this version','Saves a complete, immutable snapshot of the committed model to Model Library.',`<div class="form-grid"><label class="field full"><span>Version name *</span><input id="fmVerName" value="${escapeHtml(state.modelName)}"></label><label class="field full"><span>Change note / purpose *</span><textarea id="fmVerNote" rows="3" placeholder="What changed and why"></textarea></label><label class="field"><span>Effective month</span><input type="month" id="fmVerMonth" value="${state.start.slice(0,7)}"></label></div>`,'Save version',()=>{const name=document.getElementById('fmVerName').value.trim(),note=document.getElementById('fmVerNote').value.trim(),month=document.getElementById('fmVerMonth').value;if(!name||!note){notify('Name and change note are both required.');return false}srv.chain=srv.chain.then(flush).then(()=>act(async()=>{await post(`/finance/library/${srv.model.id}/save-version`,{changeSummary:`${name} — ${note}${month?' (effective '+month+')':''}`});await reloadLib()},'Version saved to Model Library'))})},

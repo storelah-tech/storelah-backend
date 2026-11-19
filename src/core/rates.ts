@@ -21,8 +21,12 @@ export async function adjustRate(code: string, input: AdjustRateInput) {
   const current = Math.round(input.newRate * 100) / 100;
   const changePct = previous ? Math.round(((current - previous) / previous) * 1000) / 10 : 0;
 
+  // Master Rate Strategy (R16): an operator rate change marks the unit
+  // MANUAL. Batch applies stamp STRATEGY in the B3 service; the R16 backfill
+  // migration classified history. Floor-plan publish sync keeps its own
+  // appliedBy trail (unchanged here — B3 decides its provenance).
   await prisma.$transaction([
-    prisma.unit.update({ where: { id: unit.id }, data: { monthlyRate: current } }),
+    prisma.unit.update({ where: { id: unit.id }, data: { monthlyRate: current, rateSource: 'MANUAL' } }),
     prisma.rateChange.create({
       data: {
         unitId: unit.id,

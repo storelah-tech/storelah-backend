@@ -520,6 +520,31 @@ export const ROUTE_PERMISSIONS: Record<string, PermissionSpec> = {
   // settings-booking:update.
   'PUT /business-rules': ['settings-booking:update', 'settings-moveouts:update'],
 
+  // ---- Master Rate Strategy (Track B, B3) ----
+  // Draft edits = create/update; submit (+ warning override) = update;
+  // approve/reject = approve (maker-checker: approver ≠ submitter, service);
+  // batch apply/retry/cancel/apply-due additionally need
+  // facility-units:update (checked in service code, since one route carries
+  // one permission here); REPLACE_MANUAL additionally requires Owner (D9).
+  'GET /rate-strategy/library': 'facility-rate-strategy:view',
+  'POST /facilities/:branchId/rate-strategy': 'facility-rate-strategy:create',
+  'GET /rate-strategy/:id': 'facility-rate-strategy:view',
+  'PATCH /rate-strategy/:id': 'facility-rate-strategy:update',
+  'GET /rate-strategy/:id/preview': 'facility-rate-strategy:view',
+  'POST /rate-strategy/:id/preview': 'facility-rate-strategy:view',
+  'POST /rate-strategy/:id/validate': 'facility-rate-strategy:view',
+  'POST /rate-strategy/:id/submit': 'facility-rate-strategy:update',
+  'POST /rate-strategy/:id/approve': 'facility-rate-strategy:approve',
+  'POST /rate-strategy/:id/reject': 'facility-rate-strategy:approve',
+  'POST /rate-strategy/:id/duplicate': 'facility-rate-strategy:create',
+  'POST /rate-strategy/:id/batches': 'facility-rate-strategy:approve',
+  'GET /rate-batches': 'facility-rate-strategy:view',
+  'GET /rate-batches/:id': 'facility-rate-strategy:view',
+  'POST /rate-batches/:id/apply': 'facility-rate-strategy:approve',
+  'POST /rate-batches/:id/retry-failed': 'facility-rate-strategy:approve',
+  'POST /rate-batches/:id/cancel': 'facility-rate-strategy:approve',
+  'POST /units/rate-batches/apply-due': 'facility-rate-strategy:approve',
+
   // ---- team & access (Owner only) ----
   'GET /users': 'OWNER',
   'POST /users': 'OWNER',

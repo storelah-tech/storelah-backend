@@ -331,6 +331,10 @@ async function main() {
         { unitId: ss001.id, date: monthAgo(7), previous: 130, current: 136, changePct: 4.61, reason: 'CPI adjustment', appliedBy: 'System' },
       ],
     });
+    // Master Rate Strategy (R16): the 'Faisal Z.' row is an operator rate
+    // change, so the seeded unit is MANUAL (the B2 backfill runs before seed
+    // rows exist on a fresh DB and would otherwise leave it LEGACY).
+    await prisma.unit.update({ where: { id: ss001.id }, data: { rateSource: 'MANUAL' } });
   }
 
   // Leads

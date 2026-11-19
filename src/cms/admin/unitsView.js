@@ -65,6 +65,9 @@ function normalizeUnit(u) {
     climateControl: u.climateControl,
     hasAC: u.hasAC === true,
     hasPillar: u.hasPillar === true,
+    // Master Rate Strategy (R15): restricted-access attribute flag.
+    restrictedAccess: u.restrictedAccess === true,
+    rateSource: u.rateSource ?? 'LEGACY',
     tenant,
     rateHistory: u.rateHistory || [],
     // Floor-plan unit sync: drawn size + size history (detail reads only).
@@ -87,7 +90,7 @@ function renderUnitsTable() {
         <td>${u.sizeName || '—'}${u.sizeCode ? `<div class="t-type">${u.sizeCode}</div>` : ''}</td>
         <td>${u.branchCode || '—'}</td>
         <td>${u.level ? 'Level ' + u.level : '—'}</td>
-        <td>${u.hasAC ? 'AC' : 'Non-AC'}${u.hasPillar ? `<div class="t-type">Pillar</div>` : ''}</td>
+        <td>${u.hasAC ? 'AC' : 'Non-AC'}${u.hasPillar ? `<div class="t-type">Pillar</div>` : ''}${u.restrictedAccess ? `<div class="t-type">Restricted</div>` : ''}</td>
         <td>${u.sqft != null ? u.sqft : '—'}</td>
         <td>${u.rate != null ? fmtMoney(u.rate) : '—'}</td>
         <td><span class="psf-val">${u.psf != null ? '$' + Number(u.psf).toFixed(2) : '—'}</span></td>
@@ -320,7 +323,8 @@ export async function showUnitDetail(code) {
         ${u.sqft ? `<span class="badge terra">${u.sqft} sq ft</span>` : ''}
         ${u.branchName && u.level ? `<span class="badge neutral">Level ${u.level} · ${u.branchName}</span>` : ''}
         <span class="badge neutral">${u.hasAC ? 'AC' : 'Non-AC'}</span>
-        ${u.hasPillar ? `<span class="badge neutral">Pillar</span>` : ''}`;
+        ${u.hasPillar ? `<span class="badge neutral">Pillar</span>` : ''}
+        ${u.restrictedAccess ? `<span class="badge neutral">Restricted access</span>` : ''}`;
     }
     const setVal = (sel, v) => {
       const el = $(sel);
@@ -336,7 +340,7 @@ export async function showUnitDetail(code) {
     setVal('#udRate', u.rate != null ? fmtMoney(u.rate) : '—');
     setVal('#udRateSub', u.psf != null ? '$' + Number(u.psf).toFixed(2) + '/sq ft' : '—');
     setVal('#udStatus', STATUS_LABEL[u.status] || u.status);
-    setVal('#udStatusSub', `${u.hasAC ? 'AC' : 'Non-AC'}${u.hasPillar ? ' · Pillar' : ''}`);
+    setVal('#udStatusSub', `${u.hasAC ? 'AC' : 'Non-AC'}${u.hasPillar ? ' · Pillar' : ''}${u.restrictedAccess ? ' · Restricted access' : ''}`);
     setVal('#udBranch', u.branchName || '—');
     setVal('#udLevel', u.level ? 'Level ' + u.level : '—');
     setVal('#udSize', u.sizeName || '—');
@@ -1074,6 +1078,7 @@ const FIELD_ID = {
   status: 'status',
   hasAC: 'hasAC',
   hasPillar: 'hasPillar',
+  restrictedAccess: 'restrictedAccess',
   newRate: 'newRate',
   reason: 'reason',
 };
@@ -1112,6 +1117,7 @@ export async function openCreateForm() {
   $('#f-monthlyRate').value = '';
   $('#f-hasAC').value = 'no';
   $('#f-hasPillar').value = 'no';
+  $('#f-restrictedAccess').value = 'no';
   $('#f-name').value = '';
   $('#unitFormSubmit').textContent = 'Save Unit';
   clearFieldErrors();
@@ -1150,6 +1156,7 @@ export async function openEditForm(code) {
     $('#f-monthlyRate').value = u.rate ?? '';
     $('#f-hasAC').value = u.hasAC ? 'yes' : 'no';
     $('#f-hasPillar').value = u.hasPillar ? 'yes' : 'no';
+    $('#f-restrictedAccess').value = u.restrictedAccess ? 'yes' : 'no';
     // Unit no. = the display name (falls back to the auto-assigned number).
     $('#f-name').value = u.name || u.code;
     editOrig = { floorId: u.floorId, sizeId: u.sizeId, unitNo: u.name || u.code };
@@ -1191,6 +1198,7 @@ export async function submitUnitForm(e) {
     status: $('#f-status').value,
     hasAC: $('#f-hasAC').value === 'yes',
     hasPillar: $('#f-hasPillar').value === 'yes',
+    restrictedAccess: $('#f-restrictedAccess').value === 'yes',
   };
   const nm = $('#f-name').value.trim();
   if (nm) body.name = nm;
@@ -1236,7 +1244,7 @@ export async function submitUnitForm(e) {
       const res = await request('/units', { method: 'POST', body: JSON.stringify(createBody) });
       showBanner(`Created unit ${res.data.name || res.data.code}`, true);
     } else {
-      // PUT /units/:code accepts sqft / monthlyRate / status / hasAC / hasPillar / name.
+      // PUT /units/:code accepts sqft / monthlyRate / status / hasAC / hasPillar / restrictedAccess / name.
       // Name: non-empty → set it; empty → name: null (clears back to the unit code).
       // Dimensions: length/width (when present and not plan-owned) re-derive
       // sqft server-side; otherwise the stored sqft is re-sent (a no-op).
@@ -1252,6 +1260,7 @@ export async function submitUnitForm(e) {
         status: body.status,
         hasAC: body.hasAC,
         hasPillar: body.hasPillar,
+        restrictedAccess: body.restrictedAccess,
         // Unit no.: blank or the auto number → clear the label (falls back to
         // the auto number); anything else is stored as the unit number.
         name: nm && nm !== currentEditCode ? nm : null,

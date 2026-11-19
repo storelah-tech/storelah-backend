@@ -45,6 +45,53 @@ enum TenantStatus {
   SUSPENDED
 }
 
+// Master Rate Strategy (Track B, B2): lifecycle of a strategy version.
+// Versions are immutable once submitted — enforced in service code (B3),
+// never by deleting or rewriting rows here.
+enum RateStrategyStatus {
+  DRAFT
+  PENDING_APPROVAL
+  APPROVED
+  ACTIVE
+  REJECTED
+  SUPERSEDED
+}
+
+// Master Rate Strategy pricing method (§15.9): continuous curve vs
+// Excel-style step-down.
+enum RateStrategyMethod {
+  SMOOTH
+  STEP
+}
+
+// Effective-dated Units rate batch lifecycle (D10: no scheduler on Lambda —
+// a future-dated batch waits as SCHEDULED until applyDueRateBatches() runs).
+enum RateBatchStatus {
+  SCHEDULED
+  APPLYING
+  APPLIED
+  PARTIALLY_FAILED
+  FAILED
+  CANCELLED
+}
+
+// Conflict rule for batch lines hitting operator-manual rates (D9: REPLACE
+// needs the Owner role — enforced in service code, B3).
+enum RateBatchConflictRule {
+  PRESERVE_MANUAL
+  REPLACE_MANUAL
+  CANCEL_IF_MANUAL
+}
+
+// Per-unit outcome of a batch line (PENDING = not yet attempted).
+enum RateBatchLineOutcome {
+  PENDING
+  APPLIED
+  PRESERVED_MANUAL
+  SKIPPED_OCCUPIED
+  FAILED
+}
+
 enum AccountType {
   PERSONAL
   BUSINESS
@@ -308,6 +355,8 @@ model Branch {
   varianceNotes         VarianceNote[]
   createdAt             DateTime                   @default(now())
   updatedAt             DateTime                   @updatedAt
+  rateStrategies        RateStrategy[]
+  unitRateBatches       UnitRateBatch[]
 }
 
 model Floor {
@@ -619,50 +668,59 @@ model UnitSize {
 }
 
 model Unit {
-  id             String     @id @default(cuid())
-  branchId       String
-  branch         Branch     @relation(fields: [branchId], references: [id])
-  floorId        String
-  floor          Floor      @relation(fields: [floorId], references: [id])
-  sizeId         String
-  size           UnitSize   @relation(fields: [sizeId], references: [id])
-  unitCode       String     @unique // 4-digit numeric code, e.g. 1001 (globally unique; see docs/UNIT_CODE_AND_NAME.md)
-  name           String? // optional display label; null/empty => display name falls back to unitCode
-  sqft           Float // decimal square feet, quantized to 0.01 on every write (owner decision 2026-10-14; was Int) — see quantizeSqft in src/core/unitSizing.ts
+  id               String     @id @default(cuid())
+  branchId         String
+  branch           Branch     @relation(fields: [branchId], references: [id])
+  floorId          String
+  floor            Floor      @relation(fields: [floorId], references: [id])
+  sizeId           String
+  size             UnitSize   @relation(fields: [sizeId], references: [id])
+  unitCode         String     @unique // 4-digit numeric code, e.g. 1001 (globally unique; see docs/UNIT_CODE_AND_NAME.md)
+  name             String? // optional display label; null/empty => display name falls back to unitCode
+  sqft             Float // decimal square feet, quantized to 0.01 on every write (owner decision 2026-10-14; was Int) — see quantizeSqft in src/core/unitSizing.ts
   // Physical dimensions in decimal FEET (all nullable — pre-2026-10-22 rows
   // have none). When length AND width are set, sqft is derived as
   // quantizeSqft(lengthFt × widthFt) on every write (see src/core/units.ts);
   // heightFt is informational (volume) and never feeds sqft.
-  lengthFt       Float?
-  widthFt        Float?
-  heightFt       Float?
-  monthlyRate    Decimal    @default(0) @db.Decimal(10, 2)
-  status         UnitStatus @default(AVAILABLE)
-  climateControl String? // LEGACY free-text climate note (e.g. "Ambient climate"). Kept readable/writable for
+  lengthFt         Float?
+  widthFt          Float?
+  heightFt         Float?
+  monthlyRate      Decimal    @default(0) @db.Decimal(10, 2)
+  status           UnitStatus @default(AVAILABLE)
+  climateControl   String? // LEGACY free-text climate note (e.g. "Ambient climate"). Kept readable/writable for
   // backwards compat; the source of truth for AC is now hasAC below. New writes should
   // use hasAC/hasPillar; a supplied climateControl string is mapped onto hasAC (see
   // src/core/units.ts) but never required.
-  hasAC          Boolean    @default(false) // true = air-conditioned unit (unit type filter + import column)
-  hasPillar      Boolean    @default(false) // true = unit contains a structural pillar
-  deletedAt      DateTime? // soft-delete lifecycle marker: null = active; set = hidden from all reads
-  createdAt      DateTime   @default(now())
-  updatedAt      DateTime   @updatedAt
+  hasAC            Boolean    @default(false) // true = air-conditioned unit (unit type filter + import column)
+  hasPillar        Boolean    @default(false) // true = unit contains a structural pillar
+  // Master Rate Strategy (Track B, B2 / R15–R16): restricted-access flag
+  // (ground-floor/premium-access style attribute; feeds the restrictedAdj
+  // lever) and rate provenance (LEGACY = pre-strategy, MANUAL = operator
+  // adjustRate, STRATEGY = approved batch). rateSource is system-stamped,
+  // never operator-edited. Plain String (not an enum) so future provenance
+  // values stay additive without a migration.
+  restrictedAccess Boolean    @default(false)
+  rateSource       String     @default("LEGACY")
+  deletedAt        DateTime? // soft-delete lifecycle marker: null = active; set = hidden from all reads
+  createdAt        DateTime   @default(now())
+  updatedAt        DateTime   @updatedAt
 
-  tenant      Tenant?          @relation("CurrentTenant")
-  rateHistory RateChange[]
-  areaHistory UnitAreaChange[]
-  images      UnitImage[]
-  bookings    Booking[]
-  invoices    Invoice[]
-  notices     Notice[]
+  tenant         Tenant?             @relation("CurrentTenant")
+  rateHistory    RateChange[]
+  areaHistory    UnitAreaChange[]
+  images         UnitImage[]
+  bookings       Booking[]
+  invoices       Invoice[]
+  notices        Notice[]
+  rateBatchLines UnitRateBatchLine[]
   // Track A (move-out / refund / transfer): cases, ledger lines and history
   // rows that reference this unit. Additive back-refs only.
-  moveOutCases  MoveOutCase[]
-  ledgerEntries CustomerLedgerEntry[]
-  unitHistory   RentalUnitHistory[]
-  placement   UnitPlacement? // one-to-one: a unit appears on its floor's plan at most once
-  workOrders  WorkOrder[]
-  incidents   Incident[]
+  moveOutCases   MoveOutCase[]
+  ledgerEntries  CustomerLedgerEntry[]
+  unitHistory    RentalUnitHistory[]
+  placement      UnitPlacement? // one-to-one: a unit appears on its floor's plan at most once
+  workOrders     WorkOrder[]
+  incidents      Incident[]
 
   @@unique([branchId, unitCode])
   @@index([branchId, floorId])
@@ -1188,6 +1246,125 @@ model RateChange {
   @@index([unitId])
 }
 
+// Master Rate Strategy (Track B, §15 / R15–R17, brief §5): a facility's rack
+// rate schedule is versioned. Versions are immutable once submitted
+// (status <> DRAFT) — enforced in the B3 service layer, which alone writes
+// these tables. Scalar levers are typed columns; categoryFloors,
+// sizeOverrides and previewSelection are JSON (category floors keyed by
+// category code; previewSelection carries planId + planVersion per D11 so a
+// preview stays reproducible; validation/warningOverride per D12).
+model RateStrategy {
+  id               String   @id @default(cuid())
+  branchId         String
+  branch           Branch   @relation(fields: [branchId], references: [id])
+  name             String
+  owner            String
+  currentVersionId String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  versions RateStrategyVersion[]
+
+  @@index([branchId])
+}
+
+model RateStrategyVersion {
+  id                    String             @id @default(cuid())
+  strategyId            String
+  strategy              RateStrategy       @relation(fields: [strategyId], references: [id], onDelete: Cascade)
+  versionNo             Int
+  status                RateStrategyStatus @default(DRAFT)
+  effectiveFrom         DateTime           @db.Date
+  referenceSize         Int
+  startingRate          Decimal            @db.Decimal(10, 2)
+  method                RateStrategyMethod @default(SMOOTH)
+  curveStrength         Decimal            @db.Decimal(10, 4)
+  stepEvery             Int
+  stepPsf               Decimal            @db.Decimal(10, 4)
+  psfFloor              Decimal            @db.Decimal(10, 4)
+  minMonthly            Decimal            @db.Decimal(10, 2)
+  lockerAdj             Decimal            @db.Decimal(10, 4)
+  groundFloorAdj        Decimal            @db.Decimal(10, 4)
+  restrictedAdj         Decimal            @db.Decimal(10, 4)
+  facilityAdj           Decimal            @db.Decimal(10, 4)
+  rounding              Int
+  categoryFloors        Json
+  sizeOverrides         Json
+  previewSelection      Json
+  financialModelId      String?
+  financialModelVersion Int?
+  targetPsf             Decimal?           @db.Decimal(10, 4)
+  validation            Json?
+  warningOverride       Json?
+  submittedBy           String?
+  submittedAt           DateTime?
+  approvedBy            String?
+  approvedAt            DateTime?
+  rejectedBy            String?
+  rejectedAt            DateTime?
+  rejectReason          String?
+  originVersionId       String?
+  // Optimistic locking (assertFreshVersion → 409 STALE, like Invoice.version).
+  version               Int                @default(0)
+  createdBy             String
+  createdAt             DateTime           @default(now())
+  updatedAt             DateTime           @updatedAt
+
+  batches UnitRateBatch[]
+
+  @@unique([strategyId, versionNo])
+  @@index([strategyId])
+}
+
+// Effective-dated application of an approved strategy version to Units
+// (R17): one transaction per batch at apply time (B3). A batch dated today
+// or earlier applies immediately; a future-dated batch waits as SCHEDULED
+// until the idempotent applyDueRateBatches() runs (D10).
+model UnitRateBatch {
+  id             String                @id @default(cuid())
+  // Human ref minted server-side (RATE-<timestamp>, never browser-built).
+  ref            String                @unique
+  versionId      String
+  version        RateStrategyVersion   @relation(fields: [versionId], references: [id])
+  branchId       String
+  branch         Branch                @relation(fields: [branchId], references: [id])
+  effectiveDate  DateTime              @db.Date
+  conflictRule   RateBatchConflictRule @default(PRESERVE_MANUAL)
+  status         RateBatchStatus       @default(SCHEDULED)
+  unitCount      Int                   @default(0)
+  sizeCount      Int                   @default(0)
+  // Idempotency: a replayed apply returns the first result (B3).
+  idempotencyKey String                @unique
+  createdBy      String
+  appliedBy      String?
+  appliedAt      DateTime?
+  createdAt      DateTime              @default(now())
+  updatedAt      DateTime              @updatedAt
+
+  lines UnitRateBatchLine[]
+
+  @@index([branchId])
+  @@index([versionId])
+}
+
+model UnitRateBatchLine {
+  id             String               @id @default(cuid())
+  batchId        String
+  batch          UnitRateBatch        @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  unitId         String
+  unit           Unit                 @relation(fields: [unitId], references: [id])
+  sizePoint      Int
+  previousRack   Decimal              @db.Decimal(10, 2)
+  proposedRack   Decimal              @db.Decimal(10, 2)
+  outcome        RateBatchLineOutcome @default(PENDING)
+  conflictReason String?
+  appliedAt      DateTime?
+  createdAt      DateTime             @default(now())
+
+  @@index([batchId])
+  @@index([unitId])
+}
+
 enum PromotionDiscountType {
   PERCENTAGE
   FLAT
@@ -1356,22 +1533,22 @@ model PromotionVersion {
 // be recorded manually via POST /promotion-plans/:id/redemptions before any
 // booking-time auto-link exists. See core/promotionPlans.ts recordRedemption.
 model PromotionRedemption {
-  id         String        @id @default(cuid())
-  planId     String
-  plan       PromotionPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
-  bookingId  String?
-  code       String? // promo code entered at booking time (if any)
-  amount     Decimal       @db.Decimal(10, 2) // discount value granted (SGD)
+  id          String        @id @default(cuid())
+  planId      String
+  plan        PromotionPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+  bookingId   String?
+  code        String? // promo code entered at booking time (if any)
+  amount      Decimal       @db.Decimal(10, 2) // discount value granted (SGD)
   // FREE_MONTHS plans: the 1-based agreement months made rent-free at booking
   // time (the billing run skips them). Snapshot, so later plan edits never
   // change an existing customer's bills. [] for other plan kinds.
-  freeMonths Int[]         @default([])
+  freeMonths  Int[]         @default([])
   // DISCOUNT_MATRIX plans: the term % granted at booking. The billing run
   // applies it to non-free months within the booked term only (owner
   // 2026-11-12); null for other kinds / rows from before the snapshot.
-  discountPct Decimal?     @db.Decimal(5, 2)
-  redeemedAt DateTime      @default(now())
-  createdAt  DateTime      @default(now())
+  discountPct Decimal?      @db.Decimal(5, 2)
+  redeemedAt  DateTime      @default(now())
+  createdAt   DateTime      @default(now())
 
   @@index([planId])
   @@index([bookingId])
@@ -2118,26 +2295,26 @@ model FinanceEvent {
 // PENDING (submitted, locked for edits), CURRENT (approved baseline),
 // ARCHIVED (hidden, restorable as a new draft).
 model FinancialModel {
-  id            String   @id @default(cuid())
-  branchId      String?
-  branch        Branch?  @relation(fields: [branchId], references: [id], onDelete: SetNull)
-  name          String
-  status        String   @default("DRAFT") // DRAFT | PENDING | CURRENT | ARCHIVED
-  inputs        Json
-  engineVersion String   @default("finance-projection/1")
-  inputHash     String
-  createdBy     String
-  updatedBy     String?
-  version       Int      @default(0)
+  id                String   @id @default(cuid())
+  branchId          String?
+  branch            Branch?  @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  name              String
+  status            String   @default("DRAFT") // DRAFT | PENDING | CURRENT | ARCHIVED
+  inputs            Json
+  engineVersion     String   @default("finance-projection/1")
+  inputHash         String
+  createdBy         String
+  updatedBy         String?
+  version           Int      @default(0)
   // Lease-horizon P4: recalculation state for the committed valuation.
   // CURRENT = figures match the stored revision; PENDING = recalculation
   // scheduled/running; FAILED = the lease saved but valuation did not
   // (stale figures are labelled, exports blocked until retry succeeds).
-  calculationStatus String @default("CURRENT") // CURRENT | PENDING | FAILED
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  calculationStatus String   @default("CURRENT") // CURRENT | PENDING | FAILED
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
 
-  versions FinancialModelVersion[]
+  versions     FinancialModelVersion[]
   calculations FinancialModelCalculation[]
 
   @@index([branchId])
@@ -2170,18 +2347,18 @@ model FinancialModelVersion {
 // PENDING row to CURRENT/FAILED conditionally on modelVersion so a stale
 // result can never overwrite a newer revision).
 model FinancialModelCalculation {
-  id             String    @id @default(cuid())
+  id             String         @id @default(cuid())
   modelId        String
   model          FinancialModel @relation(fields: [modelId], references: [id], onDelete: Cascade)
   modelVersion   Int
   engineVersion  String
   inputHash      String
-  status         String    @default("PENDING") // PENDING | CURRENT | FAILED
+  status         String         @default("PENDING") // PENDING | CURRENT | FAILED
   result         Json?
   error          String?
   idempotencyKey String?
   actor          String
-  startedAt      DateTime  @default(now())
+  startedAt      DateTime       @default(now())
   completedAt    DateTime?
 
   @@unique([modelId, modelVersion])

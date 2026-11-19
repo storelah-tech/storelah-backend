@@ -28,6 +28,8 @@ export interface CreateUnitInput {
   climateControl?: string;
   hasAC?: boolean;
   hasPillar?: boolean;
+  // Master Rate Strategy (R15): restricted-access attribute flag.
+  restrictedAccess?: boolean;
   // Explicit import-path code: must be a free 4-digit code (e.g. "1001").
   // Omitted in the normal path — codegen mints the next 4-digit code.
   unitCode?: string;
@@ -50,6 +52,10 @@ export interface UpdateUnitInput {
   climateControl?: string | null;
   hasAC?: boolean;
   hasPillar?: boolean;
+  // Master Rate Strategy (R15): restricted-access attribute flag. rateSource
+  // is intentionally absent here — it is system-stamped (backfill / adjustRate
+  // / batch apply), never operator-edited.
+  restrictedAccess?: boolean;
   name?: string | null;
 }
 
@@ -154,6 +160,8 @@ function serializeUnit(u: UnitWithRelations) {
     climateControl: u.climateControl,
     hasAC: u.hasAC,
     hasPillar: u.hasPillar,
+    restrictedAccess: u.restrictedAccess,
+    rateSource: u.rateSource,
     deletedAt: u.deletedAt,
     branchId: u.branchId,
     floorId: u.floorId,
@@ -458,13 +466,14 @@ export async function createUnit(input: CreateUnitInput) {
       heightFt,
       monthlyRate: input.monthlyRate,
       status: input.status ?? 'AVAILABLE',
-      climateControl: input.climateControl,
-      hasAC,
-      hasPillar: input.hasPillar ?? false,
-    },
-    include: { size: true, branch: true, floor: true, tenant: true },
-  });
-  return serializeUnit(unit);
+    climateControl: input.climateControl,
+    hasAC,
+    hasPillar: input.hasPillar ?? false,
+    restrictedAccess: input.restrictedAccess ?? false,
+  },
+  include: { size: true, branch: true, floor: true, tenant: true },
+});
+return serializeUnit(unit);
 }
 
 export async function updateUnit(code: string, input: UpdateUnitInput) {
@@ -552,6 +561,7 @@ export async function updateUnit(code: string, input: UpdateUnitInput) {
     climateControl: input.climateControl,
     ...(input.hasAC !== undefined ? { hasAC: input.hasAC } : mappedAC !== null ? { hasAC: mappedAC } : {}),
     ...(input.hasPillar !== undefined ? { hasPillar: input.hasPillar } : {}),
+    ...(input.restrictedAccess !== undefined ? { restrictedAccess: input.restrictedAccess } : {}),
     ...(input.name !== undefined
       ? { name: input.name === null ? null : input.name.trim() || null }
       : {}),
@@ -893,6 +903,8 @@ export async function getUnitDetail(code: string) {
     climateControl: unit.climateControl,
     hasAC: unit.hasAC,
     hasPillar: unit.hasPillar,
+    restrictedAccess: unit.restrictedAccess,
+    rateSource: unit.rateSource,
     tenant: hasCurrentOccupant(unit.status) && unit.tenant
       ? {
           name: unit.tenant.name,

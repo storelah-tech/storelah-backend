@@ -46,6 +46,7 @@ import {
   bindMaintenance, bindAssets, bindIncidents, bindAccess, bindInspections,
   wireFacilitiesOps, updateFacilityBadge,
 } from './facilitiesOps.js';
+import { bindRateStrategyPanel, refreshRateStrategy, refreshUnitsRateEntry } from './rateStrategyView.js';
 
 // ====================== TOAST ======================
 // The finance workspace (prototype port) reports through the CMS toast.
@@ -86,6 +87,7 @@ const sideNav = {
   facilities: [['Units Information', 'facilities', 'facility-map'], ['Units', 'facilities', 'facility-units'],
     ['Floors', 'facilities', 'facility-floors'],
     ['Floor Plan Designer', 'facilities', 'facility-floorplans'], ['Floor Plan Library', 'facilities', 'facility-floorplan-library'], ['Maintenance', 'facilities', 'facility-maintenance'],
+    ['Master rate strategy', 'facilities', 'facility-rate-strategy'],
     ['Assets & vendors', 'facilities', 'facility-assets'], ['Incidents', 'facilities', 'facility-incidents'],
     ['Access control', 'facilities', 'facility-access'], ['Inspections', 'facilities', 'facility-inspections']],
   extras: [['Protection plans', 'extras', 'extras-plans'], ['Addons', 'extras', 'extras-addons']],
@@ -4113,6 +4115,7 @@ function wireEvents() {
         bindAccess();
       }
       else if (panel === 'facility-inspections') bindInspections();
+      else if (panel === 'facility-rate-strategy') refreshRateStrategy().catch((err) => showBanner('Rate strategy: ' + describeError(err)));
     });
   });
   // Protection & Addons tabs (data-tabs="extras") — mirrors the billing/promo
@@ -4482,6 +4485,10 @@ function wireEvents() {
   wireMetricsPanel();
   // Facility operations (maintenance / assets / incidents / access / inspections)
   wireFacilitiesOps();
+    // Master Rate Strategy (B-10): Units header entry points are NOT mounted
+    // here — wireEvents() runs before sign-in (can() is false until /me
+    // resolves). They mount post-auth in boot() and on every Units render
+    // (refreshUnitsView) instead.
   // P1: portfolio cards, quotes/move-outs queues, settings extensions
   wirePortfolio();
   wireOpsQueues();
@@ -4691,6 +4698,9 @@ function bindActions(data) {
 // ====================== REFRESH VIEW HOOKS ======================
 async function refreshUnitsView() {
   await Promise.all([fetchUnitsPage().catch(() => {}), fetchUnitMap().catch(() => {})]);
+  // B-10: Units entry points mount only after sign-in — every Units render
+  // (tab switch included) re-runs the idempotent buttons + batch banner.
+  refreshUnitsRateEntry().catch(() => {});
 }
 
 // ====================== SIGN-IN (CMS RBAC) ======================
@@ -4915,6 +4925,8 @@ async function boot() {
     watchActions();
     initCharts();
     await Promise.all([loadRefs(), refreshAll()]);
+    // B-10: post-auth/permissions-ready — can() is trustworthy only now.
+    refreshUnitsRateEntry().catch(() => {});
     // Navigate to initial page from hash (unknown hashes fall back to command,
     // which covers retired views without a dedicated route).
     const hash = location.hash ? location.hash.slice(1) : 'command';
@@ -4935,6 +4947,9 @@ async function boot() {
     } else if (hash.startsWith('bill-')) {
       // Deep link into a finance submodule (#bill-models, …): never PII/draft.
       openPanel('billing', hash);
+    } else if (hash.startsWith('facility-')) {
+      // Deep link into a facility sub-panel (#facility-rate-strategy, …).
+      openPanel('facilities', hash);
     } else {
       openPage('command');
     }
@@ -4942,6 +4957,7 @@ async function boot() {
     window.addEventListener('hashchange', () => {
       const h = location.hash ? location.hash.slice(1) : '';
       if (h.startsWith('bill-')) openPanel('billing', h);
+      else if (h.startsWith('facility-')) openPanel('facilities', h);
     });
   } catch (e) {
     console.error('[storelah admin] boot failed', e);

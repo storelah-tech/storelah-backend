@@ -15,9 +15,14 @@ import { newCorrelationId } from './finance/idempotency';
 
 export type BusinessRuleKind = 'boolean' | 'number' | 'text';
 
+/** Group for the Global Settings rules list. `ratestrategy` is the B4
+ * Master Rate Strategy defaults surface (new-draft + batch-form defaults
+ * consumed by the CMS; server validation is unchanged). */
+export type BusinessRuleCategory = 'org' | 'booking' | 'moveout' | 'ratestrategy';
+
 export interface BusinessRuleDef {
   key: string;
-  category: 'org' | 'booking' | 'moveout';
+  category: BusinessRuleCategory;
   kind: BusinessRuleKind;
   label: string;
   description: string;
@@ -132,6 +137,29 @@ export const BUSINESS_RULE_DEFS: BusinessRuleDef[] = [
     default: 'ADMIN_OR_FINANCE',
     maxLength: 32,
     allowed: ['ADMIN_OR_FINANCE', 'ADMIN_ONLY'],
+  },
+  // --- Master Rate Strategy defaults (B4 CMS workspace) ---
+  // Consumed as new-draft / batch-form defaults by the operator UI only;
+  // every server calculation still validates its own inputs.
+  {
+    key: 'ratestrategy.defaultRounding',
+    category: 'ratestrategy',
+    kind: 'number',
+    label: 'Default rate rounding',
+    description: 'Monthly-rate rounding preselected for new strategy drafts (S$1, S$5 or S$10).',
+    default: 1,
+    min: 1,
+    max: 10,
+    integer: true,
+  },
+  {
+    key: 'ratestrategy.defaultConflictRule',
+    category: 'ratestrategy',
+    kind: 'text',
+    label: 'Default manual-rate rule',
+    description: 'Manual-rate rule preselected when scheduling a Units rate batch (PRESERVE_MANUAL, REPLACE_MANUAL or CANCEL_IF_MANUAL).',
+    default: 'PRESERVE_MANUAL',
+    maxLength: 32,
   },
   // --- Org ---
   {

@@ -252,9 +252,14 @@ export async function applySizeSync(
     // L × W follow the drawing too (length = plan y-extent, width = x-extent),
     // so the Units module never shows dimensions that disagree with sqft.
     // D4: shaped units carry no L×W — the Units form shows "Custom shape".
+    // Master Rate Strategy (R16): an operator publish that changes the rate
+    // stamps MANUAL, exactly like adjustRate() — so a later PRESERVE_MANUAL
+    // batch never silently overwrites it. KEEP_RATE (or an equal recompute)
+    // leaves provenance untouched.
+    const rateChanged = newRate !== c.oldRate;
     await tx.unit.update({
       where: { id: c.unitId },
-      data: { sqft: c.newSqft, sizeId: newSize.id, monthlyRate: newRate, lengthFt: c.shaped ? null : c.heightFt, widthFt: c.shaped ? null : c.widthFt },
+      data: { sqft: c.newSqft, sizeId: newSize.id, monthlyRate: newRate, lengthFt: c.shaped ? null : c.heightFt, widthFt: c.shaped ? null : c.widthFt, ...(rateChanged ? { rateSource: 'MANUAL' } : {}) },
     });
     await tx.unitAreaChange.create({
       data: {

@@ -72,12 +72,17 @@ describe('customer profile and settlements', () => {
     const preview = await api.post(`${CMS}/tenants/${tenant.id}/settlements/preview`).set('Authorization', maker.auth)
       .send({ kind: 'TRANSFER', date: '2026-11-20', toUnitId: dest.id, destPromoPct: 10, destProtection: 12.5 });
     expect(preview.status).toBe(200);
-    expect(preview.body.data).toMatchObject({ amount: 37.11, nextFullDeduction: 433.7, to: 'CU-01-02' });
+    // A-23: destination promotion is DERIVED from the destination's eligible
+    // ACTIVE plans — a keyed destPromoPct (10 here) is ignored. No plan exists
+    // in this seed, so destination net = gross 468. 20 Nov: 11/30 days.
+    // credit 320×11/30 = 117.33; destination 468×11/30 = 171.60; due 54.27.
+    // Next full deduction = 468 + 12.50 Protection Plan = 480.50.
+    expect(preview.body.data).toMatchObject({ amount: 54.27, nextFullDeduction: 480.5, to: 'CU-01-02' });
 
     const sub = await api.post(`${CMS}/tenants/${tenant.id}/settlements`).set('Authorization', maker.auth)
       .send({ kind: 'TRANSFER', date: '2026-11-20', toUnitId: dest.id, destPromoPct: 10, destProtection: 12.5 });
     expect(sub.status).toBe(201);
-    expect(sub.body.data).toMatchObject({ docType: 'Transfer approval', status: 'PENDING', amount: 37.11 });
+    expect(sub.body.data).toMatchObject({ docType: 'Transfer approval', status: 'PENDING', amount: 54.27 });
     expect(sub.body.data.ref).toMatch(/^TRF-\d{7}$/);
     expect((await prisma.tenant.findUnique({ where: { id: tenant.id } }))!.unitId).toBe(unit.id);
     expect((await api.post(`${CMS}/tenants/${tenant.id}/settlements`).set('Authorization', maker.auth)
@@ -89,7 +94,7 @@ describe('customer profile and settlements', () => {
     expect(queue.body.data).toHaveLength(1);
     const reg = await api.get(`${CMS}/finance/register?docType=Transfer%20approval`).set('Authorization', checker.auth);
     expect(reg.status).toBe(200);
-    expect(reg.body.data.rows[0]).toMatchObject({ recordId: sub.body.data.ref, source: 'settlement', pending: true, amount: 37.11, status: 'Pending approval' });
+    expect(reg.body.data.rows[0]).toMatchObject({ recordId: sub.body.data.ref, source: 'settlement', pending: true, amount: 54.27, status: 'Pending approval' });
     expect(reg.body.data.summary.pending).toBeGreaterThanOrEqual(1);
     const ok = await api.post(`${CMS}/finance/settlements/${sub.body.data.id}/approve`).set('Authorization', checker.auth).send({});
     expect(ok.body.data.status).toBe('APPROVED');

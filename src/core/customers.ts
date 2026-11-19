@@ -696,8 +696,11 @@ export async function getCustomerPortal(payload: CustomerJwtPayload) {
     bookings,
     // --- appended (additive) ---
     notice: notice ? serializePortalNotice(notice) : null,
+    // Track A (former customers, handoff §13): an ended rental shows no
+    // future deduction — same keys, but nextPayment is null once the tenant
+    // holds no unit. Shape-unchanged (value-level only).
     tenancy: tenant
-      ? { moveInDate: tenant.moveInDate, nextPayment: tenant.nextPayment }
+      ? { moveInDate: tenant.moveInDate, nextPayment: tenant.unitId ? tenant.nextPayment : null }
       : null,
     // --- appended (additive): every unit this customer rents ---
     units,
@@ -1472,6 +1475,22 @@ export async function submitCustomerNotice(payload: CustomerJwtPayload, input: {
     },
     include: { unit: true },
   });
+
+  // Track A (R2 portal bridge): the response above is the legacy shape and
+  // stays byte-identical — the canonical MoveOutCase sync below is a side
+  // effect only and never changes what the portal receives. Channel
+  // `Customer portal`, portal date prefilled+locked as today SG; an open case
+  // + a new portal date becomes a `Customer portal update` date change.
+  // Failures here must never break the 200 notice response.
+  try {
+    const { syncPortalNotice } = await import('./lifecycle/moveOutService');
+    await syncPortalNotice(
+      { id: notice.id, tenantId: tenant.id, unitId: unit.id, lastDay: notice.lastDay },
+      customer.email ?? 'customer-portal',
+    );
+  } catch (e) {
+    console.error('[portal] move-out case sync skipped:', e);
+  }
 
   return {
     status: 'SUBMITTED' as const,

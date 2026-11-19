@@ -644,6 +644,60 @@ export function billingRunExemption(a: AgreementMonth | null): string | null {
   return `Free month ${a.n}${a.durationMonths ? ` of ${a.durationMonths}` : ''} (${a.freePlanName}) — rent waived, no invoice`;
 }
 
+/**
+ * R4 billing guard: never bill a month that starts after a rental's final
+ * access date. Reads the posted (non-reversed) MoveOutCase for the rental —
+ * a REVERSED case lifts the guard. Returns the skip reason, or null to bill.
+ */
+export async function moveOutBillingExemption(
+  tenantId: string,
+  unitId: string,
+  monthStart: Date,
+): Promise<string | null> {
+  const c = await prisma.moveOutCase.findFirst({
+    where: {
+      tenantId,
+      unitId,
+      status: { not: 'REVERSED' },
+      finalAccessDate: { lt: monthStart },
+    },
+    orderBy: { finalAccessDate: 'desc' },
+    select: { caseNumber: true, finalAccessDate: true },
+  });
+  if (!c) return null;
+  const ymd = c.finalAccessDate.toISOString().slice(0, 10);
+  return `Move-out ${c.caseNumber} — final access ${ymd} was before this billing month, no further rent billed`;
+}
+
+/**
+ * R-transfer billing guard (Track A A5): a posted unit transfer already
+ * charged the destination's transfer-days rent through the transfer ledger
+ * lines. Billing the destination again for the same month would double-charge
+ * the transfer period, so a month containing the transfer effective date is
+ * never invoiced for the destination unit. Later months bill normally; the
+ * source unit is no longer the tenant's unit, so it is never billed again.
+ */
+export async function transferBillingExemption(
+  tenantId: string,
+  unitId: string,
+  monthStart: Date,
+): Promise<string | null> {
+  const monthEnd = new Date(Date.UTC(monthStart.getUTCFullYear(), monthStart.getUTCMonth() + 1, 1));
+  const s = await prisma.customerSettlement.findFirst({
+    where: {
+      tenantId,
+      kind: 'TRANSFER',
+      status: 'POSTED',
+      toUnitId: unitId,
+      effectiveDate: { gte: monthStart, lt: monthEnd },
+    },
+    select: { ref: true, effectiveDate: true },
+  });
+  if (!s) return null;
+  const ymd = s.effectiveDate.toISOString().slice(0, 10);
+  return `Transfer ${s.ref} — destination rent from ${ymd} already posted, no separate invoice this month`;
+}
+
 export interface BillingRunInput {
   branchId: string;
   billingMonth: string;
@@ -716,6 +770,20 @@ export async function runBilling(input: BillingRunInput): Promise<BillingRunResu
     const exemption = billingRunExemption(agreement);
     if (exemption) {
       result.skipped.push({ tenant: t.name, unit: t.unit?.name ?? t.unit?.unitCode ?? '—', reason: exemption });
+      continue;
+    }
+    // R4: a month starting after the rental's final access date is never
+    // billed (the posted move-out case is the source of truth). A5: a posted
+    // transfer already charged the destination's transfer-days rent through
+    // the transfer ledger — the transfer month is never invoiced again.
+    const moveOutSkip = await moveOutBillingExemption(t.id, t.unitId!, serviceStart);
+    if (moveOutSkip) {
+      result.skipped.push({ tenant: t.name, unit: t.unit?.name ?? t.unit?.unitCode ?? '—', reason: moveOutSkip });
+      continue;
+    }
+    const transferSkip = await transferBillingExemption(t.id, t.unitId!, serviceStart);
+    if (transferSkip) {
+      result.skipped.push({ tenant: t.name, unit: t.unit?.name ?? t.unit?.unitCode ?? '—', reason: transferSkip });
       continue;
     }
     const key = `billing-run:${branch.id}:${input.billingMonth}:${t.id}`;

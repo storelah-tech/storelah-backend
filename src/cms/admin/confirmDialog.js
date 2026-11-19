@@ -25,7 +25,9 @@
 //   predictable) and returns to the invoker on close.
 // - #confirmModal sits at z-index 300, above the CRUD modals (z-200), so a
 //   confirm opened from inside another modal stays visible and interactive;
-//   toasts stay below at z-100. The underlying modal is left open untouched.
+//   toasts sit above every overlay (z-2500 via ensureMoToastStyle in
+//   moveoutWorkspace.js, injected once at boot). The underlying modal is left
+//   open untouched.
 // - A second call while one is pending resolves the earlier one false first
 //   (confirms never stack).
 // - If the shell is missing for any reason, resolve false (safe default:

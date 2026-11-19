@@ -39,6 +39,11 @@ export const FINANCE_EVENT_TYPES = [
   'refund.rejected',
   'refund.bank.verified',
   'refund.succeeded',
+  // Track A move-out/manual settlement finance (phase A4, handoff §18):
+  // change-request round-trip, terminal processing, charge posting.
+  'refund.changes_requested',
+  'refund.processed',
+  'charge.posted',
   'refund.converted.to.charge',
   'reconciliation.item.matched',
   'reconciliation.batch.closed',
@@ -52,6 +57,29 @@ export const FINANCE_EVENT_TYPES = [
   'arrears.access.restricted',
   'arrears.case.resolved',
   'export.generated',
+  // Track A move-out workflow (phase A3, handoff §18): one event per case
+  // transition, published in the same transaction as the mutation.
+  'move_out.requested',
+  'move_out.date_changed',
+  'move_out.reversed',
+  'move_out.inspection_completed',
+  'move_out.settlement_submitted',
+  'move_out.completed',
+  'move_out.auto_advanced',
+  // Track A unit transfers (phase A5, handoff §§11/13/18): one event per
+  // transfer step — request/approve/execute(=complete) plus the Finance
+  // change-request round-trip. Same-transaction outbox, same as above.
+  'transfer.requested',
+  'transfer.changes_requested',
+  'transfer.corrected',
+  'transfer.approved',
+  'transfer.executed',
+  // Track A rental status editor (phase A6, handoff §13 timeline): every
+  // status edit publishes one event in the same transaction as the mutation.
+  'rental.status_changed',
+  // Settings › Move-outs & refunds (A-19, handoff §14): every changed policy
+  // key publishes one event in the same transaction as the upsert.
+  'business_rule.updated',
   // Lease-horizon P4: committed lease term updated (handoff §6.1).
   'financial_model.lease_horizon.updated',
 ] as const;

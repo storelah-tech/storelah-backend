@@ -42,12 +42,32 @@ const DIRECT_NULLABLE = new Set([
   // Phase 4 wallet/refund/arrears/reconciliation rows carry the tenant's (or
   // import's) branch at creation; null stays visible to scoped operators.
   'CreditWallet', 'Refund', 'ArrearsCase', 'LateFeeWaiver', 'SettlementImport',
+  // Track A: move-out cases live at the unit's facility (branchId set from the
+  // unit at creation); null stays visible to scoped operators.
+  'MoveOutCase',
 ]);
 const VIA_UNIT = new Set(['Booking', 'Invoice', 'Notice', 'RateChange', 'UnitAreaChange', 'UnitPlacement', 'UnitImage']);
 // Phase 3 billing tables: scoped through their parent invoice's unit.
 const VIA_INVOICE = new Set(['InvoiceLine', 'PaymentInstruction']);
+// Track A A4: CustomerSettlement carries only a scalar unitId (no unit
+// relation), so it scopes through the tenant: the tenant's own branch
+// (set at creation) or its active unit's branch (billing F-3 rule).
+// RentalUnitHistory has a unit relation and scopes through it directly.
+const VIA_TENANT_BRANCH = new Set(['CustomerSettlement']);
+const VIA_UNIT_EXTRA = new Set(['RentalUnitHistory']);
 // Phase 4 ledger rows: scoped through their parent wallet / month-close.
 const VIA_WALLET = new Set(['CreditLedgerEntry']);
+// Track A: date changes + inspections are scoped through their parent case.
+const VIA_CASE = new Set(['MoveOutDateChange', 'MoveOutInspection']);
+// Track A: change requests + processor attempts scope through their
+// settlement's unit; status changes through the tenant's unit (former
+// rentals with no unit stay visible).
+const VIA_SETTLEMENT = new Set(['SettlementChangeRequest', 'ProcessorAttempt']);
+const VIA_TENANT_UNIT = new Set(['RentalStatusChange']);
+// Track A A4: ledger lines carry their own unit when posted, else the
+// settlement's or invoice's unit, else the tenant's active unit. Lines with
+// no facility link at all stay visible to scoped operators.
+const LEDGER_MODELS = new Set(['CustomerLedgerEntry']);
 const VIA_MONTH_CLOSE = new Set(['MonthCloseAdjustment']);
 const VIA_FLOOR = new Set(['FloorPlan', 'FloorPlanDraft']);
 const VIA_LEAD = new Set(['Quotation', 'Conversation']);
@@ -56,8 +76,9 @@ const CREATE_NEEDS_FACILITY = new Set(['FacilityFee']);
 
 export function isScopedModel(model: string): boolean {
   return model === 'Branch' || model === 'Lead' || DIRECT_REQUIRED.has(model) || DIRECT_NULLABLE.has(model)
-    || VIA_UNIT.has(model) || VIA_INVOICE.has(model) || VIA_WALLET.has(model) || VIA_MONTH_CLOSE.has(model)
-    || VIA_FLOOR.has(model) || VIA_LEAD.has(model);
+    || VIA_UNIT.has(model) || VIA_UNIT_EXTRA.has(model) || VIA_INVOICE.has(model) || VIA_WALLET.has(model) || VIA_MONTH_CLOSE.has(model)
+    || VIA_FLOOR.has(model) || VIA_LEAD.has(model) || VIA_CASE.has(model)
+    || VIA_SETTLEMENT.has(model) || VIA_TENANT_UNIT.has(model) || VIA_TENANT_BRANCH.has(model) || LEDGER_MODELS.has(model);
 }
 
 /** Prisma where-fragment limiting `model` to the scope (null = no filter). */
@@ -68,7 +89,10 @@ export function scopeWhere(model: string, branchIds: string[]): Record<string, u
   if (model === 'Lead') return lead;
   if (DIRECT_REQUIRED.has(model)) return { branchId: inScope };
   if (DIRECT_NULLABLE.has(model)) return { OR: [{ branchId: inScope }, { branchId: null }] };
-  if (VIA_UNIT.has(model)) return { unit: { branchId: inScope } };
+  if (VIA_UNIT.has(model) || VIA_UNIT_EXTRA.has(model)) return { unit: { branchId: inScope } };
+  if (VIA_TENANT_BRANCH.has(model)) {
+    return { OR: [{ tenant: { branchId: inScope } }, { tenant: { unit: { branchId: inScope } } }] };
+  }
   if (VIA_INVOICE.has(model)) return { invoice: { unit: { branchId: inScope } } };
   if (VIA_WALLET.has(model)) {
     return { wallet: { OR: [{ branchId: inScope }, { branchId: null }] } };
@@ -76,6 +100,30 @@ export function scopeWhere(model: string, branchIds: string[]): Record<string, u
   if (VIA_MONTH_CLOSE.has(model)) return { monthClose: { branchId: inScope } };
   if (VIA_FLOOR.has(model)) return { floor: { branchId: inScope } };
   if (VIA_LEAD.has(model)) return { lead };
+  if (VIA_CASE.has(model)) {
+    return { moveOutCase: { OR: [{ branchId: inScope }, { branchId: null }] } };
+  }
+  if (VIA_SETTLEMENT.has(model)) {
+    return {
+      settlement: { OR: [{ tenant: { branchId: inScope } }, { tenant: { unit: { branchId: inScope } } }] },
+    };
+  }
+  if (VIA_TENANT_UNIT.has(model)) {
+    return { OR: [{ tenant: { unit: { branchId: inScope } } }, { tenant: { unitId: null } }] };
+  }
+  if (LEDGER_MODELS.has(model)) {
+    return {
+      OR: [
+        { unit: { branchId: inScope } },
+        { invoice: { unit: { branchId: inScope } } },
+        { tenant: { unit: { branchId: inScope } } },
+        { tenant: { branchId: inScope } },
+        { settlement: { tenant: { branchId: inScope } } },
+        { settlement: { tenant: { unit: { branchId: inScope } } } },
+        { unitId: null, settlementId: null, invoiceId: null },
+      ],
+    };
+  }
   return null;
 }
 

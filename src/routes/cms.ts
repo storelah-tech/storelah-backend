@@ -32,7 +32,7 @@ import {
   updateFloor,
   deleteFloor,
 } from '../core/floors';
-import { listTenants, createTenant, updateTenant, deactivateTenant, listMoveOuts, transitionMoveOut } from '../core/tenants';
+import { listTenants, createTenant, updateTenant, deactivateTenant, listMoveOuts } from '../core/tenants';
 import { listVerificationsForCms, setVerificationReview } from '../core/verifications';
 import { listLeads, getLeadById, getLeadStats, getWeeklyAnalytics, listLeadGroups, getLeadGroupTimeline, createLead, updateLead, deleteLead, createEnquiryForLead, listEnquiriesForLead } from '../core/leads';
 import type { LeadStage, LeadSource } from '@prisma/client';
@@ -79,6 +79,46 @@ import { adjustRate, getNetPsf } from '../core/rates';
 import { listQuotes, getQuote, createQuotation, listQuotableLeads, getQuotationPdf, finalizeQuotation, resolveQuotationPromo } from '../core/quotes';
 import { listFees, createFee, updateFee, deleteFee, resolveFee } from '../core/fees';
 import { listBusinessRules, upsertBusinessRules } from '../core/businessRules';
+import {
+  createMoveOutCase,
+  listMoveOutCases,
+  getMoveOutCase,
+  previewMoveOutCase,
+  previewMoveOutDateChange,
+  previewMoveOutRequest,
+  previewMoveOutInspection,
+  changeMoveOutDate,
+  reverseMoveOutCase,
+  submitMoveOutInspection,
+} from '../core/lifecycle/moveOutService';
+import {
+  createManualRefund,
+  requestSettlementChanges,
+  correctSettlement,
+  approveSettlement,
+  processSettlement,
+  cancelSettlement,
+  getFinanceSettlement,
+  listRefundsRegister,
+  listFinanceSettlements,
+  MANUAL_REFUND_REASONS,
+  RETURN_METHODS,
+  SETTLEMENT_STATUSES,
+} from '../core/lifecycle/settleFinance';
+import { getCustomerRollup } from '../core/lifecycle/customerRollup';
+import { RENTAL_EDITOR_STATUSES, setRentalStatus } from '../core/lifecycle/rentalStatus';
+import {
+  listTransfers,
+  getTransfer,
+  previewTransfer,
+  requestTransfer,
+  requestTransferChanges,
+  correctTransfer,
+  approveTransfer,
+  executeTransfer,
+  replaceTransferDestination,
+  TRANSFER_CHANGE_CATEGORIES,
+} from '../core/lifecycle/transferService';
 import {
   listUsers,
   getUser,
@@ -286,7 +326,7 @@ import { buildFinanceReportPdf, financeReportFileName } from '../core/finance/re
 import { buildProjectionReport } from '../core/finance/projectionReport';
 import { buildProjectionReportPdf, projectionReportFileName } from '../core/finance/projectionReportPdf';
 import { buildReturnsReport, buildReturnsReportPdf, returnsReportFileName } from '../core/finance/returnsReportPdf';
-import { ADJUSTMENT_CATEGORIES, decideSettlement, getCustomerProfile, listSettlements, previewSettlement, submitSettlement } from '../core/customerProfile';
+import { ADJUSTMENT_CATEGORIES, decideSettlement, getCustomerProfile, previewSettlement, submitSettlement } from '../core/customerProfile';
 import { REGISTER_DOC_TYPES, listRegister } from '../core/finance/register';
 
 const LEAD_STAGE_VALUES = PIPELINE_COLUMNS as [LeadStage, ...LeadStage[]];
@@ -1186,6 +1226,74 @@ router.get('/tenants/:id/profile', requireAuth, async (req: Request, res: Respon
   ok(res, await getCustomerProfile(String(req.params.id)));
 });
 
+// Track A (roll-up, R5): the same read model the profile spreads additively,
+// exposed directly for the operator workspace. Read-only, same readers as
+// the profile.
+router.get('/tenants/:id/rollup', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await getCustomerRollup(String(req.params.id)));
+});
+
+// A-25: route-level zod failures name the field (missing due date, empty
+// reason/response) instead of a generic label. Validation rules are
+// untouched — only the fail() message gets specific. The flattened details
+// still ride along so the CMS can render them inline.
+function fieldValidationMessage(
+  error: z.ZodError,
+  messages: Record<string, string | ((issue: z.ZodIssue) => string | null)>,
+  fallback: string,
+): string {
+  for (const issue of error.issues) {
+    const field = issue.path.length ? String(issue.path[0]) : '';
+    const entry = field ? messages[field] : undefined;
+    if (typeof entry === 'function') {
+      const m = entry(issue);
+      if (m) return m;
+    } else if (entry) {
+      return entry;
+    }
+  }
+  return fallback;
+}
+
+// Handoff copy for transfer change requests: the due date drives the
+// Operations correction, so a missing value vs a malformed value says so.
+function dueDateIssueMessage(issue: z.ZodIssue): string | null {
+  return issue.code === 'invalid_type'
+    ? 'Due date is required — set a due date for the Operations correction.'
+    : 'Due date must be a valid date (YYYY-MM-DD).';
+}
+
+// Track A (rental status editor, R5, handoff §7): guarded per-rental status
+// transitions. Version-guarded (409 STALE), reason-mandatory, audit-logged;
+// a status change alone never creates a refund, ends access or releases a
+// unit. Reuses customer-tenants:update (no new resource).
+router.post('/tenants/:id/status', requireAuth, async (req: Request, res: Response) => {
+  const parsed = z.object({
+    status: z.enum(RENTAL_EDITOR_STATUSES),
+    reason: z.string().trim().min(1, 'A reason is required to change the rental status.').max(2000),
+    expectedVersion: z.number().int().optional(),
+  }).safeParse(req.body);
+  if (!parsed.success) {
+    fail(
+      res,
+      400,
+      'VALIDATION',
+      fieldValidationMessage(
+        parsed.error,
+        {
+          reason: 'A reason is required to change the rental status.',
+          status: (issue) =>
+            issue.code === 'invalid_type' ? 'Choose a new rental status.' : 'Choose a valid rental status.',
+        },
+        'Invalid status change',
+      ),
+      parsed.error.flatten(),
+    );
+    return;
+  }
+  created(res, await setRentalStatus(String(req.params.id), parsed.data, actorName(req), 'cms'));
+});
+
 const ymdString = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Use YYYY-MM-DD');
 const adjustmentSchema = z.object({
   type: z.enum(['CHARGE', 'CREDIT']),
@@ -1198,6 +1306,7 @@ const settlementSchema = z.discriminatedUnion('kind', [
     kind: z.literal('TRANSFER'),
     date: ymdString,
     toUnitId: z.string().min(1),
+    // A-23: accepted but IGNORED — derived from the destination unit.
     destPromoPct: z.number().min(0).max(100).optional(),
     destProtection: z.number().nonnegative().optional(),
     destDeposit: z.number().nonnegative().optional(),
@@ -1256,6 +1365,8 @@ router.get('/finance/register', requireAuth, async (req: Request, res: Response)
     docType: z.enum(REGISTER_DOC_TYPES).optional(),
     status: z.string().trim().max(40).optional(),
     facility: z.string().trim().max(10).optional(),
+    unitType: z.string().trim().max(20).optional(),
+    processor: z.string().trim().max(20).optional(),
     from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
     to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   }).safeParse(req.query);
@@ -1266,25 +1377,438 @@ router.get('/finance/register', requireAuth, async (req: Request, res: Response)
   ok(res, await listRegister({ ...parsed.data, branchIds: adminOf(req)?.branchIds ?? null }));
 });
 
-router.get('/finance/settlements', requireAuth, async (req: Request, res: Response) => {
-  const parsed = z.object({ status: z.enum(['PENDING', 'APPROVED', 'REJECTED']).optional() }).safeParse(req.query);
-  if (!parsed.success) {
-    fail(res, 400, 'VALIDATION', 'Invalid status', parsed.error.flatten());
-    return;
-  }
-  ok(res, await listSettlements(parsed.data));
+// Settlement finance (Track A A4) identifies operators by email: move-out
+// case settlements record requestedBy as the operator email (operatorActor,
+// src/routes/cms.ts bottom), so approval maker-checker must compare against
+// the same string — actorName (display name) would never match.
+const settlementActor = (req: Request): string => adminOf(req)?.email ?? 'cms-operator';
+
+const settlementFilterSchema = z.object({  status: z.enum(SETTLEMENT_STATUSES as unknown as [string, ...string[]]).optional(),
+  kind: z.enum(['TRANSFER', 'MOVE_OUT', 'REFUND']).optional(),
+  from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  facility: z.string().trim().max(10).optional(),
+  branchId: z.string().trim().min(1).optional(),
+  processor: z.string().trim().max(20).optional(),
+  search: z.string().trim().max(120).optional(),
 });
 
-for (const [path, decision] of [['approve', 'APPROVED'], ['reject', 'REJECTED']] as const) {
+router.get('/finance/settlements', requireAuth, async (req: Request, res: Response) => {
+  const parsed = settlementFilterSchema.safeParse(req.query);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid settlement filter', parsed.error.flatten());
+    return;
+  }
+  ok(res, await listFinanceSettlements(parsed.data));
+});
+
+// Manual refund create (handoff §10.2–§10.4, D3): operator-entered refunds
+// live on CustomerSettlement. Idempotent per Idempotency-Key header.
+const manualRefundSchema = z.object({
+  tenantId: z.string().min(1),
+  unitId: z.string().min(1).nullable().optional(),
+  amount: z.number(),
+  reasonCode: z.enum(MANUAL_REFUND_REASONS as unknown as [string, ...string[]]),
+  sourceRef: z.string().trim().max(200).nullable().optional(),
+  returnMethod: z.enum(RETURN_METHODS as unknown as [string, ...string[]]),
+  notes: z.string(),
+});
+
+router.post('/finance/settlements', requireAuth, async (req: Request, res: Response) => {
+  const parsed = manualRefundSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid refund request', parsed.error.flatten());
+    return;
+  }
+  const out = await createManualRefund(
+    { ...parsed.data, idempotencyKey: getIdempotencyKey(req.headers) },
+    settlementActor(req),
+  );
+  if (out.deduplicated) {
+    ok(res, { settlement: out.settlement, deduplicated: true, message: out.message });
+    return;
+  }
+  created(res, { settlement: out.settlement, message: out.message });
+});
+
+// Refunds register (handoff §12): Finance settlements filtered for the CMS
+// (refunds/charges only — transfer approvals live under kind=TRANSFER).
+router.get('/finance/settlements/refunds', requireAuth, async (req: Request, res: Response) => {
+  const parsed = settlementFilterSchema.safeParse(req.query);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid refunds filter', parsed.error.flatten());
+    return;
+  }
+  const { rows, summary, empty } = await listRefundsRegister(parsed.data);
+  ok(res, rows, { count: rows.length, ...summary, ...(empty ? { empty } : {}) });
+});
+
+// Track A A7 (review drawer + jump actions): single-settlement readout. The
+// list endpoints return flattened rows; the drawer needs the full record
+// (lines, change requests, attempts, ledger lines). Literal sibling
+// /refunds stays registered above so Express matches it first.
+router.get('/finance/settlements/:id', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await getFinanceSettlement(String(req.params.id)));
+});
+
+// Approve / reject on the settlements register. Legacy PENDING rows keep the
+// old decideSettlement flow; the new lifecycle (A4) approves to APPROVED and
+// rejects as a change request (→ CHANGES_REQUESTED, handoff §10.6).
+const settlementDecisionSchema = z.object({
+  note: z.string().trim().max(500).nullable().optional(),
+  reason: z.string().trim().max(500).nullable().optional(),
+  category: z.string().trim().max(120).nullable().optional(),
+  assignTeam: z.string().trim().max(120).nullable().optional(),
+  assigneeId: z.string().trim().max(120).nullable().optional(),
+  dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
+  expectedVersion: z.number().int().nonnegative().nullable().optional(),
+});
+
+for (const path of ['approve', 'reject'] as const) {
   router.post(`/finance/settlements/:id/${path}`, requireAuth, async (req: Request, res: Response) => {
-    const parsed = z.object({ note: z.string().trim().max(500).nullable().optional() }).safeParse(req.body ?? {});
+    const parsed = settlementDecisionSchema.safeParse(req.body ?? {});
     if (!parsed.success) {
-      fail(res, 400, 'VALIDATION', 'Invalid decision note', parsed.error.flatten());
+      fail(res, 400, 'VALIDATION', 'Invalid decision', parsed.error.flatten());
       return;
     }
-    ok(res, await decideSettlement(String(req.params.id), decision, { actor: actorName(req), note: parsed.data.note }));
+    const d = parsed.data;
+    const admin = adminOf(req);
+    const actor = settlementActor(req);
+    const isOwner = admin?.isOwner ?? false;
+    const current = await prisma.customerSettlement.findFirst({
+      where: { id: String(req.params.id) },
+      select: { status: true, origin: true },
+    });
+    if (!current) {
+      fail(res, 404, 'NOT_FOUND', 'Settlement not found');
+      return;
+    }
+    // A6 wording fix: legacy rows are the pre-lifecycle ones with no origin.
+    // A NEW lifecycle row that already reached APPROVED must flow to
+    // approveSettlement's state-specific 409 — never the legacy copy.
+    const legacy = !current.origin && (current.status === 'PENDING' || current.status === 'APPROVED' || current.status === 'REJECTED');
+    if (legacy) {
+      // Legacy flow keeps its own actor convention (display name): the
+      // legacy maker-checker compares requestedBy against actorName.
+      ok(res, await decideSettlement(String(req.params.id), path === 'approve' ? 'APPROVED' : 'REJECTED', { actor: actorName(req), note: d.note ?? d.reason ?? null }));
+      return;
+    }
+    if (path === 'approve') {
+      const out = await approveSettlement(String(req.params.id), {
+        actor,
+        isOwner,
+        expectedVersion: d.expectedVersion ?? undefined,
+        reason: d.reason ?? d.note ?? undefined,
+      });
+      ok(res, { settlement: out.settlement, message: out.message, ...(out.bypassed ? { bypassed: true } : {}) });
+      return;
+    }
+    const out = await requestSettlementChanges(
+      String(req.params.id),
+      {
+        note: d.note ?? d.reason ?? '',
+        category: d.category,
+        assignTeam: d.assignTeam,
+        assigneeId: d.assigneeId,
+        dueDate: d.dueDate,
+        expectedVersion: d.expectedVersion ?? undefined,
+      },
+      actor,
+    );
+    ok(res, { settlement: out.settlement });
   });
 }
+
+// Correct + resubmit a returned settlement (handoff §10.6, R6).
+const correctSettlementSchema = z.object({
+  expectedVersion: z.number().int().nonnegative().optional(),
+  amount: z.number().optional(),
+  sourceRef: z.string().trim().max(200).nullable().optional(),
+  returnMethod: z.enum(RETURN_METHODS as unknown as [string, ...string[]]).optional(),
+  reasonCode: z.enum(MANUAL_REFUND_REASONS as unknown as [string, ...string[]]).optional(),
+  notes: z.string().max(2000).optional(),
+  charges: z.object({
+    earlyTermination: z.number().optional(),
+    damage: z.number().optional(),
+    cleaning: z.number().optional(),
+    disposal: z.number().optional(),
+    arrears: z.number().optional(),
+    other: z.number().optional(),
+  }).optional(),
+  specialCredit: z.number().optional(),
+});
+
+router.post('/finance/settlements/:id/correct', requireAuth, async (req: Request, res: Response) => {
+  const parsed = correctSettlementSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid correction', parsed.error.flatten());
+    return;
+  }
+  const out = await correctSettlement(String(req.params.id), parsed.data, settlementActor(req));
+  ok(res, { settlement: out.settlement, ...(out.outcomeChanged ? { outcomeChanged: true } : {}) });
+});
+
+// Cancel a blocked settlement (A-16) — APPROVED (processing failed/blocked),
+// PENDING_APPROVAL, CHANGES_REQUESTED or FAILED → CANCELLED with a reason.
+// Terminal and PROCESSING records can never cancel here.
+const cancelSettlementSchema = z.object({
+  reason: z.string().trim().max(500).optional(),
+  note: z.string().trim().max(500).nullable().optional(),
+  expectedVersion: z.number().int().nonnegative().optional(),
+});
+
+router.post('/finance/settlements/:id/cancel', requireAuth, async (req: Request, res: Response) => {
+  const parsed = cancelSettlementSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid cancellation', parsed.error.flatten());
+    return;
+  }
+  const admin = adminOf(req);
+  const out = await cancelSettlement(
+    String(req.params.id),
+    { reason: parsed.data.reason ?? parsed.data.note ?? '', expectedVersion: parsed.data.expectedVersion ?? undefined },
+    settlementActor(req),
+    admin?.isOwner ?? false,
+  );
+  ok(res, { settlement: out.settlement });
+});
+
+// Process a refund / post a charge (handoff §10.7). Idempotent per
+// Idempotency-Key; re-running a posted settlement is a no-op success.
+const processSettlementSchema = z.object({
+  expectedVersion: z.number().int().nonnegative().optional(),
+  bankReference: z.string().trim().max(200).nullable().optional(),
+  reason: z.string().trim().max(500).nullable().optional(),
+});
+
+router.post('/finance/settlements/:id/process', requireAuth, async (req: Request, res: Response) => {
+  const parsed = processSettlementSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid process request', parsed.error.flatten());
+    return;
+  }
+  const admin = adminOf(req);
+  const out = await processSettlement(
+    String(req.params.id),
+    {
+      expectedVersion: parsed.data.expectedVersion ?? undefined,
+      idempotencyKey: getIdempotencyKey(req.headers),
+      bankReference: parsed.data.bankReference ?? undefined,
+      reason: parsed.data.reason ?? undefined,
+    },
+    settlementActor(req),
+    admin?.isOwner ?? false,
+  );
+  ok(res, { settlement: out.settlement, message: out.message, ...(out.deduplicated ? { deduplicated: true } : {}) });
+});
+
+// ---- Unit transfers (Track A A5, handoff §11) ----
+// Thin routes over src/core/lifecycle/transferService.ts. `/:id` routes stay
+// after literal siblings. Approval rides on bill-transactions:approve;
+// manual destination replacement is Owner-only (D9).
+const transferExceptionSchema = z.object({
+  type: z.enum(['CHARGE', 'CREDIT']),
+  category: z.enum(ADJUSTMENT_CATEGORIES as unknown as [string, ...string[]]),
+  amount: z.number(),
+  reason: z.string().trim().max(500),
+}).nullable().optional();
+
+const transferMutationFields = {
+  toUnitId: z.string().min(1),
+  effectiveDate: ymdString,
+  // A-23: accepted but IGNORED — preview/post/correct recompute the
+  // destination promotion from the destination unit (handoff §11.2).
+  destPromoPct: z.number().min(0).max(100).optional(),
+  destDeposit: z.number().optional(),
+  destProtection: z.number().optional(),
+  sourceDepositHeld: z.number().optional(),
+  reason: z.string().trim().max(500).nullable().optional(),
+  exceptionAdjustment: transferExceptionSchema,
+};
+
+const transferPreviewSchema = z.object({
+  tenantId: z.string().min(1),
+  ...transferMutationFields,
+});
+
+const transferRequestSchema = z.object({
+  tenantId: z.string().min(1),
+  ...transferMutationFields,
+});
+
+const transferCorrectSchema = z.object({
+  response: z.string().max(2000),
+  expectedVersion: z.number().int().nonnegative().nullable().optional(),
+  toUnitId: z.string().min(1).optional(),
+  effectiveDate: ymdString.optional(),
+  destPromoPct: z.number().min(0).max(100).optional(),
+  destDeposit: z.number().optional(),
+  destProtection: z.number().optional(),
+  sourceDepositHeld: z.number().optional(),
+  reason: z.string().trim().max(500).nullable().optional(),
+  exceptionAdjustment: transferExceptionSchema,
+});
+
+const transferChangesSchema = z.object({
+  note: z.string().max(2000),
+  category: z.enum(TRANSFER_CHANGE_CATEGORIES as unknown as [string, ...string[]]).nullable().optional(),
+  assignTeam: z.string().trim().max(120).nullable().optional(),
+  assigneeId: z.string().trim().max(120).nullable().optional(),
+  dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  expectedVersion: z.number().int().nonnegative().nullable().optional(),
+});
+
+const transferDecideSchema = z.object({
+  reason: z.string().trim().max(500).nullable().optional(),
+  expectedVersion: z.number().int().nonnegative().nullable().optional(),
+});
+
+const transferReplaceSchema = z.object({
+  toUnitId: z.string().min(1),
+  reason: z.string().max(500),
+  expectedVersion: z.number().int().nonnegative().nullable().optional(),
+});
+
+const transferListSchema = z.object({
+  status: z.enum(['PENDING_APPROVAL', 'CHANGES_REQUESTED', 'APPROVED', 'PROCESSING', 'POSTED', 'FAILED', 'CANCELLED']).optional(),
+  branchId: z.string().trim().min(1).optional(),
+  search: z.string().trim().max(120).optional(),
+});
+
+router.post('/transfers/preview', requireAuth, async (req: Request, res: Response) => {
+  const parsed = transferPreviewSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid transfer preview', parsed.error.flatten());
+    return;
+  }
+  const { tenantId, ...input } = parsed.data;
+  ok(res, await previewTransfer(tenantId, input));
+});
+
+router.get('/transfers', requireAuth, async (req: Request, res: Response) => {
+  const parsed = transferListSchema.safeParse(req.query);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid transfer filter', parsed.error.flatten());
+    return;
+  }
+  const { rows, empty } = await listTransfers(parsed.data);
+  ok(res, rows, { count: rows.length, ...(empty ? { empty } : {}) });
+});
+
+router.post('/transfers', requireAuth, async (req: Request, res: Response) => {
+  const parsed = transferRequestSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid transfer request', parsed.error.flatten());
+    return;
+  }
+  const { tenantId, ...input } = parsed.data;
+  const out = await requestTransfer(
+    tenantId,
+    { ...input, idempotencyKey: getIdempotencyKey(req.headers) },
+    settlementActor(req),
+  );
+  if (out.deduplicated) {
+    ok(res, { settlement: out.settlement, deduplicated: true, message: out.message });
+    return;
+  }
+  created(res, { settlement: out.settlement, message: out.message });
+});
+
+router.get('/transfers/:id', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await getTransfer(String(req.params.id)));
+});
+
+router.post('/transfers/:id/correct', requireAuth, async (req: Request, res: Response) => {
+  const parsed = transferCorrectSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    fail(
+      res,
+      400,
+      'VALIDATION',
+      fieldValidationMessage(
+        parsed.error,
+        {
+          response: 'Add the Operations response to the Finance change request.',
+          effectiveDate: 'Choose a valid transfer date.',
+          toUnitId: 'Choose a destination unit.',
+        },
+        'Invalid transfer correction',
+      ),
+      parsed.error.flatten(),
+    );
+    return;
+  }
+  const out = await correctTransfer(String(req.params.id), parsed.data, settlementActor(req));
+  ok(res, { settlement: out.settlement });
+});
+
+router.post('/transfers/:id/changes', requireAuth, async (req: Request, res: Response) => {
+  const parsed = transferChangesSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    fail(
+      res,
+      400,
+      'VALIDATION',
+      fieldValidationMessage(
+        parsed.error,
+        {
+          note: 'Say what needs to change.',
+          category: `Choose an issue category: ${TRANSFER_CHANGE_CATEGORIES.join(', ')}.`,
+          dueDate: dueDateIssueMessage,
+          assigneeId: 'Unknown assignee — choose an operator who can receive the Operations work item.',
+        },
+        'Invalid change request',
+      ),
+      parsed.error.flatten(),
+    );
+    return;
+  }
+  const out = await requestTransferChanges(String(req.params.id), parsed.data, settlementActor(req));
+  ok(res, { settlement: out.settlement });
+});
+
+router.post('/transfers/:id/approve', requireAuth, async (req: Request, res: Response) => {
+  const parsed = transferDecideSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid approval', parsed.error.flatten());
+    return;
+  }
+  const admin = adminOf(req);
+  const out = await approveTransfer(String(req.params.id), {
+    actor: settlementActor(req),
+    isOwner: admin?.isOwner ?? false,
+    expectedVersion: parsed.data.expectedVersion ?? undefined,
+    reason: parsed.data.reason ?? undefined,
+  });
+  ok(res, { settlement: out.settlement, message: out.message, ...(out.bypassed ? { bypassed: true } : {}) });
+});
+
+router.post('/transfers/:id/execute', requireAuth, async (req: Request, res: Response) => {
+  const parsed = transferDecideSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid execute request', parsed.error.flatten());
+    return;
+  }
+  const admin = adminOf(req);
+  const out = await executeTransfer(
+    String(req.params.id),
+    { expectedVersion: parsed.data.expectedVersion ?? undefined, reason: parsed.data.reason ?? undefined },
+    settlementActor(req),
+    admin?.isOwner ?? false,
+  );
+  ok(res, { settlement: out.settlement, message: out.message, ...(out.deduplicated ? { deduplicated: true } : {}) });
+});
+
+router.post('/transfers/:id/replace-destination', requireAuth, async (req: Request, res: Response) => {
+  const parsed = transferReplaceSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid destination replacement', parsed.error.flatten());
+    return;
+  }
+  const admin = adminOf(req);
+  const out = await replaceTransferDestination(String(req.params.id), parsed.data, settlementActor(req), admin?.isOwner ?? false);
+  ok(res, { settlement: out.settlement });
+});
 
 // ---- Quotation register (Leads › Quotes, prototype 2026-11-04) ----
 router.get('/quotations', requireAuth, async (req: Request, res: Response) => {
@@ -3414,24 +3938,189 @@ router.get('/quotes/:id', requireAuth, async (req: Request, res: Response) => {
 });
 
 // P1 item 4: operator move-outs queue over Notice + TenantStatus.NOTICE.
-// Transitions are explicit operator actions (complete/cancel) — nothing here
-// auto-flips tenant status.
+// Read-only legacy register (kept for the Operations move-ins & move-outs
+// queue). Workflow transitions live on the canonical move-out cases below.
 router.get('/move-outs', requireAuth, async (_req: Request, res: Response) => {
   const rows = await listMoveOuts();
   ok(res, rows, { count: rows.length });
 });
 
-const moveOutTransitionSchema = z.object({
-  action: z.enum(['complete', 'cancel']),
+// D14: the legacy complete/cancel path bypassed inspection, so it is retired.
+// The path stays registered so existing callers get a 410 pointer to the
+// canonical flow — never a 404.
+router.patch('/move-outs/:tenantId', requireAuth, async (_req: Request, res: Response) => {
+  fail(
+    res,
+    410,
+    'GONE',
+    'Move-out complete/cancel is retired. Record a move-out case (POST /api/v1/cms/move-out-cases), complete the inspection, and let Finance approve the settlement.',
+    { pointer: '/api/v1/cms/move-out-cases' },
+  );
 });
 
-router.patch('/move-outs/:tenantId', requireAuth, async (req: Request, res: Response) => {
-  const parsed = moveOutTransitionSchema.safeParse(req.body);
+// Track A (move-out workflow, handoff §8/§17): thin routes over
+// src/core/lifecycle/moveOutService.ts. `/:id` routes stay after literal
+// siblings. Approval/process/ledger posting is A4 — not here.
+const moveOutCaseCreateSchema = z.object({
+  tenantId: z.string().trim().min(1),
+  finalAccessDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Choose a valid request and move-out date.'),
+  requestReceivedAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Choose a valid request and move-out date.').optional(),
+  requestChannel: z.enum(['Customer portal', 'WhatsApp', 'Phone', 'Email', 'Onsite']),
+  reasonCode: z.enum([
+    'No longer needs storage',
+    'Price',
+    'Relocation completed',
+    'Transferred to another provider',
+    'Service issue',
+    'Other',
+  ]),
+  requestNotes: z.string().max(2000).optional().nullable(),
+  noticeId: z.string().optional().nullable(),
+});
+
+const moveOutDateChangeSchema = z.object({
+  finalAccessDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Choose a valid request and move-out date.'),
+  reason: z.string().max(2000),
+  expectedVersion: z.number().int().optional(),
+});
+
+const moveOutReverseSchema = z.object({
+  reason: z.string().max(2000),
+  expectedVersion: z.number().int().optional(),
+});
+
+const moveOutInspectionSchema = z.object({
+  unitEmpty: z.boolean(),
+  doorLockWallsFloorChecked: z.boolean(),
+  accessRevoked: z.boolean(),
+  releaseConfirmed: z.boolean(),
+  releaseStatus: z.enum(['READY', 'CLEANING_REQUIRED', 'MAINTENANCE_REQUIRED', 'BLOCKED']),
+  // No .min(0) here: the service owns charge validation (negative inputs are
+  // rejected with a stable message; see submitMoveOutInspection).
+  earlyTerminationCharge: z.number().optional(),
+  damageCharge: z.number().optional(),
+  cleaningCharge: z.number().optional(),
+  disposalCharge: z.number().optional(),
+  arrearsAmount: z.number().optional(),
+  otherCharge: z.number().optional(),
+  specialCredit: z.number().optional(),
+  notes: z.string().max(4000),
+  evidenceRefs: z.array(z.string().max(500)).max(20).optional(),
+  expectedVersion: z.number().int().optional(),
+});
+
+function operatorActor(req: Request): string {
+  return adminOf(req)?.email ?? 'cms-operator';
+}
+
+router.post('/move-out-cases', requireAuth, async (req: Request, res: Response) => {
+  const parsed = moveOutCaseCreateSchema.safeParse(req.body);
   if (!parsed.success) {
-    fail(res, 400, 'VALIDATION', 'Invalid move-out action', parsed.error.flatten());
+    fail(res, 400, 'VALIDATION', 'Invalid move-out request', parsed.error.flatten());
     return;
   }
-  ok(res, await transitionMoveOut(String(req.params.tenantId), parsed.data.action));
+  created(res, await createMoveOutCase({ ...parsed.data, createdBy: operatorActor(req) }));
+});
+
+// A7 record-request modal: server-computed notice + settlement preview for a
+// rental BEFORE a case exists (handoff §8.2). Literal path — registered
+// before the `/:id` routes below. Creates nothing; the modal never keys or
+// totals money. An omitted finalAccessDate defaults to request + notice days.
+const moveOutRequestPreviewSchema = z.object({
+  tenantId: z.string().trim().min(1),
+  requestReceivedAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Choose a valid request and move-out date.').optional(),
+  finalAccessDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Choose a valid request and move-out date.').optional(),
+});
+
+router.post('/move-out-cases/request-preview', requireAuth, async (req: Request, res: Response) => {
+  const parsed = moveOutRequestPreviewSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid move-out preview', parsed.error.flatten());
+    return;
+  }
+  ok(res, await previewMoveOutRequest(parsed.data));
+});
+
+router.get('/move-out-cases', requireAuth, async (req: Request, res: Response) => {
+  const q = req.query as Record<string, string | undefined>;
+  const { rows, empty } = await listMoveOutCases({ status: q.status, branchId: q.branchId, search: q.search });
+  ok(res, rows, { count: rows.length, ...(empty ? { empty } : {}) });
+});
+
+router.get('/move-out-cases/:id', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await getMoveOutCase(String(req.params.id)));
+});
+
+router.get('/move-out-cases/:id/preview', requireAuth, async (req: Request, res: Response) => {
+  // A-12 date-change compare: ?finalAccessDate=YYYY-MM-DD reuses this read
+  // route (same `customer-moveouts` view grant — no new permission) and
+  // returns the server-computed before/after instead of the plain preview.
+  const q = req.query as Record<string, string | undefined>;
+  if (q.finalAccessDate !== undefined) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(q.finalAccessDate)) {
+      fail(res, 400, 'VALIDATION', 'Choose a valid request and move-out date.');
+      return;
+    }
+    ok(res, await previewMoveOutDateChange(String(req.params.id), q.finalAccessDate));
+    return;
+  }
+  ok(res, await previewMoveOutCase(String(req.params.id)));
+});
+
+router.patch('/move-out-cases/:id/date', requireAuth, async (req: Request, res: Response) => {
+  const parsed = moveOutDateChangeSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid date change', parsed.error.flatten());
+    return;
+  }
+  const { finalAccessDate, reason, expectedVersion } = parsed.data;
+  const { case: c, before, after } = await changeMoveOutDate(
+    String(req.params.id),
+    { finalAccessDate, reason, expectedVersion },
+    operatorActor(req),
+  );
+  ok(res, { case: c, before, after });
+});
+
+router.post('/move-out-cases/:id/reverse', requireAuth, async (req: Request, res: Response) => {
+  const parsed = moveOutReverseSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid reversal', parsed.error.flatten());
+    return;
+  }
+  ok(res, await reverseMoveOutCase(String(req.params.id), parsed.data, operatorActor(req)));
+});
+
+router.post('/move-out-cases/:id/inspection', requireAuth, async (req: Request, res: Response) => {
+  const parsed = moveOutInspectionSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid inspection', parsed.error.flatten());
+    return;
+  }
+  created(res, await submitMoveOutInspection(String(req.params.id), parsed.data, operatorActor(req)));
+});
+
+// A9 inspection modal: debounced live settlement table while charges are
+// typed (handoff §8.9). Same server engine as the submit; writes nothing.
+// Read grant (mirrors request-preview): viewers see the maths, submit stays
+// update-gated.
+const moveOutInspectionPreviewSchema = z.object({
+  earlyTerminationCharge: z.number().optional(),
+  damageCharge: z.number().optional(),
+  cleaningCharge: z.number().optional(),
+  disposalCharge: z.number().optional(),
+  arrearsAmount: z.number().optional(),
+  otherCharge: z.number().optional(),
+  specialCredit: z.number().optional(),
+});
+
+router.post('/move-out-cases/:id/inspection-preview', requireAuth, async (req: Request, res: Response) => {
+  const parsed = moveOutInspectionPreviewSchema.safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid inspection preview', parsed.error.flatten());
+    return;
+  }
+  ok(res, await previewMoveOutInspection(String(req.params.id), parsed.data));
 });
 
 router.get('/floors', requireAuth, async (req: Request, res: Response) => {
@@ -5245,7 +5934,21 @@ router.put('/business-rules', requireAuth, async (req: Request, res: Response) =
     fail(res, 400, 'VALIDATION', 'Business-rules payload must be an object of { key: value }', parsed.error.flatten());
     return;
   }
-  ok(res, await upsertBusinessRules(parsed.data));
+  // Track A A7 key scoping: settings-moveouts holders (Finance Approver —
+  // the Move-outs & refunds policy surface) may write ONLY moveout.* keys.
+  // booking.* + org.* stay behind settings-booking:update.
+  const principal = adminOf(req);
+  if (!principal || !can(principal, 'settings-booking:update')) {
+    const foreign = Object.keys(parsed.data).filter((k) => !k.startsWith('moveout.'));
+    if (foreign.length) {
+      fail(res, 403, 'FORBIDDEN', `Move-out policy editors may only change moveout.* rules (blocked: ${foreign.join(', ')}).`);
+      return;
+    }
+  }
+  // A-19 (handoff §14): policy saves carry the operator + source into the
+  // before/after audit trail written by upsertBusinessRules.
+  const policyActor = adminOf(req)?.email ?? 'cms-operator';
+  ok(res, await upsertBusinessRules(parsed.data, { actor: policyActor, source: 'cms', correlationId: newCorrelationId() }));
 });
 
 // --- Team & access: users, roles, audit (CMS RBAC; Owner only — see

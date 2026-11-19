@@ -9,6 +9,7 @@ import { resolvePromoDueTodayScope } from './promotions';
 import { resolveSupportContact } from './emails';
 import { CUSTOMER_REQUEST_NOTE_PREFIX, leadIdentityColumns, normalizeLeadEmail } from './leads';
 import { CustomerJwtPayload, signCustomerToken } from '../middleware/auth';
+import { claimBusinessVerificationTx } from './verifications';
 import { getFinancePolicies } from './finance/policies';
 import { toCustomerInvoice } from './invoicePayments';
 
@@ -31,6 +32,11 @@ export interface CreateBookingInput {
   promoCode?: string;
   movingService?: boolean;
   totalDueToday?: number;
+  /** Business bookings: the hirer company as entered (unverified). */
+  companyName?: string;
+  uen?: string;
+  /** Myinfo Business confirmation from the Details step (see applyBookingCompany). */
+  myinfoBusiness?: { verificationId: string; draftRef: string };
 }
 
 export interface CustomerRequestInput {
@@ -1226,6 +1232,13 @@ export async function createCustomerBooking(customer: Customer, input: CreateBoo
       },
     });
 
+    const { companyVerified } = await applyBookingCompany(tx, {
+      customer,
+      tenant,
+      bookingRef: booking.bookingRef,
+      input,
+    });
+
     // The unit status is deliberately left untouched here: an unpaid booking
     // (PENDING_PAYMENT + DUE invoice) never reserves the unit — it stays
     // AVAILABLE until verified payment flips it to OCCUPIED (see
@@ -1310,6 +1323,8 @@ export async function createCustomerBooking(customer: Customer, input: CreateBoo
       unit: { code: unit.unitCode, sqft: unit.sqft, rate: toNum(unit.monthlyRate) },
       moveInDate,
       amount: toNum(booking.amount),
+      // Additive: true when the hirer company was bound from Myinfo Business.
+      companyVerified,
       // --- appended (additive): the invoiced due-today total (prorated first
       // month + catalog extras — this is what the DUE invoice and the Stripe
       // unit_amount charge) plus its breakdown. `amount` above is unchanged
@@ -1333,6 +1348,83 @@ export async function createCustomerBooking(customer: Customer, input: CreateBoo
       },
     };
   });
+}
+
+// --- Hirer company (Business bookings) ----------------------------------------
+//
+// Myinfo Business phase 2. A valid { verificationId, draftRef } is claimed
+// (single-use, see claimBusinessVerificationTx) and its government-verified
+// company name / UEN / registered address OVERRIDE whatever the client sent,
+// stamped with companyVerifiedAt. Otherwise the client's companyName / uen
+// are stored unverified — except that re-typing the UEN a tenant already has
+// verified keeps the verified record. The Customer profile is only filled
+// when blank: an unauthenticated (guest) submit never rewrites an account.
+const COMPANY_NAME_MAX = 200;
+const UEN_MAX = 40;
+
+async function applyBookingCompany(
+  tx: Prisma.TransactionClient,
+  args: {
+    customer: Customer;
+    tenant: { id: string; uen: string | null; companyVerifiedAt: Date | null };
+    bookingRef: string;
+    input: CreateBookingInput;
+  },
+): Promise<{ companyVerified: boolean }> {
+  const { customer, tenant, input } = args;
+  const typedName = input.companyName?.trim().slice(0, COMPANY_NAME_MAX) || null;
+  const typedUen = input.uen?.trim().toUpperCase().slice(0, UEN_MAX) || null;
+
+  const claimed = input.myinfoBusiness
+    ? await claimBusinessVerificationTx(tx, input.myinfoBusiness, {
+        tenantId: tenant.id,
+        customerId: customer.id,
+        bookingRef: args.bookingRef,
+      })
+    : null;
+
+  let companyName = typedName;
+  let uen = typedUen;
+  let verified = false;
+  if (claimed) {
+    companyName = claimed.entityName?.slice(0, COMPANY_NAME_MAX) || typedName;
+    uen = claimed.uen?.toUpperCase().slice(0, UEN_MAX) || typedUen;
+    verified = !!(claimed.entityName && claimed.uen);
+    await tx.tenant.update({
+      where: { id: tenant.id },
+      data: {
+        type: AccountType.BUSINESS,
+        companyName,
+        uen,
+        companyAddress: claimed.registeredAddress,
+        companyVerifiedAt: verified ? claimed.verifiedAt : null,
+        companyVerificationId: claimed.verificationId,
+      },
+    });
+  } else if (companyName || uen) {
+    const keepsVerified = tenant.companyVerifiedAt != null && !!uen && tenant.uen?.toUpperCase() === uen;
+    if (!keepsVerified) {
+      await tx.tenant.update({
+        where: { id: tenant.id },
+        data: {
+          type: AccountType.BUSINESS,
+          companyName,
+          uen,
+          companyAddress: null,
+          companyVerifiedAt: null,
+          companyVerificationId: null,
+        },
+      });
+    }
+  } else {
+    return { companyVerified: false };
+  }
+
+  const fill: Prisma.CustomerUpdateInput = {};
+  if (!customer.companyName?.trim() && companyName) fill.companyName = companyName;
+  if (!customer.uen?.trim() && uen) fill.uen = uen;
+  if (Object.keys(fill).length) await tx.customer.update({ where: { id: customer.id }, data: fill });
+  return { companyVerified: verified };
 }
 
 // --- Payment-time tenant linkage (My Units) ----------------------------------
@@ -1386,6 +1478,11 @@ export async function linkTenantForPaidBooking(
       type: tenant.type,
       email: tenant.email,
       mobile: tenant.mobile,
+      companyName: tenant.companyName,
+      uen: tenant.uen,
+      companyAddress: tenant.companyAddress,
+      companyVerifiedAt: tenant.companyVerifiedAt,
+      companyVerificationId: tenant.companyVerificationId,
       unitId: unit.id,
       moveInDate: booking.moveInDate,
       monthlyRate: unit.monthlyRate,

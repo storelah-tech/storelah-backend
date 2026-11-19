@@ -41,6 +41,11 @@ function normalizeTenant(t) {
     nextPayment: t.nextPayment,
     status: String(t.status || 'ACTIVE'),
     autoDebit: !!t.autoDebit,
+    // Hirer company (Business bookings); companyVerifiedAt = Myinfo Business.
+    companyName: t.companyName || null,
+    uen: t.uen || null,
+    companyAddress: t.companyAddress || null,
+    companyVerifiedAt: t.companyVerifiedAt || null,
     // Latest mock ID-verification (null when none). reviewStatus defaults to
     // PENDING_VALIDATION for every mock row until staff VALIDATEs/REJECTs it.
     latestVerification: lv
@@ -74,6 +79,17 @@ function verificationPills(lv) {
   return html;
 }
 
+// Hirer company line + "Company verified · Myinfo Business" badge (or an
+// "Unverified" pill for manually entered company details).
+function companyLine(t) {
+  if (!t.companyName && !t.uen) return '';
+  const text = [t.companyName, t.uen].filter(Boolean).map(escapeHtml).join(' · ');
+  const badge = t.companyVerifiedAt
+    ? `<span class="badge occ" title="${escapeHtml('Retrieved via Corppass ' + new Date(t.companyVerifiedAt).toLocaleDateString('en-SG'))}">Company verified · Myinfo Business</span>`
+    : '<span class="badge neutral" title="Company details entered manually">Unverified</span>';
+  return `<div class="t-type">${text}</div><div style="margin-top:4px;">${badge}</div>`;
+}
+
 function renderTenantRow(t) {
   const size = t.size ? escapeHtml(t.size) + (t.sqft ? ` · ${t.sqft} sqft` : '') : '—';
   const since = t.since ? new Date(t.since).toLocaleString('en-SG', { month: 'short', year: 'numeric' }) : '—';
@@ -86,7 +102,7 @@ function renderTenantRow(t) {
   const verif = verificationPills(t.latestVerification);
   return `<tr data-tid="${escapeHtml(t.id)}">
     <td><div class="t-name"><button class="v2-name" type="button" data-cust-open="${escapeHtml(t.id)}">${escapeHtml(t.name)}</button></div></td>
-    <td><div class="t-type">${typeLbl}${t.segment ? ' · ' + escapeHtml(t.segment) : ''}</div></td>
+    <td><div class="t-type">${typeLbl}${t.segment ? ' · ' + escapeHtml(t.segment) : ''}</div>${companyLine(t)}</td>
     <td><strong>${escapeHtml(t.unitName || t.unit || '—')}</strong></td>
     <td>${size}</td>
     <td><strong>${rate}</strong><div class="t-type">${psf}</div></td>
@@ -547,7 +563,9 @@ export async function openTenantHistory(id) {
   if (sub) {
     sub.innerHTML =
       `<span class="badge ${tone}">${escapeHtml(thLabel(t.status))}</span> ` +
-      escapeHtml([t.type === 'BUSINESS' ? 'Business' : 'Personal', t.segment, t.email, t.mobile].filter(Boolean).join(' · '));
+      escapeHtml([t.type === 'BUSINESS' ? 'Business' : 'Personal', t.segment, t.email, t.mobile].filter(Boolean).join(' · ')) +
+      companyLine(t) +
+      (t.companyAddress ? `<div class="t-type">${escapeHtml(t.companyAddress)}</div>` : '');
   }
   const modal = $('#tenantHistoryModal');
   if (!modal) return;

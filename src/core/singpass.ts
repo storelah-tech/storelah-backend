@@ -1,4 +1,16 @@
-// Singpass Myinfo (v5, FAPI 2.0) relying-party flow.
+// Singpass Myinfo (v5) + Corppass Myinfo Business (v3) — FAPI 2.0
+// relying-party flow. Both authorization servers speak the same protocol
+// (PAR + PKCE + DPoP + private_key_jwt, ID token JWE(JWS)), so one engine
+// serves both; `FapiProvider` picks the settings, cookie and data mapping.
+//
+// Corppass (Myinfo Business, company data — see docs/myinfo-business-plan.md):
+//   CORPPASS_CLIENT_ID      Myinfo Business App ID (Singpass Developer Portal)
+//   CORPPASS_ISSUER         https://stg-id.corppass.gov.sg (staging, default) or
+//                           https://id.corppass.gov.sg (production)
+//   CORPPASS_REDIRECT_URI   registered redirect (https only — no localhost)
+//   CORPPASS_SCOPES         space-delimited; must include openid
+//   CORPPASS_RETURN_URL     booking page the callback lands on (default {BOOKING_APP_URL}/)
+//   Keys are shared: SINGPASS_PRIVATE_JWKS / /.well-known/jwks.json.
 //
 // Browser flow (all on the api host, so one HttpOnly cookie carries the
 // per-login secrets across the Singpass round trip — no DB table needed):
@@ -39,17 +51,40 @@ import {
 import { config } from '../lib/config';
 import { AppError } from '../lib/http';
 
+export type FapiProvider = 'singpass' | 'corppass';
+
 export const SINGPASS_COOKIE = 'sp_auth';
 export const SINGPASS_COOKIE_PATH = '/api/v1/public/singpass';
+export const CORPPASS_COOKIE = 'cp_auth';
+export const CORPPASS_COOKIE_PATH = '/api/v1/public/corppass';
+
+export const PROVIDER_COOKIE: Record<FapiProvider, { name: string; path: string }> = {
+  singpass: { name: SINGPASS_COOKIE, path: SINGPASS_COOKIE_PATH },
+  corppass: { name: CORPPASS_COOKIE, path: CORPPASS_COOKIE_PATH },
+};
 // Users get up to 10 minutes on the Singpass side; allow a little slack.
 export const SINGPASS_SESSION_TTL_S = 15 * 60;
 
 const DEFAULT_ISSUER = 'https://stg-id.singpass.gov.sg/fapi';
 const DEFAULT_SCOPES = 'openid uinfin name dob regadd mobileno email';
+const DEFAULT_CORPPASS_ISSUER = 'https://stg-id.corppass.gov.sg';
+// Data minimisation: only what renting a unit to a company needs, plus the
+// Corppass user's Principal Name (person scope `user.name`) to prefill the
+// representative's name. Contact email and mobile are not requested — the
+// booker types them in.
+const DEFAULT_CORPPASS_SCOPES = [
+  'openid',
+  'entity.basic_profile.name',
+  'entity.basic_profile.registration_number',
+  'entity.basic_profile.uen_status',
+  'entity.address',
+  'user.name',
+].join(' ');
 const ASSERTION_TTL_S = 60; // Singpass rejects client assertions / DPoP proofs older than 120s.
 const DISCOVERY_TTL_MS = 60 * 60 * 1000;
 
 interface SingpassSettings {
+  provider: FapiProvider;
   clientId: string;
   issuer: string;
   redirectUri: string;
@@ -58,26 +93,34 @@ interface SingpassSettings {
   returnUrl: string;
 }
 
-export function singpassSettings(): SingpassSettings | null {
-  const clientId = process.env.SINGPASS_CLIENT_ID?.trim() ?? '';
-  const redirectUri = process.env.SINGPASS_REDIRECT_URI?.trim() ?? '';
+export function providerSettings(provider: FapiProvider): SingpassSettings | null {
+  const env = (k: string) => process.env[`${provider === 'singpass' ? 'SINGPASS' : 'CORPPASS'}_${k}`]?.trim() ?? '';
+  const clientId = env('CLIENT_ID');
+  const redirectUri = env('REDIRECT_URI');
   const privateJwks = loadPrivateJwks();
   if (!clientId || !redirectUri || privateJwks.length === 0) return null;
   const bookingApp = (process.env.BOOKING_APP_URL ?? 'http://localhost:3001').replace(/\/+$/, '');
+  const singpass = provider === 'singpass';
   return {
+    provider,
     clientId,
-    issuer: (process.env.SINGPASS_ISSUER?.trim() || DEFAULT_ISSUER).replace(/\/+$/, ''),
+    issuer: (env('ISSUER') || (singpass ? DEFAULT_ISSUER : DEFAULT_CORPPASS_ISSUER)).replace(/\/+$/, ''),
     redirectUri,
-    scopes: process.env.SINGPASS_SCOPES?.trim() || DEFAULT_SCOPES,
+    scopes: env('SCOPES') || (singpass ? DEFAULT_SCOPES : DEFAULT_CORPPASS_SCOPES),
     privateJwks,
-    returnUrl: process.env.SINGPASS_RETURN_URL?.trim() || `${bookingApp}/`,
+    returnUrl: env('RETURN_URL') || `${bookingApp}/`,
   };
 }
 
-function requireSettings(): SingpassSettings {
-  const s = singpassSettings();
+export function singpassSettings(): SingpassSettings | null {
+  return providerSettings('singpass');
+}
+
+function requireSettings(provider: FapiProvider = 'singpass'): SingpassSettings {
+  const s = providerSettings(provider);
   if (!s) {
-    throw new AppError(503, 'SINGPASS_NOT_CONFIGURED', 'Singpass verification is not available yet.');
+    const label = provider === 'singpass' ? 'Singpass' : 'Myinfo Business';
+    throw new AppError(503, `${provider.toUpperCase()}_NOT_CONFIGURED`, `${label} verification is not available yet.`);
   }
   return s;
 }
@@ -127,23 +170,27 @@ interface Discovery {
   jwks_uri: string;
 }
 
-let discoveryCache: { issuer: string; at: number; doc: Discovery } | null = null;
-let remoteJwks: { uri: string; set: ReturnType<typeof createRemoteJWKSet> } | null = null;
+// Per-issuer caches (Singpass and Corppass run side by side).
+const discoveryCache = new Map<string, { at: number; doc: Discovery }>();
+const remoteJwks = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
 
 async function discover(issuer: string): Promise<Discovery> {
-  if (discoveryCache && discoveryCache.issuer === issuer && Date.now() - discoveryCache.at < DISCOVERY_TTL_MS) {
-    return discoveryCache.doc;
-  }
+  const hit = discoveryCache.get(issuer);
+  if (hit && Date.now() - hit.at < DISCOVERY_TTL_MS) return hit.doc;
   const res = await fetch(`${issuer}/.well-known/openid-configuration`);
-  if (!res.ok) throw new AppError(502, 'SINGPASS_UPSTREAM', `Singpass discovery failed (${res.status})`);
+  if (!res.ok) throw new AppError(502, 'SINGPASS_UPSTREAM', `Discovery failed for ${issuer} (${res.status})`);
   const doc = (await res.json()) as Discovery;
-  discoveryCache = { issuer, at: Date.now(), doc };
+  discoveryCache.set(issuer, { at: Date.now(), doc });
   return doc;
 }
 
 function singpassJwks(uri: string) {
-  if (!remoteJwks || remoteJwks.uri !== uri) remoteJwks = { uri, set: createRemoteJWKSet(new URL(uri)) };
-  return remoteJwks.set;
+  let set = remoteJwks.get(uri);
+  if (!set) {
+    set = createRemoteJWKSet(new URL(uri));
+    remoteJwks.set(uri, set);
+  }
+  return set;
 }
 
 // ---------- JWT helpers ----------
@@ -227,6 +274,8 @@ async function upstreamError(step: string, res: Response): Promise<AppError> {
 // ---------- auth-session cookie (encrypted, short-lived) ----------
 
 export interface SingpassAuthSession {
+  /** Absent on sessions sealed before Corppass support → Singpass. */
+  provider?: FapiProvider;
   state: string;
   nonce: string;
   codeVerifier: string;
@@ -285,7 +334,21 @@ export async function startSingpassLogin(
   bookingRef: string,
   returnPath?: string,
 ): Promise<{ redirectUrl: string; sealedSession: string }> {
-  const s = requireSettings();
+  return startFapiLogin('singpass', bookingRef, returnPath);
+}
+
+/**
+ * PAR → authorize URL for either provider. `ref` is the booking ref
+ * (Singpass) or the booking draft ref (Corppass prefill, before a booking
+ * exists). Corppass rejects `authentication_context_type` for Myinfo
+ * Business, and Singpass Myinfo apps don't need it, so neither sends it.
+ */
+export async function startFapiLogin(
+  provider: FapiProvider,
+  bookingRef: string,
+  returnPath?: string,
+): Promise<{ redirectUrl: string; sealedSession: string }> {
+  const s = requireSettings(provider);
   const d = await discover(s.issuer);
 
   const { privateKey } = await generateKeyPair('ES256', { extractable: true });
@@ -297,6 +360,7 @@ export async function startSingpassLogin(
     dpopJwk,
     bookingRef,
     returnPath: safeReturnPath(returnPath),
+    provider,
   };
   const codeChallenge = b64url(crypto.createHash('sha256').update(session.codeVerifier).digest());
 
@@ -333,8 +397,8 @@ export interface MyinfoPerson {
 }
 
 async function decryptionKey(kid: string | undefined): Promise<KeyLike | Uint8Array> {
-  const s = requireSettings();
-  const jwk = s.privateJwks.find((k) => k.use === 'enc' && (!kid || k.kid === kid));
+  // Keys are shared by both providers (one JWKS endpoint).
+  const jwk = loadPrivateJwks().find((k) => k.use === 'enc' && (!kid || k.kid === kid));
   if (!jwk) throw new AppError(502, 'SINGPASS_UPSTREAM', 'No matching Singpass decryption key');
   return importJWK(jwk, jwk.alg ?? 'ECDH-ES+A256KW');
 }
@@ -407,7 +471,25 @@ export async function completeSingpassLogin(
   session: SingpassAuthSession,
   code: string,
 ): Promise<MyinfoPerson> {
-  const s = requireSettings();
+  const { idSub, claims } = await completeFapiLogin('singpass', session, code);
+  return parseMyinfoPerson({ ...claims, sub: idSub });
+}
+
+export async function completeCorppassLogin(session: SingpassAuthSession, code: string): Promise<MyinfoBusiness> {
+  const { idSub, claims } = await completeFapiLogin('corppass', session, code);
+  return parseMyinfoBusiness({ ...claims, sub: idSub });
+}
+
+/** Token exchange → verified ID token → userinfo claims, for either provider. */
+async function completeFapiLogin(
+  provider: FapiProvider,
+  session: SingpassAuthSession,
+  code: string,
+): Promise<{ idSub: string; claims: Record<string, unknown> }> {
+  if ((session.provider ?? 'singpass') !== provider) {
+    throw new AppError(400, 'SINGPASS_SESSION', 'Login session does not match this provider.');
+  }
+  const s = requireSettings(provider);
   const d = await discover(s.issuer);
 
   const body = new URLSearchParams({
@@ -434,9 +516,63 @@ export async function completeSingpassLogin(
     ? (JSON.parse(raw) as Record<string, unknown>)
     : await openNestedJwt(raw, d.jwks_uri, { issuer: d.issuer });
   if (claims.sub && claims.sub !== idClaims.sub) {
-    throw new AppError(502, 'SINGPASS_UPSTREAM', 'Singpass userinfo subject mismatch');
+    throw new AppError(502, 'SINGPASS_UPSTREAM', 'Userinfo subject mismatch');
   }
-  return parseMyinfoPerson({ ...claims, sub: idClaims.sub });
+  return { idSub: String(idClaims.sub ?? ''), claims };
+}
+
+// ---------- Myinfo Business (Corppass) entity mapping ----------
+
+export interface MyinfoBusiness {
+  sub: string;
+  entityName: string | null;
+  uen: string | null;
+  uenStatus: string | null;
+  registeredAddress: string | null;
+  /** Corppass user's Principal Name (`person_info.name`, scope `user.name`). */
+  principalName: string | null;
+}
+
+/**
+ * Myinfo Business attribute wrappers: `{ value }`, `{ code, desc }` or
+ * `{ unavailable: true }` (plus classification/source/lastupdated metadata).
+ */
+function businessAttr(v: unknown): string | null {
+  if (!v || typeof v !== 'object') return str(v);
+  const o = v as Record<string, unknown>;
+  if (o.unavailable === true) return null;
+  if ('value' in o) return str(o.value);
+  if ('desc' in o || 'code' in o) return str(o.desc) ?? str(o.code);
+  return null;
+}
+
+/** Entity address: Myinfo-style structured fields (block/street/…) or line fields. */
+function formatEntityAddress(v: unknown): string | null {
+  if (!v || typeof v !== 'object') return str(v);
+  const a = v as Record<string, unknown>;
+  if (a.unavailable === true) return null;
+  const part = (k: string) => businessAttr(a[k]);
+  const unit = part('floor') && part('unit') ? `#${part('floor')}-${part('unit')}` : null;
+  const structured = [part('block'), part('street'), unit, part('building'), part('postal') && `Singapore ${part('postal')}`]
+    .filter(Boolean)
+    .join(' ');
+  if (structured) return structured;
+  const lines = ['line1', 'line2', 'line3', 'line4'].map(part).filter(Boolean).join(', ');
+  return lines || null;
+}
+
+export function parseMyinfoBusiness(claims: Record<string, unknown>): MyinfoBusiness {
+  const entity = (claims.entity_info ?? {}) as Record<string, unknown>;
+  const profile = (entity.basic_profile ?? {}) as Record<string, unknown>;
+  const person = (claims.person_info ?? {}) as Record<string, unknown>;
+  return {
+    sub: String(claims.sub ?? ''),
+    entityName: businessAttr(profile.name),
+    uen: businessAttr(profile.registration_number),
+    uenStatus: businessAttr(profile.uen_status),
+    registeredAddress: formatEntityAddress(entity.address),
+    principalName: businessAttr(person.name),
+  };
 }
 
 /** S1234567D → S****567D (PDPA: never persist or display the full NRIC/FIN). */
@@ -447,6 +583,6 @@ export function maskUinfin(uinfin: string | null): string | null {
 
 /** Test hook: drop cached discovery/JWKS between mock-issuer runs. */
 export function resetSingpassCaches(): void {
-  discoveryCache = null;
-  remoteJwks = null;
+  discoveryCache.clear();
+  remoteJwks.clear();
 }

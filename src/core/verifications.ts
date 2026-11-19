@@ -12,14 +12,17 @@ import { prisma } from '../lib/prisma';
 import { AppError } from '../lib/http';
 import type { CustomerJwtPayload } from '../middleware/auth';
 import { findOrCreateGuestCustomer, loadCustomer, normalizeEmail } from './customers';
-import { maskUinfin, type MyinfoPerson } from './singpass';
+import { maskUinfin, type MyinfoBusiness, type MyinfoPerson } from './singpass';
 
 export const VERIFICATION_PROVIDER = 'mock' as const;
 export const VERIFICATION_METHOD = 'mock-camera' as const;
 // Real Singpass Myinfo rows (core/singpass.ts) share the table; provider is
 // derived from `method` so pre-existing mock rows read unchanged.
 export const SINGPASS_VERIFICATION_METHOD = 'singpass-myinfo' as const;
-export type VerificationProvider = typeof VERIFICATION_PROVIDER | 'singpass';
+// Company data from Corppass Myinfo Business (pre-booking prefill, keyed by
+// the booking draft ref until the booking exists — see myinfo-business-plan).
+export const MYINFO_BUSINESS_METHOD = 'myinfo-business' as const;
+export type VerificationProvider = typeof VERIFICATION_PROVIDER | 'singpass' | 'corppass';
 
 export type VerificationIdType = 'passport' | 'nric-fin' | 'drivers-licence' | 'residence-permit';
 export type VerificationResult = 'pass' | 'fail';
@@ -69,7 +72,12 @@ export function serializeVerification(v: Verification): SerializedVerification {
     bookingRef: v.bookingRef,
     capturedAt: v.capturedAt ? v.capturedAt.toISOString() : null,
     verifiedAt: v.verifiedAt.toISOString(),
-    provider: v.method === SINGPASS_VERIFICATION_METHOD ? 'singpass' : VERIFICATION_PROVIDER,
+    provider:
+      v.method === SINGPASS_VERIFICATION_METHOD
+        ? 'singpass'
+        : v.method === MYINFO_BUSINESS_METHOD
+          ? 'corppass'
+          : VERIFICATION_PROVIDER,
     // Pre-review-layer rows cannot exist (the column backfills via its DB
     // default), but fall back defensively so a NULL never escapes.
     reviewStatus: (v.reviewStatus as VerificationReviewStatus) ?? 'PENDING_VALIDATION',
@@ -272,11 +280,14 @@ export async function createPendingSingpassVerification(
   return `${row.id}.${secret}`;
 }
 
-async function loadPendingReview(token: string): Promise<{ row: Verification; payload: SingpassPayload }> {
+async function loadPendingReview<P extends { reviewTokenHash?: string; reviewExpiresAt?: string } = SingpassPayload>(
+  token: string,
+  method: string = SINGPASS_VERIFICATION_METHOD,
+): Promise<{ row: Verification; payload: P }> {
   const [id, secret] = String(token).split('.');
   if (!id || !secret) throw new AppError(404, 'NOT_FOUND', REVIEW_NOT_FOUND);
   const row = await prisma.verification.findUnique({ where: { id } });
-  const payload = (row?.payload ?? null) as unknown as SingpassPayload | null;
+  const payload = (row && row.method === method ? row.payload : null) as unknown as P | null;
   const expected = Buffer.from(payload?.reviewTokenHash ?? '', 'hex');
   const actual = Buffer.from(sha256(secret), 'hex');
   if (
@@ -337,6 +348,176 @@ export async function confirmSingpassReview(
 export async function cancelSingpassReview(token: string): Promise<void> {
   const { row } = await loadPendingReview(token);
   await prisma.verification.delete({ where: { id: row.id } });
+}
+
+// ---------- Myinfo Business (Corppass): pending company prefill ----------
+//
+// Same pending → confirm/cancel contract as Singpass, but it runs on the
+// booking Details step BEFORE a booking exists, so the row is keyed by the
+// booking draft ref (no customer/tenant yet). "Use these details" confirms
+// it (→ VERIFIED); the booking-submit binding (phase 2) attaches it to the
+// tenant. Cancel deletes it — nothing is kept unless the user agrees.
+
+interface BusinessPayload {
+  method: typeof MYINFO_BUSINESS_METHOD;
+  corppassSub: string;
+  entityName: string | null;
+  uen: string | null;
+  uenStatus: string | null;
+  registeredAddress: string | null;
+  principalName?: string | null;
+  reviewTokenHash?: string;
+  reviewExpiresAt?: string;
+  confirmedAt?: string;
+}
+
+export interface BusinessReview {
+  draftRef: string;
+  expiresAt: string;
+  /** Government-verified (ACRA via Myinfo Business) — read-only on the form. */
+  verified: {
+    entityName: string | null;
+    uen: string | null;
+    uenStatus: string | null;
+    registeredAddress: string | null;
+    /** Corppass user's Principal Name — prefills the representative's name (editable there). */
+    principalName: string | null;
+  };
+}
+
+export async function createPendingBusinessVerification(draftRef: string, biz: MyinfoBusiness): Promise<string> {
+  const secret = crypto.randomBytes(32).toString('base64url');
+  const payload: BusinessPayload = {
+    method: MYINFO_BUSINESS_METHOD,
+    corppassSub: biz.sub,
+    entityName: biz.entityName,
+    uen: biz.uen,
+    uenStatus: biz.uenStatus,
+    registeredAddress: biz.registeredAddress,
+    principalName: biz.principalName,
+    reviewTokenHash: sha256(secret),
+    reviewExpiresAt: new Date(Date.now() + SINGPASS_REVIEW_TTL_MS).toISOString(),
+  };
+  const row = await prisma.verification.create({
+    data: {
+      customerId: null,
+      tenantId: null,
+      bookingRef: draftRef.trim(),
+      method: MYINFO_BUSINESS_METHOD,
+      idType: 'uen',
+      result: 'pass',
+      status: SINGPASS_PENDING_STATUS,
+      capturedAt: new Date(),
+      payload: payload as unknown as Prisma.InputJsonValue,
+    },
+  });
+  return `${row.id}.${secret}`;
+}
+
+function businessReviewOf(row: Verification, payload: BusinessPayload): BusinessReview {
+  return {
+    draftRef: row.bookingRef,
+    expiresAt: payload.reviewExpiresAt ?? '',
+    verified: {
+      entityName: payload.entityName,
+      uen: payload.uen,
+      uenStatus: payload.uenStatus,
+      registeredAddress: payload.registeredAddress,
+      principalName: payload.principalName ?? null,
+    },
+  };
+}
+
+export async function getBusinessReview(token: string): Promise<BusinessReview> {
+  const { row, payload } = await loadPendingReview<BusinessPayload>(token, MYINFO_BUSINESS_METHOD);
+  return businessReviewOf(row, payload);
+}
+
+/** "Use these details": VERIFIED + the confirmed company data for the form. */
+export async function confirmBusinessReview(
+  token: string,
+): Promise<{ verification: SerializedVerification; company: BusinessReview }> {
+  const { row, payload } = await loadPendingReview<BusinessPayload>(token, MYINFO_BUSINESS_METHOD);
+  const { reviewTokenHash: _h, reviewExpiresAt: _e, ...rest } = payload;
+  const confirmed: BusinessPayload = {
+    ...rest,
+    confirmedAt: new Date().toISOString(),
+  };
+  const updated = await prisma.verification.update({
+    where: { id: row.id },
+    data: {
+      status: statusForResult('pass'),
+      verifiedAt: new Date(),
+      payload: confirmed as unknown as Prisma.InputJsonValue,
+    },
+  });
+  return { verification: serializeVerification(updated), company: businessReviewOf(updated, confirmed) };
+}
+
+export async function cancelBusinessReview(token: string): Promise<void> {
+  const { row } = await loadPendingReview<BusinessPayload>(token, MYINFO_BUSINESS_METHOD);
+  await prisma.verification.delete({ where: { id: row.id } });
+}
+
+// ---------- booking-submit binding (phase 2) ----------
+//
+// POST /customer/bookings may carry { verificationId, draftRef } from the
+// Details step. The row is claimed only if it is a CONFIRMED Myinfo Business
+// row for that exact draft ref, still unbound and recent; the claim is a
+// conditional update (tenantId NULL → tenant) so a row binds at most once,
+// even under concurrent submits. Anything else returns null and the booking
+// proceeds with the client's company fields, unverified — never a false
+// "verified" stamp, never a blocked booking.
+
+export const MYINFO_BUSINESS_BIND_TTL_MS = 24 * 60 * 60 * 1000;
+
+export interface ClaimedBusinessVerification {
+  verificationId: string;
+  verifiedAt: Date;
+  entityName: string | null;
+  uen: string | null;
+  uenStatus: string | null;
+  registeredAddress: string | null;
+}
+
+export async function claimBusinessVerificationTx(
+  tx: Prisma.TransactionClient,
+  ref: { verificationId: string; draftRef: string },
+  bind: { tenantId: string; customerId: string; bookingRef: string },
+): Promise<ClaimedBusinessVerification | null> {
+  const row = await tx.verification.findUnique({ where: { id: ref.verificationId } });
+  if (
+    !row ||
+    row.method !== MYINFO_BUSINESS_METHOD ||
+    row.status !== statusForResult('pass') ||
+    row.bookingRef !== ref.draftRef.trim() ||
+    row.tenantId !== null ||
+    Date.now() - row.verifiedAt.getTime() > MYINFO_BUSINESS_BIND_TTL_MS
+  ) {
+    return null;
+  }
+  const payload = (row.payload ?? {}) as unknown as BusinessPayload;
+  const bound: BusinessPayload & { draftRef: string } = { ...payload, draftRef: row.bookingRef };
+  // Re-keyed from the draft ref to the real booking ref so the row shows up
+  // with the booking (customer + CMS verification reads).
+  const claimed = await tx.verification.updateMany({
+    where: { id: row.id, tenantId: null, bookingRef: row.bookingRef },
+    data: {
+      tenantId: bind.tenantId,
+      customerId: bind.customerId,
+      bookingRef: bind.bookingRef,
+      payload: bound as unknown as Prisma.InputJsonValue,
+    },
+  });
+  if (claimed.count !== 1) return null;
+  return {
+    verificationId: row.id,
+    verifiedAt: row.verifiedAt,
+    entityName: payload.entityName,
+    uen: payload.uen,
+    uenStatus: payload.uenStatus,
+    registeredAddress: payload.registeredAddress,
+  };
 }
 
 export async function listVerificationsByBookingRef(

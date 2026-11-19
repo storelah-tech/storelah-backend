@@ -54,6 +54,13 @@ function serializeTenant(t: TenantWithUnit, latestVerification: TenantLatestVeri
     nextPayment: t.nextPayment,
     status: t.status,
     autoDebit: t.autoDebit,
+    // Hirer company (Business bookings). companyVerifiedAt set = bound from
+    // Myinfo Business (Corppass); null = entered manually, unverified.
+    companyName: t.companyName,
+    uen: t.uen,
+    companyAddress: t.companyAddress,
+    companyVerifiedAt: t.companyVerifiedAt,
+    companyVerificationId: t.companyVerificationId,
     // Latest mock ID-verification for this tenant (null when none).
     // Resolved defensively — never throws when tenantId/bookingRef links are
     // absent (see latestVerificationsByTenant below).
@@ -157,8 +164,12 @@ export async function latestVerificationsByTenant(
 
   if (!ids.length && !allRefs.length && !allCustomerIds.length) return out;
   // Newest-first globally so the first candidate per tenant is its latest.
+  // Person identity only: Myinfo Business rows are the COMPANY check (shown
+  // via companyVerifiedAt) and unconfirmed Myinfo reviews are not results.
   const rows = await prisma.verification.findMany({
     where: {
+      method: { not: 'myinfo-business' },
+      status: { not: 'PENDING_CONFIRMATION' },
       OR: [
         { tenantId: { in: ids } },
         ...(allRefs.length ? [{ bookingRef: { in: allRefs } }] : []),
@@ -384,6 +395,13 @@ export async function listTenants(opts?: { from?: Date; to?: Date }) {
     nextPayment: t.nextPayment,
     status: t.status,
     autoDebit: t.autoDebit,
+    // Hirer company (Business bookings). companyVerifiedAt set = bound from
+    // Myinfo Business (Corppass); null = entered manually, unverified.
+    companyName: t.companyName,
+    uen: t.uen,
+    companyAddress: t.companyAddress,
+    companyVerifiedAt: t.companyVerifiedAt,
+    companyVerificationId: t.companyVerificationId,
     // Latest mock ID-verification (null when none) — see
     // latestVerificationsByTenant for the defensive resolution.
     latestVerification: latestByTenant.get(t.id) ?? null,

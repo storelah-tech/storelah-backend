@@ -257,7 +257,7 @@ describe('rate strategy close-out (B5 guardrails + legacy paths)', () => {
     const draftBatch = await api.post(`${CMS}/rate-strategy/${versionId}/batches`)
       .set('Authorization', world.ownerB.auth).send({ effectiveDate: sgDate(0) });
     expect(draftBatch.status).toBe(409);
-    expect(draftBatch.body.error.code).toBe('NOT_APPROVED');
+    expect(draftBatch.body.error.code).toBe('NOT_ACTIVE');
     const warnings = await warningsOf(versionId, world.ownerA);
     await api.post(`${CMS}/rate-strategy/${versionId}/submit`).set('Authorization', world.ownerA.auth).send({
       version: 0, warningOverride: { reasons: warnings.map(() => 'Accepted.') },
@@ -268,7 +268,7 @@ describe('rate strategy close-out (B5 guardrails + legacy paths)', () => {
     const rejectedBatch = await api.post(`${CMS}/rate-strategy/${versionId}/batches`)
       .set('Authorization', world.ownerB.auth).send({ effectiveDate: sgDate(0) });
     expect(rejectedBatch.status).toBe(409);
-    expect(rejectedBatch.body.error.code).toBe('NOT_APPROVED');
+    expect(rejectedBatch.body.error.code).toBe('NOT_ACTIVE');
 
     // Approved version → scheduled batch → version superseded → apply blocked.
     const draft2 = await createDraft(world, world.ownerA);
@@ -285,7 +285,7 @@ describe('rate strategy close-out (B5 guardrails + legacy paths)', () => {
     const apply = await api.post(`${CMS}/rate-batches/${future.body.data.id}/apply`)
       .set('Authorization', world.ownerB.auth).send({});
     expect(apply.status).toBe(409);
-    expect(apply.body.error.code).toBe('NOT_APPROVED');
+    expect(apply.body.error.code).toBe('NOT_ACTIVE');
     expect((await prisma.unitRateBatch.findUniqueOrThrow({ where: { id: future.body.data.id } })).status).toBe('SCHEDULED');
     expect(Number((await prisma.unit.findFirstOrThrow({ where: { unitCode: 'RC-U01' } })).monthlyRate)).toBe(100);
 
@@ -294,7 +294,7 @@ describe('rate strategy close-out (B5 guardrails + legacy paths)', () => {
       .set('Authorization', world.ownerB.auth).send({});
     expect(sweep.status).toBe(200);
     expect(sweep.body.data.results.find((r: { batchId: string }) => r.batchId === future.body.data.id))
-      .toMatchObject({ status: 'SCHEDULED', skipped: 'NOT_APPROVED' });
+      .toMatchObject({ status: 'SCHEDULED', skipped: 'NOT_ACTIVE' });
     expect(Number((await prisma.unit.findFirstOrThrow({ where: { unitCode: 'RC-U01' } })).monthlyRate)).toBe(100);
   });
 

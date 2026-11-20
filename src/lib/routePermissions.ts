@@ -535,8 +535,9 @@ export const ROUTE_PERMISSIONS: Record<string, PermissionSpec> = {
   'POST /rate-strategy/:id/validate': 'facility-rate-strategy:view',
   'POST /rate-strategy/:id/activate': 'facility-rate-strategy:update',
   'POST /rate-strategy/:id/submit': 'facility-rate-strategy:update',
-  'POST /rate-strategy/:id/approve': 'facility-rate-strategy:approve',
-  'POST /rate-strategy/:id/reject': 'facility-rate-strategy:approve',
+  // Legacy (deprecated) maker-checker routes for pre-existing rows: Owner only.
+  'POST /rate-strategy/:id/approve': 'OWNER',
+  'POST /rate-strategy/:id/reject': 'OWNER',
   'POST /rate-strategy/:id/duplicate': 'facility-rate-strategy:create',
   'POST /rate-strategy/:id/batches': 'facility-rate-strategy:update',
   'GET /rate-batches': 'facility-rate-strategy:view',

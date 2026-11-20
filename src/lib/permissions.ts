@@ -65,23 +65,24 @@ export const RESOURCES: readonly ResourceDef[] = [
   { group: 'Facilities', key: 'facility-incidents', label: 'Incidents', actions: CRUD },
   { group: 'Facilities', key: 'facility-access', label: 'Access Control', actions: CRUD },
   { group: 'Facilities', key: 'facility-inspections', label: 'Inspections', actions: CRUD },
-  // Master Rate Strategy (Track B): draft edit/save = create/update, send for
-  // approval (+ warning override) = update, approve/reject = approve. Applying
-  // a batch additionally needs facility-units:update (checked in service
-  // code, B3); Replace-manual needs the Owner role (D9, service code).
-  { group: 'Facilities', key: 'facility-rate-strategy', label: 'Master Rate Strategy', actions: RCUA },
+  // Master Rate Strategy (Track B, Rates and Promotions): draft edit/save +
+  // set Active = create/update; batch schedule/apply = update. Applying a
+  // batch additionally needs facility-units:update (checked in service code,
+  // B3); Replace-manual needs the Owner role (D9, service code). No approval
+  // gate: the approve action is retained only for legacy rows.
+  { group: 'Rates and Promotions', key: 'facility-rate-strategy', label: 'Master Rate Strategy', actions: RCUA },
 
   { group: 'Protection & Addons', key: 'extras-plans', label: 'Protection plans', actions: CRUD },
   { group: 'Protection & Addons', key: 'extras-addons', label: 'Addons', actions: CRUD },
 
-  { group: 'Discount & Promotion', key: 'promo-overview', label: 'Dashboard', actions: R },
-  { group: 'Discount & Promotion', key: 'promo-discount-matrix', label: 'Discount plan builder', actions: RCU },
-  { group: 'Discount & Promotion', key: 'promo-free-months', label: 'Free months', actions: RCU },
-  { group: 'Discount & Promotion', key: 'promo-code-builder', label: 'Promo code builder', actions: CRUD },
-  { group: 'Discount & Promotion', key: 'promo-library', label: 'Promotions library', actions: CRUDA },
-  { group: 'Discount & Promotion', key: 'promo-history', label: 'History', actions: R },
-  { group: 'Discount & Promotion', key: 'promo-safeguards', label: 'Safeguards', actions: CRUD },
-  { group: 'Discount & Promotion', key: 'promo-performance', label: 'Performance', actions: R },
+  { group: 'Rates and Promotions', key: 'promo-overview', label: 'Dashboard', actions: R },
+  { group: 'Rates and Promotions', key: 'promo-discount-matrix', label: 'Discount plan builder', actions: RCU },
+  { group: 'Rates and Promotions', key: 'promo-free-months', label: 'Free months', actions: RCU },
+  { group: 'Rates and Promotions', key: 'promo-code-builder', label: 'Promo code builder', actions: CRUD },
+  { group: 'Rates and Promotions', key: 'promo-library', label: 'Promotions library', actions: CRUDA },
+  { group: 'Rates and Promotions', key: 'promo-history', label: 'History', actions: R },
+  { group: 'Rates and Promotions', key: 'promo-safeguards', label: 'Safeguards', actions: CRUD },
+  { group: 'Rates and Promotions', key: 'promo-performance', label: 'Performance', actions: R },
 
   { group: 'Finance', key: 'bill-overview', label: 'Overview', actions: R },
   // Finance Phase 1 (FINANCE_MODULE_SPEC §§3–4): one resource per submodule.
@@ -166,9 +167,6 @@ const MANAGER_DENY: Record<string, readonly Action[]> = {
   'customer-transfers': ['view', 'create', 'update'],
   'settings-moveouts': ['view', 'update'],
   'promo-library': ['approve'],
-  // Master Rate Strategy: Manager edits/saves drafts but never approves
-  // (maker-checker — approver ≠ submitter is enforced in service code, B3).
-  'facility-rate-strategy': ['approve'],
   'facility-floorplans': ['approve'],
   'site-builder': ['approve'],
   'customer-tenants': ['delete'],

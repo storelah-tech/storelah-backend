@@ -468,6 +468,18 @@ describe('rate strategy service (scenario E steps 4–7)', () => {
     const submit = await api.post(`${CMS}/rate-strategy/${draft.body.data.id}/submit`).set('Authorization', world.ownerA.auth).send({ version: 0 });
     expect(submit.status).toBe(409);
     expect(submit.body.error.code).toBe('NO_CURRENT_MODEL');
+    // Client 2026-11-20: no approval gate — Set Active succeeds without a
+    // CURRENT model (target stored null, recorded as a display-only warning),
+    // and the Active version can then schedule Apply rates to Units.
+    const activated = await api.post(`${CMS}/rate-strategy/${draft.body.data.id}/activate`).set('Authorization', world.ownerA.auth).send({ version: 0 });
+    expect(activated.status).toBe(200);
+    expect(activated.body.data.status).toBe('ACTIVE');
+    const stored = await prisma.rateStrategyVersion.findUniqueOrThrow({ where: { id: draft.body.data.id } });
+    expect(stored.targetPsf).toBeNull();
+    expect((stored.warningOverride as { warningCodes: string[] }).warningCodes).toContain('NO_CURRENT_MODEL');
+    const batch = await api.post(`${CMS}/rate-strategy/${draft.body.data.id}/batches`).set('Authorization', world.ownerA.auth)
+      .set('Idempotency-Key', 'rn-activate-no-model').send({ effectiveDate: todaySg(), conflictRule: 'PRESERVE_MANUAL' });
+    expect(batch.status).toBe(201);
 
     // DRAFT promotion selected explicitly: preview works, flagged preview-only.
     const withDraftPromo = await createDraft(world, world.ownerA, {
@@ -561,7 +573,7 @@ describe('rate strategy service (scenario E steps 4–7)', () => {
     }
   });
 
-  it('batch detail exposes per-unit lines; manager cannot touch batches', async () => {
+  it('batch detail exposes per-unit lines; manager (update grant) can schedule batches', async () => {
     const draft = await createDraft(world, world.ownerA);
     const versionId = draft.body.data.id as string;
     const validated = await api.post(`${CMS}/rate-strategy/${versionId}/validate`).set('Authorization', world.ownerA.auth).send({});
@@ -570,9 +582,11 @@ describe('rate strategy service (scenario E steps 4–7)', () => {
     });
     await api.post(`${CMS}/rate-strategy/${versionId}/approve`).set('Authorization', world.ownerB.auth).send({ version: 1 });
 
-    const denied = await api.post(`${CMS}/rate-strategy/${versionId}/batches`)
-      .set('Authorization', world.manager.auth).send({ effectiveDate: sgDate(0) });
-    expect(denied.status).toBe(403);
+    // No approval gate (client 2026-11-20): batches need facility-rate-strategy:update,
+    // which the system Manager role holds (Owner can revoke it in Team & access).
+    const mgr = await api.post(`${CMS}/rate-strategy/${versionId}/batches`)
+      .set('Authorization', world.manager.auth).send({ effectiveDate: sgDate(9) });
+    expect(mgr.status).toBe(201);
 
     const future = await api.post(`${CMS}/rate-strategy/${versionId}/batches`)
       .set('Authorization', world.ownerB.auth).send({ effectiveDate: sgDate(5) });

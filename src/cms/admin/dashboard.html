@@ -1046,6 +1046,7 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
 <link rel="stylesheet" href="/admin/proto-refresh.css">
 <link rel="stylesheet" href="/admin/proto-ux-v2.css">
 <link rel="stylesheet" href="/admin/proto-v29.css">
+<link rel="stylesheet" href="/admin/proto-rate-strategy.css">
 
 </head>
 <body class="auth-pending">
@@ -1693,7 +1694,7 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
 
     <!-- ============ PROMOTIONS ============ -->
     <section class="page" id="promotions">
-      <div class="head"><div><h1>Promotion engine</h1><p>Build controlled discounts and free-month offers by facility, unit, duration and customer eligibility.</p></div></div>
+      <div class="head"><div><h1>Rates and Promotions</h1><p>Set rack-rate strategies and build controlled discounts and free-month offers by facility, unit, duration and customer eligibility.</p></div></div>
       <div class="subtabs" data-tabs="promo"><button class="active" data-tab="promo-overview">Dashboard</button><button data-tab="promo-discount-matrix">Discount plan builder</button><button data-tab="promo-free-months">Free months</button><button data-tab="promo-code-builder">Promo code builder</button><button data-tab="promo-library">Promotions library</button><button data-tab="promo-history">History</button><button data-tab="promo-safeguards">Safeguards</button><button data-tab="promo-performance">Performance</button><button data-tab="facility-rate-strategy">Master rate strategy</button></div>
 
       <!-- OVERVIEW panel -->
@@ -1986,7 +1987,7 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
       </div>
       <!-- Master rate strategy (B4 workspace; body self-mounted by rateStrategyView.js) -->
       <div class="module-panel" id="facility-rate-strategy">
-        <div class="tbl-card"><div class="sec-hdr"><div><div class="sec-title">Master rate strategy</div><div class="sec-sub">Rack-rate strategies, Units batches and activity.</div></div></div><div id="rateStrategyRoot"><div class="section-empty">Loading rate strategies…</div></div></div>
+        <div id="rateStrategyRoot"><div class="section-empty">Loading rate strategies…</div></div>
       </div>
     </section>
 

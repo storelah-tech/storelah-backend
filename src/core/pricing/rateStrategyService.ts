@@ -1017,15 +1017,10 @@ export async function activateVersion(input: ActivateInput) {
   }
   // Re-resolve the frozen selection so refs are never stale (same as submit).
   const built = await buildPreview(input.versionId, {}, scope);
-  const target = built.target;
-  if (built.noTarget || !target) {
-    throw new AppError(
-      409,
-      'NO_CURRENT_MODEL',
-      'No approved Financial Model target for this facility — approve a model before setting a rate strategy Active. Rack editing and preview remain available.',
-      { branchId: built.branch.id, branchCode: built.branch.code },
-    );
-  }
+  // Client 2026-11-20: no approval of any kind gates Set Active. A missing
+  // Financial Model target is a display-only warning here (the target is a
+  // benchmark, never an input to rack rates); the snapshot stores null.
+  const target = built.noTarget ? null : built.target;
   const { blockers, warnings } = built.preview.validation;
   if (blockers.length) {
     throw new AppError(409, 'BLOCKED', `Version ${v.versionNo} has blockers: ${blockers.map((b) => b.message).join(' ')}`, {
@@ -1038,13 +1033,13 @@ export async function activateVersion(input: ActivateInput) {
       where: { id: v.id },
       data: {
         status: 'ACTIVE',
-        financialModelId: target.modelId,
-        financialModelVersion: target.modelVersion,
-        targetPsf: new Prisma.Decimal(target.targetPsf),
+        financialModelId: target ? target.modelId : null,
+        financialModelVersion: target ? target.modelVersion : null,
+        targetPsf: target ? new Prisma.Decimal(target.targetPsf) : null,
         validation: built.preview.validation as unknown as Prisma.InputJsonValue,
         warningOverride: {
-          warningCodes: warnings.map((w) => w.code),
-          reasons: warnings.map((w) => w.reason),
+          warningCodes: [...warnings.map((w) => w.code), ...(target ? [] : ['NO_CURRENT_MODEL'])],
+          reasons: [...warnings.map((w) => w.reason), ...(target ? [] : ['No Financial Model target linked — activated without a target benchmark.'])],
           note: 'Warnings accepted display-only — no approval gate.',
         } as unknown as Prisma.InputJsonValue,
         previewSelection: built.selection as unknown as Prisma.InputJsonValue,

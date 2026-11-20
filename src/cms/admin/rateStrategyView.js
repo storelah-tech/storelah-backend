@@ -46,6 +46,7 @@ const DEFAULT_LEVERS_UI = {
 
 const view = {
   tab: 'list', // list | scheduler | settings
+  libraryOpen: false, // true after the Strategy library button
   branchFilter: '',
   statusFilter: '',
   batchBranchFilter: '',
@@ -143,18 +144,73 @@ export async function refreshRateStrategy() {
 
 function renderShell(root) {
   ensureRsWorkbenchStyles();
-  // B-2: no Strategies / Scheduler / Settings tabs — the workspace reads as
-  // one scrolling page (§15.3). The library, batches and defaults stack on
-  // the landing view; the open strategy renders every section in §15.3 order.
-  root.innerHTML =
-    '<div class="tbl-toolbar"><div><span class="t-type">Library, batches and defaults on one page — open a strategy for the single-page workspace.</span></div>' +
-    '<span style="flex:1"></span>' +
-    (can('facility-rate-strategy:create') ? '<button class="tb-btn primary" data-rs-new data-perm="facility-rate-strategy:create">＋ New strategy</button>' : '') +
-    '</div>' +
-    '<div class="modal-alert" id="rsBanner" hidden></div>' +
-    '<div id="rsBody"></div>';
-  const nw = root.querySelector('[data-rs-new]');
-  if (nw) nw.addEventListener('click', () => openCreateModal(root));
+  // Reference parity (storelah-crm-leads v55 rate-strategy.js): the panel IS
+  // the workspace — rs-head, decision banner, context row, KPI groups,
+  // builder grid, duration cards, unit-rate table, history. The strategy
+  // library is a secondary view reached from the "Strategy library" button.
+  root.innerHTML = '<div id="rsBody"></div>';
+  if (!root.dataset.rsDelegated) {
+    root.dataset.rsDelegated = '1';
+    root.addEventListener('click', (e) => {
+      const t = e.target.closest('[data-rs-tip]');
+      if (t && root.contains(t)) {
+        e.preventDefault();
+        e.stopPropagation();
+        rsDefinition(t.dataset.rsTip);
+        return;
+      }
+      const d = e.target.closest('[data-rs-duration]');
+      if (d && root.contains(d)) {
+        e.preventDefault();
+        setDuration(Number(d.dataset.rsDuration), $('#rsBody'), root);
+      }
+    });
+    root.addEventListener('keydown', (e) => {
+      const d = e.target.closest && e.target.closest('.rs-duration-card[data-rs-duration]');
+      if (d && (e.key === 'Enter' || e.key === ' ')) {
+        e.preventDefault();
+        setDuration(Number(d.dataset.rsDuration), $('#rsBody'), root);
+      }
+    });
+  }
+}
+
+/** ? definition popup (reference: showModal("Definition", text)). */
+function rsDefinition(text) {
+  overlay(rsRoot || document.body, 'Definition', '<p>' + escapeHtml(text) + '</p>', 'Close', async () => {});
+  const cancel = $('#rsOverlayCancel');
+  if (cancel) cancel.hidden = true;
+}
+
+function rsTip(label, text) {
+  return label + ' <button class="rs-tip" type="button" aria-label="' + escapeHtml(text) + '" data-rs-tip="' + escapeHtml(text) + '">?</button>';
+}
+
+function rsMoney(n, d) {
+  const dp = d == null ? 0 : d;
+  return 'S$' + new Intl.NumberFormat('en-SG', { minimumFractionDigits: dp, maximumFractionDigits: dp }).format(Number(n) || 0);
+}
+
+function rsNum(n) {
+  return new Intl.NumberFormat('en-SG', { maximumFractionDigits: 0 }).format(Number(n) || 0);
+}
+
+function rsSigned(gap) {
+  return (Number(gap) >= 0 ? '+' : '−') + 'S$' + Math.abs(Number(gap)).toFixed(2);
+}
+
+function rsDurationFilter(label, longLabels) {
+  return '<div class="rs-duration-filter"><span>' + escapeHtml(label) + '</span><div>' + DURATIONS.map((t) =>
+    '<button type="button" class="' + (view.duration === t ? 'active' : '') + '" data-rs-duration="' + t + '">' +
+    t + (longLabels ? ' month' + (t === 1 ? '' : 's') : ' mo') + '</button>').join('') + '</div></div>';
+}
+
+function rsStatusMeta(status, dirty) {
+  if (dirty) return { cls: 'amber', label: 'Unsaved changes' };
+  if (status === 'ACTIVE' || status === 'APPROVED') return { cls: 'green', label: 'Active' };
+  if (status === 'DRAFT') return { cls: 'grey', label: 'Draft' };
+  if (status === 'SUPERSEDED') return { cls: 'grey', label: 'Superseded' };
+  return { cls: 'grey', label: String(status || '—').replace(/_/g, ' ').toLowerCase().replace(/^\w/, (c) => c.toUpperCase()) };
 }
 
 function rsError(root, e) {
@@ -169,6 +225,17 @@ function rsError(root, e) {
 
 async function showRoot(root) {
   const body = root.querySelector('#rsBody');
+  if (!view.versionId && !view.libraryOpen) {
+    // Reference parity: the module opens straight into the workspace. Pick
+    // the most recently updated Draft/Active strategy; fall back to the
+    // library (with New strategy) when none exist yet.
+    try {
+      const rows = (await get('/rate-strategy/library')) || [];
+      const live = rows.filter((r) => r.status === 'DRAFT' || r.status === 'ACTIVE' || r.status === 'APPROVED')
+        .sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+      if (live.length) view.versionId = live[0].versionId;
+    } catch (e) { /* library unreadable — the library page shows the error */ }
+  }
   if (view.versionId) await renderShow(body, root);
   else await renderLibraryPage(body, root);
 }
@@ -177,13 +244,17 @@ async function showRoot(root) {
 // scheduler content, then the live settings content (§15.3: no tab split).
 async function renderLibraryPage(body, root) {
   body.innerHTML =
-    '<div class="sec-hdr"><div><div class="sec-title">Strategy library</div>' +
-    '<div class="sec-sub">Filter by facility or status, then open a version for the single-page workspace.</div></div></div>' +
-    '<div id="rsLibSec"></div>' +
-    '<div class="sec-hdr" style="margin-top:16px;"><div><div class="sec-title">Rate batches</div>' +
-    '<div class="sec-sub">Future-dated batches stay Scheduled until due — Apply due batches is idempotent and safe to repeat. Batch detail actions (apply, retry failed, cancel) live on each batch.</div></div></div>' +
-    '<div id="rsSchedSec"></div>' +
-    '<div style="margin-top:16px;" id="rsSetSec"></div>';
+    '<div class="rs-head"><div><div class="rs-eyebrow">Rates and Promotions · Pricing</div><h2>Strategy library</h2>' +
+    '<p>Every rate strategy by facility and status. Open a version to edit it in the Master rate strategy workspace.</p></div>' +
+    '<div class="rs-actions"><span class="pill blue">Administrator only</span>' +
+    (can('facility-rate-strategy:create') ? '<button class="primary" type="button" data-rs-new data-perm="facility-rate-strategy:create">＋ New strategy</button>' : '') +
+    '</div></div>' +
+    '<div class="modal-alert" id="rsBanner" hidden></div>' +
+    '<section class="card" style="margin-bottom:16px"><div class="card-head"><div><h3>Strategies</h3><small>Filter by facility or status, then open a version.</small></div></div><div class="card-body" id="rsLibSec"></div></section>' +
+    '<section class="card" style="margin-bottom:16px"><div class="card-head"><div><h3>Rate batches</h3><small>Future-dated batches stay Scheduled until due — Apply due batches is idempotent and safe to repeat.</small></div></div><div class="card-body" id="rsSchedSec"></div></section>' +
+    '<section class="card"><div class="card-body" id="rsSetSec"></div></section>';
+  const nw = body.querySelector('[data-rs-new]');
+  if (nw) nw.addEventListener('click', () => openCreateModal(root));
   await renderList($('#rsLibSec'), root);
   await renderScheduler($('#rsSchedSec'), root);
   await renderSettings($('#rsSetSec'), root);
@@ -240,6 +311,7 @@ async function loadList(root) {
 async function renderShow(body, root) {
   rsRoot = root;
   view.liveDirty = false;
+  view.libraryOpen = false;
   body.innerHTML = '<div class="section-empty">Loading strategy…</div>';
   try {
     const v = await get('/rate-strategy/' + encodeURIComponent(view.versionId));
@@ -251,139 +323,108 @@ async function renderShow(body, root) {
   const v = view.version;
   const isDraft = v.status === 'DRAFT';
   const isActive = v.status === 'ACTIVE' || v.status === 'APPROVED';
+  const st = rsStatusMeta(v.status, false);
+  const btn = (perm, action, label, cls, disabled, title) => (can(perm)
+    ? '<button class="' + (cls || 'btn') + '" type="button" data-rs-action="' + action + '" data-perm="' + perm + '"' +
+      (disabled ? ' disabled' : '') + (title ? ' title="' + escapeHtml(title) + '"' : '') + '>' + label + '</button>'
+    : '');
 
-  // Apply rates to Units is enabled only for a saved Active version with no
-  // unsaved changes (setLiveDirty re-evaluates the disabled state live).
-  const canApply = isActive;
-
-  // B-2: one scrolling page in §15.3 order — header action bar (§15.4:
-  // Strategy library, Undo, Save draft, Set Active, Duplicate for facility,
-  // Validate strategy, Apply rates to Units + status chip), target decision
-  // banner, context row, then KPIs, workbench (levers beside live chart),
-  // duration cards, categories, promotion library, unit-rate table,
-  // validation, history, activity, batches, settings. Every action renders
-  // whenever its permission is held and is disabled (not hidden) when the
-  // version state disallows it, so the header always reads the same.
+  // Reference rs-head action order: Strategy library · Undo · Save draft ·
+  // Duplicate for facility · Validate strategy · Apply rates to Units ·
+  // primary. The reference's "Send for approval" primary is replaced by
+  // "Set Active" (client 2026-11-20: no approval process).
   body.innerHTML =
-    '<div class="sec-hdr"><div><div class="sec-title">' + escapeHtml(v.strategyName) + ' <span class="t-type">v' + v.versionNo + '</span></div>' +
-    '<div class="sec-sub">' + branchLabel(v) + ' · effective ' + escapeHtml(v.effectiveFrom || '—') +
-    (v.originVersionId ? ' · duplicated from ' + escapeHtml(v.originVersionId) : '') +
-    ' · <span class="t-type">id ' + escapeHtml(v.id) + ' · optimistic-lock v' + v.version + '</span></div></div>' +
-    '<div>' + statusPill(v.status) + ' <span class="t-type" id="rsUnsaved" hidden>· Unsaved changes</span></div></div>' +
-    '<div class="tbl-toolbar" id="rsActions">' +
-    (can('facility-rate-strategy:view') ? '<button class="tb-btn ghost" data-rs-back data-perm="facility-rate-strategy:view">Strategy library</button>' : '') +
-    (can('facility-rate-strategy:update') ? '<button class="tb-btn ghost" data-rs-undo data-perm="facility-rate-strategy:update" disabled title="Undo — restores last saved state; disabled with no unsaved changes.">Undo</button>' : '') +
-    (can('facility-rate-strategy:update') ? '<button class="tb-btn" data-rs-edit data-perm="facility-rate-strategy:update"' + (isDraft ? '' : ' disabled title="Only a Draft can be saved."') + '>Save draft</button>' : '') +
-    (can('facility-rate-strategy:update') ? '<button class="tb-btn primary" data-rs-activate data-perm="facility-rate-strategy:update" data-rs-gate="activate"' + (isDraft ? '' : ' disabled title="Only a Draft can be set Active."') + '>Set Active</button>' : '') +
-    (can('facility-rate-strategy:create') ? '<button class="tb-btn" data-rs-duplicate data-perm="facility-rate-strategy:create">Duplicate for facility</button>' : '') +
-    (can('facility-rate-strategy:view') ? '<button class="tb-btn" data-rs-validate data-perm="facility-rate-strategy:view">Validate strategy</button>' : '') +
-    (can('facility-rate-strategy:update') ? '<button class="tb-btn primary" data-rs-schedule data-perm="facility-rate-strategy:update" data-rs-gate="apply"' + (canApply ? '' : ' disabled title="Only Active versions with no unsaved changes can apply rates to Units."') + '>Apply rates to Units</button>' : '') +
-    '</div>' +
+    '<div class="rs-head"><div><div class="rs-eyebrow">Rates and Promotions · Pricing</div><h2>Master rate strategy</h2>' +
+    '<p>Generate rack rates by size and unit attributes, then preview approved promotions by customer storage duration.</p></div>' +
+    '<div class="rs-actions" id="rsActions"><span class="pill blue">Administrator only</span>' +
+    '<span class="pill ' + st.cls + '" id="rsStatusPill">' + escapeHtml(st.label) + '</span>' +
+    btn('facility-rate-strategy:view', 'library', 'Strategy library') +
+    btn('facility-rate-strategy:update', 'undo', 'Undo', 'btn', true) +
+    btn('facility-rate-strategy:update', 'save', 'Save draft', 'btn', !isDraft, isDraft ? '' : 'Only a Draft can be saved — duplicate this version to make changes.') +
+    btn('facility-rate-strategy:create', 'duplicate', 'Duplicate for facility') +
+    btn('facility-rate-strategy:view', 'validate', 'Validate strategy') +
+    btn('facility-rate-strategy:update', 'sync-units', 'Apply rates to Units', 'btn', !isActive, isActive ? '' : 'Save the draft and set it Active first.') +
+    btn('facility-rate-strategy:update', 'activate', isActive ? 'Active' : 'Set Active', 'primary', !isDraft, isDraft ? '' : 'This version is already ' + st.label + '.') +
+    '</div></div>' +
+    '<div class="modal-alert" id="rsBanner" hidden></div>' +
     '<div id="rsTargetBanner"></div>' +
-    '<div class="tbl-card" id="rsContextCard"><div class="sec-hdr"><div><div class="sec-title">Strategy context</div><div class="sec-sub">Facility · name · effective date · inventory source · target source (§15.5).</div></div></div><div id="rsContext"><div class="section-empty">Loading context…</div></div></div>' +
-    '<div class="tbl-card" id="rsKpiCard"><div class="sec-hdr"><div><div class="sec-title">Rate KPIs</div><div class="sec-sub">Base rack-rate KPIs never change with promotion/duration; promotion KPIs follow the selected 1/3/6/12 duration (§15.6–15.7).</div></div></div>' +
-    '<div class="tbl-toolbar" id="rsKpiDurBar"><span class="t-type">Duration</span>' + DURATIONS.map((d) =>
-      '<button class="tb-btn' + (view.kpiDuration === d ? ' primary' : ' ghost') + '" data-rs-kpi-dur="' + d + '" data-perm="facility-rate-strategy:view" aria-pressed="' + (view.kpiDuration === d) + '">' + d + ' mo</button>').join('') + '</div>' +
-    '<div id="rsKpis"><div class="section-empty">Run preview to fill KPIs.</div></div></div>' +
-    '<div class="tbl-card"><div class="sec-hdr"><div><div class="sec-title">Pricing workbench</div><div class="sec-sub">Controls and live chart side by side (§15.5). Every change recalculates chart, categories, duration cards, unit table, totals and validation.</div></div></div>' +
-    '<div class="tbl-toolbar" id="rsDurBar"><span class="t-type">Duration</span>' + DURATIONS.map((d) =>
-      '<button class="tb-btn' + (view.duration === d ? ' primary' : ' ghost') + '" data-rs-dur="' + d + '" data-perm="facility-rate-strategy:view">' + d + ' mo</button>').join('') +
-    '<select id="rsMatrix" class="tbl-select"><option' + (view.matrix === 'Standard' ? ' selected' : '') + '>Standard</option><option' + (view.matrix === 'Ground floor' ? ' selected' : '') + '>Ground floor</option></select></div>' +
-    '<div class="rs-workgrid"><div class="rs-workcol">' +
-    '<div class="sec-hdr"><div><div class="sec-title">Levers</div><div class="sec-sub">' +     (isDraft ? 'Draft — edit beside the chart; Save draft persists, Undo restores. Recommended: smooth curve.' : 'Frozen once Active — duplicate for the next iteration.') + '</div></div></div>' +
-    '<div id="rsLevers">' + (isDraft ? leverEditHtml(v.levers) : leverSummaryHtml(v.levers)) + '</div></div>' +
-    '<div class="rs-workcol"><div class="sec-hdr"><div><div class="sec-title">Live chart</div><div class="sec-sub">Rack · Effective · Blended (only when free months apply) · approved Financial Model target.</div></div></div>' +
-    '<div id="rsChart"><div class="section-empty">Calculating preview…</div></div>' +
-    (isDraft ? '<div class="tbl-toolbar"><button class="tb-btn ghost" id="rsLiveRefresh" data-perm="facility-rate-strategy:view">Refresh preview</button><span class="t-type">Lever edits recalculate live — refresh is only a fallback.</span></div>' : '') + '</div></div>' +
-    '<div class="tbl-card"><div class="sec-hdr"><div><div class="sec-title">PSF by customer storage duration</div><div class="sec-sub">One card per 1/3/6/12-month commitment — select a card to synchronise chart, categories and unit table (§15.12).</div></div></div>' +
-    '<div id="rsDurCards"><div class="section-empty">Calculating preview…</div></div></div>' +
-    '<div class="tbl-card"><div class="sec-hdr"><div><div class="sec-title">Size categories and live rate outcomes</div><div class="sec-sub">Net/Effective PSF ranges by category, synchronised with the workbench duration filter (§15.12).</div></div></div>' +
-    '<div id="rsCats"><div class="section-empty">Run Preview to fill the category table.</div></div></div>' +
-    '<div class="tbl-card"><div class="sec-hdr"><div><div class="sec-title">Discount &amp; Promotion library</div><div class="sec-sub">Read-only preview — selecting a plan never activates it. Draft plans are preview-only (§15.13).</div></div></div>' +
-    '<div id="rsPromos"><div class="section-empty">Loading promotion library…</div></div></div>' +
-    '<div class="tbl-card"><div class="sec-hdr"><div><div class="sec-title">Unit-rate breakdown</div><div class="sec-sub">Read-only sample from live Units inventory, CURRENT Financial Model target and the promotion library.</div></div></div>' +
-    '<div class="tbl-toolbar" id="rsUnitBar"><span class="t-type">Duration</span>' + DURATIONS.map((d) =>
-      '<button class="tb-btn' + (view.duration === d ? ' primary' : ' ghost') + '" data-rs-dur="' + d + '" data-perm="facility-rate-strategy:view">' + d + ' mo</button>').join('') +
-    '<select id="rsRange" class="tbl-select"><option value="stocked"' + (view.range === 'stocked' ? ' selected' : '') + '>Facility sizes only</option><option value="all"' + (view.range === 'all' ? ' selected' : '') + '>Every 1 sq ft</option></select>' +
-    '<input id="rsFrom" type="number" class="set-input" style="width:76px" min="8" max="150" value="' + view.rangeFrom + '" title="From size">' +
-    '<input id="rsTo" type="number" class="set-input" style="width:76px" min="8" max="150" value="' + view.rangeTo + '" title="To size">' +
-    '<span class="t-type">Live — changes recalculate immediately.</span></div>' +
-    '<div id="rsPreview"><div class="section-empty">Calculating preview…</div></div></div>' +
-    '<div class="tbl-card"><div class="sec-hdr"><div><div class="sec-title">Validation</div><div class="sec-sub">Warnings are display-only. Only red blockers prevent Set Active or Apply.</div></div></div>' +
-    '<div id="rsValidation"><div class="section-empty">Run Validate strategy to check blockers and warnings.</div></div></div>' +
-    '<div class="tbl-card"><div class="sec-hdr"><div><div class="sec-title">Version history</div><div class="sec-sub">Every version is immutable once Active.</div></div></div>' +
-    '<div id="rsHistory"><div class="section-empty">Loading history…</div></div></div>' +
-    '<div class="tbl-card"><div class="sec-hdr"><div><div class="sec-title">Activity</div><div class="sec-sub">Rate-strategy and batch audit trail for this version.</div></div></div>' +
-    '<div id="rsActivity"><div class="section-empty">Loading activity…</div></div></div>' +
-    '<div class="tbl-card"><div class="sec-hdr"><div><div class="sec-title">Rate batches — this version</div><div class="sec-sub">Future-dated batches stay Scheduled until due — Apply due batches is idempotent and safe to repeat. Batch detail actions (apply, retry failed, cancel) live on each batch. Occupied-customer rent is never touched.</div></div><div>' +
-    (can('facility-rate-strategy:update') ? '<button class="tb-btn primary" id="rsVersionApplyDue" data-perm="facility-rate-strategy:update">Apply due batches</button>' : '') + '</div></div>' +
-    '<div id="rsVersionBatches"><div class="section-empty">Loading batches…</div></div><div id="rsBatchDetail"></div></div>' +
-    '<div style="margin-top:16px;" id="rsDetailSettings"></div>';
+    '<div class="rs-context" id="rsContext"></div>' +
+    '<div class="rs-kpi-sections" id="rsKpis"><div class="section-empty">Calculating preview…</div></div>' +
+    '<div class="rs-builder-grid">' +
+    '<section class="card"><div class="card-head"><div><h3>1. Pricing workbench</h3><small>Adjust the levers and see the live rate curve, category impact and unit rates together.</small></div><span class="pill green">Recommended: smooth curve</span></div><div class="card-body">' +
+    '<div class="rs-workbench-grid"><div class="rs-workbench-controls" id="rsLevers">' + leverEditHtml(v.levers, !isDraft) + '</div>' +
+    '<div class="rs-live-chart" id="rsChart"><div class="section-empty">Calculating preview…</div></div></div>' +
+    '<div id="rsCats"></div>' +
+    guardrailsHtml(v.levers, !isDraft) +
+    '</div></section>' +
+    '<section class="card rs-promo-library"><div class="card-head"><div><h3>2. Discount &amp; Promotion library</h3><small>Every library record is shown. Active plans and Draft test plans can be selected for analysis; selecting a Draft does not approve or activate it.</small></div>' +
+    '<div class="rs-plan-actions"><span class="pill green" id="rsPromoCount">Loading…</span><button class="btn" type="button" data-rs-action="promotions">Open promotion library</button></div></div><div class="card-body">' +
+    '<div class="rs-promo-toolbar"><label><span>Percentage matrix to preview</span><select id="rsMatrix">' +
+    '<option value="Standard"' + (view.matrix === 'Standard' ? ' selected' : '') + '>Standard unit</option>' +
+    '<option value="Ground floor"' + (view.matrix === 'Ground floor' ? ' selected' : '') + '>Premium access / ground floor</option></select>' +
+    '<small>This chooses the approved discount-matrix column; it does not change the rack-rate ground-floor factor above.</small></label></div>' +
+    '<div class="rs-plan-grid" id="rsPromos"><div class="section-empty">Loading promotion library…</div></div></div></section>' +
+    '</div>' +
+    '<section class="card rs-duration-section"><div class="card-head"><div><h3>3. PSF by customer storage duration</h3><small>Select 1, 3, 6 or 12 months to update the chart and unit table.</small></div>' +
+    '<div class="rs-psf-definitions"><span><b>Effective PSF:</b> recurring PSF after any percentage discount, once free months end.</span><span><b>Blended PSF:</b> shown only when free months apply.</span></div></div>' +
+    '<div class="card-body rs-duration-grid" id="rsDurCards"><div class="section-empty">Calculating preview…</div></div></section>' +
+    '<section class="card rs-table-card" id="rsPreview"><div class="section-empty">Calculating preview…</div></section>' +
+    '<details class="rs-details"><summary><span><b>Version and change history</b><small>Drafts and activations remain auditable by facility and effective date</small></span><span id="rsHistCount">…</span></summary>' +
+    '<div class="table-wrap" id="rsHistory"><div class="section-empty">Loading history…</div></div></details>' +
+    '<details class="rs-details" id="rsValidationWrap"><summary><span><b>Validation</b><small>Warnings are display-only. Only red blockers prevent Set Active or Apply.</small></span><span>Expand</span></summary>' +
+    '<div class="rs-details-body" id="rsValidation"><div class="section-empty">Run Validate strategy to check blockers and warnings.</div></div></details>' +
+    '<details class="rs-details"><summary><span><b>Rate batches — this version</b><small>Apply rates to Units schedules a batch; occupied-customer rent is never touched</small></span><span>Expand</span></summary>' +
+    '<div class="rs-details-body">' + (can('facility-rate-strategy:update') ? '<div style="display:flex;justify-content:flex-end;margin-bottom:10px"><button class="btn" type="button" id="rsVersionApplyDue" data-perm="facility-rate-strategy:update">Apply due batches</button></div>' : '') +
+    '<div id="rsVersionBatches"><div class="section-empty">Loading batches…</div></div><div id="rsBatchDetail"></div></div></details>' +
+    '<details class="rs-details"><summary><span><b>Activity</b><small>Rate-strategy and batch audit trail for this version</small></span><span>Expand</span></summary>' +
+    '<div class="rs-details-body" id="rsActivity"><div class="section-empty">Loading activity…</div></div></details>' +
+    '<details class="rs-details"><summary><span><b>Rate strategy defaults</b><small>Default rounding and manual-rate rule for new batches</small></span><span>Expand</span></summary>' +
+    '<div class="rs-details-body" id="rsDetailSettings"></div></details>';
 
-  const back = body.querySelector('[data-rs-back]');
-  if (back) back.addEventListener('click', async () => { view.versionId = null; view.previews = {}; view.planIds = null; view.plans = null; await showRoot(root); });
-  body.querySelectorAll('[data-rs-dur]').forEach((b) => b.addEventListener('click', () => {
-    setDuration(Number(b.dataset.rsDur), body, root);
+  body.querySelectorAll('[data-rs-action]').forEach((b) => b.addEventListener('click', (e) => {
+    e.preventDefault();
+    rsAction(b.dataset.rsAction, root, b);
   }));
-  body.querySelectorAll('[data-rs-kpi-dur]').forEach((b) => b.addEventListener('click', () => {
-    setKpiDuration(Number(b.dataset.rsKpiDur));
-  }));
-  const edit = body.querySelector('[data-rs-edit]');
-  if (edit) edit.addEventListener('click', () => saveInlineDraft(root));
-  const valBtn = body.querySelector('[data-rs-validate]');
-  if (valBtn) valBtn.addEventListener('click', () => runValidation(root));
-  const act = body.querySelector('[data-rs-activate]');
-  if (act) act.addEventListener('click', () => activateStrategy(root, v));
-  const dup = body.querySelector('[data-rs-duplicate]');
-  if (dup) dup.addEventListener('click', () => openDuplicateModal(root, v));
-  const sch = body.querySelector('[data-rs-schedule]');
-  if (sch) sch.addEventListener('click', () => openBatchModal(root, v));
-  const undoBtn = body.querySelector('[data-rs-undo]');
-  if (undoBtn) undoBtn.addEventListener('click', () => undoLiveEdits(root));
-  // B-4: workbench edits live beside the chart — matrix/range/duration
-  // recalculate immediately; inline levers recalculate live (debounced
-  // unsaved preview). Save persists the draft; Undo restores it.
   const matrixSel = $('#rsMatrix');
   if (matrixSel) matrixSel.addEventListener('change', () => {
     view.matrix = matrixSel.value;
     view.previews = {};
-    if (isDraft && hasLeverInputs()) scheduleLivePreview(root, true);
+    if (isDraft && view.liveDirty && hasLeverInputs()) scheduleLivePreview(root, true);
     else refreshWorkbench(root);
   });
-  const rangeSel = $('#rsRange');
-  if (rangeSel) rangeSel.addEventListener('change', (e) => {
-    view.range = e.target.value === 'all' ? 'all' : 'stocked';
-    if (view.previews[view.duration]) renderPreviewTables(root);
-    else refreshWorkbench(root);
-  });
-  const fromEl = $('#rsFrom');
-  const toEl = $('#rsTo');
-  if (fromEl && toEl) {
-    const applyRange = () => {
-      view.range = rangeSel ? rangeSel.value === 'all' ? 'all' : 'stocked' : view.range;
-      view.rangeFrom = Math.max(8, Number(fromEl.value) || 8);
-      view.rangeTo = Math.min(150, Number(toEl.value) || 150);
-      if (view.previews[view.duration]) renderPreviewTables(root);
-      else refreshWorkbench(root);
-    };
-    fromEl.addEventListener('change', applyRange);
-    toEl.addEventListener('change', applyRange);
-  }
   bindLeverInputs(root);
-  const inlineSave = $('#rsInlineSave');
-  if (inlineSave) inlineSave.addEventListener('click', () => saveInlineDraft(root));
-  const allLevers = $('#rsAllLevers');
-  if (allLevers) allLevers.addEventListener('click', () => openLeverModal(root, view.version || v, null));
-  const liveRefresh = $('#rsLiveRefresh');
-  if (liveRefresh) liveRefresh.addEventListener('click', () => scheduleLivePreview(root, true));
 
   loadPromos(root);
   loadHistory(root);
   loadActivity(root);
   loadVersionBatches(root);
   renderSettings($('#rsDetailSettings'), root);
-  // B-4: live chart on open — no Preview click needed.
+  // Live chart on open — no Preview click needed.
   refreshWorkbench(root);
+}
+
+/** One dispatcher for every data-rs-action button (reference action()). */
+function rsAction(name, root, el) {
+  const v = view.version;
+  if (name === 'library') {
+    view.versionId = null; view.libraryOpen = true; view.previews = {}; view.planIds = null; view.plans = null;
+    showRoot(root);
+  } else if (name === 'undo') undoLiveEdits(root);
+  else if (name === 'save') saveInlineDraft(root);
+  else if (name === 'duplicate') openDuplicateModal(root, v);
+  else if (name === 'validate') runValidation(root);
+  else if (name === 'sync-units') openBatchModal(root, v);
+  else if (name === 'activate') activateStrategy(root, v);
+  else if (name === 'zoom') openRsChartExpand();
+  else if (name === 'promotions') {
+    const tab = document.querySelector('#promotions [data-tab="promo-library"]');
+    if (tab) { tab.click(); window.scrollTo(0, 0); }
+  } else if (name === 'model') {
+    const nav = document.querySelector('[data-side-page="billing"][data-side-panel="bill-pricing"]') ||
+      document.querySelector('[data-side-page="billing"]');
+    if (nav) nav.click();
+  }
+  return el;
 }
 
 function readInlineLevers() {
@@ -400,6 +441,11 @@ function readInlineLevers() {
   };
   const methodEl = document.querySelector('[data-rs-lever="method"]');
   const rounding = num('rounding');
+  const categoryFloors = {};
+  document.querySelectorAll('[data-rs-cf]').forEach((el) => {
+    const raw = String(el.value || '').trim();
+    if (raw !== '' && Number.isFinite(Number(raw))) categoryFloors[el.dataset.rsCf] = Number(raw);
+  });
   return {
     referenceSize: num('referenceSize'),
     startingRate: num('startingRate'),
@@ -414,6 +460,7 @@ function readInlineLevers() {
     restrictedAdj: pct('restrictedAdj'),
     facilityAdj: pct('facilityAdj'),
     rounding: rounding === 5 || rounding === 10 ? rounding : rounding === 1 ? 1 : undefined,
+    ...(Object.keys(categoryFloors).length ? { categoryFloors } : {}),
   };
 }
 
@@ -497,8 +544,9 @@ function paintNoTargetBanner(errorMsg) {
   const banner = $('#rsBanner');
   if (!banner) return;
   if (view.noTarget) {
-    banner.hidden = false;
-    banner.textContent = 'Financial Model target unavailable: no CURRENT (approved) model is linked for this facility — target and promotion outcomes are marked unavailable below, rack rates still preview. Ask Finance to approve a model; Rate Strategy never falls back to a sample target.';
+    // The rs-decision banner already explains a missing target (and that
+    // nothing is blocked) — no second banner.
+    banner.hidden = true;
   } else if (errorMsg) {
     banner.hidden = false;
     banner.textContent = errorMsg;
@@ -509,29 +557,28 @@ function paintNoTargetBanner(errorMsg) {
 
 function setLiveDirty(dirty) {
   view.liveDirty = dirty;
-  const flag = $('#rsUnsaved');
-  if (flag) flag.hidden = !dirty;
-  const undoBtn = document.querySelector('[data-rs-undo]');
-  if (undoBtn) {
-    undoBtn.disabled = !dirty;
-    undoBtn.title = dirty
-      ? 'Undo — restores last saved state.'
-      : 'Undo — restores last saved state; disabled with no unsaved changes.';
+  const pill = $('#rsStatusPill');
+  if (pill && view.version) {
+    const st = rsStatusMeta(view.version.status, dirty);
+    pill.className = 'pill ' + st.cls;
+    pill.textContent = st.label;
   }
-  // Apply rates to Units and Set Active both require a saved version with no
-  // unsaved changes — re-evaluate their disabled state live.
-  const applyBtn = document.querySelector('[data-rs-schedule]');
-  if (applyBtn && applyBtn.dataset.rsGate === 'apply') {
-    const ok = view.version && (view.version.status === 'ACTIVE' || view.version.status === 'APPROVED') && !dirty;
-    applyBtn.disabled = !ok;
-    applyBtn.title = ok ? '' : 'Only Active versions with no unsaved changes can apply rates to Units.';
-  }
-  const activeBtn = document.querySelector('[data-rs-activate]');
+  const undoBtn = document.querySelector('[data-rs-action="undo"]');
+  if (undoBtn) undoBtn.disabled = !dirty;
+  // Apply rates to Units needs a saved Active version with no unsaved
+  // changes; Set Active needs a saved Draft. Re-evaluated live.
+  const isActive = view.version && (view.version.status === 'ACTIVE' || view.version.status === 'APPROVED');
+  document.querySelectorAll('[data-rs-action="sync-units"]').forEach((b) => {
+    const ok = isActive && !dirty;
+    b.disabled = !ok;
+    b.title = ok ? '' : (isActive ? 'Save or undo unsaved changes first.' : 'Save the draft and set it Active first.');
+  });
+  const activeBtn = document.querySelector('[data-rs-action="activate"]');
   if (activeBtn && view.version) {
     const ok = view.version.status === 'DRAFT' && !dirty;
     activeBtn.disabled = !ok;
     activeBtn.title = ok ? '' : (view.version.status !== 'DRAFT'
-      ? 'Only a Draft can be set Active.'
+      ? 'This version is already ' + rsStatusMeta(view.version.status, false).label + '.'
       : 'Save the draft first — unsaved changes must be saved or undone before Set Active.');
   }
 }
@@ -540,12 +587,12 @@ function setLiveDirty(dirty) {
 async function saveInlineDraft(root) {
   const v = view.version;
   if (!v || v.status !== 'DRAFT') return;
-  const btn = $('#rsInlineSave') || document.querySelector('[data-rs-edit]');
+  const btn = document.querySelector('[data-rs-action="save"]');
   if (btn) btn.disabled = true;
   try {
     const levers = readInlineLevers();
     await patch('/rate-strategy/' + encodeURIComponent(v.id), { version: v.version, levers });
-    showBanner('Draft saved — chart, categories, cards and unit table recalculated.', true);
+    showBanner('Draft saved — you can now Set Active.', true);
     setLiveDirty(false);
     await refreshShow(root);
   } catch (e) {
@@ -563,9 +610,11 @@ async function undoLiveEdits(root) {
   }
   const host = $('#rsLevers');
   if (host && view.version) {
-    host.innerHTML = leverEditHtml(view.version.levers);
-    bindLeverInputs(root);
+    host.innerHTML = leverEditHtml(view.version.levers, view.version.status !== 'DRAFT');
   }
+  const guard = document.querySelector('.rs-workbench-guardrails');
+  if (guard && view.version) guard.outerHTML = guardrailsHtml(view.version.levers, view.version.status !== 'DRAFT');
+  bindLeverInputs(root);
   setLiveDirty(false);
   view.previews = {};
   await refreshWorkbench(root);
@@ -575,49 +624,25 @@ async function undoLiveEdits(root) {
  *  slider and its number box stay in sync; the method toggle swaps the
  *  handoff helper copy. */
 function bindLeverInputs(root) {
-  const host = $('#rsLevers');
-  if (!host || !hasLeverInputs()) return;
-  host.querySelectorAll('[data-rs-lever]').forEach((el) => {
+  const scope = $('#rsBody');
+  if (!scope || !hasLeverInputs()) return;
+  scope.querySelectorAll('[data-rs-lever], [data-rs-cf]').forEach((el) => {
     if (el.dataset.rsLiveBound) return;
     el.dataset.rsLiveBound = '1';
     el.addEventListener('input', () => {
       if (el.dataset.rsLever === 'curveStrength') {
-        const peer = $('#rsl-curveStrengthNum');
         const lbl = $('#rsl-curveVal');
-        if (peer && peer.value !== el.value) peer.value = el.value;
-        if (lbl) lbl.textContent = el.value;
+        if (lbl) lbl.textContent = Number(el.value).toFixed(2);
       }
       scheduleLivePreview(root, false);
     });
-    el.addEventListener('change', () => scheduleLivePreview(root, false));
-  });
-  const curveNum = $('#rsl-curveStrengthNum');
-  if (curveNum && !curveNum.dataset.rsLiveBound) {
-    curveNum.dataset.rsLiveBound = '1';
-    const syncNum = () => {
-      const slider = $('#rsl-curveStrength');
-      const lbl = $('#rsl-curveVal');
-      if (slider) slider.value = curveNum.value;
-      if (lbl) lbl.textContent = curveNum.value;
-      scheduleLivePreview(root, false);
-    };
-    curveNum.addEventListener('input', syncNum);
-    curveNum.addEventListener('change', syncNum);
-  }
-  host.querySelectorAll('[data-rs-method]').forEach((b) => {
-    if (b.dataset.rsLiveBound) return;
-    b.dataset.rsLiveBound = '1';
-    b.addEventListener('click', () => {
-      const hidden = document.querySelector('[data-rs-lever="method"]');
-      if (hidden) hidden.value = b.dataset.rsMethod;
-      host.querySelectorAll('[data-rs-method]').forEach((x) => {
-        const on = x === b;
-        x.classList.toggle('primary', on);
-        x.classList.toggle('ghost', !on);
-        x.setAttribute('aria-pressed', String(on));
-      });
-      const help = $('#rsl-methodHelp');
-      if (help) help.textContent = RS_METHOD_HELP[b.dataset.rsMethod] || '';
+    el.addEventListener('change', () => {
+      if (el.dataset.rsLever === 'method') {
+        const m = el.value === 'STEP' ? 'STEP' : 'SMOOTH';
+        scope.querySelectorAll('[data-rs-method-only]').forEach((x) => { x.hidden = x.dataset.rsMethodOnly !== m; });
+        const help = $('#rsl-methodHelp');
+        if (help) help.innerHTML = RS_METHOD_HELP[m];
+      }
       scheduleLivePreview(root, false);
     });
   });
@@ -626,11 +651,11 @@ function bindLeverInputs(root) {
 /** Synchronised 1/3/6/12 filter — every duration toolbar (workbench +
  *  unit-rate table) and the duration cards follow one value (§15.12). */
 function setDuration(d, body, root) {
+  if (!DURATIONS.includes(d)) return;
   view.duration = d;
-  body.querySelectorAll('[data-rs-dur]').forEach((x) => {
-    const on = Number(x.dataset.rsDur) === d;
-    x.classList.toggle('primary', on);
-    x.classList.toggle('ghost', !on);
+  view.kpiDuration = d;
+  document.querySelectorAll('#rateStrategyRoot [data-rs-duration]').forEach((x) => {
+    x.classList.toggle('active', Number(x.dataset.rsDuration) === d);
   });
   if (view.previews[d]) {
     view.preview = view.previews[d];
@@ -643,24 +668,7 @@ function setDuration(d, body, root) {
 }
 
 function leverSummaryHtml(l) {
-  if (!l) return '<div class="section-empty">No levers stored.</div>';
-  const pct = (x) => (x == null ? '—' : (Number(x) * 100).toFixed(1).replace(/\.0$/, '') + '%');
-  const row = (k, val) => '<div class="ud-stat"><div class="ud-stat-lbl">' + k + '</div><div class="ud-stat-val" style="font-size:14px;">' + val + '</div></div>';
-  return '<div class="ud-stats">' +
-    row('Reference size', escapeHtml(String(l.referenceSize)) + ' sq ft') +
-    row('Starting rack', fmtMoney(l.startingRate) + '/mo') +
-    row('Method', escapeHtml(l.method === 'STEP' ? 'Step-down table' : 'Smooth size curve')) +
-    (l.method === 'STEP'
-      ? row('Step', '−' + fmtMoney(l.stepPsf) + ' PSF every ' + escapeHtml(String(l.stepEvery)) + ' sq ft')
-      : row('Curve strength', escapeHtml(String(l.curveStrength)))) +
-    row('Rack PSF floor', fmtPsf(l.psfFloor) + '/sq ft') +
-    row('Minimum rent', fmtMoney(l.minMonthly) + '/mo') +
-    row('Locker', pct(l.lockerAdj)) + row('Ground floor', pct(l.groundFloorAdj)) +
-    row('Restricted', pct(l.restrictedAdj)) + row('Facility-wide', pct(l.facilityAdj)) +
-    row('Rounding', 'S$' + escapeHtml(String(l.rounding))) +
-    row('Category floors', CATEGORIES.map((c) => c + ' ' + fmtPsf(l.categoryFloors && l.categoryFloors[c])).join(' · ')) +
-    row('Size overrides', (l.sizeOverrides && l.sizeOverrides.length ? l.sizeOverrides.map((o) => o.size + ' sq ft → ' + fmtMoney(o.monthlyRate)).join('; ') : 'none')) +
-    '</div>';
+  return leverEditHtml(l, true);
 }
 
 // B-4: editable workbench beside the live chart (v55 §15.8, handoff §15.9).
@@ -669,68 +677,117 @@ function leverSummaryHtml(l) {
 // verbatim. Every keystroke/drag recalculates live (debounced unsaved
 // preview) — no modal, no Preview click. Save draft persists via PATCH.
 const RS_METHOD_HELP = {
-  SMOOTH: 'PSF falls gradually as size increases, giving every square foot a continuous rate. Best for a clean, consistent pricing curve.',
-  STEP: 'PSF drops by a fixed amount after each size interval. Best when you want to mirror a traditional rate table.',
+  SMOOTH: '<b>Smooth size curve:</b> PSF falls gradually as size increases, giving every square foot a continuous rate. Best for a clean, consistent pricing curve.',
+  STEP: '<b>Excel-style step-down:</b> PSF drops by a fixed amount after each size interval. Best when you want to mirror a traditional rate table.',
 };
 
-function leverEditHtml(l) {
+function leverEditHtml(l, locked) {
   const v = l || {};
   const pct = (x) => (x == null ? '' : Math.round(Number(x) * 1000) / 10);
-  const cf = v.categoryFloors || {};
   const method = v.method === 'STEP' ? 'STEP' : 'SMOOTH';
-  const curve = v.curveStrength ?? 0.2;
-  const num = (id, label, val, attrs, tip) =>
-    '<div class="field"><label for="rsl-' + id + '">' + escapeHtml(label) + ' <span class="rs-tip" title="' + escapeHtml(tip || '') + '" tabindex="0" aria-label="' + escapeHtml(tip || '') + '">?</span></label>' +
-    '<input id="rsl-' + id + '" data-rs-lever="' + id + '" value="' + escapeHtml(String(val ?? '')) + '"' + (attrs || '') + '></div>';
-  return '<div class="form-grid">' +
-    num('referenceSize', 'Reference size (sq ft)', v.referenceSize, ' type="number" min="1" step="1"', 'Anchor size used for starting rate.') +
-    num('startingRate', 'Starting monthly rack (S$)', v.startingRate, ' type="number" min="1" step="0.01"', 'Pre-promotion monthly rate at reference size.') +
-    '</div>' +
-    '<div class="field"><label>Pricing method <span class="rs-tip" title="Smooth size curve or step-down table." tabindex="0" aria-label="Smooth size curve or step-down table.">?</span></label>' +
-    '<div class="rs-seg" role="group" aria-label="Pricing method">' +
-    '<button type="button" class="tb-btn' + (method === 'SMOOTH' ? ' primary' : ' ghost') + '" data-rs-method="SMOOTH" aria-pressed="' + (method === 'SMOOTH') + '">Smooth size curve</button>' +
-    '<button type="button" class="tb-btn' + (method === 'STEP' ? ' primary' : ' ghost') + '" data-rs-method="STEP" aria-pressed="' + (method === 'STEP') + '">Step-down table</button>' +
-    '</div>' +
-    '<input type="hidden" data-rs-lever="method" value="' + method + '">' +
-    '<div class="t-type" id="rsl-methodHelp" style="margin-top:4px;">' + escapeHtml(RS_METHOD_HELP[method]) + '</div>' +
-    '<div class="t-type" style="margin-top:2px;">Recommended: smooth curve</div></div>' +
-    '<div class="field"><label for="rsl-curveStrength">Curve strength 0–0.60 (smooth) <span class="rs-tip" title="How quickly PSF falls as size increases. Smooth only." tabindex="0" aria-label="How quickly PSF falls as size increases. Smooth only.">?</span></label>' +
-    '<div style="display:flex;gap:8px;align-items:center;">' +
-    '<input id="rsl-curveStrength" data-rs-lever="curveStrength" type="range" min="0" max="0.6" step="0.01" value="' + escapeHtml(String(curve)) + '" style="flex:1;" aria-label="Curve strength slider">' +
-    '<input id="rsl-curveStrengthNum" type="number" min="0" max="0.6" step="0.01" value="' + escapeHtml(String(curve)) + '" style="width:76px;" class="set-input" aria-label="Curve strength value"></div>' +
-    '<div class="t-type">Value: <b id="rsl-curveVal">' + escapeHtml(String(curve)) + '</b></div></div>' +
-    '<div class="form-grid">' +
-    num('stepEvery', 'Reduce PSF every N sq ft (step)', v.stepEvery, ' type="number" min="1" step="1"', 'Step interval. Step-down only.') +
-    num('stepPsf', 'PSF reduction per step (S$)', v.stepPsf, ' type="number" min="0" step="0.01"', 'Fixed PSF decrease each interval. Step-down only.') +
-    num('psfFloor', 'Rack PSF floor (S$)', v.psfFloor, ' type="number" min="0" step="0.01"', 'Overall pre-promotion floor.') +
-    num('minMonthly', 'Minimum monthly (S$)', v.minMonthly, ' type="number" min="0" step="0.01"', 'Final monthly minimum before rounding.') +
-    num('lockerAdj', 'Locker %', pct(v.lockerAdj), ' type="number" min="-95" max="100" step="0.5"', 'Signed half-height locker factor.') +
-    num('groundFloorAdj', 'Ground-floor %', pct(v.groundFloorAdj), ' type="number" min="-95" max="100" step="0.5"', 'Signed factor for tagged ground-floor/premium-access units.') +
-    num('restrictedAdj', 'Restricted %', pct(v.restrictedAdj), ' type="number" min="-95" max="100" step="0.5"', 'Signed factor for tagged access limitations.') +
-    num('facilityAdj', 'Facility-wide %', pct(v.facilityAdj), ' type="number" min="-50" max="100" step="0.5"', 'Facility positioning uplift/discount.') +
-    '</div>' +
-    '<div class="field"><label for="rsl-rounding">Round monthly rate to nearest <span class="rs-tip" title="Rounding increment for the final monthly rate: S$1, S$5 or S$10." tabindex="0" aria-label="Rounding increment for the final monthly rate: S$1, S$5 or S$10.">?</span></label>' +
-    '<select id="rsl-rounding" data-rs-lever="rounding">' +
-    [1, 5, 10].map((r) => '<option value="' + r + '"' + (Number(v.rounding) === r ? ' selected' : '') + '>S$' + r + '</option>').join('') + '</select></div>' +
-    '<div class="t-type" style="margin:6px 0;">Category floors (minimum rack PSF): ' + CATEGORIES.map((c) => c + ' ' + escapeHtml(String(cf[c] ?? ''))).join(' · ') + ' — edit via All levers.</div>' +
-    '<div class="tbl-toolbar"><button class="tb-btn primary" id="rsInlineSave" data-perm="facility-rate-strategy:update">Save draft</button>' +
-    '<button class="tb-btn ghost" id="rsAllLevers" data-perm="facility-rate-strategy:update">All levers…</button>' +
-    '<span class="t-type">Typing or dragging recalculates live — saving persists the draft.</span></div>';
+  const curve = Number(v.curveStrength ?? 0.2);
+  const dis = locked ? ' disabled' : '';
+  const field = (id, label, val, unit, attrs, extra, only) =>
+    '<label' + (only ? ' data-rs-method-only="' + only + '"' + (only !== method ? ' hidden' : '') : '') + '><span>' + label + '</span>' +
+    '<div class="rs-suffix"><input type="number" data-rs-lever="' + id + '" value="' + escapeHtml(String(val ?? '')) + '"' + attrs + dis + '><em>' + unit + '</em></div>' +
+    (extra || '') + '</label>';
+  return '<div class="rs-form-grid">' +
+    field('referenceSize', rsTip('Reference size', 'The anchor unit used to set the first monthly rack rate. Other sizes are calculated from this point.'), v.referenceSize, 'sq ft', ' min="1" step="1"') +
+    field('startingRate', rsTip('Starting monthly rack rate', 'The pre-promotion monthly rate for the reference size. For example, S$90 for 10 sq ft means a starting rack PSF of S$9.00.'), v.startingRate, 'SGD', ' min="1" step="1"') +
+    '<label><span>' + rsTip('Pricing method', 'Smooth curve gradually reduces PSF for every size. Excel-style step-down lowers PSF by a fixed amount at each chosen size interval.') + '</span>' +
+    '<select data-rs-lever="method"' + dis + '><option value="SMOOTH"' + (method === 'SMOOTH' ? ' selected' : '') + '>Smooth size curve · recommended</option>' +
+    '<option value="STEP"' + (method === 'STEP' ? ' selected' : '') + '>Excel-style step-down</option></select>' +
+    '<small class="rs-method-help" id="rsl-methodHelp">' + RS_METHOD_HELP[method] + '</small></label>' +
+    '<label data-rs-method-only="SMOOTH"' + (method !== 'SMOOTH' ? ' hidden' : '') + '><span>' + rsTip('Curve strength', 'Controls how quickly PSF falls as unit size increases. 0 keeps one PSF; a higher value gives larger units a lower PSF.') + '</span>' +
+    '<div class="rs-range"><input type="range" min="0" max="0.6" step="0.01" data-rs-lever="curveStrength" value="' + escapeHtml(String(curve)) + '"' + dis + '><b id="rsl-curveVal">' + curve.toFixed(2) + '</b></div></label>' +
+    field('stepEvery', 'Reduce PSF every', v.stepEvery, 'sq ft', ' min="1" step="1"', '', 'STEP') +
+    field('stepPsf', 'PSF reduction per step', v.stepPsf, 'SGD', ' min="0" step="0.05"', '', 'STEP') +
+    field('psfFloor', rsTip('Rack PSF floor', 'The curve may not generate a rack PSF below this amount. Promotion effects are checked separately.'), v.psfFloor, 'SGD', ' min="0" step="0.05"') +
+    field('minMonthly', 'Minimum monthly rack rent', v.minMonthly, 'SGD', ' min="0" step="1"') +
+    field('lockerAdj', rsTip('Locker unit adjustment', 'Signed factor applied to half-height locker units. Use a negative value for a discount or positive value for a premium.'), pct(v.lockerAdj), '%', ' min="-95" max="100" step="0.5"', '<small>Example: −25% discounts a locker; +10% adds a premium.</small>') +
+    field('groundFloorAdj', rsTip('Ground-floor adjustment', 'Signed factor for units flagged as ground floor or premium access in Facilities · Units.'), pct(v.groundFloorAdj), '%', ' min="-95" max="100" step="0.5"') +
+    field('restrictedAdj', rsTip('Restricted-access adjustment', 'Signed factor for units with an access limitation such as an obstruction or awkward approach.'), pct(v.restrictedAdj), '%', ' min="-95" max="100" step="0.5"') +
+    field('facilityAdj', rsTip('Facility-wide rate adjustment', 'Optional uplift or discount for a facility’s location, access or positioning. Use size overrides for exceptions that apply to only one size.'), pct(v.facilityAdj), '%', ' min="-50" max="100" step="0.5"') +
+    '<label><span>Round monthly rate to nearest</span><select data-rs-lever="rounding"' + dis + '>' +
+    [1, 5, 10].map((r) => '<option value="' + r + '"' + (Number(v.rounding) === r ? ' selected' : '') + '>S$' + r + '</option>').join('') + '</select></label>' +
+    '</div>';
+}
+
+const RS_CAT_DEFS = [
+  { key: 'LOCKER', label: 'Locker', range: '8–15 sq ft · half-height', min: 8, max: 15 },
+  { key: 'XS', label: 'XS', range: '10–19 sq ft', min: 10, max: 19 },
+  { key: 'S', label: 'S', range: '20–39 sq ft', min: 20, max: 39 },
+  { key: 'M', label: 'M', range: '40–69 sq ft', min: 40, max: 69 },
+  { key: 'L', label: 'L', range: '70–99 sq ft', min: 70, max: 99 },
+  { key: 'XL', label: 'XL', range: '100–150 sq ft', min: 100, max: 150 },
+];
+
+/** Reference guardrailsMarkup(): category floors are editable here (Draft). */
+function guardrailsHtml(l, locked) {
+  const v = l || {};
+  const cf = v.categoryFloors || {};
+  const dis = locked ? ' disabled' : '';
+  return '<details class="rs-details rs-workbench-guardrails"><summary><span><b>Advanced guardrails</b><small>Category floors, total-rate progression and activation controls</small></span><span>Expand</span></summary>' +
+    '<div class="rs-details-body"><div class="rs-floor-panel"><div><b>Minimum rack PSF by size category</b><span>The higher of the overall floor and category floor is applied before rounding.</span></div>' +
+    '<div class="rs-floor-grid">' + RS_CAT_DEFS.map((d) =>
+      '<label><span>' + escapeHtml(d.label + ' · ' + d.range) + '</span><div class="rs-suffix"><input type="number" min="0" step="0.05" data-rs-cf="' + d.key + '" value="' +
+      (cf[d.key] == null ? '' : Number(cf[d.key]).toFixed(2)) + '"' + dis + '><em>SGD</em></div></label>').join('') + '</div></div>' +
+    '<div class="rs-guard-grid">' +
+    '<div class="rs-guard"><i>✓</i><div><b>Overall rack PSF floor</b><span>' + fmtPsf(v.psfFloor) + ' before promotions. Below-floor overrides are blocked.</span></div></div>' +
+    '<div class="rs-guard"><i>✓</i><div><b>Total-rate progression</b><span>Larger units are checked so total monthly rent does not accidentally fall below a smaller unit.</span></div></div>' +
+    '<div class="rs-guard"><i>✓</i><div><b>Financial Model is benchmark-only</b><span>The Financial Model Effective PSF target is read here but is never overwritten.</span></div></div>' +
+    '<div class="rs-guard"><i>✓</i><div><b>Promotions remain separately controlled</b><span>Rules are edited in Rates and Promotions; this page only previews eligible Active plans.</span></div></div>' +
+    '</div></div></details>';
 }
 
 function renderRsContext() {
   const host = $('#rsContext');
   if (!host || !view.version) return;
   const v = view.version;
-  const inv = view.preview && view.preview.inventory;
+  const sum = view.preview && view.preview.preview && view.preview.preview.summary;
   const tgt = view.preview && view.preview.target;
-  host.innerHTML = '<div class="ud-stats">' +
-    '<div class="ud-stat"><div class="ud-stat-lbl">Facility</div><div class="ud-stat-val" style="font-size:14px;">' + branchLabel(v) + '</div></div>' +
-    '<div class="ud-stat"><div class="ud-stat-lbl">Strategy name</div><div class="ud-stat-val" style="font-size:14px;">' + escapeHtml(v.strategyName) + ' v' + v.versionNo + '</div></div>' +
-    '<div class="ud-stat"><div class="ud-stat-lbl">Effective from</div><div class="ud-stat-val" style="font-size:14px;">' + escapeHtml(v.effectiveFrom || '—') + '</div></div>' +
-    '<div class="ud-stat"><div class="ud-stat-lbl">Inventory source</div><div class="ud-stat-val" style="font-size:14px;">' + (inv ? Number(inv.unitCount || 0) + ' units · ' + Number(inv.stockedSizeCount || 0) + ' sizes' : 'Facilities · Units') + '</div></div>' +
-    '<div class="ud-stat"><div class="ud-stat-lbl">Target source</div><div class="ud-stat-val" style="font-size:14px;">' + (tgt && tgt.targetPsf != null ? 'Approved Financial Model · S$' + Number(tgt.targetPsf).toFixed(2) : 'Unavailable — no CURRENT model') + '</div></div>' +
-    '</div>';
+  const isDraft = v.status === 'DRAFT';
+  const lastBatch = (view.batches || [])[0];
+  host.innerHTML =
+    '<label><span>Facility</span><select id="rsCtxFacility">' + (state.branches || []).map((b) =>
+      '<option value="' + escapeHtml(b.id) + '"' + (b.id === v.branchId ? ' selected' : '') + '>' + escapeHtml(b.name || b.code) + '</option>').join('') + '</select></label>' +
+    '<label><span>Strategy name</span><input id="rsCtxName" value="' + escapeHtml(v.strategyName) + '" readonly title="Set when the strategy is created"></label>' +
+    '<label><span>Effective from</span><input type="date" id="rsCtxDate" value="' + escapeHtml(v.effectiveFrom || '') + '"' + (isDraft ? '' : ' disabled') + '></label>' +
+    '<div><span>Inventory source</span><b>Facilities · Units</b><small>' + (sum ? rsNum(sum.totalUnits) + ' units · ' + rsNum(sum.totalNla) + ' sq ft NLA · ' : '') +
+    (lastBatch ? 'rates ' + escapeHtml(String(lastBatch.status).replace(/_/g, ' ').toLowerCase()) : 'rates not applied') + '</small></div>' +
+    '<div><span>Target source</span>' + (tgt && tgt.targetPsf != null
+      ? '<b>' + fmtPsf(tgt.targetPsf) + ' approved PSF</b><small>' + escapeHtml((tgt.modelName || 'Financial Model') + (tgt.modelVersion != null ? ' · v' + tgt.modelVersion : '')) + '</small>'
+      : '<b>Unavailable</b><small>No CURRENT Financial Model linked</small>') + '</div>';
+  const fac = $('#rsCtxFacility');
+  if (fac) fac.addEventListener('change', () => switchFacility(fac.value));
+  const date = $('#rsCtxDate');
+  if (date && isDraft) date.addEventListener('change', async () => {
+    try {
+      await patch('/rate-strategy/' + encodeURIComponent(v.id), { version: v.version, effectiveFrom: date.value });
+      showBanner('Effective date saved', true);
+      await refreshShow(rsRoot);
+    } catch (e) { rsError(rsRoot, e); }
+  });
+}
+
+/** Facility select: open that facility's latest Draft/Active strategy, or
+ *  start a new one for it when none exists yet. */
+async function switchFacility(branchId) {
+  const root = rsRoot;
+  try {
+    const rows = (await get('/rate-strategy/library?branchId=' + encodeURIComponent(branchId))) || [];
+    const live = rows.filter((r) => r.status === 'DRAFT' || r.status === 'ACTIVE' || r.status === 'APPROVED')
+      .sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+    if (live.length) {
+      view.versionId = live[0].versionId;
+      view.previews = {}; view.planIds = null; view.plans = null;
+      await renderShow($('#rsBody'), root);
+    } else {
+      view.branchFilter = branchId;
+      openCreateModal(root);
+      renderRsContext();
+    }
+  } catch (e) { rsError(root, e); }
 }
 
 /** B-3 KPI cards (v55 §15.6–15.7): the Base rack-rate card is
@@ -746,71 +803,69 @@ function kpiPromoDuration() {
 function renderRsKpis() {
   const host = $('#rsKpis');
   if (!host) return;
-  const kd = kpiPromoDuration();
-  // Base card: fixed 12-month reference so the promo toggle never moves it
-  // (rack figures are identical across durations; 12 mo is the anchor).
+  const d = view.duration;
   const basePayload = (view.previews && view.previews[12]) || view.preview;
-  const promoPayload = (view.previews && view.previews[kd]) || view.preview;
+  const promoPayload = (view.previews && view.previews[d]) || view.preview;
   const base = basePayload && basePayload.preview && basePayload.preview.summary;
   const promo = promoPayload && promoPayload.preview && promoPayload.preview.summary;
   if (!base || !promo) {
-    host.innerHTML = '<div class="section-empty">Run preview to fill KPIs.</div>';
+    host.innerHTML = '<div class="section-empty">Calculating preview…</div>';
     return;
   }
-  const gap = promo.gapVsTarget;
-  const vsTarget = (view.noTarget || gap == null)
-    ? '<span class="t-type">target unavailable</span>'
-    : ((Number(gap) >= 0 ? '+' : '') + fmtPsf(gap));
-  host.innerHTML = '<div class="rs-kpi-grid">' +
-    '<div class="tbl-card"><div class="sec-sub"><b>Base rack-rate</b> <span class="t-type">· never changes with promotion/duration</span></div>' +
-    '<div class="ud-stats">' +
-    '<div class="ud-stat"><div class="ud-stat-lbl">Facility sizes</div><div class="ud-stat-val" style="font-size:16px;">' + Number(base.stockedSizeCount || 0) + '</div></div>' +
-    '<div class="ud-stat"><div class="ud-stat-lbl">Rack rent potential</div><div class="ud-stat-val" style="font-size:16px;">' + fmtMoney(base.rackPotential) + '/mo</div></div>' +
-    '<div class="ud-stat"><div class="ud-stat-lbl">Weighted rack PSF</div><div class="ud-stat-val" style="font-size:16px;">' + fmtPsf(base.weightedRackPsf) + '</div></div>' +
-    '</div></div>' +
-    '<div class="tbl-card"><div class="sec-sub"><b>Promotion preview</b> <span class="t-type">· ' + kd + ' mo · ' + escapeHtml(view.matrix) + '</span></div>' +
-    '<div class="ud-stats">' +
-    '<div class="ud-stat"><div class="ud-stat-lbl">Effective PSF</div><div class="ud-stat-val" style="font-size:16px;">' + fmtPsf(promo.weightedEffectivePsf) + '</div></div>' +
-    '<div class="ud-stat"><div class="ud-stat-lbl">Blended PSF</div><div class="ud-stat-val" style="font-size:16px;">' + (promo.weightedBlendedPsf != null ? fmtPsf(promo.weightedBlendedPsf) : '<span class="t-type">n/a — no free months</span>') + '</div></div>' +
-    '<div class="ud-stat"><div class="ud-stat-lbl">Effective PSF vs target</div><div class="ud-stat-val" style="font-size:16px;">' + vsTarget + '</div></div>' +
-    '</div></div></div>';
+  const rows = (basePayload.preview.rows || []);
+  const hasFree = !!promo.hasBlended && promo.weightedBlendedPsf != null;
+  const noTarget = view.noTarget || promo.gapVsTarget == null;
+  const gapClass = noTarget ? 'warn' : (Number(promo.gapVsTarget) >= -0.005 ? 'good' : 'warn');
+  host.innerHTML =
+    '<section class="rs-kpi-group fixed"><header><b>Base rack-rate strategy</b><span>These values do not change when you preview another promotion.</span></header><div class="rs-kpis">' +
+    '<div><small>Facility sizes</small><strong>' + rsNum(base.stockedSizeCount) + '</strong><span>' + rsNum(rows.length) + ' one-sq-ft rate points available</span></div>' +
+    '<div><small>' + rsTip('Rack rent potential', 'Monthly rent at 100% occupancy before any promotion, using every available unit.') + '</small><strong>' + rsMoney(base.rackPotential) + '</strong><span>per month · 100% occupied</span></div>' +
+    '<div><small>' + rsTip('Weighted rack PSF', 'Total monthly rack rent divided by total available unit square feet.') + '</small><strong>' + fmtPsf(base.weightedRackPsf) + '</strong><span>before promotion</span></div>' +
+    '</div></section>' +
+    '<section class="rs-kpi-group scenario"><header><div><b>' + d + '-month promotion preview</b><span>Rack rates stay fixed; these values reflect only the selected library plans.</span></div>' +
+    rsDurationFilter('Preview duration', false) + '</header><div class="rs-kpis ' + (hasFree ? '' : 'two') + '">' +
+    '<div><small>' + rsTip('Effective PSF after free period', 'The recurring PSF after any percentage discount. Once the free-month period ends, this is the monthly PSF that resumes.') + '</small><strong>' + fmtPsf(promo.weightedEffectivePsf) + '</strong><span>ongoing monthly rate</span></div>' +
+    (hasFree ? '<div><small>' + rsTip('Blended PSF', 'Total rent payable over the commitment divided evenly across its months. Free months reduce this figure during the offer term.') + '</small><strong>' + fmtPsf(promo.weightedBlendedPsf) + '</strong><span>includes applicable free months</span></div>' : '') +
+    '<div class="' + gapClass + '"><small>' + rsTip('Effective PSF vs target', 'Recurring Effective PSF after the approved percentage discount, minus the Financial Model PSF target. Free months do not change this comparison.') + '</small><strong>' +
+    (noTarget ? '—' : rsSigned(promo.gapVsTarget)) + '</strong><span>' + (noTarget ? 'Target unavailable' : gapClass === 'good' ? 'Meets target' : 'Below target') + '</span></div>' +
+    '</div></section>';
 }
 
 /** Promotion-preview toggle only: switches Effective/Blended/vs-target
  *  without touching the workbench duration, chart, categories or unit
  *  table. Uses the cached all-duration previews — no extra fetch. */
 function setKpiDuration(d) {
-  if (!DURATIONS.includes(d)) return;
-  view.kpiDuration = d;
-  document.querySelectorAll('[data-rs-kpi-dur]').forEach((x) => {
-    const on = Number(x.dataset.rsKpiDur) === d;
-    x.classList.toggle('primary', on);
-    x.classList.toggle('ghost', !on);
-    x.setAttribute('aria-pressed', String(on));
-  });
-  if (view.previews[d] || view.preview) renderRsKpis();
+  setDuration(d, $('#rsBody'), rsRoot);
 }
 
 function renderRsTargetBanner() {
   const host = $('#rsTargetBanner');
   if (!host) return;
-  const twelve = view.previews && view.previews[12];
-  const sum = twelve && twelve.preview && twelve.preview.summary;
-  const tgt = twelve && twelve.target;
-  if (!sum || !tgt || tgt.targetPsf == null || sum.weightedEffectivePsf == null) {
-    host.innerHTML = '';
-    return;
+  const d = view.duration;
+  const p = view.previews && view.previews[d];
+  const sum = p && p.preview && p.preview.summary;
+  const tgt = p && p.target;
+  if (!sum) { host.innerHTML = ''; return; }
+  if (!tgt || tgt.targetPsf == null || sum.gapVsTarget == null) {
+    host.innerHTML = '<div class="rs-decision warn"><div><b>Financial Model target unavailable</b><span>No CURRENT Financial Model is linked for this facility — rack rates still preview and target comparisons show as unavailable. Save draft, Set Active and Apply rates to Units are not blocked.</span></div>' +
+      '<button class="btn" type="button" data-rs-action="model">Open Financial Model pricing</button></div>';
+  } else {
+    const gap = Number(sum.gapVsTarget);
+    const meets = gap >= -0.005;
+    const v = view.version || {};
+    const refSize = Number(v.levers && v.levers.referenceSize) || 10;
+    const startRate = Number(v.levers && v.levers.startingRate) || 0;
+    const required = startRate + Math.max(0, -gap) * refSize;
+    const uplift = startRate ? (required / startRate - 1) * 100 : 0;
+    const detail = meets
+      ? 'Recurring Effective PSF is ' + fmtPsf(sum.weightedEffectivePsf) + (Math.abs(gap) < 0.005 ? ', exactly matching the target' : ', S$' + Math.abs(gap).toFixed(2) + ' above target') + '. ' +
+        (sum.hasBlended ? 'Blended PSF is shown separately to reveal the cost of free months.' : 'No free-month benefit applies at this duration, so Blended PSF is not shown.')
+      : 'Recurring Effective PSF is ' + fmtPsf(sum.weightedEffectivePsf) + '. Raise the ' + refSize + ' sq ft anchor from ' + rsMoney(startRate) + ' to about ' + rsMoney(required) + ' (' + uplift.toFixed(1) + '%), or review the approved percentage discount.';
+    host.innerHTML = '<div class="rs-decision ' + (meets ? 'good' : 'warn') + '"><div><b>' + d + '-month Effective PSF ' + (meets ? 'meets the approved target' : 'is below the approved target') + '</b><span>' + escapeHtml(detail) + '</span></div>' +
+      '<button class="btn" type="button" data-rs-action="model">Open Financial Model pricing</button></div>';
   }
-  const gap = Number(sum.gapVsTarget || 0);
-  if (gap >= 0) {
-    host.innerHTML = '<div class="modal-alert olive">12-month Effective PSF ' + fmtPsf(sum.weightedEffectivePsf) + ' meets the approved target ' + fmtPsf(tgt.targetPsf) + '.</div>';
-    return;
-  }
-  const v = view.version || {};
-  const refSize = Number(v.levers && v.levers.referenceSize) || 10;
-  const startRate = Number(v.levers && v.levers.startingRate) || 0;
-  const anchor = startRate + Math.abs(gap) * refSize;
-  host.innerHTML = '<div class="modal-alert">12-month Effective PSF ' + fmtPsf(sum.weightedEffectivePsf) + ' is below the approved target ' + fmtPsf(tgt.targetPsf) + ' — raise anchor to about ' + fmtMoney(anchor) + '.</div>';
+  const b = host.querySelector('[data-rs-action]');
+  if (b) b.addEventListener('click', (e) => { e.preventDefault(); rsAction('model', rsRoot, b); });
 }
 
 async function fetchPreview(durationMonths) {
@@ -852,7 +907,7 @@ async function refreshWorkbench(root) {
   } catch (e) {
     const code = e && e.code;
     const msg = code === 'NO_CURRENT_MODEL'
-      ? 'Financial Model target unavailable: no CURRENT (approved) model is linked for this facility — target and promotion outcomes are unavailable below, rack-rate editing stays available. Ask Finance to approve a model; Rate Strategy never falls back to a sample target.'
+      ? 'Financial Model target unavailable for this facility — rack rates still preview; Save draft, Set Active and Apply rates to Units are not blocked.'
       : 'Preview failed: ' + escapeHtml(describeError(e));
     for (const id of ['#rsChart', '#rsCats', '#rsDurCards', '#rsPreview']) {
       const host = $(id);
@@ -869,6 +924,7 @@ function renderWorkbenchViews(root) {
   renderRsKpis();
   renderRsContext();
   renderRsTargetBanner();
+  paintPromoCount();
 }
 
 // ---- live chart (same inline-SVG approach as the finance screens:
@@ -879,140 +935,69 @@ const RS_SERIES = [
   { key: 'blend', label: 'Blended PSF', color: '#c97952', get: (r) => (r.hasBlended ? r.blendedPsf : null) },
 ];
 
-function rsChartSvg(plotted, targetPsf, hasBlended, large) {
-  const width = large ? 920 : 480, height = large ? 340 : 220, p = { l: large ? 64 : 56, r: 14, t: large ? 20 : 16, b: 30 };
-  const vals = [];
-  plotted.forEach((r) => { vals.push(r.rackPsf, r.effectivePsf); if (hasBlended && r.hasBlended) vals.push(r.blendedPsf); });
-  if (targetPsf != null) vals.push(targetPsf);
-  const finite = vals.filter(Number.isFinite);
-  let rawMax = Math.max.apply(null, finite.concat([1])) * 1.06;
-  let rawMin = Math.min.apply(null, finite.concat([0]));
-  if (!(rawMax > rawMin)) { rawMax = rawMin + 1; }
-  // B-5: Y ticks every S$0.50 across the chart range — snap the domain to
-  // the half-dollar grid so the lines sit on round values (v55 §15.19).
-  const tickMin = Math.floor(rawMin * 2) / 2;
-  let tickMax = Math.ceil(rawMax * 2) / 2;
-  if (!(tickMax > tickMin)) { tickMax = tickMin + 0.5; }
-  const max = tickMax, min = tickMin;
-  const xs = plotted.map((r) => r.size);
-  const xMin = 8;
-  const xMax = Math.max.apply(null, xs.concat([150]));
-  const x = (s) => p.l + ((s - xMin) / Math.max(xMax - xMin, 1)) * (width - p.l - p.r);
-  const y = (v) => p.t + (max - v) * (height - p.t - p.b) / (max - min || 1);
-  const line = (fn) => {
-    let started = false;
-    return plotted.map((r) => {
-      const v = fn(r);
-      if (!Number.isFinite(v)) { started = false; return ''; }
-      const cmd = started ? 'L' : 'M';
-      started = true;
-      return cmd + x(r.size).toFixed(1) + ',' + y(v).toFixed(1);
-    }).join(' ');
-  };
-  const grids = [];
-  const tickCount = Math.round((max - min) * 2);
-  for (let i = 0; i <= tickCount; i++) {
-    const val = Math.round((min + i * 0.5) * 100) / 100;
-    const yy = p.t + (max - val) * (height - p.t - p.b) / (max - min || 1);
-    grids.push('<line class="gridline" x1="' + p.l + '" y1="' + yy.toFixed(1) + '" x2="' + (width - p.r) + '" y2="' + yy.toFixed(1) + '"/>' +
-      '<text class="axis-label" x="3" y="' + (yy + 3).toFixed(1) + '">S$' + val.toFixed(2) + '</text>');
-  }
-  const gridsHtml = grids.join('');
-  const every = Math.max(1, Math.ceil(plotted.length / 6));
-  const labels = plotted.map((r, i) => (i % every === 0 || i === plotted.length - 1)
-    ? '<text class="axis-label" x="' + x(r.size) + '" y="' + (height - 8) + '" text-anchor="middle">' + r.size + '</text>' : '').join('');
-  const dots = plotted.filter((r) => r.stocked).map((r) => {
-    const tip = r.size + ' sq ft · Rack ' + fmtMoney(r.rackMonthly) + ' · Eff ' + fmtMoney(r.effectiveMonthly) +
-      (r.hasBlended ? ' · Blend ' + fmtMoney(r.blendedMonthly) : '');
-    return '<circle cx="' + x(r.size).toFixed(1) + '" cy="' + y(r.effectivePsf).toFixed(1) + '" r="3" fill="#2a9d8f"><title>' +
-      escapeHtml(tip) + '</title></circle>';
-  }).join('');
-  const payload = encodeURIComponent(JSON.stringify({
-    labels: plotted.map((r) => r.size + ' sq ft'),
-    series: RS_SERIES.filter((s) => s.key !== 'blend' || hasBlended).map((s) => ({
-      label: s.label, values: plotted.map((r) => { const v = s.get(r); return Number.isFinite(v) ? 'S$' + Number(v).toFixed(2) : '—'; }),
-    })),
-  }));
-  const targetLine = targetPsf != null
-    ? '<line x1="' + p.l + '" y1="' + y(targetPsf).toFixed(1) + '" x2="' + (width - p.r) + '" y2="' + y(targetPsf).toFixed(1) + '" stroke="#8a6d3b" stroke-width="1.5" stroke-dasharray="6 4"/>' +
-      '<text class="axis-label" x="' + (width - p.r) + '" y="' + targetLabelY(targetPsf) + '" text-anchor="end" fill="#8a6d3b">Target S$' + Number(targetPsf).toFixed(2) + '</text>' : '';
-  function targetLabelY(v) {
-    const yy = y(v);
-    // Keep the label inside the plot: above the line, or below it when the
-    // line rides near the top edge.
-    return (yy - 6 < p.t + 8 ? yy + 13 : yy - 5).toFixed(1);
-  }
-  return '<div class="fm-chart-wrap" data-chart-wrap style="position:relative;">' +
-    '<svg class="fm-chart fm-mini-chart fm-interactive-chart" data-chart-payload="' + payload + '" viewBox="0 0 ' + width + ' ' + height + '" preserveAspectRatio="none" style="width:100%;height:' + height + 'px;display:block;" role="img" aria-label="PSF by size chart">' +
-    gridsHtml + labels +
-    '<path fill="none" stroke="#526557" stroke-width="2.5" d="' + line((r) => r.rackPsf) + '"/>' +
-    '<path fill="none" stroke="#2a9d8f" stroke-width="2.5" d="' + line((r) => r.effectivePsf) + '"/>' +
-    (hasBlended ? '<path fill="none" stroke="#c97952" stroke-width="2.5" d="' + line((r) => (r.hasBlended ? r.blendedPsf : null)) + '"/>' : '') +
-    targetLine +
-    '<line class="fm-crosshair" x1="' + p.l + '" y1="' + p.t + '" x2="' + p.l + '" y2="' + (height - p.b) + '"/>' +
-    dots + '</svg><div class="fm-chart-tooltip"></div>' +
-    '<div class="fm-legend"><span><i style="background:#526557"></i>Rack PSF</span>' +
-    '<span><i style="background:#2a9d8f"></i>Effective PSF</span>' +
-    '<span' + (hasBlended ? '' : ' class="t-type" title="No free-months plan in preview"') + '><i style="background:' + (hasBlended ? '#c97952' : 'transparent;border:1px dashed #c97952') + '"></i>Blended PSF' + (hasBlended ? '' : ' (n/a)') + '</span>' +
-    (targetPsf != null ? '<span><i style="background:#8a6d3b"></i>Model target S$' + Number(targetPsf).toFixed(2) + '</span>' : '') + '</div></div>';
+function rsChartSvg(plotted, targetPsf, hasBlended) {
+  // Reference chart(): 820×430 viewBox, fixed 8–150 sq ft X axis, S$0.50 Y
+  // grid, rack/effective(/blended) polylines + points, dashed target line.
+  const width = 820, height = 430, left = 68, right = 22, top = 24, bottom = 44;
+  const minX = 8, maxX = 150;
+  const values = [];
+  plotted.forEach((r) => { values.push(r.rackPsf, r.effectivePsf); if (hasBlended) values.push(r.blendedPsf); });
+  if (targetPsf != null) values.push(Number(targetPsf));
+  const finite = values.filter(Number.isFinite);
+  const minY = Math.max(0, Math.floor((Math.min.apply(null, finite) - 0.5) * 2) / 2);
+  const maxY = Math.ceil((Math.max.apply(null, finite) + 0.5) * 2) / 2;
+  const x = (val) => left + ((val - minX) / Math.max(1, maxX - minX)) * (width - left - right);
+  const y = (val) => top + ((maxY - val) / Math.max(0.1, maxY - minY)) * (height - top - bottom);
+  const pts = (get) => plotted.map((r) => x(r.size).toFixed(1) + ',' + y(get(r)).toFixed(1)).join(' ');
+  const ticks = [];
+  for (let i = 0; i <= Math.round((maxY - minY) / 0.5); i++) ticks.push(minY + i * 0.5);
+  const grid = ticks.map((val) => '<g><line x1="' + left + '" y1="' + y(val) + '" x2="' + (width - right) + '" y2="' + y(val) + '"/><text x="' + (left - 10) + '" y="' + (y(val) + 4) + '" text-anchor="end">S$' + val.toFixed(2) + '</text></g>').join('');
+  const pointRows = plotted.filter((r) => r.stocked);
+  const points = (get, monthly, cls, label) => pointRows.map((r) =>
+    '<circle class="' + cls + '" cx="' + x(r.size).toFixed(1) + '" cy="' + y(get(r)).toFixed(1) + '" r="4.5" tabindex="0"><title>' +
+    r.size + ' sq ft · ' + label + ' S$' + Number(get(r)).toFixed(2) + ' · ' + rsMoney(monthly(r), 2) + '/month</title></circle>').join('');
+  const target = targetPsf != null
+    ? '<line class="rs-target" x1="' + left + '" y1="' + y(targetPsf) + '" x2="' + (width - right) + '" y2="' + y(targetPsf) + '"/>' +
+      '<text class="rs-target-label" x="' + (width - right) + '" y="' + (y(targetPsf) - 8) + '" text-anchor="end">Financial Model target S$' + Number(targetPsf).toFixed(2) + '</text>'
+    : '';
+  return '<div class="rs-chart-wrap"><svg class="rs-chart" viewBox="0 0 ' + width + ' ' + height + '" role="img" aria-label="Rack and effective PSF' + (hasBlended ? ', plus blended PSF after free months' : '') + ' by unit size">' +
+    '<g class="rs-grid">' + grid + '</g>' + target +
+    '<polyline class="rs-rack-line" points="' + pts((r) => r.rackPsf) + '"/>' +
+    '<polyline class="rs-net-line" points="' + pts((r) => r.effectivePsf) + '"/>' +
+    (hasBlended ? '<polyline class="rs-effective-line" points="' + pts((r) => r.blendedPsf) + '"/>' : '') +
+    points((r) => r.rackPsf, (r) => r.rackMonthly, 'rs-rack-point', 'Rack PSF') +
+    points((r) => r.effectivePsf, (r) => r.effectiveMonthly, 'rs-net-point', 'Effective PSF') +
+    (hasBlended ? points((r) => r.blendedPsf, (r) => r.blendedMonthly, 'rs-effective-point', 'Blended PSF') : '') +
+    '<text x="' + left + '" y="' + (height - 12) + '">' + minX + ' sq ft</text><text x="' + (width - right) + '" y="' + (height - 12) + '" text-anchor="end">' + maxX + ' sq ft</text></svg></div>' +
+    '<div class="rs-legend"><span><i class="rack"></i>Rack PSF</span><span><i class="net"></i>Effective PSF</span>' +
+    (hasBlended ? '<span><i class="effective"></i>' + view.duration + '-month Blended PSF</span>' : '') +
+    (targetPsf != null ? '<span><i class="target"></i>Financial Model target</span>' : '') + '</div>';
+}
+
+function rsChartRows() {
+  const all = ((view.preview && view.preview.preview.rows) || []).slice().sort((a, b) => a.size - b.size);
+  return view.range === 'all'
+    ? all.filter((r) => r.size >= view.rangeFrom && r.size <= view.rangeTo)
+    : all.filter((r) => r.stocked);
 }
 
 function rsBindChartHover() {
-  // Inline + expanded (overlay) chart share the hover binder; the guard
-  // keeps finance-screen charts untouched (they bind their own handler).
-  document.querySelectorAll('#rsChart .fm-interactive-chart, #rsOverlay .fm-interactive-chart').forEach((svg) => {
-    if (svg.dataset.bound) return;
-    svg.dataset.bound = '1';
-    const wrap = svg.closest('[data-chart-wrap]');
-    const tipBox = wrap && wrap.querySelector('.fm-chart-tooltip');
-    const cross = svg.querySelector('.fm-crosshair');
-    let payload = null;
-    try { payload = JSON.parse(decodeURIComponent(svg.dataset.chartPayload)); } catch (e) { return; }
-    svg.addEventListener('mousemove', (e) => {
-      const rect = svg.getBoundingClientRect();
-      const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-      const index = Math.round(ratio * (payload.labels.length - 1));
-      if (!tipBox || !payload.labels[index]) return;
-      tipBox.innerHTML = '<b>' + escapeHtml(payload.labels[index]) + '</b>' +
-        payload.series.map((s) => '<span>' + escapeHtml(s.label) + '<strong>' + escapeHtml(s.values[index]) + '</strong></span>').join('');
-      tipBox.style.display = 'grid';
-      tipBox.style.left = Math.min(rect.width - 150, Math.max(8, e.clientX - rect.left + 10)) + 'px';
-      tipBox.style.top = '8px';
-      if (cross) {
-        const vb = svg.viewBox.baseVal;
-        const xx = vb.x + ratio * vb.width;
-        cross.setAttribute('x1', xx);
-        cross.setAttribute('x2', xx);
-        cross.style.opacity = '1';
-      }
-    });
-    svg.addEventListener('mouseleave', () => {
-      if (tipBox) tipBox.style.display = 'none';
-      if (cross) cross.style.opacity = '0';
-    });
-  });
+  // Reference chart uses native <title> tooltips on each point — nothing to bind.
 }
 
 function renderRsChart() {
   const host = $('#rsChart');
   if (!host || !view.preview) return;
-  const data = view.preview;
-  const all = (data.preview.rows || []).slice().sort((a, b) => a.size - b.size);
-  const plotted = view.range === 'all' ? all : all.filter((r) => r.stocked);
-  if (!plotted.length) {
-    host.innerHTML = '<div class="section-empty">No sizes to chart for this range.</div>';
-    return;
-  }
-  const anyBlended = plotted.some((r) => r.hasBlended);
-  const targetPsf = data.target && data.target.targetPsf;
-  host.innerHTML = '<div class="rs-chart-head"><span class="t-type">' + view.duration + ' mo · ' + escapeHtml(view.matrix) +
-    ' · ' + plotted.length + ' sizes · X 8–150 sq ft (full commercial axis kept) · Y PSF</span>' +
-    '<span style="flex:1"></span>' +
-    '<button class="tb-btn ghost" id="rsChartExpand" data-perm="facility-rate-strategy:view">Expand</button></div>' +
-    rsChartSvg(plotted, targetPsf, anyBlended, false);
+  const plotted = rsChartRows();
+  const hasBlended = plotted.some((r) => r.hasBlended);
+  const targetPsf = view.preview.target && view.preview.target.targetPsf;
+  const d = view.duration;
+  host.innerHTML = '<div class="rs-live-chart-head"><div><b>Live rate curve · ' + d + ' month' + (d === 1 ? '' : 's') + '</b><small>' +
+    (hasBlended ? 'Rack, Effective and Blended PSF' : 'Rack and Effective PSF') + ' across the commercial 8–150 sq ft range</small></div>' +
+    '<button class="btn rs-small" type="button" id="rsChartExpand">Expand</button></div>' +
+    (plotted.length ? rsChartSvg(plotted, targetPsf, hasBlended) : '<div class="rs-empty">No facility sizes are linked yet.</div>');
   const expand = $('#rsChartExpand');
   if (expand) expand.addEventListener('click', () => openRsChartExpand());
-  rsBindChartHover();
 }
 
 /** B-5 Expand: the same inline-SVG chart at finance-screen large size in
@@ -1020,19 +1005,16 @@ function renderRsChart() {
  *  the inline chart underneath is untouched so state restores as-is. */
 function openRsChartExpand() {
   if (!view.preview) return;
-  const data = view.preview;
-  const all = (data.preview.rows || []).slice().sort((a, b) => a.size - b.size);
-  const plotted = view.range === 'all' ? all : all.filter((r) => r.stocked);
+  const plotted = rsChartRows();
   if (!plotted.length) return;
-  const anyBlended = plotted.some((r) => r.hasBlended);
-  const targetPsf = data.target && data.target.targetPsf;
-  overlay(rsRoot || document.body, view.duration + '-month PSF by size — expanded',
-    '<p class="t-type">' + view.duration + ' mo · ' + escapeHtml(view.matrix) + ' · ' + plotted.length +
-    ' sizes · hover anywhere for values · Y ticks every S$0.50</p>' +
-    rsChartSvg(plotted, targetPsf, anyBlended, true),
+  const hasBlended = plotted.some((r) => r.hasBlended);
+  const targetPsf = view.preview.target && view.preview.target.targetPsf;
+  overlay(rsRoot || document.body, 'Live rate curve · ' + view.duration + ' month' + (view.duration === 1 ? '' : 's'),
+    '<div class="rs-live-chart" style="min-width:min(900px,80vw)">' + rsChartSvg(plotted, targetPsf, hasBlended) + '</div>',
     'Close',
     async () => {});
-  rsBindChartHover();
+  const cancel = $('#rsOverlayCancel');
+  if (cancel) cancel.hidden = true;
 }
 
 // ---- category table + totals (§15.12) ----
@@ -1049,65 +1031,91 @@ function psfRange(rows, get) {
 function renderRsCats() {
   const host = $('#rsCats');
   if (!host || !view.preview) return;
-  const rows = (view.preview.preview.rows || []).filter((r) => r.stocked);
-  const anyBlended = rows.some((r) => r.hasBlended);
-  if (!rows.length) {
-    host.innerHTML = '<div class="section-empty">No facility sizes are stocked yet.</div>';
-    return;
-  }
-  const byCat = {};
-  rows.forEach((r) => { (byCat[r.category] = byCat[r.category] || []).push(r); });
-  const body = RS_CAT_ORDER.map((c) => {
-    const list = (byCat[c] || []).slice().sort((a, b) => a.size - b.size);
-    if (!list.length) {
-      return '<tr><td>' + c + '</td><td class="t-type">' + RS_CAT_RANGE[c] + ' sq ft</td><td colspan="' +
-        (anyBlended ? 7 : 6) + '" class="t-type">Not stocked — Rate only in the unit table; excluded from totals.</td></tr>';
-    }
-    const nla = list.reduce((s, r) => s + r.size * r.unitCount, 0);
-    const units = list.reduce((s, r) => s + r.unitCount, 0);
-    const rack = list.reduce((s, r) => s + r.rackMonthly * r.unitCount, 0);
-    const net = list.reduce((s, r) => s + r.effectiveMonthly * r.unitCount, 0);
-    return '<tr><td><b>' + c + '</b></td><td class="t-type">' + RS_CAT_RANGE[c] + ' sq ft</td>' +
-      '<td>' + nla.toLocaleString('en-SG') + '</td><td>' + units + '</td>' +
-      '<td>' + psfRange(list, (r) => r.rackPsf) + '</td><td>' + psfRange(list, (r) => r.effectivePsf) + '</td>' +
-      (anyBlended ? '<td>' + (list.some((r) => r.hasBlended) ? psfRange(list.filter((r) => r.hasBlended), (r) => r.blendedPsf) : '<span class="t-type">n/a</span>') + '</td>' : '') +
-      '<td>' + fmtMoney(rack) + '</td><td>' + fmtMoney(net) + '</td></tr>';
-  }).join('');
+  const all = view.preview.preview.rows || [];
   const s = view.preview.preview.summary || {};
+  const stockedSizes = all.filter((r) => r.stocked).length;
+  const hasBlended = all.some((r) => r.stocked && r.hasBlended);
+  const range = (list, get) => {
+    const vs = list.map(get).filter(Number.isFinite);
+    return vs.length ? 'S$' + Math.min.apply(null, vs).toFixed(2) + '–S$' + Math.max.apply(null, vs).toFixed(2) : '—';
+  };
+  const cats = RS_CAT_DEFS.map((d) => {
+    const inCat = all.filter((r) => r.category === d.key);
+    const stocked = inCat.filter((r) => r.stocked);
+    return {
+      ...d,
+      units: stocked.reduce((a, r) => a + r.unitCount, 0),
+      area: stocked.reduce((a, r) => a + r.size * r.unitCount, 0),
+      rack: stocked.reduce((a, r) => a + r.rackMonthly * r.unitCount, 0),
+      net: stocked.reduce((a, r) => a + r.effectiveMonthly * r.unitCount, 0),
+      rackRange: range(inCat, (r) => r.rackPsf),
+      netRange: range(inCat, (r) => r.effectivePsf),
+    };
+  });
+  const lv = (view.version && view.version.levers) || {};
+  const refSize = Math.max(1, Number(lv.referenceSize) || 10);
+  const refRow = all.find((r) => r.size === refSize);
+  const rounding = Number(lv.rounding) || 1;
+  const adj = (factor) => {
+    if (!refRow) return null;
+    const monthly = Math.max(Number(lv.minMonthly) || 0, Math.round((refRow.rackMonthly * (1 + factor)) / rounding) * rounding);
+    return { monthly, psf: monthly / refSize };
+  };
+  const pctNote = (f) => (Number(f) >= 0 ? '+' : '') + (Number(f || 0) * 100).toFixed(1) + '%';
+  const examples = [
+    { label: 'Standard', note: 'No unit factor', row: adj(0) },
+    { label: 'Locker', note: pctNote(lv.lockerAdj), row: adj(Number(lv.lockerAdj) || 0) },
+    { label: 'Ground floor', note: pctNote(lv.groundFloorAdj), row: adj(Number(lv.groundFloorAdj) || 0) },
+    { label: 'Restricted access', note: pctNote(lv.restrictedAdj), row: adj(Number(lv.restrictedAdj) || 0) },
+  ];
   host.innerHTML =
-    '<div class="t-type" style="margin-bottom:6px;">' + view.duration + ' mo · ' + escapeHtml(view.matrix) + ' · Effective PSF ranges drive the target comparison — never Blended.</div>' +
-    '<div style="overflow-x:auto;"><table class="data-tbl"><thead><tr><th>Category</th><th>Size range</th><th>Facility NLA</th><th>Units</th>' +
-    '<th>Rack PSF range</th><th>Net PSF range</th>' + (anyBlended ? '<th>Blended PSF range</th>' : '') +
-    '<th>Monthly Rack Potential</th><th>Monthly Net Rent Potential</th></tr></thead><tbody>' + body + '</tbody></table></div>' +
-    '<div class="t-type" style="margin-top:6px;">Totals — NLA ' + Number(s.totalNla || 0).toLocaleString('en-SG') + ' sq ft · ' + (s.totalUnits || 0) + ' units · ' +
-    'weighted rack ' + fmtPsf(s.weightedRackPsf) + ' · weighted net/effective ' + fmtPsf(s.weightedEffectivePsf) +
-    (s.weightedBlendedPsf != null ? ' · weighted blended ' + fmtPsf(s.weightedBlendedPsf) : '') +
-    ' · rack potential ' + fmtMoney(s.rackPotential) + '/mo · net potential ' + fmtMoney(s.netPotential) + '/mo</div>';
+    '<div class="rs-subsection-head"><div><h4>Size categories and live rate outcomes</h4><p>Facility availability comes from Facilities · Units. Net PSF ranges and rent potential recalculate for the selected storage duration.</p></div>' +
+    '<div class="rs-subsection-actions"><div class="rs-duration-filter rs-category-duration"><span>Storage duration</span><div>' + DURATIONS.map((t) =>
+      '<button type="button" class="' + (view.duration === t ? 'active' : '') + '" data-rs-duration="' + t + '">' + t + ' mo</button>').join('') + '</div></div>' +
+    '<span class="pill blue">' + stockedSizes + ' available sizes</span></div></div>' +
+    '<div class="table-wrap"><table class="rs-category-table"><thead><tr><th>Category</th><th>Size range</th><th>Facility NLA</th><th>Units</th><th>Rack PSF range</th>' +
+    '<th>' + rsTip('Net PSF range', 'The recurring Effective PSF range after the selected percentage promotions. Free months are excluded because rent returns to this rate after the free period.') + '</th>' +
+    '<th>Monthly rack potential</th><th>' + rsTip('Monthly Net Rent Potential', 'Recurring monthly rent from all stocked units after selected percentage promotions, at 100% occupancy. Free-month spreading is not deducted.') + '</th></tr></thead><tbody>' +
+    cats.map((c) => '<tr><td><b>' + escapeHtml(c.label) + '</b></td><td>' + escapeHtml(c.range) + '</td><td>' + (c.area ? rsNum(c.area) + ' sq ft' : '—') + '</td><td>' + (c.units || '—') + '</td>' +
+      '<td><b>' + c.rackRange + '</b></td><td><b>' + c.netRange + '</b></td><td>' + (c.units ? rsMoney(c.rack) : 'Not stocked') + '</td><td>' + (c.units ? rsMoney(c.net) : 'Not stocked') + '</td></tr>').join('') +
+    '</tbody></table></div>' +
+    '<div class="rs-category-totals">' +
+    '<div><small>Total facility NLA</small><b>' + rsNum(s.totalNla) + ' sq ft</b></div>' +
+    '<div><small>Total units</small><b>' + rsNum(s.totalUnits) + '</b></div>' +
+    '<div><small>' + rsTip('Weighted-average Rack PSF', 'Total monthly rack rent divided by total stocked facility square feet.') + '</small><b>' + fmtPsf(s.weightedRackPsf) + '</b></div>' +
+    '<div><small>' + rsTip('Weighted-average Net PSF', 'Total recurring Effective/Net rent after percentage promotions divided by total stocked facility square feet.') + '</small><b>' + fmtPsf(s.weightedEffectivePsf) + '</b></div>' +
+    (hasBlended && s.weightedBlendedPsf != null ? '<div><small>' + rsTip('Weighted-average Blended PSF', 'Total rent across the selected commitment, including free months, divided by months and stocked facility square feet.') + '</small><b>' + fmtPsf(s.weightedBlendedPsf) + '</b></div>' : '') +
+    '<div><small>Total monthly Rack Rent Potential</small><b>' + rsMoney(s.rackPotential) + '</b></div>' +
+    '<div><small>Total monthly Net Rent Potential</small><b>' + rsMoney(s.netPotential) + '</b></div>' +
+    '</div>' +
+    '<div class="rs-subsection-head compact"><div><h4>Attribute-adjusted example at ' + refSize + ' sq ft</h4><p>These examples isolate each factor. Actual unit rates change only when that attribute is tagged in Facilities · Units.</p></div></div>' +
+    '<div class="rs-adjustment-examples">' + examples.map((e) => '<div><span>' + escapeHtml(e.label) + '</span><strong>' + (e.row ? rsMoney(e.row.monthly, 2) : '—') + '</strong><b>' +
+      (e.row ? 'S$' + e.row.psf.toFixed(2) + ' PSF' : '—') + '</b><small>' + escapeHtml(e.note) + '</small></div>').join('') + '</div>';
 }
 
 // ---- duration cards (§15.9: one card per 1/3/6/12 month commitment) ----
 function renderRsDurCards(root) {
   const host = $('#rsDurCards');
   if (!host) return;
-  const cards = DURATIONS.map((d) => {
+  host.innerHTML = DURATIONS.map((d) => {
     const p = view.previews[d];
     const sum = p && p.preview.summary;
-    const active = d === view.duration;
-    const inner = !sum
-      ? '<div class="t-type">Not loaded</div>'
-      : '<div class="ud-stat-val" style="font-size:14px;">' + fmtPsf(sum.weightedEffectivePsf) + ' <span class="t-type">eff PSF</span></div>' +
-        '<div class="t-type">gap ' + (sum.gapVsTarget == null ? '—' : (Number(sum.gapVsTarget) >= 0 ? '+' : '') + fmtPsf(sum.gapVsTarget)) +
-        ' · net ' + fmtMoney(sum.netPotential) + '/mo' +
-        (sum.weightedBlendedPsf != null ? ' · blend ' + fmtPsf(sum.weightedBlendedPsf) : '') + '</div>';
-    return '<button class="tbl-card" data-rs-durcard="' + d + '" style="flex:1 1 140px;min-width:140px;text-align:left;cursor:pointer;' +
-      (active ? 'border:2px solid var(--olive2,#526557);' : '') + '" data-perm="facility-rate-strategy:view">' +
-      '<div class="t-type"><b>' + d + ' month' + (d === 1 ? '' : 's') + '</b>' + (active ? ' · selected' : '') + '</div>' + inner + '</button>';
+    const sel = d === view.duration;
+    const hasFree = !!(sum && sum.hasBlended && sum.weightedBlendedPsf != null);
+    const noTarget = !sum || sum.gapVsTarget == null;
+    const freeRow = hasFree && (p.preview.rows || []).find((r) => r.stocked && r.freeMonths > 0);
+    return '<div role="button" tabindex="0" class="rs-duration-card ' + (sel ? 'active' : '') + '" data-rs-duration="' + d + '">' +
+      '<div><span>' + d + ' month' + (d === 1 ? '' : 's') + '</span>' + (sel ? '<b class="pill blue">Detailed view</b>' : '') + '</div>' +
+      (!sum ? '<small>Not loaded</small>' :
+        '<dl><div><dt>Rack PSF</dt><dd>' + fmtPsf(sum.weightedRackPsf) + '</dd></div>' +
+        '<div><dt>' + rsTip('Effective PSF', 'Recurring PSF after percentage discounts. This is the value compared with the Financial Model target.') + '</dt><dd>' + fmtPsf(sum.weightedEffectivePsf) + '</dd></div>' +
+        (hasFree ? '<div><dt>' + rsTip('Blended PSF', 'Total rent payable over this commitment divided evenly across every month. Free months reduce this value.') + '</dt><dd>' + fmtPsf(sum.weightedBlendedPsf) + '</dd></div>' : '') +
+        '<div><dt>Effective vs target</dt><dd class="' + (noTarget ? '' : Number(sum.gapVsTarget) >= -0.005 ? 'good-text' : 'warn-text') + '">' + (noTarget ? '—' : rsSigned(sum.gapVsTarget)) + '</dd></div></dl>' +
+        '<small>' + (hasFree
+          ? 'Includes ' + (freeRow ? freeRow.freeMonths : '') + ' free month' + (freeRow && freeRow.freeMonths === 1 ? '' : 's') + ' for eligible sizes; target comparison still uses recurring Effective PSF.'
+          : Number(sum.weightedEffectivePsf) >= Number(sum.weightedRackPsf) - 0.005 ? 'No active ' + d + '-month percentage rule; rack rate applies.' : 'No free-month benefit applies at this duration, so Blended PSF is not shown.') + '</small>') +
+      '</div>';
   }).join('');
-  host.innerHTML = '<div class="t-type" style="margin-bottom:4px;">PSF by customer storage duration — select a card to synchronise chart, categories and unit table.</div>' +
-    '<div style="display:flex;flex-wrap:wrap;gap:12px;">' + cards + '</div>';
-  host.querySelectorAll('[data-rs-durcard]').forEach((b) => b.addEventListener('click', () => {
-    setDuration(Number(b.dataset.rsDurcard), $('#rsBody'), root);
-  }));
 }
 
 // ---- promotion library preview panel (§15.13, read-only) ----
@@ -1136,51 +1144,86 @@ function renderRsPromos(root) {
   if (!host || !view.plans) return;
   const sel = selectedPlanRefs();
   if (!view.plans.length) {
-    host.innerHTML = '<div class="section-empty">No promotion plans exist yet.</div>';
+    host.innerHTML = '<div class="rs-empty" style="grid-column:1/-1">No promotion plans exist yet — create one in Rates and Promotions › Discount plan builder or Free months.</div>';
+    paintPromoCount();
     return;
   }
-  const recurring = (view.plans || []).filter((p) => p.kind === 'DISCOUNT_MATRIX' || p.kind === 'FREE_MONTHS');
-  const others = (view.plans || []).filter((p) => p.kind !== 'DISCOUNT_MATRIX' && p.kind !== 'FREE_MONTHS');
-  const row = (p) => {
-    const previewable = (p.status === 'ACTIVE' || p.status === 'DRAFT') && (p.kind === 'DISCOUNT_MATRIX' || p.kind === 'FREE_MONTHS');
-    const checked = previewable && sel.includes(p.id);
-    return '<tr><td>' + (previewable
-      ? '<input type="checkbox" data-rs-promo="' + escapeHtml(p.id) + '"' + (checked ? ' checked' : '') + ' aria-label="Include ' + escapeHtml(p.name || p.id) + ' in preview">'
-      : '<span class="t-type" title="Conditional offer — visible only, excluded from unit-rate analysis">—</span>') + '</td>' +
-      '<td><b>' + escapeHtml(p.name || p.id) + '</b>' + (p.status === 'DRAFT' ? ' <i class="t-type">preview only</i>' : '') + '</td>' +
-      '<td>' + escapeHtml(planKindLabel(p)) + '</td>' +
-      '<td><span class="pill ' + (p.status === 'ACTIVE' ? 'green' : p.status === 'DRAFT' ? 'amber' : '') + '">' + escapeHtml(p.status || '—') + '</span></td>' +
-      '<td class="t-type">' + escapeHtml(Array.isArray(p.facilityScope) ? p.facilityScope.join(', ') : String(p.facilityScope || '—')) + '</td></tr>';
-  };
-  host.innerHTML = '<div class="t-type" style="margin-bottom:6px;">Selecting a plan never activates it. Draft plans resolve preview-only; conditional offers stay visible-only.</div>' +
-    '<div style="overflow-x:auto;"><table class="data-tbl"><thead><tr><th title="Include in preview">In preview</th><th>Plan</th><th>Kind</th><th>Status</th><th>Facility scope</th></tr></thead><tbody>' +
-    recurring.map(row).join('') +
-    (others.length ? '<tr><td colspan="5" class="t-type">Conditional offers — visible only, excluded from recurring unit-rate analysis:</td></tr>' + others.map(row).join('') : '') +
-    '</tbody></table></div>';
-  host.querySelectorAll('[data-rs-promo]').forEach((c) => c.addEventListener('change', () => {
-    const ids = Array.from(host.querySelectorAll('[data-rs-promo]:checked')).map((el) => el.dataset.rsPromo);
+  const order = (p) => (p.kind === 'DISCOUNT_MATRIX' ? 0 : p.kind === 'FREE_MONTHS' ? 1 : 2);
+  const plans = view.plans.slice().sort((a, b) => order(a) - order(b));
+  host.innerHTML = plans.map((p) => {
+    const recurring = p.kind === 'DISCOUNT_MATRIX' || p.kind === 'FREE_MONTHS';
+    const selectable = recurring && (p.status === 'ACTIVE' || p.status === 'DRAFT');
+    const selected = selectable && sel.includes(p.id);
+    const statusLabel = String(p.status || '—').toLowerCase().replace(/^\w/, (c) => c.toUpperCase());
+    const statusClass = p.status === 'ACTIVE' ? 'green' : p.status === 'DRAFT' ? 'amber' : 'grey';
+    const desc = p.description || (p.kind === 'DISCOUNT_MATRIX'
+      ? 'Approved 3, 6 and 12-month matrix by size and access.'
+      : p.kind === 'FREE_MONTHS'
+        ? (p.commitmentMonths ? p.commitmentMonths + ' months only · ' : '') + (p.freeMonthCount || 0) + ' free month' + (p.freeMonthCount === 1 ? '' : 's') + '.'
+        : planKindLabel(p) + ' — conditional offer.');
+    const eff = (p.effectiveFrom ? 'Effective ' + fmtDay(p.effectiveFrom) : '') + (p.effectiveTo ? ' – ' + fmtDay(p.effectiveTo) : '');
+    const note = p.status === 'DRAFT' && selectable ? ' · Preview-only selection; it remains Draft'
+      : selectable ? ' · Included only when selected' : ' · Visible only; not applied automatically';
+    return '<label class="rs-plan-row ' + (selected ? 'selected' : '') + ' ' + (selectable ? '' : 'readonly') + '">' +
+      (selectable ? '<input type="checkbox" data-rs-plan="' + escapeHtml(p.id) + '"' + (selected ? ' checked' : '') + '>' : '<span class="rs-plan-lock">i</span>') +
+      '<span class="rs-plan-check">✓</span><div><div><b>' + escapeHtml((p.name || p.id) + ' · v' + (p.version || 1)) + '</b><span class="pill ' + statusClass + '">' + escapeHtml(statusLabel) + '</span></div>' +
+      '<p>' + escapeHtml(desc) + '</p><small>' + escapeHtml(eff + note) + '</small></div></label>';
+  }).join('');
+  host.querySelectorAll('[data-rs-plan]').forEach((c) => c.addEventListener('change', () => {
+    const ids = Array.from(host.querySelectorAll('[data-rs-plan]:checked')).map((el) => el.dataset.rsPlan);
     // Unchecking everything reverts to the stored selection: the preview
-    // route treats an absent planIds param as “stored/default”, so an
-    // explicit empty list would silently preview the defaults instead.
+    // route treats an absent planIds param as “stored/default”.
     view.planIds = ids.length ? ids : null;
     view.previews = {};
-    refreshWorkbench(root);
+    paintPromoSelection();
+    if (view.liveDirty && hasLeverInputs()) scheduleLivePreview(root, true);
+    else refreshWorkbench(root);
   }));
+  paintPromoCount();
+}
+
+function paintPromoCount() {
+  const el = $('#rsPromoCount');
+  if (!el || !view.plans) return;
+  const selectable = view.plans.filter((p) => (p.kind === 'DISCOUNT_MATRIX' || p.kind === 'FREE_MONTHS') && (p.status === 'ACTIVE' || p.status === 'DRAFT'));
+  const sel = selectedPlanRefs();
+  el.textContent = selectable.filter((p) => sel.includes(p.id)).length + ' of ' + selectable.length + ' testable plans selected';
 }
 
 function paintPromoSelection() {
   const host = $('#rsPromos');
   if (!host || !view.plans) return;
   const sel = selectedPlanRefs();
-  host.querySelectorAll('[data-rs-promo]').forEach((c) => { c.checked = sel.includes(c.dataset.rsPromo); });
+  host.querySelectorAll('[data-rs-plan]').forEach((c) => {
+    c.checked = sel.includes(c.dataset.rsPlan);
+    const row = c.closest('.rs-plan-row');
+    if (row) row.classList.toggle('selected', c.checked);
+  });
+  paintPromoCount();
 }
 
 // ---- unit-rate breakdown (§15.20): duration filter, range view, overrides ----
+function rsSelectedPlanNames(kind) {
+  const sel = selectedPlanRefs();
+  return (view.plans || []).filter((p) => p.kind === kind && sel.includes(p.id)).map((p) => p.name);
+}
+
 function promoCell(r) {
+  // Reference appliedBenefits: "<plan> · 45%" + " + " + "<plan> · 2 free".
   const parts = [];
-  if (r.combinedDiscount > 0) parts.push((Number(r.combinedDiscount) * 100).toFixed(1) + '%');
-  if (r.freeMonths) parts.push(r.freeMonths + ' mo free');
-  return parts.length ? escapeHtml(parts.join(' + ')) : '<span class="t-type">—</span>';
+  if (r.combinedDiscount > 0) {
+    const names = rsSelectedPlanNames('DISCOUNT_MATRIX');
+    parts.push((names.length ? names.join(' + ') : 'Approved percentage plan') + ' · ' + rsPct(r.combinedDiscount));
+  }
+  if (r.freeMonths) {
+    const names = rsSelectedPlanNames('FREE_MONTHS');
+    parts.push((names.length ? names.join(' + ') : 'Approved free-month plan') + ' · ' + r.freeMonths + ' free');
+  }
+  return parts.length ? parts.join(' + ') : 'No promotion';
+}
+
+function rsPct(x) {
+  return (Number(x) * 100).toFixed(1).replace(/\.0$/, '') + '%';
 }
 
 function renderPreviewTables(root) {
@@ -1188,42 +1231,79 @@ function renderPreviewTables(root) {
   if (!host || !view.preview) return;
   const data = view.preview;
   const all = (data.preview.rows || []).slice().sort((a, b) => a.size - b.size);
-  const inRange = view.range === 'all'
+  const rows = view.range === 'all'
     ? all.filter((r) => r.size >= view.rangeFrom && r.size <= view.rangeTo)
     : all.filter((r) => r.stocked);
-  const anyBlended = all.some((r) => r.hasBlended);
-  const s = data.preview.summary || {};
+  const hasFree = all.some((r) => r.stocked && r.hasBlended);
+  const targetPsf = data.target && data.target.targetPsf;
+  const d = view.duration;
   const canOverride = view.version && view.version.status === 'DRAFT' && can('facility-rate-strategy:update');
-  if (!inRange.length) {
-    host.innerHTML = '<div class="section-empty">No sizes in this range. Widen From/To or pick “Facility sizes only”.</div>';
-    return;
-  }
-  const cap = inRange.slice(0, 200);
+  const isActive = view.version && (view.version.status === 'ACTIVE' || view.version.status === 'APPROVED');
+  const pctNames = rsSelectedPlanNames('DISCOUNT_MATRIX');
+  const freeNames = rsSelectedPlanNames('FREE_MONTHS');
+  const anyPct = all.some((r) => r.stocked && r.combinedDiscount > 0);
+  const anyFree = all.some((r) => r.stocked && r.freeMonths > 0);
+  const promoNames = [].concat(anyPct ? pctNames : [], anyFree ? freeNames : []);
+  const promoName = (promoNames.length ? promoNames.join(' + ') : 'No applicable promotion') + ' · ' + d + ' month' + (d === 1 ? '' : 's');
+  const applyBtn = can('facility-rate-strategy:update')
+    ? '<button class="primary rs-sync-button" type="button" data-rs-action="sync-units" data-perm="facility-rate-strategy:update"' +
+      (isActive && !view.liveDirty ? '' : ' disabled title="Save the draft and set it Active first."') + '>Apply rates to Units</button>'
+    : '';
   host.innerHTML =
-    '<div class="t-type" style="margin-bottom:6px;">Showing ' + cap.length + ' of ' + inRange.length +
-    (view.range === 'all' ? ' sizes (' + view.rangeFrom + '–' + view.rangeTo + ' sq ft; unstocked rows are Rate only and never affect totals)' : ' stocked sizes') +
-    ' · ' + escapeHtml(String(s.totalUnits ?? '—')) + ' units · ' + escapeHtml(String(s.totalNla ?? '—')) + ' sq ft NLA' +
-    (data.target && data.target.targetPsf != null ? ' · target ' + fmtPsf(data.target.targetPsf) + '/sq ft (' + escapeHtml(data.target.modelName || data.target.modelId || 'model') + ')' : '') + '</div>' +
-    '<div style="overflow-x:auto;"><table class="data-tbl"><thead><tr><th>Facility availability</th><th>Unit size</th><th>Category</th><th>Promotion(s) applied</th>' +
-    '<th>Rack rent</th><th>Rack PSF</th><th>Approved discount</th><th>Effective monthly rent</th><th>Effective PSF</th>' +
-    (anyBlended ? '<th>Approved free months</th><th>Blended monthly rent</th><th>Blended PSF</th>' : '') +
-    '<th>Model target PSF</th><th>Effective PSF vs target</th><th>Override</th></tr></thead><tbody>' +
-    cap.map((r) =>
-      '<tr><td>' + (r.stocked ? r.unitCount + ' unit' + (r.unitCount === 1 ? '' : 's') : '<span class="t-type">Not stocked</span>') + '</td>' +
-      '<td>' + escapeHtml(r.category) + '</td><td>' + r.size + ' sq ft</td><td>' + promoCell(r) + '</td>' +
-      '<td>' + fmtMoney(r.rackMonthly) + '</td><td>' + fmtPsf(r.rackPsf) + '</td>' +
-      '<td>' + (r.combinedDiscount > 0 ? (Number(r.combinedDiscount) * 100).toFixed(1) + '%' : '—') + '</td>' +
-      '<td>' + fmtMoney(r.effectiveMonthly) + '</td><td>' + fmtPsf(r.effectivePsf) + '</td>' +
-      (anyBlended ? '<td>' + (r.freeMonths ? r.freeMonths + ' mo' : '—') + '</td><td>' + fmtMoney(r.blendedMonthly) + '</td><td>' + fmtPsf(r.blendedPsf) + '</td>' : '') +
-      '<td>' + fmtPsf(r.targetPsf) + '</td>' +
-      '<td>' + (r.gapVsTarget == null ? '—' : (Number(r.gapVsTarget) >= 0 ? '+' : '') + fmtPsf(r.gapVsTarget)) + '</td>' +
-      '<td>' + (r.overridden ? '<span class="pill amber">override</span> ' : '') +
-      (canOverride ? '<button class="tb-btn ghost" data-rs-override="' + r.size + '" data-perm="facility-rate-strategy:update">Override</button>' : '') + '</td></tr>').join('') +
-    '</tbody></table></div>' +
-    (inRange.length > cap.length ? '<div class="t-type">Showing 200 of ' + inRange.length + ' rows.</div>' : '') +
-    '<div class="t-type" style="margin-top:6px;">Rack potential ' + fmtMoney(s.rackPotential) + '/mo · net potential ' + fmtMoney(s.netPotential) +
-    '/mo · weighted rack ' + fmtPsf(s.weightedRackPsf) + ' · weighted effective ' + fmtPsf(s.weightedEffectivePsf) +
-    (s.weightedBlendedPsf != null ? ' · weighted blended ' + fmtPsf(s.weightedBlendedPsf) : '') + '</div>';
+    '<div class="card-head"><div><h3>Unit-rate breakdown</h3><small>Compare discount, free-month and PSF outcomes for each duration. Only stocked sizes affect facility totals.</small></div>' +
+    '<div class="rs-rate-tools">' + rsDurationFilter('Customer storage duration', true) +
+    '<label><span>Unit sizes</span><select id="rsRange"><option value="stocked"' + (view.range !== 'all' ? ' selected' : '') + '>Facility sizes only</option>' +
+    '<option value="all"' + (view.range === 'all' ? ' selected' : '') + '>Every 1 sq ft</option></select></label>' +
+    (view.range === 'all'
+      ? '<label><span>From</span><input type="number" min="8" max="150" step="1" id="rsFrom" value="' + view.rangeFrom + '"></label>' +
+        '<label><span>To</span><input type="number" min="8" max="150" step="1" id="rsTo" value="' + view.rangeTo + '"></label>'
+      : '') +
+    '<b>' + rows.length + ' rate' + (rows.length === 1 ? '' : 's') + '</b>' + applyBtn + '</div></div>' +
+    '<div class="rs-table-context"><b>' + d + '-month view</b><span>' + escapeHtml(promoName) + '</span><span>Model target: <b>' +
+    (targetPsf != null ? fmtPsf(targetPsf) + ' PSF' : 'unavailable') + '</b></span></div>' +
+    '<div class="table-wrap rs-rate-scroll"><table class="rs-table ' + (hasFree ? '' : 'no-blended') + '"><thead><tr>' +
+    '<th>Facility availability</th><th>Category</th><th>Unit size</th><th>Promotion(s) applied</th><th>Rack rent</th><th>Rack PSF</th><th>Approved discount</th>' +
+    '<th>' + rsTip('Effective monthly rent', 'Recurring customer rent after the approved percentage discount. This resumes after any free-month benefit ends.') + '</th>' +
+    '<th>' + rsTip('Effective PSF', 'Effective monthly rent divided by unit size; this excludes free-month spreading.') + '</th>' +
+    (hasFree ? '<th>Approved free months</th><th>' + rsTip('Blended monthly rent', 'Total commitment rent divided evenly across all commitment months, including free months.') + '</th><th>' + rsTip('Blended PSF', 'Blended monthly rent divided by unit size.') + '</th>' : '') +
+    '<th>' + rsTip('Model target PSF', 'The Financial Model recurring PSF target for this facility.') + '</th>' +
+    '<th>' + rsTip('Effective PSF vs target', 'Effective PSF minus the Financial Model target. Free months affect Blended PSF but not this comparison.') + '</th>' +
+    '<th>Override</th></tr></thead><tbody>' +
+    (rows.length ? rows.map((r) => {
+      const gap = targetPsf != null ? r.effectivePsf - Number(targetPsf) : null;
+      return '<tr class="' + (r.stocked ? '' : 'unavailable') + '">' +
+        '<td>' + (r.stocked ? '<span class="pill green">Available · ' + r.unitCount + ' unit' + (r.unitCount === 1 ? '' : 's') + '</span>' : '<span class="pill grey">Rate only</span>') + '</td>' +
+        '<td>' + escapeHtml(r.category === 'LOCKER' ? 'Locker' : r.category) + '</td>' +
+        '<td><b>' + r.size + ' sq ft</b>' + (r.category === 'LOCKER' ? '<small>Half-height locker</small>' : '') + '</td>' +
+        '<td><span class="rs-applied-benefit">' + escapeHtml(promoCell(r)) + '</span></td>' +
+        '<td><b>' + rsMoney(r.rackMonthly, 2) + '</b>' + (r.overridden ? '<small class="rs-override">Manual override</small>' : '') + '</td>' +
+        '<td>' + fmtPsf(r.rackPsf) + '</td>' +
+        '<td>' + (r.combinedDiscount > 0 ? rsPct(r.combinedDiscount) : '0%') + '</td>' +
+        '<td><b>' + rsMoney(r.effectiveMonthly, 2) + '</b></td><td><b>' + fmtPsf(r.effectivePsf) + '</b></td>' +
+        (hasFree ? '<td>' + (r.freeMonths || 0) + ' of ' + (r.commitmentMonths || d) + '</td><td>' + rsMoney(r.blendedMonthly, 2) + '</td><td><b>' + fmtPsf(r.blendedPsf) + '</b></td>' : '') +
+        '<td><b>' + (targetPsf != null ? fmtPsf(targetPsf) : '—') + '</b></td>' +
+        '<td>' + (r.stocked && gap != null ? '<span class="pill ' + (gap >= -0.005 ? 'green' : 'grey') + '">' + rsSigned(gap) + '</span>' : '—') + '</td>' +
+        '<td>' + (canOverride ? '<button class="btn rs-small" type="button" data-rs-override="' + r.size + '">' + (r.overridden ? 'Edit' : 'Set') + '</button>' : (r.overridden ? 'Manual' : '—')) + '</td></tr>';
+    }).join('') : '<tr><td colspan="15"><div class="rs-empty">No sizes in this range. Widen From/To or pick “Facility sizes only”.</div></td></tr>') +
+    '</tbody></table></div>';
+  const rangeSel = $('#rsRange');
+  if (rangeSel) rangeSel.addEventListener('change', () => {
+    view.range = rangeSel.value === 'all' ? 'all' : 'stocked';
+    renderPreviewTables(root);
+    renderRsChart();
+  });
+  const fromEl = $('#rsFrom');
+  const toEl = $('#rsTo');
+  const applyRange = () => {
+    view.rangeFrom = Math.max(8, Math.min(150, Number(fromEl && fromEl.value) || 8));
+    view.rangeTo = Math.max(view.rangeFrom, Math.min(150, Number(toEl && toEl.value) || 150));
+    renderPreviewTables(root);
+    renderRsChart();
+  };
+  if (fromEl) fromEl.addEventListener('change', applyRange);
+  if (toEl) toEl.addEventListener('change', applyRange);
+  const sync = host.querySelector('[data-rs-action="sync-units"]');
+  if (sync) sync.addEventListener('click', (e) => { e.preventDefault(); openBatchModal(root, view.version); });
   if (canOverride) {
     host.querySelectorAll('[data-rs-override]').forEach((b) => b.addEventListener('click', () => {
       openOverrideModal(root, Number(b.dataset.rsOverride));
@@ -1321,14 +1401,17 @@ async function loadHistory(root) {
     const rows = (await get('/rate-strategy/library')) || [];
     const mine = rows.filter((r) => r.strategyId === view.version.strategyId).sort((a, b) => b.versionNo - a.versionNo);
     view.history = mine;
-    if (!mine.length) { host.innerHTML = '<div class="section-empty">No versions found.</div>'; return; }
-    host.innerHTML = '<div class="rs-table-scroll"><table class="data-tbl"><thead><tr><th>Version</th><th>Status</th><th>Effective</th><th>Saved by</th><th>Set Active by</th><th>Updated</th><th></th></tr></thead><tbody>' +
-      mine.map((r) =>
-        '<tr><td><b>v' + r.versionNo + '</b>' + (r.currentVersion ? '<div class="t-type">current</div>' : '') + '</td><td>' + statusPill(r.status) + '</td>' +
-        '<td>' + escapeHtml(r.effectiveFrom || '—') + '</td><td>' + escapeHtml(r.submittedBy || '—') + '</td>' +
-        '<td>' + escapeHtml(r.approvedBy || r.rejectedBy || '—') + '</td><td>' + escapeHtml(fmtDay(r.updatedAt)) + '</td>' +
-        '<td>' + (r.versionId === view.versionId ? '<span class="t-type">open</span>' : '<button class="tb-btn ghost" data-rs-hist="' + escapeHtml(r.versionId) + '">Open</button>') + '</td></tr>').join('') +
-      '</tbody></table></div>';
+    const count = $('#rsHistCount');
+    if (count) count.textContent = mine.length + ' version' + (mine.length === 1 ? '' : 's');
+    if (!mine.length) { host.innerHTML = '<div class="rs-empty">No versions found.</div>'; return; }
+    const change = (r) => (r.status === 'ACTIVE' || r.status === 'APPROVED' ? 'Set Active' : r.status === 'SUPERSEDED' ? 'Superseded by a newer Active version' : r.status === 'DRAFT' ? 'Draft saved' : String(r.status).replace(/_/g, ' ').toLowerCase());
+    host.innerHTML = '<table class="rs-history"><thead><tr><th>Version</th><th>Date</th><th>Changed by</th><th>Change</th><th>Status</th><th></th></tr></thead><tbody>' +
+      mine.map((r) => {
+        const stm = rsStatusMeta(r.status, false);
+        return '<tr><td>v' + r.versionNo + '</td><td>' + escapeHtml(fmtDay(r.updatedAt)) + '</td><td>' + escapeHtml(r.approvedBy || r.submittedBy || r.owner || '—') + '</td>' +
+          '<td>' + escapeHtml(change(r)) + '</td><td><span class="pill ' + stm.cls + '">' + escapeHtml(stm.label) + '</span></td>' +
+          '<td>' + (r.versionId === view.versionId ? '<span class="pill blue">Open</span>' : '<button class="btn rs-small" type="button" data-rs-hist="' + escapeHtml(r.versionId) + '">Open</button>') + '</td></tr>';
+      }).join('') + '</tbody></table>';
     host.querySelectorAll('[data-rs-hist]').forEach((b) => b.addEventListener('click', async () => {
       view.versionId = b.dataset.rsHist;
       view.version = null; view.preview = null; view.previewError = null; view.liveDirty = false; view.validation = null; view.history = null; view.activity = null;
@@ -1336,7 +1419,7 @@ async function loadHistory(root) {
       await renderShow($('#rsBody'), root);
     }));
   } catch (e) {
-    host.innerHTML = '<div class="section-empty">History failed to load: ' + escapeHtml(describeError(e)) + '</div>';
+    host.innerHTML = '<div class="rs-empty">History failed to load: ' + escapeHtml(describeError(e)) + '</div>';
   }
 }
 
@@ -1379,6 +1462,8 @@ async function loadVersionBatches(root) {
   if (!host || !view.version) return;
   try {
     const rows = await get('/rate-batches?versionId=' + encodeURIComponent(view.versionId) + '&limit=50');
+    view.batches = rows || [];
+    renderRsContext();
     if (!rows || !rows.length) {
       host.innerHTML = '<div class="section-empty">No batches for this version yet. Apply rates to Units schedules the first batch.</div>';
     } else {
@@ -1420,8 +1505,8 @@ async function refreshShow(root) {
   if (body) await renderShow(body, root);
 }
 
-// Set Active (no approval gate): Draft → Active. Blockers and a missing
-// CURRENT Financial Model target prevent activation; warnings are
+// Set Active (no approval gate): Draft → Active. Only red validation
+// blockers prevent activation; a missing Financial Model target and warnings are
 // display-only. Requires a saved draft — unsaved workbench edits block it.
 async function activateStrategy(root, v) {
   if (!v || v.status !== 'DRAFT') {
@@ -1501,6 +1586,7 @@ function openBatchModal(root, v) {
         showBanner('Batch ' + body.data.ref + ' scheduled' + (body.meta && body.meta.replayed ? ' (replayed)' : ''), true);
         await loadVersionBatches(root);
         await loadActivity(root);
+        renderRsContext();
         const sec = $('#rsVersionBatches');
         if (sec) sec.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     });
@@ -1516,6 +1602,8 @@ function openBatchModal(root, v) {
 // dashboard CSS is frozen) and keep wide tables in their own horizontal
 // scroll containers. No-op at 1440px: everything still fits on one row.
 function ensureRsWorkbenchStyles() {
+  // Layout/typography come from proto-rate-strategy.css (verbatim copy of
+  // the reference rate-strategy.css). Only glue for CMS widgets reused here.
   if (document.querySelector('style[data-rs-workbench]')) return;
   const st = document.createElement('style');
   st.setAttribute('data-rs-workbench', '1');
@@ -1523,19 +1611,9 @@ function ensureRsWorkbenchStyles() {
     '#rateStrategyRoot .tbl-toolbar{flex-wrap:wrap;row-gap:8px}' +
     '#rateStrategyRoot .tbl-toolbar .tbl-select,#rateStrategyRoot .tbl-toolbar .set-input{max-width:100%}' +
     '#rateStrategyRoot .rs-table-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}' +
-    '.rs-workgrid{display:flex;flex-wrap:wrap;gap:12px}' +
-    '.rs-workgrid>.rs-workcol{flex:1 1 340px;min-width:280px;min-width:0}' +
-    '@media (max-width:700px){.rs-workgrid>.rs-workcol{flex-basis:100%}}' +
-    '.rs-kpi-grid{display:flex;flex-wrap:wrap;gap:12px}' +
-    '.rs-kpi-grid>.tbl-card{flex:1 1 300px;min-width:260px;min-width:0}' +
-    '@media (max-width:700px){.rs-kpi-grid>.tbl-card{flex-basis:100%}}' +
-    '#rsKpiDurBar{flex-wrap:wrap;row-gap:8px}' +
-    '.rs-seg{display:flex;gap:8px;flex-wrap:wrap}' +
-    '.rs-chart-head{display:flex;align-items:center;gap:8px;margin-bottom:4px;flex-wrap:wrap}' +
-    '.rs-tip{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border-radius:50%;' +
-    'border:1px solid var(--olive2,#526557);color:var(--olive2,#526557);font-size:11px;line-height:1;cursor:help}' +
-    '.rs-tip:focus{outline:2px solid var(--olive2,#526557);outline-offset:1px}' +
-    '#rsLevers input[type=range]{accent-color:var(--olive2,#526557)}';
+    '#rateStrategyRoot > #rsBody > .modal-alert{margin-bottom:14px}' +
+    '#rateStrategyRoot .rs-details{margin-top:14px}' +
+    '#rateStrategyRoot [hidden]{display:none!important}';
   document.head.appendChild(st);
 }
 

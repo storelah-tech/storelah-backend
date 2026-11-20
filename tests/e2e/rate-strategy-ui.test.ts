@@ -345,12 +345,10 @@ describe('rate strategy CMS UI contract (B4)', () => {
     expect(cancelled.status).toBe(200);
     expect(cancelled.body.data.status).toBe('CANCELLED');
 
-    // Manager holds no approve grant — scheduler mutations stay 403.
-    const mgrBatch = await api.post(`${CMS}/rate-strategy/${world.versionId}/batches`)
-      .set('Authorization', world.manager.auth).send({ effectiveDate: sgDate(0) });
-    expect(mgrBatch.status).toBe(403);
+    // No approval gate (client 2026-11-20): scheduler mutations need
+    // facility-rate-strategy:update, which the system Manager role holds.
     const mgrDue = await api.post(`${CMS}/units/rate-batches/apply-due`).set('Authorization', world.manager.auth).send({});
-    expect(mgrDue.status).toBe(403);
+    expect(mgrDue.status).toBe(200);
   });
 
   it('activity feed: audit timeline covers the version and its batches', async () => {

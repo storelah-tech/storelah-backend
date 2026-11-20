@@ -519,7 +519,7 @@ export async function targetOf(branch: { id: string; code: string }): Promise<Re
     throw new AppError(
       409,
       'NO_CURRENT_MODEL',
-      `No approved Financial Model target for facility ${branch.code} — approve a model before previewing a rate strategy.`,
+      `No CURRENT Financial Model target for facility ${branch.code}.`,
       { branchId: branch.id, branchCode: branch.code },
     );
   }
@@ -530,7 +530,7 @@ export async function targetOf(branch: { id: string; code: string }): Promise<Re
     throw new AppError(
       409,
       'NO_CURRENT_MODEL',
-      `The approved Financial Model for facility ${branch.code} no longer projects — restore a working version before previewing a rate strategy.`,
+      `The CURRENT Financial Model for facility ${branch.code} no longer projects — restore a working version in Finance.`,
       { branchId: branch.id, branchCode: branch.code, modelId: m.id },
     );
   }
@@ -617,14 +617,19 @@ export interface UpdateDraftInput {
   correlationId?: string;
 }
 
+/** Statuses the no-approval flow treats as an editable Draft. Legacy
+ *  PENDING_APPROVAL / REJECTED rows (from the retired maker-checker flow)
+ *  are Drafts: editable, and can be set Active directly. */
+const EDITABLE_STATUSES: readonly string[] = ['DRAFT', 'PENDING_APPROVAL', 'REJECTED'];
+
 export async function updateDraft(input: UpdateDraftInput) {
   const scope = currentBranchScopeLazy();
   const { v, branchCode } = await loadVersion(input.versionId, scope);
-  if (v.status !== 'DRAFT') {
+  if (!EDITABLE_STATUSES.includes(v.status)) {
     throw new AppError(
       409,
       'LOCKED',
-      `Version ${v.versionNo} is ${v.status} — only DRAFT versions can be edited. Versions are immutable once Active.`,
+      `Version ${v.versionNo} is ${v.status} — only Draft versions can be edited. Editing an Active version saves a new Draft version.`,
       { status: v.status, versionNo: v.versionNo },
     );
   }
@@ -659,6 +664,9 @@ export async function updateDraft(input: UpdateDraftInput) {
         effectiveFrom,
         // Any saved draft change invalidates prior validation (handoff §15.9).
         validation: Prisma.JsonNull,
+        // Legacy maker-checker rows (PENDING_APPROVAL / REJECTED) become a
+        // plain Draft on save — there is no approval step any more.
+        status: 'DRAFT',
         version: nextVersion(v.version),
       },
       include: { strategy: true },
@@ -1007,11 +1015,11 @@ export async function activateVersion(input: ActivateInput) {
   if (v.status === 'ACTIVE') {
     return serializeVersion(v, branchCode);
   }
-  if (v.status !== 'DRAFT' && v.status !== 'APPROVED') {
+  if (!EDITABLE_STATUSES.includes(v.status) && v.status !== 'APPROVED') {
     throw new AppError(
       409,
       'LOCKED',
-      `Version ${v.versionNo} is ${v.status} — only Draft versions (or legacy Approved) can be set Active.`,
+      `Version ${v.versionNo} is ${v.status} — only Draft versions can be set Active.`,
       { status: v.status },
     );
   }
@@ -1308,6 +1316,83 @@ export async function duplicateVersion(input: DuplicateInput) {
   });
   const loaded = await loadVersion(created.version.id, null);
   return serializeVersion(loaded.v, dest.code);
+}
+
+// ---------------------------------------------------------------------------
+// revise (no approval gate): editing an Active (or superseded) version saves
+// the edits as the strategy's next Draft version — the Active snapshot stays
+// frozen until that Draft is set Active. Reuses an existing newer Draft so
+// repeated saves never fork the strategy.
+// ---------------------------------------------------------------------------
+
+export interface ReviseInput {
+  versionId: string;
+  levers?: LeverInput;
+  effectiveFrom?: string;
+  actor: StrategyActor;
+  correlationId?: string;
+}
+
+export async function reviseVersion(input: ReviseInput) {
+  const scope = currentBranchScopeLazy();
+  const { v, branchCode } = await loadVersion(input.versionId, scope);
+  if (EDITABLE_STATUSES.includes(v.status)) {
+    // Already a Draft: plain save.
+    return updateDraft({ versionId: v.id, expectedVersion: v.version, levers: input.levers, effectiveFrom: input.effectiveFrom, actor: input.actor, correlationId: input.correlationId });
+  }
+  const openDraft = await prisma.rateStrategyVersion.findFirst({
+    where: { strategyId: v.strategyId, status: { in: ['DRAFT', 'PENDING_APPROVAL', 'REJECTED'] }, versionNo: { gt: v.versionNo } },
+    orderBy: { versionNo: 'desc' },
+  });
+  if (openDraft) {
+    return updateDraft({ versionId: openDraft.id, expectedVersion: openDraft.version, levers: input.levers, effectiveFrom: input.effectiveFrom, actor: input.actor, correlationId: input.correlationId });
+  }
+  const levers = mergeLevers(leversOf(v), input.levers);
+  validateFullLevers(levers);
+  const effectiveFrom = input.effectiveFrom ? parseEffectiveDate(input.effectiveFrom) : new Date(`${todaySg()}T00:00:00.000Z`);
+  const max = await prisma.rateStrategyVersion.aggregate({ where: { strategyId: v.strategyId }, _max: { versionNo: true } });
+  const versionNo = (max._max.versionNo ?? v.versionNo) + 1;
+  const correlationId = input.correlationId ?? newCorrelationId();
+  const created = await prisma.$transaction(async (tx) => {
+    const version = await tx.rateStrategyVersion.create({
+      data: {
+        strategyId: v.strategyId,
+        versionNo,
+        status: 'DRAFT',
+        effectiveFrom,
+        referenceSize: levers.referenceSize,
+        startingRate: new Prisma.Decimal(levers.startingRate),
+        method: levers.method,
+        curveStrength: new Prisma.Decimal(levers.curveStrength),
+        stepEvery: levers.stepEvery,
+        stepPsf: new Prisma.Decimal(levers.stepPsf),
+        psfFloor: new Prisma.Decimal(levers.psfFloor),
+        minMonthly: new Prisma.Decimal(levers.minMonthly),
+        lockerAdj: new Prisma.Decimal(levers.lockerAdj),
+        groundFloorAdj: new Prisma.Decimal(levers.groundFloorAdj),
+        restrictedAdj: new Prisma.Decimal(levers.restrictedAdj),
+        facilityAdj: new Prisma.Decimal(levers.facilityAdj),
+        rounding: levers.rounding,
+        categoryFloors: levers.categoryFloors as unknown as Prisma.InputJsonValue,
+        sizeOverrides: levers.sizeOverrides as unknown as Prisma.InputJsonValue,
+        previewSelection: (v.previewSelection ?? {}) as Prisma.InputJsonValue,
+        originVersionId: v.id,
+        version: 0,
+        createdBy: input.actor.email,
+      },
+    });
+    await writeAuditEvent(tx, {
+      branchId: v.strategy.branchId, actor: input.actor.email, action: 'RATE_STRATEGY_REVISED',
+      entityType: 'rate-strategy', entityId: version.id,
+      before: { versionId: v.id, versionNo: v.versionNo, status: v.status, levers: leversOf(v) },
+      after: { versionNo, status: 'DRAFT', levers },
+      reason: `Version ${versionNo} drafted from v${v.versionNo}`,
+      source: 'cms', correlationId,
+    });
+    return version;
+  });
+  const loaded = await loadVersion(created.id, null);
+  return serializeVersion(loaded.v, branchCode);
 }
 
 // ---------------------------------------------------------------------------

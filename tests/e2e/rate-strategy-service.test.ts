@@ -226,10 +226,8 @@ describe('rate strategy service (scenario E steps 4–7)', () => {
     expect(submitted.body.data.submittedBy).toBe(world.ownerA.email);
     expect(submitted.body.data.financialModel.targetPsf).toBe(world.targetPsf);
 
-    // --- approved-but-unsaved-changes: mutate after submit → 409 ---
-    const mutate = await api.patch(`${CMS}/rate-strategy/${versionId}`)
-      .set('Authorization', world.ownerA.auth).send({ version: 1, levers: { startingRate: 95 } });
-    expect(mutate.status).toBe(409);
+    // (No approval gate since 2026-11-20: a PENDING_APPROVAL row is an
+    // editable Draft — covered by the legacy PENDING_APPROVAL test below.)
 
     // --- maker-checker: submitter cannot approve their own version ---
     const selfApprove = await api.post(`${CMS}/rate-strategy/${versionId}/approve`)
@@ -595,5 +593,62 @@ describe('rate strategy service (scenario E steps 4–7)', () => {
     expect(detail.status).toBe(200);
     expect(detail.body.data.lines.length).toBe(6);
     expect(detail.body.data.lines.every((l: { outcome: string }) => l.outcome === 'PENDING')).toBe(true);
+  });
+
+  it('legacy PENDING_APPROVAL version is a Draft: editable, Set Active and apply with no approver', async () => {
+    const draft = await createDraft(world, world.ownerA);
+    const versionId = draft.body.data.id as string;
+    const validated = await api.post(`${CMS}/rate-strategy/${versionId}/validate`).set('Authorization', world.ownerA.auth).send({});
+    const submitted = await api.post(`${CMS}/rate-strategy/${versionId}/submit`).set('Authorization', world.ownerA.auth).send({
+      version: 0, warningOverride: { reasons: validated.body.data.warnings.map(() => 'Accepted.') },
+    });
+    expect(submitted.body.data.status).toBe('PENDING_APPROVAL');
+    // Save works (row becomes a plain Draft) ...
+    const saved = await api.patch(`${CMS}/rate-strategy/${versionId}`).set('Authorization', world.ownerA.auth)
+      .send({ version: submitted.body.data.version, levers: { startingRate: 92 } });
+    expect(saved.status).toBe(200);
+    expect(saved.body.data.status).toBe('DRAFT');
+    // ... and the same submitter sets it Active and applies — no second user.
+    const active = await api.post(`${CMS}/rate-strategy/${versionId}/activate`).set('Authorization', world.ownerA.auth)
+      .send({ version: saved.body.data.version });
+    expect(active.status).toBe(200);
+    expect(active.body.data.status).toBe('ACTIVE');
+    const batch = await api.post(`${CMS}/rate-strategy/${versionId}/batches`).set('Authorization', world.ownerA.auth)
+      .set('Idempotency-Key', 'legacy-pending-apply').send({ effectiveDate: sgDate(0) });
+    expect(batch.status).toBe(201);
+    expect(batch.body.data.status).toBe('APPLIED');
+
+    // A PENDING_APPROVAL row can also be set Active directly.
+    const d2 = await createDraft(world, world.ownerA, { name: 'RS pending direct' });
+    const v2 = d2.body.data.id as string;
+    const val2 = await api.post(`${CMS}/rate-strategy/${v2}/validate`).set('Authorization', world.ownerA.auth).send({});
+    await api.post(`${CMS}/rate-strategy/${v2}/submit`).set('Authorization', world.ownerA.auth).send({
+      version: 0, warningOverride: { reasons: val2.body.data.warnings.map(() => 'Accepted.') },
+    });
+    const direct = await api.post(`${CMS}/rate-strategy/${v2}/activate`).set('Authorization', world.ownerA.auth).send({ version: 1 });
+    expect(direct.status).toBe(200);
+    expect(direct.body.data.status).toBe('ACTIVE');
+  });
+
+  it('revise: editing an Active version saves the next Draft version, reused on later saves', async () => {
+    const draft = await createDraft(world, world.ownerA);
+    const v1 = draft.body.data.id as string;
+    const active = await api.post(`${CMS}/rate-strategy/${v1}/activate`).set('Authorization', world.ownerA.auth).send({ version: 0 });
+    expect(active.body.data.status).toBe('ACTIVE');
+    const r1 = await api.post(`${CMS}/rate-strategy/${v1}/revise`).set('Authorization', world.ownerA.auth).send({ levers: { startingRate: 99 } });
+    expect(r1.status).toBe(200);
+    expect(r1.body.data).toMatchObject({ status: 'DRAFT', versionNo: 2, originVersionId: v1 });
+    expect(r1.body.data.levers.startingRate).toBe(99);
+    const r2 = await api.post(`${CMS}/rate-strategy/${v1}/revise`).set('Authorization', world.ownerA.auth).send({ levers: { startingRate: 101 } });
+    expect(r2.body.data.id).toBe(r1.body.data.id);
+    expect(r2.body.data.levers.startingRate).toBe(101);
+    const stillActive = await api.get(`${CMS}/rate-strategy/${v1}`).set('Authorization', world.ownerA.auth);
+    expect(stillActive.body.data.status).toBe('ACTIVE');
+    expect(stillActive.body.data.levers.startingRate).toBe(90);
+    const v2Active = await api.post(`${CMS}/rate-strategy/${r1.body.data.id}/activate`).set('Authorization', world.ownerA.auth)
+      .send({ version: r2.body.data.version });
+    expect(v2Active.body.data.status).toBe('ACTIVE');
+    const v1After = await api.get(`${CMS}/rate-strategy/${v1}`).set('Authorization', world.ownerA.auth);
+    expect(v1After.body.data.status).toBe('SUPERSEDED');
   });
 });

@@ -203,8 +203,19 @@ function rsDurationFilter(label, longLabels) {
     t + (longLabels ? ' month' + (t === 1 ? '' : 's') : ' mo') + '</button>').join('') + '</div></div>';
 }
 
+/** No approval flow: legacy PENDING_APPROVAL / REJECTED rows are Drafts,
+ *  legacy APPROVED rows are Active (server accepts the same mapping). */
+function rsEditable(status) {
+  return status === 'DRAFT' || status === 'PENDING_APPROVAL' || status === 'REJECTED';
+}
+
+function rsIsActive(status) {
+  return status === 'ACTIVE' || status === 'APPROVED';
+}
+
 function rsStatusMeta(status, dirty) {
   if (dirty) return { cls: 'amber', label: 'Unsaved changes' };
+  if (status === 'PENDING_APPROVAL' || status === 'REJECTED') return { cls: 'grey', label: 'Draft' };
   if (status === 'ACTIVE' || status === 'APPROVED') return { cls: 'green', label: 'Active' };
   if (status === 'DRAFT') return { cls: 'grey', label: 'Draft' };
   if (status === 'SUPERSEDED') return { cls: 'grey', label: 'Superseded' };
@@ -229,7 +240,7 @@ async function showRoot(root) {
     // library (with New strategy) when none exist yet.
     try {
       const rows = (await get('/rate-strategy/library')) || [];
-      const live = rows.filter((r) => r.status === 'DRAFT' || r.status === 'ACTIVE' || r.status === 'APPROVED')
+      const live = rows.filter((r) => rsEditable(r.status) || rsIsActive(r.status))
         .sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
       if (live.length) view.versionId = live[0].versionId;
     } catch (e) { /* library unreadable — the library page shows the error */ }
@@ -288,7 +299,7 @@ async function loadList(root) {
     host.innerHTML = '<div class="rs-table-scroll"><table class="data-tbl"><thead><tr><th>Strategy</th><th>Version</th><th>Status</th><th>Facility</th><th>Effective from</th><th>Owner</th><th>Updated</th><th></th></tr></thead><tbody>' +
       rows.map((r) =>
         '<tr><td><b>' + escapeHtml(r.strategyName) + '</b>' + (r.currentVersion ? '<div class="t-type">current</div>' : '') + '</td>' +
-        '<td>v' + r.versionNo + '</td><td>' + statusPill(r.status) + '</td>' +
+        '<td>v' + r.versionNo + '</td><td><span class="pill ' + rsStatusMeta(r.status, false).cls + '">' + escapeHtml(rsStatusMeta(r.status, false).label) + '</span></td>' +
         '<td>' + branchLabel(r) + '</td><td>' + escapeHtml(r.effectiveFrom || '—') + '</td>' +
         '<td>' + escapeHtml(r.owner || '—') + '</td><td>' + escapeHtml(fmtDay(r.updatedAt)) + '</td>' +
         '<td><button class="tb-btn ghost" data-rs-open="' + escapeHtml(r.versionId) + '" data-perm="facility-rate-strategy:view">Open</button></td></tr>').join('') +
@@ -308,6 +319,7 @@ async function loadList(root) {
 
 async function renderShow(body, root) {
   rsRoot = root;
+  cancelLivePreview();
   view.liveDirty = false;
   view.libraryOpen = false;
   body.innerHTML = '<div class="section-empty">Loading strategy…</div>';
@@ -319,8 +331,8 @@ async function renderShow(body, root) {
     return;
   }
   const v = view.version;
-  const isDraft = v.status === 'DRAFT';
-  const isActive = v.status === 'ACTIVE' || v.status === 'APPROVED';
+  const isDraft = rsEditable(v.status);
+  const isActive = rsIsActive(v.status);
   const st = rsStatusMeta(v.status, false);
   const btn = (perm, action, label, cls, disabled, title) => (can(perm)
     ? '<button class="' + (cls || 'btn') + '" type="button" data-rs-action="' + action + '" data-perm="' + perm + '"' +
@@ -338,7 +350,7 @@ async function renderShow(body, root) {
     '<span class="pill ' + st.cls + '" id="rsStatusPill">' + escapeHtml(st.label) + '</span>' +
     btn('facility-rate-strategy:view', 'library', 'Strategy library') +
     btn('facility-rate-strategy:update', 'undo', 'Undo', 'btn', true) +
-    btn('facility-rate-strategy:update', 'save', 'Save draft', 'btn', !isDraft, isDraft ? '' : 'Only a Draft can be saved — duplicate this version to make changes.') +
+    btn('facility-rate-strategy:update', 'save', 'Save draft', 'btn', !isDraft, isDraft ? '' : 'Change a lever first — saving an Active version creates its next Draft version.') +
     btn('facility-rate-strategy:create', 'duplicate', 'Duplicate for facility') +
     btn('facility-rate-strategy:view', 'validate', 'Validate strategy') +
     btn('facility-rate-strategy:update', 'sync-units', 'Apply rates to Units', 'btn', !isActive, isActive ? '' : 'Save the draft and set it Active first.') +
@@ -350,10 +362,10 @@ async function renderShow(body, root) {
     '<div class="rs-kpi-sections" id="rsKpis"><div class="section-empty">Calculating preview…</div></div>' +
     '<div class="rs-builder-grid">' +
     '<section class="card"><div class="card-head"><div><h3>1. Pricing workbench</h3><small>Adjust the levers and see the live rate curve, category impact and unit rates together.</small></div><span class="pill green">Recommended: smooth curve</span></div><div class="card-body">' +
-    '<div class="rs-workbench-grid"><div class="rs-workbench-controls" id="rsLevers">' + leverEditHtml(v.levers, !isDraft) + '</div>' +
+    '<div class="rs-workbench-grid"><div class="rs-workbench-controls" id="rsLevers">' + leverEditHtml(v.levers, !can('facility-rate-strategy:update')) + '</div>' +
     '<div class="rs-live-chart" id="rsChart"><div class="section-empty">Calculating preview…</div></div></div>' +
     '<div id="rsCats"></div>' +
-    guardrailsHtml(v.levers, !isDraft) +
+    guardrailsHtml(v.levers, !can('facility-rate-strategy:update')) +
     '</div></section>' +
     '<section class="card rs-promo-library"><div class="card-head"><div><h3>2. Discount &amp; Promotion library</h3><small>Every library record is shown. Active plans and Draft test plans can be selected for analysis; selecting a Draft does not approve or activate it.</small></div>' +
     '<div class="rs-plan-actions"><span class="pill green" id="rsPromoCount">Loading…</span><button class="btn" type="button" data-rs-action="promotions">Open promotion library</button></div></div><div class="card-body">' +
@@ -494,8 +506,17 @@ async function fetchPreviewLive(durationMonths) {
 let rsLiveTimer = null;
 let rsLiveSeq = 0;
 
+/** Drop any queued/in-flight live preview. A lever input fires `change` as
+ *  it loses focus when Save draft is clicked; without this, that preview
+ *  lands after the save and marks the saved draft dirty again. */
+function cancelLivePreview() {
+  if (rsLiveTimer) clearTimeout(rsLiveTimer);
+  rsLiveTimer = null;
+  rsLiveSeq += 1;
+}
+
 function scheduleLivePreview(root, immediate) {
-  if (!view.version || view.version.status !== 'DRAFT' || !hasLeverInputs()) return;
+  if (!view.version || !hasLeverInputs()) return;
   if (rsLiveTimer) clearTimeout(rsLiveTimer);
   const run = () => {
     rsLiveTimer = null;
@@ -561,34 +582,54 @@ function setLiveDirty(dirty) {
   }
   const undoBtn = document.querySelector('[data-rs-action="undo"]');
   if (undoBtn) undoBtn.disabled = !dirty;
+  const editable = view.version && rsEditable(view.version.status);
+  // Save draft: always for a Draft; for an Active version only once a lever
+  // changed (the save becomes the strategy's next Draft version).
+  const saveBtn = document.querySelector('[data-rs-action="save"]');
+  if (saveBtn && view.version) {
+    saveBtn.disabled = !(editable || dirty);
+    saveBtn.title = editable || dirty ? '' : 'Change a lever first — saving an Active version creates its next Draft version.';
+  }
   // Apply rates to Units needs a saved Active version with no unsaved
   // changes; Set Active needs a saved Draft. Re-evaluated live.
-  const isActive = view.version && (view.version.status === 'ACTIVE' || view.version.status === 'APPROVED');
+  const isActive = view.version && rsIsActive(view.version.status);
   document.querySelectorAll('[data-rs-action="sync-units"]').forEach((b) => {
     const ok = isActive && !dirty;
     b.disabled = !ok;
-    b.title = ok ? '' : (isActive ? 'Save or undo unsaved changes first.' : 'Save the draft and set it Active first.');
+    b.title = ok ? '' : (isActive ? 'Save draft (creates the next version) and Set Active it, or Undo, first.' : 'Save the draft and set it Active first.');
   });
   const activeBtn = document.querySelector('[data-rs-action="activate"]');
   if (activeBtn && view.version) {
-    const ok = view.version.status === 'DRAFT' && !dirty;
+    const ok = editable && !dirty;
     activeBtn.disabled = !ok;
-    activeBtn.title = ok ? '' : (view.version.status !== 'DRAFT'
-      ? 'This version is already ' + rsStatusMeta(view.version.status, false).label + '.'
+    activeBtn.title = ok ? '' : (!editable
+      ? (dirty ? 'Save draft first — it creates the next version, which you then set Active.' : 'This version is already ' + rsStatusMeta(view.version.status, false).label + '.')
       : 'Save the draft first — unsaved changes must be saved or undone before Set Active.');
   }
 }
 
-/** Persist the inline levers (PATCH draft) and repaint from saved state. */
+/** Persist the inline levers and repaint from saved state. A Draft is
+ *  PATCHed; edits to an Active version are saved as the strategy's next
+ *  Draft version (POST /revise) and that Draft opens. */
 async function saveInlineDraft(root) {
   const v = view.version;
-  if (!v || v.status !== 'DRAFT') return;
+  if (!v) return;
+  const editable = rsEditable(v.status);
+  if (!editable && !view.liveDirty) return;
   const btn = document.querySelector('[data-rs-action="save"]');
   if (btn) btn.disabled = true;
+  cancelLivePreview();
   try {
     const levers = readInlineLevers();
-    await patch('/rate-strategy/' + encodeURIComponent(v.id), { version: v.version, levers });
-    showBanner('Draft saved — you can now Set Active.', true);
+    if (editable) {
+      await patch('/rate-strategy/' + encodeURIComponent(v.id), { version: v.version, levers });
+      showBanner('Draft saved — you can now Set Active.', true);
+    } else {
+      const d = await post('/rate-strategy/' + encodeURIComponent(v.id) + '/revise', { levers });
+      view.versionId = d.id;
+      view.previews = {};
+      showBanner('Saved as Draft v' + d.versionNo + ' — Set Active to use it; v' + v.versionNo + ' stays Active until then.', true);
+    }
     setLiveDirty(false);
     await refreshShow(root);
   } catch (e) {
@@ -604,12 +645,13 @@ async function undoLiveEdits(root) {
     showBanner('No unsaved changes — workbench matches the saved draft.');
     return;
   }
+  cancelLivePreview();
   const host = $('#rsLevers');
   if (host && view.version) {
-    host.innerHTML = leverEditHtml(view.version.levers, view.version.status !== 'DRAFT');
+    host.innerHTML = leverEditHtml(view.version.levers, !can('facility-rate-strategy:update'));
   }
   const guard = document.querySelector('.rs-workbench-guardrails');
-  if (guard && view.version) guard.outerHTML = guardrailsHtml(view.version.levers, view.version.status !== 'DRAFT');
+  if (guard && view.version) guard.outerHTML = guardrailsHtml(view.version.levers, !can('facility-rate-strategy:update'));
   bindLeverInputs(root);
   setLiveDirty(false);
   view.previews = {};
@@ -742,7 +784,7 @@ function renderRsContext() {
   const v = view.version;
   const sum = view.preview && view.preview.preview && view.preview.preview.summary;
   const tgt = view.preview && view.preview.target;
-  const isDraft = v.status === 'DRAFT';
+  const isDraft = rsEditable(v.status);
   const lastBatch = (view.batches || [])[0];
   host.innerHTML =
     '<label><span>Facility</span><select id="rsCtxFacility">' + (state.branches || []).map((b) =>
@@ -772,7 +814,7 @@ async function switchFacility(branchId) {
   const root = rsRoot;
   try {
     const rows = (await get('/rate-strategy/library?branchId=' + encodeURIComponent(branchId))) || [];
-    const live = rows.filter((r) => r.status === 'DRAFT' || r.status === 'ACTIVE' || r.status === 'APPROVED')
+    const live = rows.filter((r) => rsEditable(r.status) || rsIsActive(r.status))
       .sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
     if (live.length) {
       view.versionId = live[0].versionId;
@@ -856,8 +898,8 @@ function renderRsTargetBanner() {
     const detail = meets
       ? 'Recurring Effective PSF is ' + fmtPsf(sum.weightedEffectivePsf) + (Math.abs(gap) < 0.005 ? ', exactly matching the target' : ', S$' + Math.abs(gap).toFixed(2) + ' above target') + '. ' +
         (sum.hasBlended ? 'Blended PSF is shown separately to reveal the cost of free months.' : 'No free-month benefit applies at this duration, so Blended PSF is not shown.')
-      : 'Recurring Effective PSF is ' + fmtPsf(sum.weightedEffectivePsf) + '. Raise the ' + refSize + ' sq ft anchor from ' + rsMoney(startRate) + ' to about ' + rsMoney(required) + ' (' + uplift.toFixed(1) + '%), or review the approved percentage discount.';
-    host.innerHTML = '<div class="rs-decision ' + (meets ? 'good' : 'warn') + '"><div><b>' + d + '-month Effective PSF ' + (meets ? 'meets the approved target' : 'is below the approved target') + '</b><span>' + escapeHtml(detail) + '</span></div>' +
+      : 'Recurring Effective PSF is ' + fmtPsf(sum.weightedEffectivePsf) + '. Raise the ' + refSize + ' sq ft anchor from ' + rsMoney(startRate) + ' to about ' + rsMoney(required) + ' (' + uplift.toFixed(1) + '%), or review the percentage discount.';
+    host.innerHTML = '<div class="rs-decision ' + (meets ? 'good' : 'warn') + '"><div><b>' + d + '-month Effective PSF ' + (meets ? 'meets the Financial Model target' : 'is below the Financial Model target') + '</b><span>' + escapeHtml(detail) + '</span></div>' +
       '<button class="btn" type="button" data-rs-action="model">Open Financial Model pricing</button></div>';
   }
   const b = host.querySelector('[data-rs-action]');
@@ -1231,7 +1273,7 @@ function renderPreviewTables(root) {
   const hasFree = all.some((r) => r.stocked && r.hasBlended);
   const targetPsf = data.target && data.target.targetPsf;
   const d = view.duration;
-  const canOverride = view.version && view.version.status === 'DRAFT' && can('facility-rate-strategy:update');
+  const canOverride = view.version && rsEditable(view.version.status) && can('facility-rate-strategy:update');
   const isActive = view.version && (view.version.status === 'ACTIVE' || view.version.status === 'APPROVED');
   const pctNames = rsSelectedPlanNames('DISCOUNT_MATRIX');
   const freeNames = rsSelectedPlanNames('FREE_MONTHS');
@@ -1309,7 +1351,7 @@ function renderPreviewTables(root) {
  *  “Use generated rate” removes the override. Draft-only, audited. */
 function openOverrideModal(root, size) {
   const v = view.version;
-  if (!v || v.status !== 'DRAFT') return;
+  if (!v || !rsEditable(v.status)) return;
   const existing = ((v.levers && v.levers.sizeOverrides) || []).find((o) => Number(o.size) === size);
   const row = view.preview && (view.preview.preview.rows || []).find((r) => r.size === size);
   const current = (existing && existing.monthlyRate) ?? (row && row.rackMonthly) ?? '';
@@ -1389,7 +1431,7 @@ async function loadHistory(root) {
     const count = $('#rsHistCount');
     if (count) count.textContent = mine.length + ' version' + (mine.length === 1 ? '' : 's');
     if (!mine.length) { host.innerHTML = '<div class="rs-empty">No versions found.</div>'; return; }
-    const change = (r) => (r.status === 'ACTIVE' || r.status === 'APPROVED' ? 'Set Active' : r.status === 'SUPERSEDED' ? 'Superseded by a newer Active version' : r.status === 'DRAFT' ? 'Draft saved' : String(r.status).replace(/_/g, ' ').toLowerCase());
+    const change = (r) => (r.status === 'ACTIVE' || r.status === 'APPROVED' ? 'Set Active' : r.status === 'SUPERSEDED' ? 'Superseded by a newer Active version' : rsEditable(r.status) ? 'Draft saved' : String(r.status).replace(/_/g, ' ').toLowerCase());
     host.innerHTML = '<table class="rs-history"><thead><tr><th>Version</th><th>Date</th><th>Changed by</th><th>Change</th><th>Status</th><th></th></tr></thead><tbody>' +
       mine.map((r) => {
         const stm = rsStatusMeta(r.status, false);
@@ -1494,7 +1536,7 @@ async function refreshShow(root) {
 // blockers prevent activation; a missing Financial Model target and
 // warnings are display-only. Requires a saved draft.
 async function activateStrategy(root, v) {
-  if (!v || v.status !== 'DRAFT') {
+  if (!v || !rsEditable(v.status)) {
     rsError(root, new Error('Only a Draft can be set Active.'));
     return;
   }
@@ -1580,7 +1622,7 @@ function openBatchModal(root, v) {
     '<div><small>Strategy</small><b>' + escapeHtml(v.strategyName + ' · v' + v.versionNo) + '</b></div>' +
     '<div><small>Unit records</small><b>' + (sum ? rsNum(sum.totalUnits) : '—') + '</b></div>' +
     '<div><small>Size rates</small><b>' + rows.length + '</b></div></div>' +
-    '<div class="rs-modal-grid"><label class="rs-modal-field"><span>Rates take effect</span><input id="rsBatchDate" type="date" value="' + escapeHtml(v.effectiveFrom && v.effectiveFrom > todaySg() ? v.effectiveFrom : todaySg()) + '"></label>' +
+    '<div class="rs-modal-grid"><label class="rs-modal-field"><span>Rates take effect</span><input id="rsBatchDate" type="date" min="' + todaySg() + '" value="' + todaySg() + '"><small>Today applies now. A future date waits as Scheduled until that day.</small></label>' +
     '<label class="rs-modal-field"><span>' + rsTip('Existing manual unit rates', 'Some units may already have a manually set rate because they are unusual. Choose whether to preserve or replace those exceptions when this strategy is applied.') + '</span>' +
     '<select id="rsBatchRule">' + CONFLICT_RULES.map((r) => '<option value="' + r + '"' + (rule === r ? ' selected' : '') + '>' + escapeHtml(ruleLabel[r] || r) + '</option>').join('') + '</select>' +
     '<small>A manual unit rate is an intentional exception saved against one specific unit.</small></label></div>' +
@@ -1638,6 +1680,9 @@ function ensureRsWorkbenchStyles() {
     '#rateStrategyRoot .rs-table-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}' +
     '#rateStrategyRoot > #rsBody > .modal-alert{margin-bottom:14px}' +
     '#rateStrategyRoot [hidden]{display:none!important}' +
+    // Keep "1 mo" / "12 mo" on one line in every duration toggle (client
+    // 2026-11-20: labels wrapped under the number in the KPI header).
+    '#rateStrategyRoot .rs-duration-filter button{white-space:nowrap}' +
     // Reference hides the module tab row on this page (sidebar sub-items
     // carry the same navigation).
     '#promotions:has(#facility-rate-strategy.active) > .subtabs{display:none}';

@@ -177,9 +177,7 @@ function renderShell(root) {
 
 /** ? definition popup (reference: showModal("Definition", text)). */
 function rsDefinition(text) {
-  overlay(rsRoot || document.body, 'Definition', '<p>' + escapeHtml(text) + '</p>', 'Close', async () => {});
-  const cancel = $('#rsOverlayCancel');
-  if (cancel) cancel.hidden = true;
+  overlay(rsRoot || document.body, 'Definition', '<p style="margin:0">' + escapeHtml(text) + '</p>', '', async () => {}, { noConfirm: true });
 }
 
 function rsTip(label, text) {
@@ -406,10 +404,8 @@ async function renderShow(body, root) {
 /** One dispatcher for every data-rs-action button (reference action()). */
 function rsAction(name, root, el) {
   const v = view.version;
-  if (name === 'library') {
-    view.versionId = null; view.libraryOpen = true; view.previews = {}; view.planIds = null; view.plans = null;
-    showRoot(root);
-  } else if (name === 'undo') undoLiveEdits(root);
+  if (name === 'library') openStrategyLibraryModal(root);
+  else if (name === 'undo') undoLiveEdits(root);
   else if (name === 'save') saveInlineDraft(root);
   else if (name === 'duplicate') openDuplicateModal(root, v);
   else if (name === 'validate') runValidation(root);
@@ -1010,11 +1006,9 @@ function openRsChartExpand() {
   const hasBlended = plotted.some((r) => r.hasBlended);
   const targetPsf = view.preview.target && view.preview.target.targetPsf;
   overlay(rsRoot || document.body, 'Live rate curve · ' + view.duration + ' month' + (view.duration === 1 ? '' : 's'),
-    '<div class="rs-live-chart" style="min-width:min(900px,80vw)">' + rsChartSvg(plotted, targetPsf, hasBlended) + '</div>',
-    'Close',
-    async () => {});
-  const cancel = $('#rsOverlayCancel');
-  if (cancel) cancel.hidden = true;
+    '<div class="rs-live-chart">' + rsChartSvg(plotted, targetPsf, hasBlended) + '</div>',
+    '', async () => {}, { size: 'wide', noConfirm: true,
+      subtitle: (hasBlended ? 'Rack, Effective and Blended PSF' : 'Rack and Effective PSF') + ' across the commercial 8–150 sq ft range' });
 }
 
 // ---- category table + totals (§15.12) ----
@@ -1311,20 +1305,25 @@ function renderPreviewTables(root) {
   }
 }
 
-/** Per-row manual rate override (§15.21): monthly rate + mandatory reason;
- *  “Use generated rate” removes the override. Draft-only, audited server-side. */
+/** Per-row manual rate override: monthly rate + mandatory reason;
+ *  “Use generated rate” removes the override. Draft-only, audited. */
 function openOverrideModal(root, size) {
   const v = view.version;
   if (!v || v.status !== 'DRAFT') return;
   const existing = ((v.levers && v.levers.sizeOverrides) || []).find((o) => Number(o.size) === size);
-  const currentRack = view.preview && (view.preview.preview.rows || []).find((r) => r.size === size);
-  overlay(root, 'Override ' + size + ' sq ft — ' + v.strategyName + ' v' + v.versionNo,
-    '<p class="t-type">Generated rack ' + fmtMoney(currentRack && currentRack.rackMonthly) + '/mo. The override stays visible and auditable; a below-floor rate is a blocker.</p>' +
-    '<div class="form-grid"><div class="field"><label for="rsov-rate">Monthly rack-rate override (S$)</label>' +
-    '<input id="rsov-rate" type="number" min="0.01" step="0.01" value="' + escapeHtml(String((existing && existing.monthlyRate) ?? (currentRack && currentRack.rackMonthly) ?? '')) + '"></div>' +
-    '<div class="field"><label for="rsov-reason">Reason (required)</label>' +
-    '<input id="rsov-reason" maxlength="200" value="' + escapeHtml(String((existing && existing.reason) || '')) + '" placeholder="e.g. Locker premium for level 1"></div></div>' +
-    (existing ? '<p class="t-type">“Use generated rate” below removes this override.</p>' : ''),
+  const row = view.preview && (view.preview.preview.rows || []).find((r) => r.size === size);
+  const current = (existing && existing.monthlyRate) ?? (row && row.rackMonthly) ?? '';
+  const saveOverrides = async (list, msg) => {
+    await patch('/rate-strategy/' + encodeURIComponent(v.id), { version: v.version, levers: { sizeOverrides: list } });
+    showBanner(msg, true);
+    view.previews = {};
+    setTimeout(async () => { await refreshShow(root); }, 0);
+  };
+  overlay(root, 'Override ' + size + ' sq ft rack rate',
+    '<div class="rs-modal-note"><b>' + size + ' sq ft · ' + escapeHtml(row ? (row.category === 'LOCKER' ? 'Locker' : row.category) : '') + '</b><span>The generated rate is ' +
+    rsMoney(row && row.rackMonthly, 2) + '. A manual override remains visible and auditable.</span></div>' +
+    '<label class="rs-modal-field"><span>Monthly rack-rate override</span><div class="rs-suffix"><input id="rsov-rate" type="number" min="1" step="1" value="' + escapeHtml(String(current)) + '"><em>SGD</em></div></label>' +
+    '<label class="rs-modal-field"><span>Reason</span><textarea id="rsov-reason" maxlength="200" placeholder="Required for audit, e.g. unusual column or restricted access">' + escapeHtml(String((existing && existing.reason) || '')) + '</textarea></label>',
     'Apply override',
     async () => {
       const rate = Number($('#rsov-rate').value);
@@ -1333,65 +1332,51 @@ function openOverrideModal(root, size) {
       if (!reason) throw new Error('A reason is required for an override.');
       const rest = ((v.levers && v.levers.sizeOverrides) || []).filter((o) => Number(o.size) !== size);
       rest.push({ size, monthlyRate: Math.round(rate * 100) / 100, reason });
-      await patch('/rate-strategy/' + encodeURIComponent(v.id), { version: v.version, levers: { sizeOverrides: rest } });
-      showBanner('Override saved for ' + size + ' sq ft', true);
-      view.previews = {};
-      await refreshShow(root);
-      await refreshWorkbench(root);
-    });
-  if (existing) {
-    const foot = $('#rsOverlay .modal-foot');
-    if (foot) {
-      const rm = document.createElement('button');
-      rm.className = 'act-btn';
-      rm.type = 'button';
-      rm.textContent = 'Use generated rate';
-      rm.setAttribute('data-perm', 'facility-rate-strategy:update');
-      rm.addEventListener('click', async () => {
-        rm.disabled = true;
-        try {
-          const rest = ((view.version.levers && view.version.levers.sizeOverrides) || []).filter((o) => Number(o.size) !== size);
-          await patch('/rate-strategy/' + encodeURIComponent(view.version.id), { version: view.version.version, levers: { sizeOverrides: rest } });
-          showBanner('Override removed for ' + size + ' sq ft', true);
-          closeOverlay();
-          view.previews = {};
-          await refreshShow(root);
-          await refreshWorkbench(root);
-        } catch (e) {
-          const err = $('#rsOverlayErr');
-          if (err) { err.hidden = false; err.textContent = describeError(e); }
-          rm.disabled = false;
-        }
-      });
-      foot.prepend(rm);
-    }
-  }
+      await saveOverrides(rest, 'Override saved for ' + size + ' sq ft');
+    },
+    { footerStart: existing ? '<button class="btn" type="button" id="rsOverrideRemove" style="margin-right:auto">Use generated rate</button>' : '' });
+  const rm = $('#rsOverrideRemove');
+  if (rm) rm.addEventListener('click', async () => {
+    rm.disabled = true;
+    try {
+      const rest = ((v.levers && v.levers.sizeOverrides) || []).filter((o) => Number(o.size) !== size);
+      await saveOverrides(rest, 'Override removed for ' + size + ' sq ft');
+      closeOverlay();
+    } catch (e) { showRsError(describeError(e)); rm.disabled = false; }
+  });
 }
 
 async function runValidation(root) {
   const host = $('#rsValidation');
-  host.innerHTML = '<div class="section-empty">Validating…</div>';
+  if (host) host.innerHTML = '<div class="rs-empty">Validating…</div>';
   try {
     const data = await post('/rate-strategy/' + encodeURIComponent(view.versionId) + '/validate', {});
     view.validation = data;
-    const issue = (i, cls) => '<div class="alert-item"><div class="alert-icon ' + cls + '">!</div><div class="alert-body"><div class="alert-title">' +
-      escapeHtml(i.code) + '</div><div class="alert-desc">' + escapeHtml(i.message) +
-      (i.reason ? '<br><i>' + escapeHtml(i.reason) + '</i>' : '') + '</div></div></div>';
-    const html =
-      (data.blockers && data.blockers.length ? '<div class="modal-alert">This version has blockers — Set Active and Apply stay disabled until they clear.</div>' + data.blockers.map((i) => issue(i, 'red')).join('') : '') +
-      (data.warnings && data.warnings.length ? '<div class="modal-alert olive">Warnings are display-only — they never block Set Active or Apply.</div>' + data.warnings.map((i) => issue(i, 'amber')).join('') : '') +
-      (!((data.blockers || []).length + (data.warnings || []).length) ? '<div class="section-empty">Passed — no blockers or warnings.</div>' : '') +
-      ((data.passed || []).length ? '<div class="t-type">Passed: ' + escapeHtml(data.passed.map((p) => (p && typeof p === 'object' ? (p.message || p.code) : p)).join(' · ')) + '</div>' : '');
-    host.innerHTML = html;
-    // Validation modal (§15.23): same result, exact rule text, Close only —
-    // blockers gate Set Active / Apply; warnings are display-only.
-    overlay(root, 'Validation — ' + (view.version ? view.version.strategyName + ' v' + view.version.versionNo : view.versionId),
-      '<p class="t-type">Warnings are display-only. Only red blockers prevent Set Active or Apply.</p>' + html,
-      'Close',
-      async () => {});
+    const html = rsValidationHtml(data);
+    if (host) host.innerHTML = html;
+    const wrap = $('#rsValidationWrap');
+    if (wrap) wrap.open = true;
+    overlay(root, 'Rate strategy validation', html, '', async () => {},
+      { noConfirm: true, cancelLabel: 'Return to strategy',
+        subtitle: view.version ? view.version.strategyName + ' · v' + view.version.versionNo : '' });
   } catch (e) {
-    host.innerHTML = '<div class="section-empty">Validation failed: ' + escapeHtml(describeError(e)) + '</div>';
+    if (host) host.innerHTML = '<div class="rs-empty">Validation failed: ' + escapeHtml(describeError(e)) + '</div>';
+    rsError(root, e);
   }
+}
+
+/** Reference openValidation() body: summary tiles, checks, guidance. */
+function rsValidationHtml(data) {
+  const blockers = data.blockers || [];
+  const warnings = data.warnings || [];
+  const passed = data.passed || [];
+  const text = (i) => (i && typeof i === 'object' ? (i.message || i.code) + (i.reason && i.reason !== i.message ? ' — ' + i.reason : '') : String(i));
+  const list = (items, kind) => items.map((i) =>
+    '<div class="rs-check ' + kind + '"><i>' + (kind === 'pass' ? '✓' : kind === 'block' ? '×' : '!') + '</i><span>' + escapeHtml(text(i)) + '</span></div>').join('');
+  return '<div class="rs-validation-summary"><div><small>Passed</small><b>' + passed.length + '</b></div>' +
+    '<div><small>Warnings</small><b>' + warnings.length + '</b></div><div><small>Blockers</small><b>' + blockers.length + '</b></div></div>' +
+    '<div class="rs-checks">' + list(blockers, 'block') + list(warnings, 'warn') + list(passed, 'pass') + '</div>' +
+    '<div class="rs-formula"><b>Warnings do not block Set Active</b><span>Only red blockers prevent Set Active or Apply rates to Units.</span></div>';
 }
 
 async function loadHistory(root) {
@@ -1506,8 +1491,8 @@ async function refreshShow(root) {
 }
 
 // Set Active (no approval gate): Draft → Active. Only red validation
-// blockers prevent activation; a missing Financial Model target and warnings are
-// display-only. Requires a saved draft — unsaved workbench edits block it.
+// blockers prevent activation; a missing Financial Model target and
+// warnings are display-only. Requires a saved draft.
 async function activateStrategy(root, v) {
   if (!v || v.status !== 'DRAFT') {
     rsError(root, new Error('Only a Draft can be set Active.'));
@@ -1517,79 +1502,119 @@ async function activateStrategy(root, v) {
     rsError(root, new Error('Save the draft first — unsaved workbench changes must be saved or undone before Set Active.'));
     return;
   }
-  const okConfirm = await confirmDialog({
-    title: 'Set version ' + v.versionNo + ' Active?',
-    message: 'Activation freezes this snapshot and supersedes other Active versions. Rates still reach Units only through Apply rates to Units.',
-    confirmLabel: 'Set Active',
-    danger: false,
-  });
-  if (!okConfirm) return;
+  let result;
   try {
-    await post('/rate-strategy/' + encodeURIComponent(v.id) + '/activate', { version: v.version });
-    showBanner('Version ' + v.versionNo + ' is now Active', true);
+    result = await post('/rate-strategy/' + encodeURIComponent(v.id) + '/validate', {});
   } catch (e) { rsError(root, e); return; }
-  await refreshShow(root);
+  if ((result.blockers || []).length) {
+    overlay(root, 'Rate strategy validation', '<div class="rs-warning"><b>Resolve blockers before Set Active</b><span>Red blockers must be fixed in the workbench; warnings never block.</span></div>' + rsValidationHtml(result),
+      '', async () => {}, { noConfirm: true, cancelLabel: 'Return to strategy' });
+    return;
+  }
+  const p = view.previews && view.previews[12];
+  const sum = p && p.preview && p.preview.summary;
+  const tgt = p && p.target;
+  const warnings = result.warnings || [];
+  const branch = (state.branches || []).find((b) => b.id === v.branchId);
+  const body =
+    '<div class="rs-modal-note"><b>Set Active creates a dated facility rate version</b><span>The snapshot is frozen and any other Active version of this strategy is superseded. Rates reach Units only when you click Apply rates to Units.</span></div>' +
+    '<div class="rs-approval-summary"><div><small>Facility</small><b>' + escapeHtml(branch ? branch.name : (v.branchCode || '—')) + '</b></div>' +
+    '<div><small>Effective from</small><b>' + escapeHtml(fmtDay(v.effectiveFrom)) + '</b></div>' +
+    '<div><small>Weighted Effective PSF</small><b>' + (sum ? fmtPsf(sum.weightedEffectivePsf) : '—') + '</b></div>' +
+    '<div><small>Financial target</small><b>' + (tgt && tgt.targetPsf != null ? fmtPsf(tgt.targetPsf) : 'Unavailable') + '</b></div></div>' +
+    (warnings.length
+      ? '<div class="rs-approval-warnings"><b>' + warnings.length + ' advisory warning' + (warnings.length === 1 ? '' : 's') + '</b>' +
+        warnings.map((w) => '<span>! ' + escapeHtml(w.message || w.code) + '</span>').join('') +
+        '<small>Warnings are display-only — they do not prevent Set Active.</small></div>'
+      : '<div class="rs-modal-note"><b>No warnings</b><span>The strategy passed all automated checks.</span></div>');
+  overlay(root, 'Set version ' + v.versionNo + ' Active', body, 'Set Active', async () => {
+    await post('/rate-strategy/' + encodeURIComponent(v.id) + '/activate', { version: v.version });
+    showBanner('Version ' + v.versionNo + ' is now Active — you can Apply rates to Units', true);
+    setTimeout(() => refreshShow(root), 0);
+  }, { subtitle: v.strategyName });
 }
 
 function openDuplicateModal(root, v) {
-  const branches = (state.branches || []);
-  overlay(root, 'Duplicate version ' + v.versionNo + ' for facility',
-    '<p class="t-type">Copies pricing logic, not inventory — the destination facility re-links to its own Units. Resets to version 1, Draft.</p>' +
-    '<label class="t-type" for="rsDupBranch">Destination facility</label>' +
-    '<select id="rsDupBranch" class="tbl-select" style="width:100%">' + branches.map((b) =>
-      '<option value="' + escapeHtml(b.id) + '"' + (b.id === v.branchId ? ' selected' : '') + '>' + escapeHtml(b.code + ' · ' + b.name) + '</option>').join('') + '</select>' +
-    '<label class="t-type" for="rsDupName" style="margin-top:8px;display:block;">New strategy name</label>' +
-    '<input id="rsDupName" class="set-input" style="width:100%" maxlength="120" value="' + escapeHtml(v.strategyName + ' (copy)') + '">' +
-    '<label class="t-type" for="rsDupUplift" style="margin-top:8px;display:block;">Rate uplift % (default +5 — applied to anchor, floors, minimum, category floors and overrides)</label>' +
-    '<input id="rsDupUplift" type="number" class="set-input" value="5" min="-50" max="100" step="0.5" style="width:120px">',
-    'Duplicate',
+  const all = state.branches || [];
+  const others = all.filter((b) => b.id !== v.branchId);
+  const opts = (others.length ? others : all);
+  overlay(root, 'Duplicate rate strategy',
+    '<div class="rs-modal-note"><b>Copy the pricing logic, not another facility’s inventory</b><span>The target facility will use its own Units inventory. The uplift is applied to the starting rate, PSF floor, minimum monthly rent, category floors and any size overrides.</span></div>' +
+    '<div class="rs-modal-grid"><label class="rs-modal-field"><span>Destination facility</span><select id="rsDupBranch">' +
+    opts.map((b) => '<option value="' + escapeHtml(b.id) + '">' + escapeHtml(b.name || b.code) + '</option>').join('') + '</select></label>' +
+    '<label class="rs-modal-field"><span>Rate uplift</span><div class="rs-suffix"><input id="rsDupUplift" type="number" step="0.5" min="-50" max="100" value="5"><em>%</em></div></label>' +
+    '<label class="rs-modal-field full"><span>New strategy name</span><input id="rsDupName" maxlength="120" value="' + escapeHtml('Copy of ' + v.strategyName) + '"></label></div>',
+    'Create facility draft',
     async () => {
       const data = await post('/rate-strategy/' + encodeURIComponent(v.id) + '/duplicate', {
         destinationBranchId: $('#rsDupBranch').value,
         name: $('#rsDupName').value.trim(),
         upliftPct: Number($('#rsDupUplift').value),
-      }).then((b) => b);
+      });
       showBanner('Duplicated as ' + data.strategyName + ' v1 Draft', true);
       view.versionId = data.id;
       view.version = null; view.preview = null; view.previewError = null; view.liveDirty = false; view.validation = null; view.history = null; view.activity = null;
-      await refreshShow(root);
+      view.previews = {}; view.planIds = null; view.plans = null;
+      setTimeout(() => refreshShow(root), 0);
     });
 }
 
 function openBatchModal(root, v) {
-  if (v.status !== 'ACTIVE' && v.status !== 'APPROVED') {
-    rsError(root, new Error('Only Active versions can apply rates to Units. Save the draft, set it Active, then apply with no unsaved changes.'));
-    return;
-  }
-  if (view.liveDirty) {
-    rsError(root, new Error('Save the draft first — unsaved workbench changes must be saved or undone before applying rates.'));
-    return;
-  }
+  const isActive = v && (v.status === 'ACTIVE' || v.status === 'APPROVED');
+  const ready = isActive && !view.liveDirty;
+  const p = view.previews && (view.previews[12] || view.previews[view.duration]);
+  const rows = ((p && p.preview.rows) || []).filter((r) => r.stocked).sort((a, b) => a.size - b.size);
+  const sum = p && p.preview.summary;
+  const branch = (state.branches || []).find((b) => b.id === v.branchId);
   const rule = currentDefaultRule();
-  overlay(root, 'Schedule Units rate batch — ' + v.strategyName + ' v' + v.versionNo,
-    '<p class="t-type">Batch updates vacant-unit rack rates, future quotes and new reservations on/after the effective date. It never touches occupied-customer rent, promotion definitions, Protection Plans or signed agreements. ' +
-    'Confirmation is enabled only for Active versions with no unsaved changes.</p>' +
-    '<label class="t-type" for="rsBatchDate">Rates take effect</label>' +
-    '<input id="rsBatchDate" type="date" class="set-input" value="' + escapeHtml(v.effectiveFrom || todaySg()) + '">' +
-    '<label class="t-type" for="rsBatchRule" style="margin-top:8px;display:block;">Existing manual unit rates</label>' +
-    '<select id="rsBatchRule" class="tbl-select" style="width:100%">' + CONFLICT_RULES.map((r) =>
-      '<option value="' + r + '"' + (rule === r ? ' selected' : '') + '>' + r.replace(/_/g, ' ').toLowerCase() +
-      (r === 'PRESERVE_MANUAL' ? ' — recommended' : r === 'REPLACE_MANUAL' ? ' — Owner only' : '') + '</option>').join('') + '</select>',
-    'Schedule batch',
+  const ruleLabel = {
+    PRESERVE_MANUAL: 'Preserve existing manual rates (recommended)',
+    REPLACE_MANUAL: 'Replace manual rates with this strategy (Owner only)',
+    CANCEL_IF_MANUAL: 'Cancel if any manual rate exists',
+  };
+  const body =
+    (ready
+      ? '<div class="rs-modal-note"><b>Ready to schedule the Active rack rates</b><span>This creates one versioned rate batch for Facilities · Units. It does not apply percentage discounts or free months to the unit master.</span></div>'
+      : '<div class="rs-warning"><b>Set this strategy Active first</b><span>Save the draft, click Set Active, then Apply rates to Units with no unsaved changes.</span></div>') +
+    '<div class="rs-sync-summary"><div><small>Facility</small><b>' + escapeHtml(branch ? branch.name : (v.branchCode || '—')) + '</b></div>' +
+    '<div><small>Strategy</small><b>' + escapeHtml(v.strategyName + ' · v' + v.versionNo) + '</b></div>' +
+    '<div><small>Unit records</small><b>' + (sum ? rsNum(sum.totalUnits) : '—') + '</b></div>' +
+    '<div><small>Size rates</small><b>' + rows.length + '</b></div></div>' +
+    '<div class="rs-modal-grid"><label class="rs-modal-field"><span>Rates take effect</span><input id="rsBatchDate" type="date" value="' + escapeHtml(v.effectiveFrom && v.effectiveFrom > todaySg() ? v.effectiveFrom : todaySg()) + '"></label>' +
+    '<label class="rs-modal-field"><span>' + rsTip('Existing manual unit rates', 'Some units may already have a manually set rate because they are unusual. Choose whether to preserve or replace those exceptions when this strategy is applied.') + '</span>' +
+    '<select id="rsBatchRule">' + CONFLICT_RULES.map((r) => '<option value="' + r + '"' + (rule === r ? ' selected' : '') + '>' + escapeHtml(ruleLabel[r] || r) + '</option>').join('') + '</select>' +
+    '<small>A manual unit rate is an intentional exception saved against one specific unit.</small></label></div>' +
+    '<div class="rs-sync-scope"><div><i>✓</i><span><b>Updated:</b> vacant-unit rack rates, future quotes and new reservations from the effective date.</span></div>' +
+    '<div><i>—</i><span><b>Not changed:</b> occupied-customer rent, promotions, protection plans or existing signed agreements.</span></div></div>' +
+    '<div class="table-wrap"><table class="rs-sync-preview"><thead><tr><th>Size</th><th>Units</th><th>Rack rent</th><th>Rack PSF</th><th>Unit master action</th></tr></thead><tbody>' +
+    (rows.length ? rows.map((r) => '<tr><td>' + r.size + ' sq ft</td><td>' + r.unitCount + '</td><td><b>' + rsMoney(r.rackMonthly, 2) + '</b></td><td>' + fmtPsf(r.rackPsf) + '</td><td>Schedule rack-rate update</td></tr>').join('')
+      : '<tr><td colspan="5"><div class="rs-empty">No stocked sizes for this facility.</div></td></tr>') +
+    '</tbody></table></div>';
+  overlay(root, 'Apply rack rates to Facilities · Units', body, ready ? 'Schedule Units rate update' : 'Set Active first',
     async () => {
       const key = 'rs-' + v.id.slice(0, 8) + '-' + Date.now().toString(36);
-      const body = await request('/rate-strategy/' + encodeURIComponent(v.id) + '/batches', {
+      const res = await request('/rate-strategy/' + encodeURIComponent(v.id) + '/batches', {
         method: 'POST',
         body: JSON.stringify({ effectiveDate: $('#rsBatchDate').value, conflictRule: $('#rsBatchRule').value }),
         headers: { 'Idempotency-Key': key },
       });
-        showBanner('Batch ' + body.data.ref + ' scheduled' + (body.meta && body.meta.replayed ? ' (replayed)' : ''), true);
+      const b = res.data || {};
+      showBanner('Batch ' + b.ref + ' ' + String(b.status || 'scheduled').toLowerCase() + (res.meta && res.meta.replayed ? ' (replayed)' : ''), true);
+      setTimeout(async () => {
         await loadVersionBatches(root);
         await loadActivity(root);
         renderRsContext();
-        const sec = $('#rsVersionBatches');
-        if (sec) sec.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-    });
+        const s = b.summary || {};
+        overlay(root, 'Units rate batch ' + (b.status === 'APPLIED' ? 'applied' : 'scheduled'),
+          '<div class="rs-modal-note"><b>' + escapeHtml(b.ref || 'Batch') + ' · ' + escapeHtml(String(b.status || '').replace(/_/g, ' ').toLowerCase()) + '</b><span>' +
+          (b.status === 'APPLIED'
+            ? (s.applied || 0) + ' vacant unit records updated; ' + (s.skippedOccupied || 0) + ' occupied units skipped; ' + (s.preservedManual || 0) + ' manual rates preserved.'
+            : 'Unit records update on ' + escapeHtml(fmtDay(b.effectiveDate)) + '.') + ' Existing customer rent remains unchanged.</span></div>' +
+          '<div class="rs-sync-scope"><div><i>✓</i><span>The batch is recorded in this strategy’s history and linked to Facilities · Units.</span></div>' +
+          '<div><i>✓</i><span>New quotes and reservations use the new rack rates from the effective date.</span></div></div>',
+          '', async () => {}, { noConfirm: true });
+      }, 0);
+    }, { size: 'wide', confirmDisabled: !ready });
 }
 
 // Scoped styles for the B-4 live workbench (runtime-injected, same
@@ -1612,67 +1637,90 @@ function ensureRsWorkbenchStyles() {
     '#rateStrategyRoot .tbl-toolbar .tbl-select,#rateStrategyRoot .tbl-toolbar .set-input{max-width:100%}' +
     '#rateStrategyRoot .rs-table-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}' +
     '#rateStrategyRoot > #rsBody > .modal-alert{margin-bottom:14px}' +
-    '#rateStrategyRoot .rs-details{margin-top:14px}' +
-    '#rateStrategyRoot [hidden]{display:none!important}';
+    '#rateStrategyRoot [hidden]{display:none!important}' +
+    // Reference hides the module tab row on this page (sidebar sub-items
+    // carry the same navigation).
+    '#promotions:has(#facility-rate-strategy.active) > .subtabs{display:none}';
   document.head.appendChild(st);
 }
 
-// Scoped scroll guard for every rate-strategy modal (B-1): the shared
-// dashboard.html `.modal-overlay` has no overflow, so a tall window (e.g. the
-// 1337px New-strategy form) clips its footer below the fold on a 900px-high
-// screen. Constrain this workspace's window to the viewport and scroll the
-// body internally, leaving the header/footer pinned. Injected once at runtime
-// (same convention as confirmDialog's check row) — no dashboard.html change, existing
-// CMS tokens and v55 look untouched. All overlay() callers (new, edit levers,
-// override, validate, duplicate, schedule batch) share id #rsOverlay,
-// so this one rule audits/fixes them all; Set Active goes through the short
-// confirmDialog shell and never overflows.
 function ensureRsOverlayStyles() {
+  // The modal shell (.modal/.overlay/.modal-card) and every rs-* body class
+  // come from the CMS base + proto-rate-strategy.css. Our CMS base differs
+  // from the reference in three values — pin the reference ones here.
   if (document.querySelector('style[data-rs-overlay]')) return;
   const st = document.createElement('style');
   st.setAttribute('data-rs-overlay', '1');
   st.textContent =
-    '#rsOverlay{overflow-y:auto}' +
-    '#rsOverlay .modal-win{max-height:min(90vh,1100px);display:flex;flex-direction:column;overflow:hidden}' +
-    '#rsOverlay .modal-hdr{flex:none}' +
-    '#rsOverlay .modal-body{overflow-y:auto;min-height:0;flex:1 1 auto;overscroll-behavior:contain}' +
-    '#rsOverlay .modal-foot{flex:none}';
+    '#rsOverlay .modal-card header h2{font-size:19px}' +
+    '#rsOverlay .modal-card header small{color:inherit}' +
+    '#rsOverlay .modal-card footer{padding:14px 20px}' +
+    '#rsOverlay .modal-card{z-index:1}' +
+    '#rsOverlay{z-index:120}' +
+    '#rsOverlayErr{margin-top:12px}' +
+    '#rsOverlay [hidden]{display:none!important}';
   document.head.appendChild(st);
 }
 
-/** Tiny runtime modal — no dashboard.html change (same convention as confirmDialog's check row). */
-function overlay(root, title, bodyHtml, confirmLabel, onConfirm) {
+/** Reference showModal(): `.modal.rs-modal` + `.overlay` + `.modal-card`
+ *  (header h2/small + × iconbtn, section body, footer buttons). opts:
+ *  { size: 'wide'|'normal', subtitle, cancelLabel, footerStart (html),
+ *    noConfirm, confirmDisabled }. Ids #rsOverlay/#rsOverlayOk/
+ *  #rsOverlayCancel/#rsOverlayErr are stable for callers. */
+function overlay(root, title, bodyHtml, confirmLabel, onConfirm, opts) {
+  const o = opts || {};
   ensureRsOverlayStyles();
   closeOverlay();
   const wrap = document.createElement('div');
-  wrap.className = 'modal-overlay';
+  wrap.className = 'modal rs-modal';
   wrap.id = 'rsOverlay';
-  wrap.innerHTML = '<div class="modal-win" role="dialog" aria-label="' + escapeHtml(title) + '">' +
-    '<div class="modal-hdr"><div class="modal-title">' + escapeHtml(title) + '</div>' +
-    '<button class="modal-x" id="rsOverlayX" type="button">✕</button></div>' +
-    '<div class="modal-body">' + bodyHtml + '<div class="modal-alert" id="rsOverlayErr" hidden></div></div>' +
-    '<div class="modal-foot"><button class="act-btn" id="rsOverlayCancel" type="button">Cancel</button>' +
-    '<button class="act-btn primary" id="rsOverlayOk" type="button">' + escapeHtml(confirmLabel) + '</button></div></div>';
+  wrap.innerHTML = '<div class="overlay" data-rs-close></div>' +
+    '<div class="modal-card' + (o.size === 'wide' ? ' rs-wide' : '') + '" role="dialog" aria-modal="true" aria-label="' + escapeHtml(title) + '">' +
+    '<header><div><h2>' + escapeHtml(title) + '</h2><small>' + escapeHtml(o.subtitle || '') + '</small></div>' +
+    '<button class="iconbtn" type="button" id="rsOverlayX" data-rs-close aria-label="Close">×</button></header>' +
+    '<section>' + bodyHtml + '<div class="rs-warning" id="rsOverlayErr" hidden></div></section>' +
+    '<footer>' + (o.footerStart || '') +
+    '<button class="btn" type="button" id="rsOverlayCancel" data-rs-close>' + escapeHtml(o.cancelLabel || (o.noConfirm ? 'Close' : 'Cancel')) + '</button>' +
+    (o.noConfirm ? '' : '<button class="primary" type="button" id="rsOverlayOk"' + (o.confirmDisabled ? ' disabled' : '') + '>' + escapeHtml(confirmLabel) + '</button>') +
+    '</footer></div>';
   document.body.appendChild(wrap);
-  const close = () => closeOverlay();
-  $('#rsOverlayX').addEventListener('click', close);
-  $('#rsOverlayCancel').addEventListener('click', close);
-  wrap.addEventListener('click', (e) => { if (e.target === wrap) close(); });
-  $('#rsOverlayOk').addEventListener('click', async () => {
-    const btn = $('#rsOverlayOk');
-    btn.disabled = true;
-    try { await onConfirm(); close(); }
+  // Same stopPropagation guard as the reference: keep modal clicks away
+  // from the app-wide fallback button handler.
+  wrap.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const tip = e.target.closest('[data-rs-tip]');
+    if (tip) { e.preventDefault(); showRsError(tip.dataset.rsTip, true); return; }
+    if (e.target.closest('[data-rs-close]')) { e.preventDefault(); closeOverlay(); }
+  });
+  const onKey = (e) => { if (e.key === 'Escape') closeOverlay(); };
+  document.addEventListener('keydown', onKey);
+  wrap._rsKey = onKey;
+  requestAnimationFrame(() => wrap.classList.add('open'));
+  const ok = $('#rsOverlayOk');
+  if (ok) ok.addEventListener('click', async () => {
+    ok.disabled = true;
+    try { await onConfirm(); closeOverlay(); }
     catch (e) {
-      const err = $('#rsOverlayErr');
-      if (err) { err.hidden = false; err.textContent = describeError(e); }
-      btn.disabled = false;
+      showRsError(describeError(e));
+      ok.disabled = false;
     }
   });
 }
 
+/** Inline message inside the open dialog (errors, or a ? definition). */
+function showRsError(text, info) {
+  const err = $('#rsOverlayErr');
+  if (!err) return;
+  err.hidden = false;
+  err.className = info ? 'rs-modal-note' : 'rs-warning';
+  err.innerHTML = '<b>' + (info ? 'Definition' : 'Could not complete this action') + '</b><span>' + escapeHtml(text) + '</span>';
+}
+
 function closeOverlay() {
   const el = $('#rsOverlay');
-  if (el) el.remove();
+  if (!el) return;
+  if (el._rsKey) document.removeEventListener('keydown', el._rsKey);
+  el.remove();
 }
 
 // ============================== create / edit levers ==============================
@@ -1758,31 +1806,79 @@ async function loadPromoPlans() {
 }
 
 function openCreateModal(root) {
-  loadPromoPlans().then((plans) => {
-    const l = { ...DEFAULT_LEVERS_UI, rounding: currentDefaultRounding(), previewDuration: 12, previewMatrix: 'Standard', planIds: [] };
-    overlay(root, 'New rate strategy',
-      '<label class="t-type" for="rsf-branch">Facility</label>' +
-      '<select id="rsf-branch" class="tbl-select" style="width:100%">' + (state.branches || []).map((b) =>
-        '<option value="' + escapeHtml(b.id) + '"' + (view.branchFilter === b.id ? ' selected' : '') + '>' + escapeHtml(b.code + ' · ' + b.name) + '</option>').join('') + '</select>' +
-      '<div class="form-grid" style="margin-top:8px;"><div class="field"><label for="rsf-name">Strategy name</label><input id="rsf-name" maxlength="120" placeholder="e.g. Sembawang launch rates"></div>' +
-      '<div class="field"><label for="rsf-owner">Owner (optional)</label><input id="rsf-owner" maxlength="120"></div>' +
-      leverField('effectiveFrom', 'Effective from', todaySg(), ' type="date"') + '</div>' +
-      leverFormHtml(l, plans),
-      'Create draft',
-      async () => {
-        if (!$('#rsf-name').value.trim()) throw new Error('A strategy name is required.');
-        const { levers, preview } = readLeversForm();
-        const data = await post('/facilities/' + encodeURIComponent($('#rsf-branch').value) + '/rate-strategy', {
-          name: $('#rsf-name').value.trim(),
-          owner: $('#rsf-owner').value.trim() || undefined,
-          effectiveFrom: $('#rsf-effectiveFrom').value || undefined,
-          levers, promotionPreview: preview,
-        }).then((b) => b);
-        showBanner('Draft ' + data.strategyName + ' v1 created', true);
-        view.versionId = data.id;
-        await showRoot(root);
+  const branches = state.branches || [];
+  overlay(root, 'New rate strategy',
+    '<div class="rs-modal-note"><b>Start a facility draft</b><span>The draft opens in the workbench with the recommended smooth-curve defaults. Adjust the levers there, Save draft, then Set Active.</span></div>' +
+    '<div class="rs-modal-grid"><label class="rs-modal-field"><span>Facility</span><select id="rsf-branch">' + branches.map((b) =>
+      '<option value="' + escapeHtml(b.id) + '"' + (view.branchFilter === b.id ? ' selected' : '') + '>' + escapeHtml(b.name || b.code) + '</option>').join('') + '</select></label>' +
+    '<label class="rs-modal-field"><span>Effective from</span><input id="rsf-effectiveFrom" type="date" value="' + todaySg() + '"></label>' +
+    '<label class="rs-modal-field full"><span>Strategy name</span><input id="rsf-name" maxlength="120" placeholder="e.g. Sembawang Master Rate Strategy"></label>' +
+    '<label class="rs-modal-field full"><span>Owner (optional)</span><input id="rsf-owner" maxlength="120"></label></div>',
+    'Create draft',
+    async () => {
+      const name = $('#rsf-name').value.trim();
+      if (!name) throw new Error('A strategy name is required.');
+      const data = await post('/facilities/' + encodeURIComponent($('#rsf-branch').value) + '/rate-strategy', {
+        name,
+        owner: $('#rsf-owner').value.trim() || undefined,
+        effectiveFrom: $('#rsf-effectiveFrom').value || undefined,
       });
-  }).catch((e) => rsError(root, e));
+      showBanner('Draft ' + data.strategyName + ' v1 created', true);
+      view.versionId = data.id;
+      view.libraryOpen = false;
+      view.previews = {}; view.planIds = null; view.plans = null;
+      setTimeout(() => showRoot(root), 0);
+    });
+}
+
+/** Reference openStrategyLibrary(): wide modal with facility/status
+ *  filters and a Load button per version. */
+async function openStrategyLibraryModal(root) {
+  let rows = [];
+  try { rows = (await get('/rate-strategy/library')) || []; } catch (e) { rsError(root, e); return; }
+  const branches = state.branches || [];
+  const nameOf = (r) => { const b = branches.find((x) => x.id === r.branchId); return b ? b.name : (r.branchCode || '—'); };
+  overlay(root, 'Rate strategy library',
+    '<div class="rs-modal-note"><b>One library for every facility strategy</b><span>Load an existing version, compare its status and effective date, or start a new facility draft. Only Active strategies can be applied to Facilities · Units.</span></div>' +
+    '<div class="rs-library-filters"><label><span>Facility</span><select id="rsLibFacility"><option value="all">All facilities</option>' +
+    branches.map((b) => '<option value="' + escapeHtml(b.id) + '">' + escapeHtml(b.name || b.code) + '</option>').join('') + '</select></label>' +
+    '<label><span>Status</span><select id="rsLibStatus"><option value="all">All statuses</option><option value="DRAFT">Draft</option><option value="ACTIVE">Active</option><option value="SUPERSEDED">Superseded</option></select></label></div>' +
+    '<div class="table-wrap"><table class="rs-library-table"><thead><tr><th>Strategy</th><th>Facility</th><th>Version</th><th>Effective from</th><th>Status</th><th>Updated / owner</th><th></th></tr></thead><tbody id="rsLibRows"></tbody></table></div>',
+    '＋ New strategy',
+    async () => { setTimeout(() => openCreateModal(root), 0); },
+    { size: 'wide', cancelLabel: 'Close library',
+      footerStart: '<button class="btn" type="button" id="rsLibAllBatches" style="margin-right:auto">All rate batches &amp; defaults</button>' });
+  const paint = () => {
+    const f = $('#rsLibFacility').value;
+    const s = $('#rsLibStatus').value;
+    const list = rows.filter((r) => (f === 'all' || r.branchId === f) &&
+      (s === 'all' || r.status === s || (s === 'ACTIVE' && r.status === 'APPROVED')));
+    $('#rsLibRows').innerHTML = list.length ? list.map((r) => {
+      const st = rsStatusMeta(r.status, false);
+      const loaded = r.versionId === view.versionId;
+      return '<tr><td><b>' + escapeHtml(r.strategyName) + '</b>' + (loaded ? '<small>Current working copy</small>' : '') + '</td>' +
+        '<td>' + escapeHtml(nameOf(r)) + '</td><td>v' + r.versionNo + '</td><td>' + escapeHtml(fmtDay(r.effectiveFrom)) + '</td>' +
+        '<td><span class="pill ' + st.cls + '">' + escapeHtml(st.label) + '</span></td>' +
+        '<td>' + escapeHtml(fmtDay(r.updatedAt)) + '<small>' + escapeHtml(r.owner || '—') + '</small></td>' +
+        '<td>' + (loaded ? '<span class="pill blue">Loaded</span>' : '<button class="btn rs-small" type="button" data-rs-load="' + escapeHtml(r.versionId) + '">Load</button>') + '</td></tr>';
+    }).join('') : '<tr><td colspan="7"><div class="rs-empty">No strategies match these filters.</div></td></tr>';
+    $('#rsLibRows').querySelectorAll('[data-rs-load]').forEach((b) => b.addEventListener('click', () => {
+      closeOverlay();
+      view.versionId = b.dataset.rsLoad;
+      view.version = null; view.preview = null; view.previewError = null; view.liveDirty = false; view.validation = null; view.history = null; view.activity = null;
+      view.previews = {}; view.planIds = null; view.plans = null;
+      renderShow($('#rsBody'), root);
+    }));
+  };
+  $('#rsLibFacility').addEventListener('change', paint);
+  $('#rsLibStatus').addEventListener('change', paint);
+  const all = $('#rsLibAllBatches');
+  if (all) all.addEventListener('click', () => {
+    closeOverlay();
+    view.versionId = null; view.libraryOpen = true; view.previews = {}; view.planIds = null; view.plans = null;
+    showRoot(root);
+  });
+  paint();
 }
 
 function openLeverModal(root, v, _unused) {

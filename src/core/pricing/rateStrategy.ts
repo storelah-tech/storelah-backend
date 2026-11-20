@@ -676,14 +676,14 @@ export function validateStrategy(
       code: 'BELOW_FLOOR',
       message: 'Stocked size breaches the applicable rack PSF floor.',
       reason:
-        'The higher of the overall floor and the category floor applies before rounding; a rate below it (only possible via override) must be fixed before approval.',
+        'The higher of the overall floor and the category floor applies before rounding; a rate below it (only possible via override) must be fixed before Set Active.',
       sizes: belowFloor.map((r) => r.size),
     });
   } else if (stockedRows.length > 0) {
     pass('FLOORS_HOLD');
   }
 
-  // Warnings (D12): reason is mandatory; none of these blocks submission —
+  // Warnings (D12): reason is mandatory; none of these blocks Set Active —
   // an authorised approver accepts them with a note (B3 enforces the note).
   for (let i = 1; i < stockedRows.length; i += 1) {
     const prev = stockedRows[i - 1];
@@ -715,7 +715,7 @@ export function validateStrategy(
   if (summary.gapVsTarget != null && summary.gapVsTarget < 0) {
     warnings.push({
       code: 'BELOW_TARGET',
-      message: `Weighted Effective PSF is below the approved model target (gap ${summary.gapVsTarget}).`,
+      message: `Weighted Effective PSF is below the Financial Model target (gap ${summary.gapVsTarget}).`,
       reason:
         'The target comparison uses recurring Effective PSF, never Blended PSF; pricing below target needs commercial sign-off regardless of the size of the gap.',
     });
@@ -726,7 +726,7 @@ export function validateStrategy(
       warnings.push({
         code: 'DRAFT_PROMO_PREVIEW',
         message: `Plan ${p.planId} v${p.planVersion} is ${p.status}, preview-only.`,
-        reason: 'Selecting a non-active plan never approves or activates it; the preview is indicative until the plan itself is approved.',
+        reason: 'Selecting a non-active plan never activates it; the preview is indicative until the plan itself is Active.',
       });
     }
   }
@@ -744,8 +744,8 @@ export function validateStrategy(
   if (targetPsf == null) {
     warnings.push({
       code: 'TARGET_UNAVAILABLE',
-      message: 'No approved Financial Model target was supplied.',
-      reason: 'Variance cannot be computed without the CURRENT-model recurring Effective PSF target; B3 surfaces this as a blocking state.',
+      message: 'No Financial Model target is linked for this facility.',
+      reason: 'Variance cannot be computed without the CURRENT-model recurring Effective PSF target; target comparisons show as unavailable; nothing is blocked.',
     });
   }
 

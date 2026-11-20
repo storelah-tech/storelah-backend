@@ -80,6 +80,7 @@ import {
   previewVersionWithLevers as previewRateVersionWithLevers,
   validateVersion as validateRateVersion,
   activateVersion as activateRateVersion,
+  reviseVersion as reviseRateVersion,
   submitVersion as submitRateVersion,
   approveVersion as approveRateVersion,
   rejectVersion as rejectRateVersion,
@@ -2341,6 +2342,23 @@ router.post('/rate-strategy/:id/activate', requireAuth, async (req: Request, res
   }
   ok(res, await activateRateVersion({
     versionId: String(req.params.id), expectedVersion: parsed.data.version,
+    actor: rateActorOf(req), correlationId: newCorrelationId(),
+  }));
+});
+
+// Revise: edits to an Active version are saved as the strategy's next Draft
+// version (an existing newer Draft is reused; a Draft id is a plain save).
+router.post('/rate-strategy/:id/revise', requireAuth, async (req: Request, res: Response) => {
+  const parsed = z.object({
+    levers: rateLeversSchema.optional(),
+    effectiveFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  }).safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid revise payload (levers/effectiveFrom)', parsed.error.flatten());
+    return;
+  }
+  ok(res, await reviseRateVersion({
+    versionId: String(req.params.id), levers: parsed.data.levers, effectiveFrom: parsed.data.effectiveFrom,
     actor: rateActorOf(req), correlationId: newCorrelationId(),
   }));
 });

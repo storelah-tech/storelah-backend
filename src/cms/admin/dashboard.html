@@ -107,7 +107,7 @@ main{min-width:0;display:flex;flex-direction:column;min-height:100vh}
 .qitem .dot{width:8px;height:8px;border-radius:50%;background:var(--terra);margin:auto}
 .qitem b{font-size:13px}.qitem small{color:var(--muted)}
 .pill{border-radius:99px;padding:4px 8px;font-size:11px;font-weight:700;white-space:nowrap}
-.pill.red{background:#f8dfdc;color:#9e3f38}.pill.amber{background:#faebcf;color:#8b6324}.pill.green{background:#dfe7dd;color:#39503f}.pill.blue{background:#dfeef3;color:#3a5f6e}
+.pill.red{background:#f8dfdc;color:#9e3f38}.pill.amber{background:#faebcf;color:#8b6324}.pill.green{background:#dfeadf;color:#3f6846}.pill.blue{background:#e1ebef;color:#426676}.pill.terra{background:#f7e2d7;color:#9a5031}.pill.grey{background:#edeae5;color:#666}
 
 /* ============ SOURCE ROWS ============ */
 .source-row{display:flex;align-items:center;gap:12px;padding:8px 0;border-bottom:1px solid var(--line)}.source-row:last-child{border-bottom:0}
@@ -1122,7 +1122,7 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
   <button class="nav" data-core-page="customers"><svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 9a3 3 0 100-6 3 3 0 000 6z"/><path d="M3 17c0-3.3 2.7-6 6-6s6 2.7 6 6"/></svg> <span>Customers</span></button>
   <button class="nav" data-core-page="facilities"><svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="6" height="6" rx="1"/><rect x="10" y="2" width="6" height="6" rx="1"/><rect x="2" y="10" width="6" height="6" rx="1"/><rect x="10" y="10" width="6" height="6" rx="1"/></svg> <span>Facilities</span><i class="badge" id="facilityBadge">0</i></button>
   <button class="nav" data-core-page="extras"><svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 1.5l6 2.5v5c0 4-2.7 6.5-6 7.5-3.3-1-6-3.5-6-7.5V4L9 1.5z"/><path d="M9 6v4M7 8h4"/></svg> <span>Protection &amp; Addons</span></button>
-  <button class="nav" data-core-page="promotions"><svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 2.5H10l5.5 5.5-7.5 7.5-5.5-5.5V2.5z"/><circle cx="6.6" cy="6.6" r="1.3"/></svg> <span>Discount &amp; Promotion</span></button>
+  <button class="nav" data-core-page="promotions"><svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 2.5H10l5.5 5.5-7.5 7.5-5.5-5.5V2.5z"/><circle cx="6.6" cy="6.6" r="1.3"/></svg> <span>Rates and Promotions</span></button>
   <button class="nav" data-core-page="billing"><svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="14" height="9" rx="1.5"/><circle cx="9" cy="9.5" r="2"/><path d="M5.5 7.2v.01M12.5 11.8v.01"/></svg> <span>Finance</span></button>
   <button class="nav" data-core-page="content"><svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="14" height="14" rx="2"/><path d="M2 6.5h14M6.5 6.5V16"/></svg> <span>Content</span></button>
   <button class="nav" data-core-page="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg> <span>Global Settings</span></button>
@@ -1293,7 +1293,7 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
 
     <!-- ============ FACILITIES ============ -->
     <section class="page" id="facilities">
-      <div class="subtabs" data-tabs="facility"><button class="active" data-tab="facility-map">Units Information</button><button data-tab="facility-units">Units</button><button data-tab="facility-floors">Floors</button><button data-tab="facility-floorplans">Floor Plan Designer</button><button data-tab="facility-floorplan-library">Floor Plan Library</button><button data-tab="facility-maintenance">Maintenance</button><button data-tab="facility-assets">Assets &amp; Vendors</button><button data-tab="facility-incidents">Incidents</button><button data-tab="facility-access">Access Control</button><button data-tab="facility-inspections">Inspections</button><button data-tab="facility-rate-strategy">Master rate strategy</button></div>
+      <div class="subtabs" data-tabs="facility"><button class="active" data-tab="facility-map">Units Information</button><button data-tab="facility-units">Units</button><button data-tab="facility-floors">Floors</button><button data-tab="facility-floorplans">Floor Plan Designer</button><button data-tab="facility-floorplan-library">Floor Plan Library</button><button data-tab="facility-maintenance">Maintenance</button><button data-tab="facility-assets">Assets &amp; Vendors</button><button data-tab="facility-incidents">Incidents</button><button data-tab="facility-access">Access Control</button><button data-tab="facility-inspections">Inspections</button></div>
       <!-- Units Information -->
       <div class="module-panel active" id="facility-map">
         <div class="unit-map-card">
@@ -1679,10 +1679,6 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
           <table class="data-tbl" id="certificatesTable"><thead><tr><th>Certificate</th><th>Type</th><th>Branch</th><th>Expiry</th><th>Status</th><th></th></tr></thead><tbody id="certificatesBody"></tbody></table>
         </div>
       </div>
-      <!-- Master rate strategy (B4 workspace; body self-mounted by rateStrategyView.js) -->
-      <div class="module-panel" id="facility-rate-strategy">
-        <div class="tbl-card"><div class="sec-hdr"><div><div class="sec-title">Master rate strategy</div><div class="sec-sub">Rack-rate strategies, approval, Units batches and activity.</div></div></div><div id="rateStrategyRoot"><div class="section-empty">Loading rate strategies…</div></div></div>
-      </div>
     </section>
 
     <!-- ============ PROTECTION & ADDONS (booking checkout catalog; bodies self-mounted by extrasView.js) ============ -->
@@ -1698,7 +1694,7 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
     <!-- ============ PROMOTIONS ============ -->
     <section class="page" id="promotions">
       <div class="head"><div><h1>Promotion engine</h1><p>Build controlled discounts and free-month offers by facility, unit, duration and customer eligibility.</p></div></div>
-      <div class="subtabs" data-tabs="promo"><button class="active" data-tab="promo-overview">Dashboard</button><button data-tab="promo-discount-matrix">Discount plan builder</button><button data-tab="promo-free-months">Free months</button><button data-tab="promo-code-builder">Promo code builder</button><button data-tab="promo-library">Promotions library</button><button data-tab="promo-history">History</button><button data-tab="promo-safeguards">Safeguards</button><button data-tab="promo-performance">Performance</button></div>
+      <div class="subtabs" data-tabs="promo"><button class="active" data-tab="promo-overview">Dashboard</button><button data-tab="promo-discount-matrix">Discount plan builder</button><button data-tab="promo-free-months">Free months</button><button data-tab="promo-code-builder">Promo code builder</button><button data-tab="promo-library">Promotions library</button><button data-tab="promo-history">History</button><button data-tab="promo-safeguards">Safeguards</button><button data-tab="promo-performance">Performance</button><button data-tab="facility-rate-strategy">Master rate strategy</button></div>
 
       <!-- OVERVIEW panel -->
       <div class="module-panel active" id="promo-overview">
@@ -1987,6 +1983,10 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
             </tbody></table></div>
           </div>
         </div>
+      </div>
+      <!-- Master rate strategy (B4 workspace; body self-mounted by rateStrategyView.js) -->
+      <div class="module-panel" id="facility-rate-strategy">
+        <div class="tbl-card"><div class="sec-hdr"><div><div class="sec-title">Master rate strategy</div><div class="sec-sub">Rack-rate strategies, Units batches and activity.</div></div></div><div id="rateStrategyRoot"><div class="section-empty">Loading rate strategies…</div></div></div>
       </div>
     </section>
 

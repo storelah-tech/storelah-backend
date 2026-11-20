@@ -79,6 +79,7 @@ import {
   previewVersion as previewRateVersion,
   previewVersionWithLevers as previewRateVersionWithLevers,
   validateVersion as validateRateVersion,
+  activateVersion as activateRateVersion,
   submitVersion as submitRateVersion,
   approveVersion as approveRateVersion,
   rejectVersion as rejectRateVersion,
@@ -2165,11 +2166,12 @@ router.get('/finance/library/:id/audit', requireAuth, async (req: Request, res: 
 });
 
 // ---- Master Rate Strategy (Track B, B3) ----
-// Read-only consumers: preview/validate/library (view). Draft edits: create/
-// update. Submit (+ warning override): update. Approve/reject: approve
-// (maker-checker: approver ≠ submitter, enforced in service). Batch apply/
-// retry/cancel/apply-due additionally need facility-units:update (checked in
-// service code, since the route table expresses one permission per route);
+// Read-only consumers: preview/validate/library (view). Draft edits, set
+// Active and batch apply/retry/cancel/apply-due: update (no approval gate —
+// a previous approval step was removed; batches additionally need
+// facility-units:update, checked in service code since the route table
+// expresses one permission per route). Submit/approve/reject are legacy
+// deprecated aliases retained for existing rows; new UI never calls them.
 // REPLACE_MANUAL additionally requires the Owner role (D9, service code).
 const rateCategoryFloorsSchema = z.object({
   LOCKER: z.number().min(0).optional(),
@@ -2329,6 +2331,23 @@ router.post('/rate-strategy/:id/validate', requireAuth, async (req: Request, res
   ok(res, await validateRateVersion(String(req.params.id), parsed.data));
 });
 
+router.post('/rate-strategy/:id/activate', requireAuth, async (req: Request, res: Response) => {
+  const parsed = z.object({
+    version: z.number().int(),
+  }).safeParse(req.body);
+  if (!parsed.success) {
+    fail(res, 400, 'VALIDATION', 'Invalid activate payload (version)', parsed.error.flatten());
+    return;
+  }
+  ok(res, await activateRateVersion({
+    versionId: String(req.params.id), expectedVersion: parsed.data.version,
+    actor: rateActorOf(req), correlationId: newCorrelationId(),
+  }));
+});
+
+// Legacy approval flow (deprecated): submit/approve/reject are retained for
+// existing PENDING_APPROVAL/APPROVED rows. New UI uses Save draft + Set
+// Active above and never calls these.
 router.post('/rate-strategy/:id/submit', requireAuth, async (req: Request, res: Response) => {
   const parsed = z.object({
     version: z.number().int(),

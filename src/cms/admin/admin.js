@@ -84,12 +84,11 @@ const sideNav = {
   facilities: [['Units Information', 'facilities', 'facility-map'], ['Units', 'facilities', 'facility-units'],
     ['Floors', 'facilities', 'facility-floors'],
     ['Floor Plan Designer', 'facilities', 'facility-floorplans'], ['Floor Plan Library', 'facilities', 'facility-floorplan-library'], ['Maintenance', 'facilities', 'facility-maintenance'],
-    ['Master rate strategy', 'facilities', 'facility-rate-strategy'],
     ['Assets & vendors', 'facilities', 'facility-assets'], ['Incidents', 'facilities', 'facility-incidents'],
     ['Access control', 'facilities', 'facility-access'], ['Inspections', 'facilities', 'facility-inspections']],
   extras: [['Protection plans', 'extras', 'extras-plans'], ['Addons', 'extras', 'extras-addons']],
   content: [['All content', 'content', 'content-list'], ['Site builder', 'content', 'site-builder']],
-  promotions: [['Dashboard', 'promotions', 'promo-overview'], ['Discount plan builder', 'promotions', 'promo-discount-matrix'], ['Free months', 'promotions', 'promo-free-months'], ['Promo code builder', 'promotions', 'promo-code-builder'], ['Promotions library', 'promotions', 'promo-library'], ['History', 'promotions', 'promo-history'], ['Safeguards', 'promotions', 'promo-safeguards'], ['Performance', 'promotions', 'promo-performance']],
+  promotions: [['Dashboard', 'promotions', 'promo-overview'], ['Discount plan builder', 'promotions', 'promo-discount-matrix'], ['Free months', 'promotions', 'promo-free-months'], ['Promo code builder', 'promotions', 'promo-code-builder'], ['Promotions library', 'promotions', 'promo-library'], ['History', 'promotions', 'promo-history'], ['Safeguards', 'promotions', 'promo-safeguards'], ['Performance', 'promotions', 'promo-performance'], ['Master rate strategy', 'promotions', 'facility-rate-strategy']],
   // Prototype labels (2026-11-04): Invoices folded into the unified register,
   // Credits shown as WIP, Investor access removed.
   billing: [['Finance overview', 'billing', 'bill-overview'], ['Transactions, documents & approvals', 'billing', 'bill-transactions'],
@@ -4110,7 +4109,7 @@ function wireEvents() {
         bindAccess();
       }
       else if (panel === 'facility-inspections') bindInspections();
-      else if (panel === 'facility-rate-strategy') refreshRateStrategy().catch((err) => showBanner('Rate strategy: ' + describeError(err)));
+      else if (panel === 'facility-rate-strategy') openPanel('promotions', 'facility-rate-strategy');
     });
   });
   // Protection & Addons tabs (data-tabs="extras") — mirrors the billing/promo
@@ -4215,6 +4214,7 @@ function wireEvents() {
       else if (panel === 'promo-performance') bindPromoPerformance().catch(function () {});
       else if (panel === 'promo-free-months') loadFreeMonthsPlan().catch(function () {});
       else if (panel === 'promo-code-builder') loadCodePlan().catch(function () {});
+      else if (panel === 'facility-rate-strategy') refreshRateStrategy().catch(function (err) { showBanner('Rate strategy: ' + describeError(err)); });
     });
   });
   // Drawer (mobile)
@@ -4936,8 +4936,11 @@ async function boot() {
     } else if (hash.startsWith('bill-')) {
       // Deep link into a finance submodule (#bill-models, …): never PII/draft.
       openPanel('billing', hash);
+    } else if (hash === 'facility-rate-strategy') {
+      // Legacy deep link: the strategy moved to Rates and Promotions.
+      openPanel('promotions', hash);
     } else if (hash.startsWith('facility-')) {
-      // Deep link into a facility sub-panel (#facility-rate-strategy, …).
+      // Deep link into a facility sub-panel.
       openPanel('facilities', hash);
     } else {
       openPage('command');
@@ -4946,6 +4949,7 @@ async function boot() {
     window.addEventListener('hashchange', () => {
       const h = location.hash ? location.hash.slice(1) : '';
       if (h.startsWith('bill-')) openPanel('billing', h);
+      else if (h === 'facility-rate-strategy') openPanel('promotions', h);
       else if (h.startsWith('facility-')) openPanel('facilities', h);
     });
   } catch (e) {

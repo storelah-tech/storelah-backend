@@ -1,10 +1,11 @@
 // StoreLah CMS admin UI — Master Rate Strategy workspace (Track B, B4).
 //
-// Facilities › Master rate strategy (`#facilities` + panel
-// `facility-rate-strategy`). Calls ONLY the B3 CMS routes — no new endpoints:
+// Rates and Promotions › Master rate strategy (`#promotions` + panel
+// `facility-rate-strategy`; legacy `#facilities` deep links redirect here).
+// Calls ONLY the B3 CMS routes — no new endpoints:
 //   GET /rate-strategy/library, POST /facilities/:branchId/rate-strategy,
 //   GET/PATCH /rate-strategy/:id, GET /rate-strategy/:id/preview,
-//   POST /rate-strategy/:id/{validate,submit,approve,reject,duplicate},
+//   POST /rate-strategy/:id/{validate,activate,duplicate},
 //   POST /rate-strategy/:id/batches, GET /rate-batches, GET /rate-batches/:id,
 //   POST /rate-batches/:id/{apply,retry-failed,cancel},
 //   POST /units/rate-batches/apply-due,
@@ -12,12 +13,15 @@
 // GET /business-rules + PUT /business-rules (settings) and
 // GET /finance/models (CURRENT target readout).
 //
+// Flow (no approval gate): Save draft → Set Active → Apply rates to Units.
+// Apply is enabled only for a saved Active version with no unsaved changes.
+//
 // Body self-mounts into #rateStrategyRoot (like extrasView.js); the tab and
 // panel shell live in dashboard.html. Permission gating follows access.js:
 // the panel requires `facility-rate-strategy:view`; every action button
 // carries an explicit data-perm so the sweep hides what the role lacks.
 
-import { get, post, patch, put, request, describeError, can, getMe } from './api.js';
+import { get, post, patch, put, request, describeError, can } from './api.js';
 import { $, $$, escapeHtml, showBanner } from './dom.js';
 import { state } from './state.js';
 import { canView } from './access.js';
@@ -77,7 +81,7 @@ function todaySg() {
 function statusPill(s) {
   const cls = s === 'APPROVED' || s === 'ACTIVE' || s === 'APPLIED' ? 'green'
     : s === 'REJECTED' || s === 'FAILED' ? 'red'
-    : s === 'CANCELLED' || s === 'SUPERSEDED' ? '' : s === 'SCHEDULED' || s === 'PENDING_APPROVAL' ? 'blue' : 'amber';
+    : s === 'CANCELLED' || s === 'SUPERSEDED' ? 'grey' : s === 'SCHEDULED' || s === 'PENDING_APPROVAL' ? 'blue' : 'amber';
   return '<span class="pill ' + cls + '">' + escapeHtml(String(s).replace(/_/g, ' ')) + '</span>';
 }
 
@@ -92,8 +96,10 @@ function fmtMoney(n) {
 }
 
 function fmtPsf(n) {
+  // PSF is display-only at 2 decimals everywhere in this module (S$6.83,
+  // S$3.96, S$3.30). The engine keeps 4dp internally; never show it here.
   if (n == null || Number.isNaN(Number(n))) return '—';
-  return 'S$' + Number(n).toFixed(4);
+  return 'S$' + Number(n).toFixed(2);
 }
 
 function fmtDay(v) {
@@ -189,7 +195,7 @@ async function renderList(body, root) {
   body.innerHTML =
     '<div class="tbl-toolbar"><select id="rsBranchFilter" class="tbl-select">' + branchOptions(view.branchFilter) + '</select>' +
     '<select id="rsStatusFilter" class="tbl-select"><option value="">All statuses</option>' +
-    ['DRAFT', 'PENDING_APPROVAL', 'APPROVED', 'ACTIVE', 'REJECTED', 'SUPERSEDED'].map((s) =>
+    ['DRAFT', 'ACTIVE'].map((s) =>
       '<option value="' + s + '"' + (view.statusFilter === s ? ' selected' : '') + '>' + s.replace(/_/g, ' ') + '</option>').join('') +
     '</select><span style="flex:1"></span><button class="tb-btn ghost" id="rsReload">Reload</button></div>' +
     '<div id="rsListState"><div class="section-empty">Loading strategies…</div></div>';
@@ -243,21 +249,21 @@ async function renderShow(body, root) {
     return;
   }
   const v = view.version;
-  const me = getMe();
-  const selfSubmitted = !!(me && v.submittedBy && me.user && me.user.email &&
-    String(me.user.email).toLowerCase() === String(v.submittedBy).toLowerCase());
   const isDraft = v.status === 'DRAFT';
-  const isPending = v.status === 'PENDING_APPROVAL';
+  const isActive = v.status === 'ACTIVE' || v.status === 'APPROVED';
 
-  const canApply = v.status === 'APPROVED' || v.status === 'ACTIVE';
+  // Apply rates to Units is enabled only for a saved Active version with no
+  // unsaved changes (setLiveDirty re-evaluates the disabled state live).
+  const canApply = isActive;
 
-  // B-2: one scrolling page in §15.3 order — header action bar (all seven
-  // actions in handoff §15.4 order + status chip), target decision banner,
-  // context row, then KPIs, workbench, duration cards, categories, promotion
-  // library, unit-rate table, validation, history, activity, batches,
-  // settings. Every action renders whenever its permission is held and is
-  // disabled (not hidden) when the version state disallows it, so the header
-  // always reads the same.
+  // B-2: one scrolling page in §15.3 order — header action bar (§15.4:
+  // Strategy library, Undo, Save draft, Set Active, Duplicate for facility,
+  // Validate strategy, Apply rates to Units + status chip), target decision
+  // banner, context row, then KPIs, workbench (levers beside live chart),
+  // duration cards, categories, promotion library, unit-rate table,
+  // validation, history, activity, batches, settings. Every action renders
+  // whenever its permission is held and is disabled (not hidden) when the
+  // version state disallows it, so the header always reads the same.
   body.innerHTML =
     '<div class="sec-hdr"><div><div class="sec-title">' + escapeHtml(v.strategyName) + ' <span class="t-type">v' + v.versionNo + '</span></div>' +
     '<div class="sec-sub">' + branchLabel(v) + ' · effective ' + escapeHtml(v.effectiveFrom || '—') +
@@ -268,13 +274,11 @@ async function renderShow(body, root) {
     (can('facility-rate-strategy:view') ? '<button class="tb-btn ghost" data-rs-back data-perm="facility-rate-strategy:view">Strategy library</button>' : '') +
     (can('facility-rate-strategy:update') ? '<button class="tb-btn ghost" data-rs-undo data-perm="facility-rate-strategy:update" disabled title="Undo — restores last saved state; disabled with no unsaved changes.">Undo</button>' : '') +
     (can('facility-rate-strategy:update') ? '<button class="tb-btn" data-rs-edit data-perm="facility-rate-strategy:update"' + (isDraft ? '' : ' disabled title="Only a Draft can be saved."') + '>Save draft</button>' : '') +
+    (can('facility-rate-strategy:update') ? '<button class="tb-btn primary" data-rs-activate data-perm="facility-rate-strategy:update" data-rs-gate="activate"' + (isDraft ? '' : ' disabled title="Only a Draft can be set Active."') + '>Set Active</button>' : '') +
     (can('facility-rate-strategy:create') ? '<button class="tb-btn" data-rs-duplicate data-perm="facility-rate-strategy:create">Duplicate for facility</button>' : '') +
     (can('facility-rate-strategy:view') ? '<button class="tb-btn" data-rs-validate data-perm="facility-rate-strategy:view">Validate strategy</button>' : '') +
-    (can('facility-rate-strategy:approve') ? '<button class="tb-btn primary" data-rs-schedule data-perm="facility-rate-strategy:approve"' + (canApply ? '' : ' disabled title="Only Approved or Active versions can apply rates to Units."') + '>Apply rates to Units</button>' : '') +
-    (can('facility-rate-strategy:update') ? '<button class="tb-btn primary" data-rs-submit data-perm="facility-rate-strategy:update"' + (isDraft ? '' : ' disabled title="Only a Draft can be sent for approval."') + '>Send for approval</button>' : '') +
-    (isPending && can('facility-rate-strategy:approve') ? '<button class="tb-btn primary" data-rs-approve data-perm="facility-rate-strategy:approve">Approve</button><button class="tb-btn" data-rs-reject data-perm="facility-rate-strategy:approve">Reject</button>' : '') +
+    (can('facility-rate-strategy:update') ? '<button class="tb-btn primary" data-rs-schedule data-perm="facility-rate-strategy:update" data-rs-gate="apply"' + (canApply ? '' : ' disabled title="Only Active versions with no unsaved changes can apply rates to Units."') + '>Apply rates to Units</button>' : '') +
     '</div>' +
-    (isPending && selfSubmitted ? '<div class="modal-alert olive">You submitted this version — a different approver must decide it.</div>' : '') +
     '<div id="rsTargetBanner"></div>' +
     '<div class="tbl-card" id="rsContextCard"><div class="sec-hdr"><div><div class="sec-title">Strategy context</div><div class="sec-sub">Facility · name · effective date · inventory source · target source (§15.5).</div></div></div><div id="rsContext"><div class="section-empty">Loading context…</div></div></div>' +
     '<div class="tbl-card" id="rsKpiCard"><div class="sec-hdr"><div><div class="sec-title">Rate KPIs</div><div class="sec-sub">Base rack-rate KPIs never change with promotion/duration; promotion KPIs follow the selected 1/3/6/12 duration (§15.6–15.7).</div></div></div>' +
@@ -286,7 +290,7 @@ async function renderShow(body, root) {
       '<button class="tb-btn' + (view.duration === d ? ' primary' : ' ghost') + '" data-rs-dur="' + d + '" data-perm="facility-rate-strategy:view">' + d + ' mo</button>').join('') +
     '<select id="rsMatrix" class="tbl-select"><option' + (view.matrix === 'Standard' ? ' selected' : '') + '>Standard</option><option' + (view.matrix === 'Ground floor' ? ' selected' : '') + '>Ground floor</option></select></div>' +
     '<div class="rs-workgrid"><div class="rs-workcol">' +
-    '<div class="sec-hdr"><div><div class="sec-title">Levers</div><div class="sec-sub">' +     (isDraft ? 'Draft — edit beside the chart; Save draft persists, Undo restores. Recommended: smooth curve.' : 'Frozen once submitted — edits create no new version; submit again from Draft.') + '</div></div></div>' +
+    '<div class="sec-hdr"><div><div class="sec-title">Levers</div><div class="sec-sub">' +     (isDraft ? 'Draft — edit beside the chart; Save draft persists, Undo restores. Recommended: smooth curve.' : 'Frozen once Active — duplicate for the next iteration.') + '</div></div></div>' +
     '<div id="rsLevers">' + (isDraft ? leverEditHtml(v.levers) : leverSummaryHtml(v.levers)) + '</div></div>' +
     '<div class="rs-workcol"><div class="sec-hdr"><div><div class="sec-title">Live chart</div><div class="sec-sub">Rack · Effective · Blended (only when free months apply) · approved Financial Model target.</div></div></div>' +
     '<div id="rsChart"><div class="section-empty">Calculating preview…</div></div>' +
@@ -305,14 +309,14 @@ async function renderShow(body, root) {
     '<input id="rsTo" type="number" class="set-input" style="width:76px" min="8" max="150" value="' + view.rangeTo + '" title="To size">' +
     '<span class="t-type">Live — changes recalculate immediately.</span></div>' +
     '<div id="rsPreview"><div class="section-empty">Calculating preview…</div></div></div>' +
-    '<div class="tbl-card"><div class="sec-hdr"><div><div class="sec-title">Validation</div><div class="sec-sub">Warnings do not block approval. An authorised approver can accept a warning with a note. Only red blockers prevent submission or approval.</div></div></div>' +
+    '<div class="tbl-card"><div class="sec-hdr"><div><div class="sec-title">Validation</div><div class="sec-sub">Warnings are display-only. Only red blockers prevent Set Active or Apply.</div></div></div>' +
     '<div id="rsValidation"><div class="section-empty">Run Validate strategy to check blockers and warnings.</div></div></div>' +
-    '<div class="tbl-card"><div class="sec-hdr"><div><div class="sec-title">Version history</div><div class="sec-sub">Every version is immutable once submitted.</div></div></div>' +
+    '<div class="tbl-card"><div class="sec-hdr"><div><div class="sec-title">Version history</div><div class="sec-sub">Every version is immutable once Active.</div></div></div>' +
     '<div id="rsHistory"><div class="section-empty">Loading history…</div></div></div>' +
     '<div class="tbl-card"><div class="sec-hdr"><div><div class="sec-title">Activity</div><div class="sec-sub">Rate-strategy and batch audit trail for this version.</div></div></div>' +
     '<div id="rsActivity"><div class="section-empty">Loading activity…</div></div></div>' +
     '<div class="tbl-card"><div class="sec-hdr"><div><div class="sec-title">Rate batches — this version</div><div class="sec-sub">Future-dated batches stay Scheduled until due — Apply due batches is idempotent and safe to repeat. Batch detail actions (apply, retry failed, cancel) live on each batch. Occupied-customer rent is never touched.</div></div><div>' +
-    (can('facility-rate-strategy:approve') ? '<button class="tb-btn primary" id="rsVersionApplyDue" data-perm="facility-rate-strategy:approve">Apply due batches</button>' : '') + '</div></div>' +
+    (can('facility-rate-strategy:update') ? '<button class="tb-btn primary" id="rsVersionApplyDue" data-perm="facility-rate-strategy:update">Apply due batches</button>' : '') + '</div></div>' +
     '<div id="rsVersionBatches"><div class="section-empty">Loading batches…</div></div><div id="rsBatchDetail"></div></div>' +
     '<div style="margin-top:16px;" id="rsDetailSettings"></div>';
 
@@ -328,12 +332,8 @@ async function renderShow(body, root) {
   if (edit) edit.addEventListener('click', () => saveInlineDraft(root));
   const valBtn = body.querySelector('[data-rs-validate]');
   if (valBtn) valBtn.addEventListener('click', () => runValidation(root));
-  const sub = body.querySelector('[data-rs-submit]');
-  if (sub) sub.addEventListener('click', () => openSubmitModal(root, v));
-  const app = body.querySelector('[data-rs-approve]');
-  if (app) app.addEventListener('click', () => decideVersion(root, v, true, selfSubmitted));
-  const rej = body.querySelector('[data-rs-reject]');
-  if (rej) rej.addEventListener('click', () => openRejectModal(root, v));
+  const act = body.querySelector('[data-rs-activate]');
+  if (act) act.addEventListener('click', () => activateStrategy(root, v));
   const dup = body.querySelector('[data-rs-duplicate]');
   if (dup) dup.addEventListener('click', () => openDuplicateModal(root, v));
   const sch = body.querySelector('[data-rs-schedule]');
@@ -517,6 +517,22 @@ function setLiveDirty(dirty) {
     undoBtn.title = dirty
       ? 'Undo — restores last saved state.'
       : 'Undo — restores last saved state; disabled with no unsaved changes.';
+  }
+  // Apply rates to Units and Set Active both require a saved version with no
+  // unsaved changes — re-evaluate their disabled state live.
+  const applyBtn = document.querySelector('[data-rs-schedule]');
+  if (applyBtn && applyBtn.dataset.rsGate === 'apply') {
+    const ok = view.version && (view.version.status === 'ACTIVE' || view.version.status === 'APPROVED') && !dirty;
+    applyBtn.disabled = !ok;
+    applyBtn.title = ok ? '' : 'Only Active versions with no unsaved changes can apply rates to Units.';
+  }
+  const activeBtn = document.querySelector('[data-rs-activate]');
+  if (activeBtn && view.version) {
+    const ok = view.version.status === 'DRAFT' && !dirty;
+    activeBtn.disabled = !ok;
+    activeBtn.title = ok ? '' : (view.version.status !== 'DRAFT'
+      ? 'Only a Draft can be set Active.'
+      : 'Save the draft first — unsaved changes must be saved or undone before Set Active.');
   }
 }
 
@@ -713,7 +729,7 @@ function renderRsContext() {
     '<div class="ud-stat"><div class="ud-stat-lbl">Strategy name</div><div class="ud-stat-val" style="font-size:14px;">' + escapeHtml(v.strategyName) + ' v' + v.versionNo + '</div></div>' +
     '<div class="ud-stat"><div class="ud-stat-lbl">Effective from</div><div class="ud-stat-val" style="font-size:14px;">' + escapeHtml(v.effectiveFrom || '—') + '</div></div>' +
     '<div class="ud-stat"><div class="ud-stat-lbl">Inventory source</div><div class="ud-stat-val" style="font-size:14px;">' + (inv ? Number(inv.unitCount || 0) + ' units · ' + Number(inv.stockedSizeCount || 0) + ' sizes' : 'Facilities · Units') + '</div></div>' +
-    '<div class="ud-stat"><div class="ud-stat-lbl">Target source</div><div class="ud-stat-val" style="font-size:14px;">' + (tgt && tgt.targetPsf != null ? 'Approved Financial Model · S$' + Number(tgt.targetPsf).toFixed(4) : 'Unavailable — no CURRENT model') + '</div></div>' +
+    '<div class="ud-stat"><div class="ud-stat-lbl">Target source</div><div class="ud-stat-val" style="font-size:14px;">' + (tgt && tgt.targetPsf != null ? 'Approved Financial Model · S$' + Number(tgt.targetPsf).toFixed(2) : 'Unavailable — no CURRENT model') + '</div></div>' +
     '</div>';
 }
 
@@ -1188,10 +1204,10 @@ function renderPreviewTables(root) {
     (view.range === 'all' ? ' sizes (' + view.rangeFrom + '–' + view.rangeTo + ' sq ft; unstocked rows are Rate only and never affect totals)' : ' stocked sizes') +
     ' · ' + escapeHtml(String(s.totalUnits ?? '—')) + ' units · ' + escapeHtml(String(s.totalNla ?? '—')) + ' sq ft NLA' +
     (data.target && data.target.targetPsf != null ? ' · target ' + fmtPsf(data.target.targetPsf) + '/sq ft (' + escapeHtml(data.target.modelName || data.target.modelId || 'model') + ')' : '') + '</div>' +
-    '<div style="overflow-x:auto;"><table class="data-tbl"><thead><tr><th>Availability</th><th>Cat</th><th>Size</th><th>Promotion(s)</th>' +
-    '<th>Rack</th><th>Rack PSF</th><th>Disc</th><th>Effective</th><th>Eff PSF</th>' +
-    (anyBlended ? '<th>Free</th><th>Blended</th><th>Blend PSF</th>' : '') +
-    '<th>Target</th><th>Eff vs target</th><th>Override</th></tr></thead><tbody>' +
+    '<div style="overflow-x:auto;"><table class="data-tbl"><thead><tr><th>Facility availability</th><th>Unit size</th><th>Category</th><th>Promotion(s) applied</th>' +
+    '<th>Rack rent</th><th>Rack PSF</th><th>Approved discount</th><th>Effective monthly rent</th><th>Effective PSF</th>' +
+    (anyBlended ? '<th>Approved free months</th><th>Blended monthly rent</th><th>Blended PSF</th>' : '') +
+    '<th>Model target PSF</th><th>Effective PSF vs target</th><th>Override</th></tr></thead><tbody>' +
     cap.map((r) =>
       '<tr><td>' + (r.stocked ? r.unitCount + ' unit' + (r.unitCount === 1 ? '' : 's') : '<span class="t-type">Not stocked</span>') + '</td>' +
       '<td>' + escapeHtml(r.category) + '</td><td>' + r.size + ' sq ft</td><td>' + promoCell(r) + '</td>' +
@@ -1282,15 +1298,15 @@ async function runValidation(root) {
       escapeHtml(i.code) + '</div><div class="alert-desc">' + escapeHtml(i.message) +
       (i.reason ? '<br><i>' + escapeHtml(i.reason) + '</i>' : '') + '</div></div></div>';
     const html =
-      (data.blockers && data.blockers.length ? '<div class="modal-alert">This version has blockers — submission and approval stay disabled until they clear.</div>' + data.blockers.map((i) => issue(i, 'red')).join('') : '') +
-      (data.warnings && data.warnings.length ? '<div class="modal-alert olive">Warnings do not block approval. An authorised approver can accept a warning with a note.</div>' + data.warnings.map((i) => issue(i, 'amber')).join('') : '') +
+      (data.blockers && data.blockers.length ? '<div class="modal-alert">This version has blockers — Set Active and Apply stay disabled until they clear.</div>' + data.blockers.map((i) => issue(i, 'red')).join('') : '') +
+      (data.warnings && data.warnings.length ? '<div class="modal-alert olive">Warnings are display-only — they never block Set Active or Apply.</div>' + data.warnings.map((i) => issue(i, 'amber')).join('') : '') +
       (!((data.blockers || []).length + (data.warnings || []).length) ? '<div class="section-empty">Passed — no blockers or warnings.</div>' : '') +
       ((data.passed || []).length ? '<div class="t-type">Passed: ' + escapeHtml(data.passed.map((p) => (p && typeof p === 'object' ? (p.message || p.code) : p)).join(' · ')) + '</div>' : '');
     host.innerHTML = html;
     // Validation modal (§15.23): same result, exact rule text, Close only —
-    // approval itself stays on the header actions behind its own permission.
+    // blockers gate Set Active / Apply; warnings are display-only.
     overlay(root, 'Validation — ' + (view.version ? view.version.strategyName + ' v' + view.version.versionNo : view.versionId),
-      '<p class="t-type">Warnings do not block approval. An authorised approver can accept a warning with a note. Only red blockers prevent submission or approval.</p>' + html,
+      '<p class="t-type">Warnings are display-only. Only red blockers prevent Set Active or Apply.</p>' + html,
       'Close',
       async () => {});
   } catch (e) {
@@ -1306,7 +1322,7 @@ async function loadHistory(root) {
     const mine = rows.filter((r) => r.strategyId === view.version.strategyId).sort((a, b) => b.versionNo - a.versionNo);
     view.history = mine;
     if (!mine.length) { host.innerHTML = '<div class="section-empty">No versions found.</div>'; return; }
-    host.innerHTML = '<div class="rs-table-scroll"><table class="data-tbl"><thead><tr><th>Version</th><th>Status</th><th>Effective</th><th>Submitted by</th><th>Decided by</th><th>Updated</th><th></th></tr></thead><tbody>' +
+    host.innerHTML = '<div class="rs-table-scroll"><table class="data-tbl"><thead><tr><th>Version</th><th>Status</th><th>Effective</th><th>Saved by</th><th>Set Active by</th><th>Updated</th><th></th></tr></thead><tbody>' +
       mine.map((r) =>
         '<tr><td><b>v' + r.versionNo + '</b>' + (r.currentVersion ? '<div class="t-type">current</div>' : '') + '</td><td>' + statusPill(r.status) + '</td>' +
         '<td>' + escapeHtml(r.effectiveFrom || '—') + '</td><td>' + escapeHtml(r.submittedBy || '—') + '</td>' +
@@ -1404,57 +1420,30 @@ async function refreshShow(root) {
   if (body) await renderShow(body, root);
 }
 
-async function decideVersion(root, v, approve, selfSubmitted) {
-  if (approve && selfSubmitted) {
-    rsError(root, new Error('You submitted this version — a different approver must decide it.'));
+// Set Active (no approval gate): Draft → Active. Blockers and a missing
+// CURRENT Financial Model target prevent activation; warnings are
+// display-only. Requires a saved draft — unsaved workbench edits block it.
+async function activateStrategy(root, v) {
+  if (!v || v.status !== 'DRAFT') {
+    rsError(root, new Error('Only a Draft can be set Active.'));
+    return;
+  }
+  if (view.liveDirty) {
+    rsError(root, new Error('Save the draft first — unsaved workbench changes must be saved or undone before Set Active.'));
     return;
   }
   const okConfirm = await confirmDialog({
-    title: approve ? 'Approve version ' + v.versionNo + '?' : 'Reject version?',
-    message: approve
-      ? 'Approval freezes this snapshot and supersedes other approved versions. Rates still reach Units only through a scheduled batch.'
-      : 'Rejection returns the version for rework — it stays readable in history.',
-    confirmLabel: approve ? 'Approve' : 'Reject',
-    danger: !approve,
+    title: 'Set version ' + v.versionNo + ' Active?',
+    message: 'Activation freezes this snapshot and supersedes other Active versions. Rates still reach Units only through Apply rates to Units.',
+    confirmLabel: 'Set Active',
+    danger: false,
   });
   if (!okConfirm) return;
   try {
-    if (approve) {
-      await post('/rate-strategy/' + encodeURIComponent(v.id) + '/approve', { version: v.version });
-      showBanner('Version ' + v.versionNo + ' approved', true);
-    } else {
-      openRejectModal(root, v);
-      return;
-    }
+    await post('/rate-strategy/' + encodeURIComponent(v.id) + '/activate', { version: v.version });
+    showBanner('Version ' + v.versionNo + ' is now Active', true);
   } catch (e) { rsError(root, e); return; }
   await refreshShow(root);
-}
-
-function openRejectModal(root, v) {
-  const reason = window.prompt('Reject version ' + v.versionNo + ' — a reason is required:');
-  if (reason == null) return;
-  if (!reason.trim()) { rsError(root, new Error('A reason is required to reject a version.')); return; }
-  post('/rate-strategy/' + encodeURIComponent(v.id) + '/reject', { version: v.version, reason: reason.trim() })
-    .then(() => { showBanner('Version ' + v.versionNo + ' rejected', true); refreshShow(root); })
-    .catch((e) => rsError(root, e));
-}
-
-function openSubmitModal(root, v) {
-  overlay(root, 'Send version ' + v.versionNo + ' for approval',
-    '<p class="t-type">Warnings do not block approval. An authorised approver can accept a warning with a note. Only red blockers prevent submission or approval.</p>' +
-    '<label class="t-type" for="rsSubmitReasons">Warning reasons — one per warning, each on its own line (required when warnings exist)</label>' +
-    '<textarea id="rsSubmitReasons" class="set-input" rows="3" style="width:100%" placeholder="e.g. Below-target PSF accepted for launch pricing"></textarea>' +
-    '<label class="t-type" for="rsSubmitNote" style="margin-top:8px;display:block;">Submission note (optional)</label>' +
-    '<input id="rsSubmitNote" class="set-input" style="width:100%" maxlength="500" placeholder="What changed in this version">',
-    'Send for approval',
-    async () => {
-      const reasons = $('#rsSubmitReasons').value.split('\n').map((s) => s.trim()).filter(Boolean);
-      const note = $('#rsSubmitNote').value.trim();
-      await post('/rate-strategy/' + encodeURIComponent(v.id) + '/submit',
-        { version: v.version, warningOverride: { reasons, note }, changeNote: note || undefined });
-      showBanner('Version ' + v.versionNo + ' sent for approval', true);
-      await refreshShow(root);
-    });
 }
 
 function openDuplicateModal(root, v) {
@@ -1483,14 +1472,18 @@ function openDuplicateModal(root, v) {
 }
 
 function openBatchModal(root, v) {
-  if (v.status !== 'APPROVED' && v.status !== 'ACTIVE') {
-    rsError(root, new Error('Only Approved or Active versions can apply rates to Units.'));
+  if (v.status !== 'ACTIVE' && v.status !== 'APPROVED') {
+    rsError(root, new Error('Only Active versions can apply rates to Units. Save the draft, set it Active, then apply with no unsaved changes.'));
+    return;
+  }
+  if (view.liveDirty) {
+    rsError(root, new Error('Save the draft first — unsaved workbench changes must be saved or undone before applying rates.'));
     return;
   }
   const rule = currentDefaultRule();
   overlay(root, 'Schedule Units rate batch — ' + v.strategyName + ' v' + v.versionNo,
     '<p class="t-type">Batch updates vacant-unit rack rates, future quotes and new reservations on/after the effective date. It never touches occupied-customer rent, promotion definitions, Protection Plans or signed agreements. ' +
-    'Confirmation is enabled only for Approved versions with no unsaved changes.</p>' +
+    'Confirmation is enabled only for Active versions with no unsaved changes.</p>' +
     '<label class="t-type" for="rsBatchDate">Rates take effect</label>' +
     '<input id="rsBatchDate" type="date" class="set-input" value="' + escapeHtml(v.effectiveFrom || todaySg()) + '">' +
     '<label class="t-type" for="rsBatchRule" style="margin-top:8px;display:block;">Existing manual unit rates</label>' +
@@ -1551,11 +1544,11 @@ function ensureRsWorkbenchStyles() {
 // 1337px New-strategy form) clips its footer below the fold on a 900px-high
 // screen. Constrain this workspace's window to the viewport and scroll the
 // body internally, leaving the header/footer pinned. Injected once at runtime
-// (same convention as dateFilter.js) — no dashboard.html change, existing
+// (same convention as confirmDialog's check row) — no dashboard.html change, existing
 // CMS tokens and v55 look untouched. All overlay() callers (new, edit levers,
-// override, validate, submit, duplicate, schedule batch) share id #rsOverlay,
-// so this one rule audits/fixes them all; approve/reject go through the short
-// confirmDialog shell or a native prompt and never overflow.
+// override, validate, duplicate, schedule batch) share id #rsOverlay,
+// so this one rule audits/fixes them all; Set Active goes through the short
+// confirmDialog shell and never overflows.
 function ensureRsOverlayStyles() {
   if (document.querySelector('style[data-rs-overlay]')) return;
   const st = document.createElement('style');
@@ -1748,7 +1741,7 @@ async function renderScheduler(body, root) {
     ['SCHEDULED', 'APPLYING', 'APPLIED', 'PARTIALLY_FAILED', 'FAILED', 'CANCELLED'].map((s) =>
       '<option value="' + s + '"' + (view.batchStatusFilter === s ? ' selected' : '') + '>' + s.replace(/_/g, ' ') + '</option>').join('') + '</select>' +
     '<span style="flex:1"></span>' +
-    (can('facility-rate-strategy:approve') ? '<button class="tb-btn primary" id="rsApplyDue">Apply due batches</button>' : '') +
+    (can('facility-rate-strategy:update') ? '<button class="tb-btn primary" id="rsApplyDue">Apply due batches</button>' : '') +
     '<button class="tb-btn ghost" id="rsBatchReload">Reload</button></div>' +
     '<div id="rsBatchList"><div class="section-empty">Loading batches…</div></div>' +
     '<div id="rsBatchDetail"></div>';
@@ -1820,9 +1813,9 @@ async function openBatchDetail(root, batchId) {
       ' · skipped occupied ' + (s.skippedOccupied || 0) + ' · failed ' + (s.failed || 0) + ' · pending ' + (s.pending || 0) +
       (b.legacyUnits ? ' · ' + b.legacyUnits.length + ' LEGACY unit(s) listed separately' : '') + '</div>' +
       '<div class="tbl-toolbar">' +
-      ((b.status === 'SCHEDULED' && b.effectiveDate <= todaySg() && can('facility-rate-strategy:approve')) ? '<button class="tb-btn primary" data-rs-bapply data-perm="facility-rate-strategy:approve">Apply now</button>' : '') +
-      ((b.status === 'PARTIALLY_FAILED' || b.status === 'FAILED') && can('facility-rate-strategy:approve') ? '<button class="tb-btn" data-rs-bretry data-perm="facility-rate-strategy:approve">Retry failed</button>' : '') +
-      (b.status === 'SCHEDULED' && can('facility-rate-strategy:approve') ? '<button class="tb-btn" data-rs-bcancel data-perm="facility-rate-strategy:approve">Cancel batch</button>' : '') +
+      ((b.status === 'SCHEDULED' && b.effectiveDate <= todaySg() && can('facility-rate-strategy:update')) ? '<button class="tb-btn primary" data-rs-bapply data-perm="facility-rate-strategy:update">Apply now</button>' : '') +
+      ((b.status === 'PARTIALLY_FAILED' || b.status === 'FAILED') && can('facility-rate-strategy:update') ? '<button class="tb-btn" data-rs-bretry data-perm="facility-rate-strategy:update">Retry failed</button>' : '') +
+      (b.status === 'SCHEDULED' && can('facility-rate-strategy:update') ? '<button class="tb-btn" data-rs-bcancel data-perm="facility-rate-strategy:update">Cancel batch</button>' : '') +
       '</div>' +
       batchLinesHtml(b) + '</div>';
     const apply = host.querySelector('[data-rs-bapply]');
@@ -1914,7 +1907,7 @@ async function renderSettings(body, root) {
       '<div id="rsModels">' + ((state.branches || []).map((b) => {
         const ms = byBranch[b.id] || [];
         return '<div class="set-row"><div><b>' + escapeHtml(b.code + ' · ' + b.name) + '</b><small>' +
-          (ms.length ? escapeHtml(ms.map((m) => m.name + ' (v' + m.version + ')').join(', ')) : 'No CURRENT model — previews return the rack schedule with the target unavailable; submit blocks with NO_CURRENT_MODEL') +
+          (ms.length ? escapeHtml(ms.map((m) => m.name + ' (v' + m.version + ')').join(', ')) : 'No CURRENT model — previews return the rack schedule with the target unavailable; Set Active blocks with NO_CURRENT_MODEL') +
           '</small></div></div>';
       }).join('') || '<div class="section-empty">No facilities loaded.</div>') + '</div></div>';
     const save = $('#rsSettingsSave');
@@ -1939,9 +1932,10 @@ async function renderSettings(body, root) {
 
 // ============================== units entry points ==============================
 
-/** Facilities · Units header buttons (handoff §15.26 + R17/D10): Open rate
+  /** Facilities · Units header buttons (handoff §15.26 + R17/D10): Open rate
  * strategy + Apply due batches. Injected from JS so dashboard.html keeps
  * only the strategy tab + panel; permission-gated like every other action.
+ * The workspace lives under Rates and Promotions — jumps target #promotions.
  *
  * B-10: wireEvents() runs before sign-in (can() is false until /me
  * resolves), so this must run AFTER auth (admin.js boot) and on every Units
@@ -1966,22 +1960,22 @@ export function mountUnitsRateEntry() {
     open.setAttribute('data-perm', 'facility-rate-strategy:view');
     open.textContent = 'Open rate strategy';
     open.addEventListener('click', () => {
-      location.hash = '#facilities';
+      location.hash = '#promotions';
       const tab = document.querySelector('[data-tab="facility-rate-strategy"]');
       if (tab) tab.click();
     });
     host.prepend(open);
   }
-  // Apply needs BOTH approve and facility-units:update (the server enforces
+  // Apply needs BOTH update and facility-units:update (the server enforces
   // the pair; the route table carries only the first). Hide without both.
-  const mayApply = can('facility-rate-strategy:approve') && can('facility-units:update');
+  const mayApply = can('facility-rate-strategy:update') && can('facility-units:update');
   const due = $('#unitsApplyDueBtn');
   if (mayApply && !due) {
     const btn = document.createElement('button');
     btn.className = 'tb-btn';
     btn.id = 'unitsApplyDueBtn';
     btn.type = 'button';
-    btn.setAttribute('data-perm', 'facility-rate-strategy:approve');
+    btn.setAttribute('data-perm', 'facility-rate-strategy:update');
     btn.textContent = 'Apply due batches';
     btn.title = 'Apply every due scheduled rate batch (idempotent, safe to repeat)';
     btn.addEventListener('click', async () => {
@@ -2053,7 +2047,7 @@ export function openRateStrategyVersion(versionId) {
     view.validation = null; view.history = null; view.activity = null;
     view.previews = {}; view.planIds = null; view.plans = null;
   }
-  try { location.hash = '#facilities'; } catch (e) { /* noop */ }
+  try { location.hash = '#promotions'; } catch (e) { /* noop */ }
   const tab = document.querySelector('[data-tab="facility-rate-strategy"]');
   if (tab) tab.click();
   else refreshRateStrategy().catch(() => {});

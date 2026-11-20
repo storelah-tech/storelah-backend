@@ -3,11 +3,11 @@
 //
 // Writes RateStrategy / RateStrategyVersion / UnitRateBatch /
 // UnitRateBatchLine (schema: B2 migration 20261118000000). Reads inventory
-// live from Units (R15), promotions read-only from Discount & Promotion, and
+// live from Units (R15), promotions read-only from Rates and Promotions, and
 // the target from the branch's latest CURRENT FinancialModel (read-only,
 // never a DRAFT, never a hard-coded fallback — preview returns the rack
 // schedule with target/promo marked unavailable (noTarget) when none;
-// submit still BLOCKS 409 until a CURRENT model exists).
+// set-Active still BLOCKS 409 until a CURRENT model exists).
 //
 // Server-is-authoritative: preview and apply call the same B1 pure engine
 // (`previewFacility` / `baseMonthlyCents` / `finalizeRackCents`);
@@ -15,12 +15,15 @@
 // transit and Decimal(10,2) in storage; every mutation writes a
 // FinanceAuditEvent + FinanceEvent in the same transaction (§18 types) and
 // checks the optimistic-lock `version` via assertFreshVersion (409 STALE).
-// Versions are immutable once submitted — enforced here, never in the DB.
+// New flow (no approval gate): DRAFT --save--> DRAFT --set Active--> ACTIVE.
+// Only saved ACTIVE versions with no unsaved changes may apply rates to
+// Units. Versions are immutable once Active — enforced here, never in the
+// DB. Legacy submit/approve/reject paths are retained deprecated for
+// existing PENDING_APPROVAL/APPROVED rows; new UI never calls them.
 //
 // Copy contract (handoff §§15/19, quoted verbatim where the UI/tests need it):
 //   'No facility sizes are linked yet.' · 'No strategies match these filters.'
-//   'Warnings do not block approval. An authorised approver can accept a
-//   warning with a note. Only red blockers prevent submission or approval.'
+//   'Warnings are display-only. Only red blockers prevent Set Active or Apply.'
 
 import { Prisma, type RateStrategy, type RateStrategyVersion } from '@prisma/client';
 import { prisma } from '../../lib/prisma';
@@ -386,7 +389,7 @@ export interface ResolvedPromotions {
 }
 
 /**
- * Read-only promotion preview inputs (Discount & Promotion owns the records).
+ * Read-only promotion preview inputs (Rates and Promotions owns the records).
  * Default: every ACTIVE plan covering the branch. DRAFT / VALIDATED /
  * SCHEDULED plans are preview-only and resolve only when explicitly
  * selected; ENDED plans never resolve. PROMO_CODE / CREDITS kinds are not
@@ -621,7 +624,7 @@ export async function updateDraft(input: UpdateDraftInput) {
     throw new AppError(
       409,
       'LOCKED',
-      `Version ${v.versionNo} is ${v.status} — only DRAFT versions can be edited. Versions are immutable once submitted.`,
+      `Version ${v.versionNo} is ${v.status} — only DRAFT versions can be edited. Versions are immutable once Active.`,
       { status: v.status, versionNo: v.versionNo },
     );
   }
@@ -796,6 +799,8 @@ export async function validateVersion(versionId: string, opts: PreviewOpts = {})
 
 // ---------------------------------------------------------------------------
 // submit (with warning override) / approve / reject — maker-checker
+// (LEGACY, deprecated: retained for existing PENDING_APPROVAL/APPROVED rows;
+// new UI uses activateVersion above and never calls these).
 // ---------------------------------------------------------------------------
 
 export interface SubmitInput {
@@ -822,7 +827,7 @@ export async function submitVersion(input: SubmitInput) {
     throw new AppError(
       409,
       'NO_CURRENT_MODEL',
-      'No approved Financial Model target for this facility — approve a model before sending a rate strategy for approval. Rack editing and preview remain available.',
+      'No approved Financial Model target for this facility — approve a model before setting a rate strategy Active. Rack editing and preview remain available.',
       { branchId: built.branch.id, branchCode: built.branch.code },
     );
   }
@@ -839,7 +844,7 @@ export async function submitVersion(input: SubmitInput) {
       throw new AppError(
         409,
         'WARNING_OVERRIDE_REQUIRED',
-        `Warnings do not block approval. An authorised approver can accept a warning with a note. Only red blockers prevent submission or approval — ${warnings.length} warning(s) need a reason each.`,
+        `Warnings are display-only — record one reason per warning to accept them. Only red blockers prevent submission — ${warnings.length} warning(s) need a reason each.`,
         { warnings: warnings.map((w) => ({ code: w.code, message: w.message, reason: w.reason })) },
       );
     }
@@ -980,6 +985,115 @@ export function approveVersion(input: DecideInput) {
 
 export function rejectVersion(input: DecideInput) {
   return decideVersion(input, false);
+}
+
+// ---------------------------------------------------------------------------
+// set Active (no approval gate): DRAFT --set Active--> ACTIVE. Legacy
+// APPROVED versions may also be set Active (migration path). Idempotent
+// for versions that are already ACTIVE.
+// ---------------------------------------------------------------------------
+
+export interface ActivateInput {
+  versionId: string;
+  expectedVersion?: number;
+  actor: StrategyActor;
+  correlationId?: string;
+}
+
+export async function activateVersion(input: ActivateInput) {
+  const scope = currentBranchScopeLazy();
+  const { v, branchCode } = await loadVersion(input.versionId, scope);
+  assertFreshVersion(v.version, input.expectedVersion, 'RateStrategyVersion');
+  if (v.status === 'ACTIVE') {
+    return serializeVersion(v, branchCode);
+  }
+  if (v.status !== 'DRAFT' && v.status !== 'APPROVED') {
+    throw new AppError(
+      409,
+      'LOCKED',
+      `Version ${v.versionNo} is ${v.status} — only Draft versions (or legacy Approved) can be set Active.`,
+      { status: v.status },
+    );
+  }
+  // Re-resolve the frozen selection so refs are never stale (same as submit).
+  const built = await buildPreview(input.versionId, {}, scope);
+  const target = built.target;
+  if (built.noTarget || !target) {
+    throw new AppError(
+      409,
+      'NO_CURRENT_MODEL',
+      'No approved Financial Model target for this facility — approve a model before setting a rate strategy Active. Rack editing and preview remain available.',
+      { branchId: built.branch.id, branchCode: built.branch.code },
+    );
+  }
+  const { blockers, warnings } = built.preview.validation;
+  if (blockers.length) {
+    throw new AppError(409, 'BLOCKED', `Version ${v.versionNo} has blockers: ${blockers.map((b) => b.message).join(' ')}`, {
+      blockers: blockers.map((b) => b.code),
+    });
+  }
+  const correlationId = input.correlationId ?? newCorrelationId();
+  const updated = await prisma.$transaction(async (tx) => {
+    const u = await tx.rateStrategyVersion.update({
+      where: { id: v.id },
+      data: {
+        status: 'ACTIVE',
+        financialModelId: target.modelId,
+        financialModelVersion: target.modelVersion,
+        targetPsf: new Prisma.Decimal(target.targetPsf),
+        validation: built.preview.validation as unknown as Prisma.InputJsonValue,
+        warningOverride: {
+          warningCodes: warnings.map((w) => w.code),
+          reasons: warnings.map((w) => w.reason),
+          note: 'Warnings accepted display-only — no approval gate.',
+        } as unknown as Prisma.InputJsonValue,
+        previewSelection: built.selection as unknown as Prisma.InputJsonValue,
+        approvedBy: input.actor.email,
+        approvedAt: new Date(),
+        version: nextVersion(v.version),
+      },
+      include: { strategy: true },
+    });
+    // The newly Active version becomes current; other ACTIVE/APPROVED
+    // versions of the same strategy are superseded.
+    const others = await tx.rateStrategyVersion.findMany({
+      where: { strategyId: v.strategyId, status: { in: ['ACTIVE', 'APPROVED'] }, id: { not: v.id } },
+    });
+    for (const o of others) {
+      await tx.rateStrategyVersion.update({ where: { id: o.id }, data: { status: 'SUPERSEDED' } });
+      await writeAuditEvent(tx, {
+        branchId: u.strategy.branchId, actor: input.actor.email, action: 'RATE_STRATEGY_SUPERSEDED',
+        entityType: 'rate-strategy', entityId: o.id,
+        before: { status: o.status }, after: { status: 'SUPERSEDED', supersededBy: u.id },
+        reason: `Superseded by activation of version ${u.versionNo}`, source: 'cms', correlationId,
+      });
+      await publishFinanceEvent(tx, {
+        type: 'rate.strategy.superseded',
+        payload: { versionId: o.id, supersededBy: u.id },
+        branchId: u.strategy.branchId, correlationId,
+      });
+    }
+    await tx.rateStrategy.update({ where: { id: v.strategyId }, data: { currentVersionId: u.id } });
+    await writeAuditEvent(tx, {
+      branchId: u.strategy.branchId, actor: input.actor.email, action: 'RATE_STRATEGY_ACTIVATED',
+      entityType: 'rate-strategy', entityId: u.id,
+      before: { status: v.status, version: v.version },
+      after: {
+        status: 'ACTIVE', version: u.version,
+        validation: built.preview.validation,
+        target, previewSelection: built.selection,
+      },
+      reason: 'Set Active',
+      source: 'cms', correlationId,
+    });
+    await publishFinanceEvent(tx, {
+      type: 'rate.strategy.activated',
+      payload: { versionId: u.id, versionNo: u.versionNo },
+      branchId: u.strategy.branchId, correlationId,
+    });
+    return u;
+  });
+  return serializeVersion(updated, branchCode);
 }
 
 // ---------------------------------------------------------------------------
@@ -1345,11 +1459,11 @@ async function computeBatchLines(versionId: string, strategyBranchId: string): P
 export async function createBatch(input: CreateBatchInput) {
   const scope = currentBranchScopeLazy();
   const { v } = await loadVersion(input.versionId, scope);
-  if (v.status !== 'APPROVED' && v.status !== 'ACTIVE') {
+  if (v.status !== 'ACTIVE' && v.status !== 'APPROVED') {
     throw new AppError(
       409,
-      'NOT_APPROVED',
-      `Only Approved or Active strategies are eligible for Units application — version ${v.versionNo} is ${v.status}.`,
+      'NOT_ACTIVE',
+      `Only Active strategies are eligible for Units application — version ${v.versionNo} is ${v.status}. Save the draft, set it Active, then apply with no unsaved changes.`,
       { status: v.status },
     );
   }
@@ -1454,14 +1568,15 @@ export async function applyBatch(input: ApplyBatchInput) {
   }
   const correlationId = input.correlationId ?? newCorrelationId();
   const version = await prisma.rateStrategyVersion.findUniqueOrThrow({ where: { id: b.versionId }, include: { strategy: true } });
-  // Handoff §27 + §15.25: only Approved or Active versions update Units. A
-  // version superseded (or rejected) after its batch was scheduled must not
-  // apply stale rates — not via apply, retry, or the due-batch sweep.
-  if (version.status !== 'APPROVED' && version.status !== 'ACTIVE') {
+  // Handoff §27 + §15.25: only Active versions update Units (legacy
+  // APPROVED still accepted for batches scheduled before the approval gate
+  // was removed). A version superseded after its batch was scheduled must
+  // not apply stale rates — not via apply, retry, or the due-batch sweep.
+  if (version.status !== 'ACTIVE' && version.status !== 'APPROVED') {
     throw new AppError(
       409,
-      'NOT_APPROVED',
-      `Only Approved or Active strategies are eligible for Units application — version ${version.versionNo} is ${version.status}.`,
+      'NOT_ACTIVE',
+      `Only Active strategies are eligible for Units application — version ${version.versionNo} is ${version.status}. Save the draft, set it Active, then apply with no unsaved changes.`,
       { status: version.status, batchStatus: b.status },
     );
   }

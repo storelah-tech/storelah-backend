@@ -331,6 +331,7 @@ describe('pricing overlay (live wins)', () => {
     const lockerRow = res.body.data.rows.find((r: { code: string }) => r.code === 'LOCKER');
     expect(lockerRow).toMatchObject({ name: 'Locker', units: 1, minSqft: 20, maxSqft: 20 });
     expect(res.body.data.rows.find((r: { code: string }) => r.code === 'MEDIUM')).toMatchObject({ units: 0, minSqft: null, maxSqft: null });
+
     expect(res.body.data.authorityNote).toMatch(/NEVER write back/);
 
     const over = await api.put(`${CMS}/finance/pricing/${locker.id}`).set('Authorization', op.auth).send({
@@ -352,6 +353,14 @@ describe('pricing overlay (live wins)', () => {
     const audits = await prisma.financeAuditEvent.findMany({ where: { entityType: 'size-price-rule' } });
     expect(audits).toHaveLength(1);
     expect(audits[0].action).toBe('PRICING_OVERRIDE');
+
+    // A unit drawn on an unpublished floor plan is hidden from Units, so it is not inventory here either.
+    await prisma.unit.create({
+      data: { branchId: branch.id, floorId: (await prisma.floor.findFirstOrThrow({ where: { branchId: branch.id } })).id, sizeId: locker.id, unitCode: 'F2-01-09', sqft: 15, monthlyRate: 100, status: 'DRAFT' },
+    });
+    const withDraft = await api.get(`${CMS}/finance/pricing?branchId=${branch.id}`).set('Authorization', op.auth);
+    expect(withDraft.body.data.facilityUnits).toBe(2);
+    expect(withDraft.body.data.facilityNla).toBe(70);
 
     // Reason required; stale rule versions conflict.
     expect((await api.put(`${CMS}/finance/pricing/${locker.id}`).set('Authorization', op.auth).send({ branchId: branch.id, targetPsf: 8 })).status).toBe(400);

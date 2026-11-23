@@ -67,7 +67,7 @@ export async function getInvestorSummary(opts: InvestorSummaryOpts = {}) {
 
   // --- Live occupancy (aggregate counts only — no tenant rows leave this function).
   const [totalUnits, occupiedUnits] = await Promise.all([
-    prisma.unit.count({ where: { ...branchFilter, deletedAt: null } }),
+    prisma.unit.count({ where: { ...branchFilter, deletedAt: null, status: { not: 'DRAFT' } } }), // DRAFT = unpublished plan, not inventory
     prisma.tenant.count({
       where: { ...branchFilter, unitId: { not: null }, status: { in: ['ACTIVE', 'DUE_SOON', 'OVERDUE', 'NOTICE'] } },
     }),

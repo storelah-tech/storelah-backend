@@ -35,6 +35,20 @@ function createClient() {
         },
       },
     },
+  }).$extends({
+    // Unit.sqft is whole square feet everywhere it is read (owner 2026-11-23):
+    // customers are sold the rounded size, so every PSF is rate ÷ whole sqft,
+    // matching Master Rate Strategy (Math.round(sqft) size points). Writes are
+    // already rounded (wholeSqft, 2026-11-16); this covers legacy decimal rows
+    // until migration 20261123000000_round_unit_sqft rounds them in the DB.
+    result: {
+      unit: {
+        sqft: {
+          needs: { sqft: true },
+          compute: (u) => Math.round(u.sqft),
+        },
+      },
+    },
   });
 }
 

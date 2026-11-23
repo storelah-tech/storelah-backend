@@ -138,7 +138,7 @@ export async function listRegister(q: { search?: string; docType?: string; statu
       key: `settlement:${s.id}`, source: 'settlement' as const, id: s.id, date: ymd(s.createdAt), recordId: s.ref,
       customer: s.tenant.name, tenantId: s.tenantId, ...settlementUnitOf(s),
       docType: s.docType as RegisterRow['docType'],
-      purpose: s.kind === 'TRANSFER' ? 'Transfer settlement' : s.kind === 'MOVE_OUT' ? 'Move-out settlement' : 'Customer closing settlement',
+      purpose: s.kind === 'TRANSFER' ? 'Transfer settlement' : s.kind === 'MOVE_OUT' ? 'Move-out settlement' : s.origin === 'MANUAL' ? (s.docType === 'Refund' ? 'Manual refund' : 'Manual adjustment') + (s.reason ? ` · ${s.reason}` : '') : 'Customer closing settlement',
       method: s.returnMethod === 'BANK' ? 'Bank transfer' : s.returnMethod === 'WALLET' ? 'Customer account credit' : s.docType === 'Refund' ? 'Original payment method' : toNum(s.amount) >= 0 ? 'Customer payment method' : 'Customer account credit',
       amount: toNum(s.amount), status: SETTLEMENT_STATUS[s.status] ?? s.status, pending: SETTLEMENT_PENDING.has(s.status), approver: s.approvedBy ?? s.decidedBy ?? 'Finance review',
       // Processor reference is evidence (record detail), not a table column —

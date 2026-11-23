@@ -28,6 +28,7 @@ import {
   finalizeRackCents,
   generatedRackCents,
   isBatchEligibleUnit,
+  isGroundFloorLevel,
   previewFacility,
   rackCentsForUnit,
   solveRequiredBaseRate,
@@ -632,6 +633,12 @@ describe('B-9 attribute/minimum/rounding order (§15.9)', () => {
     expect(finalizeRackCents(34800, { isGroundFloor: true }, baseLevers({ rounding: 5 }))).toBe(38500);
     // round(38280/1000) = round(38.28) = 38 → S$380.00.
     expect(finalizeRackCents(34800, { isGroundFloor: true }, baseLevers({ rounding: 10 }))).toBe(38000);
+  });
+
+  it('ground floor is building Level 1 only — a single-floor branch on Level 6 gets no uplift', () => {
+    expect(isGroundFloorLevel(1)).toBe(true);
+    expect(isGroundFloorLevel(2)).toBe(false);
+    expect(isGroundFloorLevel(6)).toBe(false);
   });
 
   it('12 sq ft locker on the ground floor finalizes to S$86 (batch regression)', () => {

@@ -253,7 +253,7 @@ describe('rate strategy service (scenario E steps 4–7)', () => {
     expect(batch.body.data.status).toBe('APPLIED');
     expect(batch.body.data.summary).toMatchObject({ applied: 3, preservedManual: 1, skippedOccupied: 2, failed: 0, pending: 0 });
     const lineFor = (code: string) => (batch.body.data.lines as Array<Record<string, unknown>>).find((l) => l.unitCode === code)!;
-    // RS-U01 sits on the ground floor (Level 1 = branch minimum): 90 × 1.10.
+    // RS-U01 sits on the ground floor (building Level 1): 90 × 1.10.
     expect(lineFor('RS-U01')).toMatchObject({ outcome: 'APPLIED', previousRack: 100, proposedRack: 99 });
     expect(lineFor('RS-U02')).toMatchObject({ outcome: 'PRESERVED_MANUAL' });
     expect(lineFor('RS-U03')).toMatchObject({ outcome: 'APPLIED', previousRack: 270, proposedRack: 273 });
@@ -491,6 +491,41 @@ describe('rate strategy service (scenario E steps 4–7)', () => {
     expect(codes).toContain('DRAFT_PROMO_PREVIEW');
     // Selecting it never activates it.
     expect((await prisma.promotionPlan.findUniqueOrThrow({ where: { id: world.draftPlanId } })).status).toBe('DRAFT');
+  });
+
+  it('a deleted promotion in the saved selection never blocks preview, Validate, Save or Set Active (2026-11-23)', async () => {
+    const doomed = await prisma.promotionPlan.create({
+      data: {
+        kind: 'DISCOUNT_MATRIX', name: 'DELETED E2E', status: 'DRAFT',
+        effectiveFrom: new Date('2026-01-01T00:00:00.000Z'),
+        facilityScope: ['ALL'], sizeScope: ['ALL'],
+        matrixCells: { create: [{ sizeCategory: 'XS', accessType: 'Standard', commitmentMonths: 12, discountPct: new Prisma.Decimal(10) }] },
+      },
+    });
+    const draft = await createDraft(world, world.ownerA, {
+      name: 'RS with deleted promo',
+      promotionPreview: { durationMonths: 12, matrix: 'Standard', planIds: [world.pctPlanId, doomed.id] },
+    });
+    expect(draft.status).toBe(201);
+    const id = draft.body.data.id as string;
+    await prisma.discountMatrixCell.deleteMany({ where: { planId: doomed.id } });
+    await prisma.promotionPlan.delete({ where: { id: doomed.id } });
+
+    const preview = await api.get(`${CMS}/rate-strategy/${id}/preview`).set('Authorization', world.ownerA.auth);
+    expect(preview.status).toBe(200);
+    const validate = await api.post(`${CMS}/rate-strategy/${id}/validate`).set('Authorization', world.ownerA.auth).send({});
+    expect(validate.status).toBe(200);
+    // Re-saving the stored selection drops the stale id instead of 404ing.
+    const saved = await api.patch(`${CMS}/rate-strategy/${id}`).set('Authorization', world.ownerA.auth)
+      .send({ version: 0, levers: { startingRate: 95 }, promotionPreview: { durationMonths: 12, matrix: 'Standard', planIds: [world.pctPlanId, doomed.id] } });
+    expect(saved.status).toBe(200);
+    expect((saved.body.data.previewSelection.planRefs as Array<{ planId: string }>).map((r) => r.planId)).toEqual([world.pctPlanId]);
+    const activated = await api.post(`${CMS}/rate-strategy/${id}/activate`).set('Authorization', world.ownerA.auth).send({ version: saved.body.data.version });
+    expect(activated.status).toBe(200);
+    expect(activated.body.data.status).toBe('ACTIVE');
+    // An explicit request for a missing plan is still a clear 404.
+    const explicit = await api.get(`${CMS}/rate-strategy/${id}/preview?planIds=${doomed.id}`).set('Authorization', world.ownerA.auth);
+    expect(explicit.status).toBe(404);
   });
 
   it('unsaved-levers preview recalculates read-only without touching the draft (B-4)', async () => {

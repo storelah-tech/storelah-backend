@@ -39,6 +39,7 @@ import {
   categoryForSize,
   finalizeRackCents,
   isBatchEligibleUnit,
+  isGroundFloorLevel,
   previewFacility,
   type DurationMonths,
   type PromotionPreviewInput,
@@ -325,20 +326,19 @@ export interface BranchInventory {
 export async function inventoryOf(branchId: string): Promise<BranchInventory> {
   const branch = await prisma.branch.findUnique({ where: { id: branchId } });
   if (!branch) throw new AppError(404, 'NOT_FOUND', `Branch ${branchId} not found.`);
-  const [units, floors] = await Promise.all([
-    prisma.unit.findMany({
-      where: { branchId, deletedAt: null },
-      include: { size: true, floor: true },
-    }),
-    prisma.floor.findMany({ where: { branchId, isActive: true }, select: { level: true } }),
-  ]);
-  const minLevel = floors.length ? Math.min(...floors.map((f) => f.level)) : null;
+  const units = await prisma.unit.findMany({
+    where: { branchId, deletedAt: null },
+    include: { size: true, floor: true },
+  });
   const list: InventoryUnit[] = units.map((u) => ({
     id: u.id,
     unitCode: u.unitCode,
     sizePoint: Math.round(u.sqft),
     isLocker: u.size.code === 'LOCKER',
-    isGroundFloor: minLevel != null && u.floor.level === minLevel,
+    // Ground floor = building Level 1 (Floor.level is the real level). Not
+    // "lowest active floor": a single-floor branch on Level 6 is not ground
+    // floor, and inferring it uplifted every unit vs the preview (2026-11-23).
+    isGroundFloor: isGroundFloorLevel(u.floor.level),
     isRestricted: u.restrictedAccess,
     status: u.status,
     rateSource: u.rateSource,
@@ -400,8 +400,14 @@ export async function promotionsOf(
   opts: {
     durationMonths: DurationMonths; matrix: string; planIds?: string[];
     branchSizePoints?: Array<{ sizePoint: number; isLocker: boolean }>;
+    /** Plan ids come from a version's saved selection, not the request: a
+     *  plan deleted, ended or re-scoped since then is skipped, never an
+     *  error — otherwise one deleted draft promotion makes the strategy's
+     *  preview, Validate and Set Active fail for good (2026-11-23). */
+    lenient?: boolean;
   },
 ): Promise<ResolvedPromotions> {
+  const lenient = opts.lenient === true;
   const explicit = [...new Set(opts.planIds ?? [])];
   const plans = await prisma.promotionPlan.findMany({
     where: explicit.length
@@ -411,18 +417,18 @@ export async function promotionsOf(
   });
   if (explicit.length) {
     const missing = explicit.filter((id) => !plans.some((p) => p.id === id));
-    if (missing.length) throw new AppError(404, 'NOT_FOUND', `Promotion plan(s) not found: ${missing.join(', ')}.`);
+    if (missing.length && !lenient) throw new AppError(404, 'NOT_FOUND', `Promotion plan(s) not found: ${missing.join(', ')}.`);
   }
   const inputs: PromotionPreviewInput[] = [];
   const refs: ResolvedPromotions['refs'] = [];
   for (const plan of plans) {
     if (plan.status === 'ENDED') {
-      if (explicit.includes(plan.id)) throw new AppError(400, 'VALIDATION', `Promotion plan ${plan.name} has ended and cannot be previewed.`);
+      if (explicit.includes(plan.id) && !lenient) throw new AppError(400, 'VALIDATION', `Promotion plan ${plan.name} has ended and cannot be previewed.`);
       continue;
     }
     if (!explicit.length && plan.status !== 'ACTIVE') continue;
     if (!planCoversBranch(plan.facilityScope, branch)) {
-      if (explicit.includes(plan.id)) {
+      if (explicit.includes(plan.id) && !lenient) {
         throw new AppError(400, 'VALIDATION', `Promotion plan ${plan.name} does not cover facility ${branch.code}.`);
       }
       continue;
@@ -707,6 +713,9 @@ async function resolveSelection(branchId: string, input: PromotionPreviewSelecti
       matrix,
       planIds: input?.planIds,
       branchSizePoints: inv.stocked,
+      // Saving re-resolves the selection: stale (deleted/ended) plan ids are
+      // dropped so the stored selection heals instead of blocking the save.
+      lenient: true,
     },
   );
   return { durationMonths, matrix, planRefs: refs };
@@ -725,12 +734,13 @@ export interface PreviewOpts {
   levers?: LeverInput;
 }
 
-function selectionOf(v: VersionWithStrategy, opts: PreviewOpts): PromotionPreviewSelection {
+function selectionOf(v: VersionWithStrategy, opts: PreviewOpts): PromotionPreviewSelection & { fromStored: boolean } {
   const stored = (v.previewSelection ?? {}) as { durationMonths?: unknown; matrix?: unknown; planRefs?: Array<{ planId: string }> };
   return {
     durationMonths: opts.durationMonths ?? (isDurationMonths(stored.durationMonths) ? stored.durationMonths : 12),
     matrix: opts.matrix ?? (typeof stored.matrix === 'string' ? stored.matrix : 'Standard'),
     planIds: opts.planIds ?? (Array.isArray(stored.planRefs) ? stored.planRefs.map((r) => r.planId) : []),
+    fromStored: opts.planIds == null,
   };
 }
 
@@ -764,6 +774,7 @@ async function buildPreview(versionId: string, opts: PreviewOpts, scope: string[
       matrix: sel.matrix as string,
       planIds: sel.planIds,
       branchSizePoints: inv.stocked,
+      lenient: sel.fromStored,
     });
   // B-4 live workbench: unsaved lever edits preview through the same pure
   // engine (server is the only calculator) without touching the draft.

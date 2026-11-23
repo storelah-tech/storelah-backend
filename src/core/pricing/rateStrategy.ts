@@ -253,6 +253,11 @@ export function roundToIncrementCents(cents: number, rounding: RoundingIncrement
  * Non-locker sizes below 10 fall to the nearest band (XS). Sizes above 150
  * use XL (R15); D13 flags stocked ones in the report.
  */
+/** Ground-floor attribute: building Level 1 only (Floor.level is the real level). */
+export function isGroundFloorLevel(level: number): boolean {
+  return level === 1;
+}
+
 export function categoryForSize(size: number, isLocker = false): SizeCategory {
   if (isLocker) return 'LOCKER';
   if (size < 20) return 'XS';

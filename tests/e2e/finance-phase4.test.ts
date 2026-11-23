@@ -37,7 +37,7 @@ async function seedWorld(): Promise<World> {
     type: 'PERSONAL',
   });
   expect(reg.status).toBe(201);
-  const branch = await prisma.branch.findUnique({ where: { code: 'SW' } });
+  const branch = await prisma.branch.findUnique({ where: { code: 'SS' } });
   if (!branch) throw new Error('[e2e] move-in world not seeded');
   const size = await prisma.unitSize.findFirst();
   const floor = await prisma.floor.findFirst({ where: { branchId: branch.id } });

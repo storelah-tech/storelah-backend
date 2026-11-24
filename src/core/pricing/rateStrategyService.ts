@@ -35,12 +35,17 @@ import { assertFreshVersion, nextVersion, newCorrelationId } from '../finance/id
 import { currentBranchScope } from '../../lib/facilityScope';
 import {
   DEFAULT_LEVERS,
+  DEFAULT_DURATION_MIX,
+  DEFAULT_DURATION_MIX_SOURCE,
   baseMonthlyCents,
   categoryForSize,
   finalizeRackCents,
   isBatchEligibleUnit,
   isGroundFloorLevel,
   previewFacility,
+  validateDurationMix,
+  type DurationMix,
+  type DurationMixSource,
   type DurationMonths,
   type PromotionPreviewInput,
   type SizeCategory,
@@ -130,6 +135,8 @@ export interface PromotionPreviewSelection {
   /** 'Standard' | 'Ground floor' matrix column (handoff §15.13). */
   matrix?: string;
   planIds?: string[];
+  durationMix?: DurationMix;
+  durationMixSource?: DurationMixSource;
 }
 
 const SIZE_CATEGORIES: readonly SizeCategory[] = ['LOCKER', 'XS', 'S', 'M', 'L', 'XL'];
@@ -263,6 +270,8 @@ function serializeVersion(v: VersionWithStrategy, branchCode: string) {
       sizeOverrides: (v.sizeOverrides ?? []) as Array<{ size: number; monthlyRate: number; reason: string }>,
     },
     previewSelection: (v.previewSelection ?? {}) as Record<string, unknown>,
+    durationMix: ((v.previewSelection as any)?.durationMix ?? DEFAULT_DURATION_MIX) as DurationMix,
+    durationMixSource: ((v.previewSelection as any)?.durationMixSource ?? DEFAULT_DURATION_MIX_SOURCE) as DurationMixSource,
     financialModel: v.financialModelId
       ? { id: v.financialModelId, version: v.financialModelVersion, targetPsf: v.targetPsf == null ? null : toNum(v.targetPsf, 4) }
       : null,
@@ -643,7 +652,7 @@ export async function updateDraft(input: UpdateDraftInput) {
   const levers = mergeLevers(leversOf(v), input.levers);
   const effectiveFrom = input.effectiveFrom ? parseEffectiveDate(input.effectiveFrom) : v.effectiveFrom;
   const selection = input.promotionPreview
-    ? await resolveSelection(v.strategy.branchId, input.promotionPreview)
+    ? await resolveSelection(v.strategy.branchId, input.promotionPreview, v.previewSelection)
     : v.previewSelection;
   const before = { levers: leversOf(v), effectiveFrom: dateKey(v.effectiveFrom) };
   const correlationId = input.correlationId ?? newCorrelationId();
@@ -697,13 +706,32 @@ function currentBranchScopeLazy(): string[] | null {
   return currentBranchScope();
 }
 
-async function resolveSelection(branchId: string, input: PromotionPreviewSelection | undefined) {
-  const durationMonths = input?.durationMonths ?? 12;
+async function resolveSelection(
+  branchId: string,
+  input: PromotionPreviewSelection | undefined,
+  current?: unknown,
+) {
+  const cur = (current ?? {}) as {
+    durationMonths?: unknown;
+    matrix?: unknown;
+    planRefs?: unknown;
+    durationMix?: DurationMix;
+    durationMixSource?: DurationMixSource;
+  };
+  const durationMonths = input?.durationMonths ?? (isDurationMonths(cur.durationMonths) ? cur.durationMonths : 12);
   if (!isDurationMonths(durationMonths)) throw new AppError(400, 'VALIDATION', 'durationMonths must be 1, 3, 6 or 12.');
-  const matrix = input?.matrix ?? 'Standard';
+  const matrix = input?.matrix ?? (typeof cur.matrix === 'string' ? cur.matrix : 'Standard');
   if (matrix !== 'Standard' && matrix !== 'Ground floor') {
     throw new AppError(400, 'VALIDATION', "matrix must be 'Standard' or 'Ground floor'.");
   }
+  const durationMix: DurationMix = input?.durationMix
+    ? validateDurationMix(input.durationMix).normalized
+    : cur.durationMix ?? DEFAULT_DURATION_MIX;
+  const durationMixSource: DurationMixSource =
+    input?.durationMixSource ??
+    cur.durationMixSource ??
+    (input?.durationMix ? 'Manual planning assumption' : DEFAULT_DURATION_MIX_SOURCE);
+
   const branch = await prisma.branch.findUniqueOrThrow({ where: { id: branchId } });
   const inv = await inventoryOf(branchId);
   const { refs } = await promotionsOf(
@@ -718,7 +746,7 @@ async function resolveSelection(branchId: string, input: PromotionPreviewSelecti
       lenient: true,
     },
   );
-  return { durationMonths, matrix, planRefs: refs };
+  return { durationMonths, matrix, planRefs: refs, durationMix, durationMixSource };
 }
 
 // ---------------------------------------------------------------------------
@@ -729,17 +757,27 @@ export interface PreviewOpts {
   durationMonths?: DurationMonths;
   matrix?: string;
   planIds?: string[];
+  durationMix?: DurationMix;
+  durationMixSource?: DurationMixSource;
   /** Unsaved lever edits for the live workbench (B-4): merged over the
    *  saved levers, validated identically, never persisted. */
   levers?: LeverInput;
 }
 
 function selectionOf(v: VersionWithStrategy, opts: PreviewOpts): PromotionPreviewSelection & { fromStored: boolean } {
-  const stored = (v.previewSelection ?? {}) as { durationMonths?: unknown; matrix?: unknown; planRefs?: Array<{ planId: string }> };
+  const stored = (v.previewSelection ?? {}) as {
+    durationMonths?: unknown;
+    matrix?: unknown;
+    planRefs?: Array<{ planId: string }>;
+    durationMix?: DurationMix;
+    durationMixSource?: DurationMixSource;
+  };
   return {
     durationMonths: opts.durationMonths ?? (isDurationMonths(stored.durationMonths) ? stored.durationMonths : 12),
     matrix: opts.matrix ?? (typeof stored.matrix === 'string' ? stored.matrix : 'Standard'),
     planIds: opts.planIds ?? (Array.isArray(stored.planRefs) ? stored.planRefs.map((r) => r.planId) : []),
+    durationMix: opts.durationMix ?? stored.durationMix ?? DEFAULT_DURATION_MIX,
+    durationMixSource: opts.durationMixSource ?? stored.durationMixSource ?? DEFAULT_DURATION_MIX_SOURCE,
     fromStored: opts.planIds == null,
   };
 }
@@ -786,8 +824,24 @@ async function buildPreview(versionId: string, opts: PreviewOpts, scope: string[
     selectedDurationMonths: sel.durationMonths as DurationMonths,
     targetPsf: target ? target.targetPsf : null,
     matrix: sel.matrix,
+    durationMix: sel.durationMix,
+    durationMixSource: sel.durationMixSource,
   });
-  return { v, inv, branch, target, noTarget, preview, selection: { durationMonths: sel.durationMonths, matrix: sel.matrix, planRefs: refs } };
+  return {
+    v,
+    inv,
+    branch,
+    target,
+    noTarget,
+    preview,
+    selection: {
+      durationMonths: sel.durationMonths,
+      matrix: sel.matrix,
+      planRefs: refs,
+      durationMix: sel.durationMix,
+      durationMixSource: sel.durationMixSource,
+    },
+  };
 }
 
 export async function previewVersion(versionId: string, opts: PreviewOpts = {}) {
@@ -795,6 +849,9 @@ export async function previewVersion(versionId: string, opts: PreviewOpts = {}) 
   return {
     preview,
     previewSelection: selection,
+    portfolio: preview.portfolio,
+    durationMix: selection.durationMix,
+    durationMixSource: selection.durationMixSource,
     target,
     noTarget: noTarget === true ? true : undefined,
     targetUnavailable: noTarget === true ? true : undefined,
@@ -1271,7 +1328,13 @@ export async function duplicateVersion(input: DuplicateInput) {
   validateFullLevers(levers);
   // The destination facility re-links to its own Units inventory; the
   // promotion selection is carried for reference (re-resolved at preview).
-  const stored = (v.previewSelection ?? {}) as { durationMonths?: unknown; matrix?: unknown; planRefs?: Array<{ planId: string }> };
+  const stored = (v.previewSelection ?? {}) as {
+    durationMonths?: unknown;
+    matrix?: unknown;
+    planRefs?: Array<{ planId: string }>;
+    durationMix?: DurationMix;
+    durationMixSource?: DurationMixSource;
+  };
   const correlationId = input.correlationId ?? newCorrelationId();
   const created = await prisma.$transaction(async (tx) => {
     const strategy = await tx.rateStrategy.create({
@@ -1302,6 +1365,8 @@ export async function duplicateVersion(input: DuplicateInput) {
           durationMonths: stored.durationMonths ?? 12,
           matrix: stored.matrix ?? 'Standard',
           planRefs: [],
+          durationMix: stored.durationMix ?? DEFAULT_DURATION_MIX,
+          durationMixSource: stored.durationMixSource ?? DEFAULT_DURATION_MIX_SOURCE,
         } as unknown as Prisma.InputJsonValue,
         originVersionId: v.id,
         version: 0,
@@ -1340,6 +1405,7 @@ export interface ReviseInput {
   versionId: string;
   levers?: LeverInput;
   effectiveFrom?: string;
+  promotionPreview?: PromotionPreviewSelection;
   actor: StrategyActor;
   correlationId?: string;
 }
@@ -1349,14 +1415,30 @@ export async function reviseVersion(input: ReviseInput) {
   const { v, branchCode } = await loadVersion(input.versionId, scope);
   if (EDITABLE_STATUSES.includes(v.status)) {
     // Already a Draft: plain save.
-    return updateDraft({ versionId: v.id, expectedVersion: v.version, levers: input.levers, effectiveFrom: input.effectiveFrom, actor: input.actor, correlationId: input.correlationId });
+    return updateDraft({
+      versionId: v.id,
+      expectedVersion: v.version,
+      levers: input.levers,
+      effectiveFrom: input.effectiveFrom,
+      promotionPreview: input.promotionPreview,
+      actor: input.actor,
+      correlationId: input.correlationId,
+    });
   }
   const openDraft = await prisma.rateStrategyVersion.findFirst({
     where: { strategyId: v.strategyId, status: { in: ['DRAFT', 'PENDING_APPROVAL', 'REJECTED'] }, versionNo: { gt: v.versionNo } },
     orderBy: { versionNo: 'desc' },
   });
   if (openDraft) {
-    return updateDraft({ versionId: openDraft.id, expectedVersion: openDraft.version, levers: input.levers, effectiveFrom: input.effectiveFrom, actor: input.actor, correlationId: input.correlationId });
+    return updateDraft({
+      versionId: openDraft.id,
+      expectedVersion: openDraft.version,
+      levers: input.levers,
+      effectiveFrom: input.effectiveFrom,
+      promotionPreview: input.promotionPreview,
+      actor: input.actor,
+      correlationId: input.correlationId,
+    });
   }
   const levers = mergeLevers(leversOf(v), input.levers);
   validateFullLevers(levers);
@@ -1364,6 +1446,9 @@ export async function reviseVersion(input: ReviseInput) {
   const max = await prisma.rateStrategyVersion.aggregate({ where: { strategyId: v.strategyId }, _max: { versionNo: true } });
   const versionNo = (max._max.versionNo ?? v.versionNo) + 1;
   const correlationId = input.correlationId ?? newCorrelationId();
+  const previewSelection = input.promotionPreview
+    ? await resolveSelection(v.strategy.branchId, input.promotionPreview, v.previewSelection)
+    : ((v.previewSelection ?? {}) as Prisma.InputJsonValue);
   const created = await prisma.$transaction(async (tx) => {
     const version = await tx.rateStrategyVersion.create({
       data: {
@@ -1386,7 +1471,7 @@ export async function reviseVersion(input: ReviseInput) {
         rounding: levers.rounding,
         categoryFloors: levers.categoryFloors as unknown as Prisma.InputJsonValue,
         sizeOverrides: levers.sizeOverrides as unknown as Prisma.InputJsonValue,
-        previewSelection: (v.previewSelection ?? {}) as Prisma.InputJsonValue,
+        previewSelection,
         originVersionId: v.id,
         version: 0,
         createdBy: input.actor.email,
@@ -1949,4 +2034,140 @@ export async function applyDueBatches(actor: StrategyActor, correlationId?: stri
     branchId: null, correlationId: cid,
   });
   return { today: todaySg(), results };
+}
+
+/**
+ * Derives the active occupied duration mix for a facility (Handoff v2 §9).
+ * Aggregates occupied agreements by commitment duration (1, 3, 6, 12 months)
+ * weighted by occupied NLA (whole sq ft).
+ */
+export async function getOccupiedDurationMix(branchId: string): Promise<{
+  mix: DurationMix;
+  source: DurationMixSource;
+  totalNla: number;
+  occupiedCount: number;
+  available: boolean;
+}> {
+  const branch = await prisma.branch.findUnique({ where: { id: branchId } });
+  if (!branch) {
+    throw new AppError(404, 'NOT_FOUND', 'Branch not found.');
+  }
+
+  const today = todaySg();
+  const activeTenants = await prisma.tenant.findMany({
+    where: {
+      unitId: { not: null },
+      unit: {
+        branchId,
+        deletedAt: null,
+      },
+      status: { in: ['ACTIVE', 'NOTICE'] },
+    },
+    include: {
+      unit: {
+        select: {
+          id: true,
+          sqft: true,
+          status: true,
+        },
+      },
+      bookings: {
+        where: {
+          status: { in: ['CONFIRMED', 'ACTIVE'] },
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 1,
+      },
+      moveOutCases: {
+        where: {
+          status: { not: 'CANCELLED' },
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 1,
+      },
+    },
+  });
+
+  const nlaByDuration: Record<DurationMonths, number> = { 1: 0, 3: 0, 6: 0, 12: 0 };
+  let totalOccupiedNla = 0;
+  let occupiedCount = 0;
+
+  for (const t of activeTenants) {
+    if (!t.unit || t.unit.status !== 'OCCUPIED') continue;
+
+    // Check move-out case: include unit until its actual move-out effective date; exclude after
+    if (t.moveOutCases.length > 0) {
+      const mo = t.moveOutCases[0];
+      if (mo.status === 'COMPLETED' || dateKey(mo.finalAccessDate) < today) {
+        continue;
+      }
+    }
+
+    const unitNla = Math.round(toNum(t.unit.sqft));
+    if (unitNla <= 0) continue;
+
+    // Classify duration commitment
+    let duration: DurationMonths = 1;
+    const b = t.bookings[0];
+    if (b && b.duration) {
+      const dStr = b.duration.toLowerCase();
+      let commitment = 1;
+      if (dStr.includes('12')) commitment = 12;
+      else if (dStr.includes('6')) commitment = 6;
+      else if (dStr.includes('3')) commitment = 3;
+      else if (dStr.includes('1') || dStr.includes('month')) commitment = 1;
+
+      // Check if commitment has expired and reverted to rolling monthly
+      if (b.moveInDate) {
+        const moveIn = new Date(b.moveInDate);
+        const commitmentEnd = new Date(moveIn);
+        commitmentEnd.setMonth(commitmentEnd.getMonth() + commitment);
+        if (dateKey(commitmentEnd) < today) {
+          duration = 1;
+        } else {
+          duration = commitment as DurationMonths;
+        }
+      } else {
+        duration = commitment as DurationMonths;
+      }
+    }
+
+    nlaByDuration[duration] += unitNla;
+    totalOccupiedNla += unitNla;
+    occupiedCount += 1;
+  }
+
+  if (totalOccupiedNla <= 0) {
+    return {
+      mix: DEFAULT_DURATION_MIX,
+      source: 'Equal planning assumption',
+      totalNla: 0,
+      occupiedCount: 0,
+      available: false,
+    };
+  }
+
+  // Calculate percentages rounded to 2 decimal places
+  const rawPcts: Record<DurationMonths, number> = {
+    1: Math.round((nlaByDuration[1] / totalOccupiedNla) * 10000) / 100,
+    3: Math.round((nlaByDuration[3] / totalOccupiedNla) * 10000) / 100,
+    6: Math.round((nlaByDuration[6] / totalOccupiedNla) * 10000) / 100,
+    12: Math.round((nlaByDuration[12] / totalOccupiedNla) * 10000) / 100,
+  };
+  const sumRaw = rawPcts[1] + rawPcts[3] + rawPcts[6] + rawPcts[12];
+  const diff = Math.round((100 - sumRaw) * 100) / 100;
+  // Adjust largest bucket with residual diff so sum is exactly 100.00
+  const largestDur = ([1, 3, 6, 12] as DurationMonths[]).reduce(
+    (max, d) => (rawPcts[d] > rawPcts[max] ? d : max),
+    1 as DurationMonths,
+  );
+  rawPcts[largestDur] = Math.round((rawPcts[largestDur] + diff) * 100) / 100;
+
+  return {
+    mix: rawPcts,
+    source: 'Current occupied contracts',
+    totalNla: totalOccupiedNla,
+    occupiedCount,
+    available: true,
+  };
 }

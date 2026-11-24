@@ -55,6 +55,8 @@ const view = {
   version: null,
   duration: 12,
   kpiDuration: 12,
+  durationMix: { 1: 25, 3: 25, 6: 25, 12: 25 },
+  durationMixSource: 'Equal planning assumption',
   matrix: 'Standard',
   range: 'stocked', // stocked | all (§15.11)
   rangeFrom: 8,
@@ -326,6 +328,9 @@ async function renderShow(body, root) {
   try {
     const v = await get('/rate-strategy/' + encodeURIComponent(view.versionId));
     view.version = v;
+    const sel = (v && v.previewSelection) || {};
+    view.durationMix = sel.durationMix ? { ...sel.durationMix } : { 1: 25, 3: 25, 6: 25, 12: 25 };
+    view.durationMixSource = sel.durationMixSource || 'Equal planning assumption';
   } catch (e) {
     body.innerHTML = '<div class="section-empty">Strategy failed to load: ' + escapeHtml(describeError(e)) + '</div>';
     return;
@@ -376,8 +381,9 @@ async function renderShow(body, root) {
     '<div class="rs-plan-grid" id="rsPromos"><div class="section-empty">Loading promotion library…</div></div></div></section>' +
     '</div>' +
     '<section class="card rs-duration-section"><div class="card-head"><div><h3>3. PSF by customer storage duration</h3><small>Select 1, 3, 6 or 12 months to update the chart and unit table.</small></div>' +
-    '<div class="rs-psf-definitions"><span><b>Effective PSF:</b> recurring PSF after any percentage discount, once free months end.</span><span><b>Blended PSF:</b> shown only when free months apply.</span></div></div>' +
-    '<div class="card-body rs-duration-grid" id="rsDurCards"><div class="section-empty">Calculating preview…</div></div></section>' +
+    '<div class="rs-psf-definitions"><span><b>Effective PSF:</b> recurring PSF after percentage discounts.</span><span><b>Blended PSF:</b> additionally spreads applicable free months across the commitment.</span></div></div>' +
+    '<div class="card-body rs-duration-grid" id="rsDurCards"><div class="section-empty">Calculating preview…</div></div>' +
+    '<div class="rs-mix-section" id="rsMixSection"></div></section>' +
     '<section class="card rs-table-card" id="rsPreview"><div class="section-empty">Calculating preview…</div></section>' +
     '<details class="rs-details"><summary><span><b>Version and change history</b><small>Drafts and activations remain auditable by facility and effective date</small></span><span id="rsHistCount">…</span></summary>' +
     '<div class="table-wrap" id="rsHistory"><div class="section-empty">Loading history…</div></div></details>' +
@@ -498,7 +504,13 @@ function readLiveLevers() {
 async function fetchPreviewLive(durationMonths) {
   const levers = readLiveLevers();
   if (!levers) return null;
-  const body = { levers, durationMonths, matrix: view.matrix };
+  const body = {
+    levers,
+    durationMonths,
+    matrix: view.matrix,
+    durationMix: view.durationMix,
+    durationMixSource: view.durationMixSource,
+  };
   if (Array.isArray(view.planIds) && view.planIds.length) body.planIds = view.planIds;
   return post('/rate-strategy/' + encodeURIComponent(view.versionId) + '/preview', body);
 }
@@ -593,18 +605,26 @@ function setLiveDirty(dirty) {
   // Apply rates to Units needs a saved Active version with no unsaved
   // changes; Set Active needs a saved Draft. Re-evaluated live.
   const isActive = view.version && rsIsActive(view.version.status);
+  const mix = view.durationMix;
+  const mixTotal = mix ? (mix[1] || 0) + (mix[3] || 0) + (mix[6] || 0) + (mix[12] || 0) : 100;
+  const mixValid = Math.abs(mixTotal - 100) <= 0.005;
+
   document.querySelectorAll('[data-rs-action="sync-units"]').forEach((b) => {
-    const ok = isActive && !dirty;
+    const ok = isActive && !dirty && mixValid;
     b.disabled = !ok;
-    b.title = ok ? '' : (isActive ? 'Save draft (creates the next version) and Set Active it, or Undo, first.' : 'Save the draft and set it Active first.');
+    b.title = !mixValid
+      ? 'Duration mix must total 100% (currently ' + mixTotal.toFixed(1) + '%).'
+      : (ok ? '' : (isActive ? 'Save draft (creates the next version) and Set Active it, or Undo, first.' : 'Save the draft and set it Active first.'));
   });
   const activeBtn = document.querySelector('[data-rs-action="activate"]');
   if (activeBtn && view.version) {
-    const ok = editable && !dirty;
+    const ok = editable && !dirty && mixValid;
     activeBtn.disabled = !ok;
-    activeBtn.title = ok ? '' : (!editable
-      ? (dirty ? 'Save draft first — it creates the next version, which you then set Active.' : 'This version is already ' + rsStatusMeta(view.version.status, false).label + '.')
-      : 'Save the draft first — unsaved changes must be saved or undone before Set Active.');
+    activeBtn.title = !mixValid
+      ? 'Duration mix must total 100% (currently ' + mixTotal.toFixed(1) + '%).'
+      : (ok ? '' : (!editable
+        ? (dirty ? 'Save draft first — it creates the next version, which you then set Active.' : 'This version is already ' + rsStatusMeta(view.version.status, false).label + '.')
+        : 'Save the draft first — unsaved changes must be saved or undone before Set Active.'));
   }
 }
 
@@ -621,11 +641,18 @@ async function saveInlineDraft(root) {
   cancelLivePreview();
   try {
     const levers = readInlineLevers();
+    const promotionPreview = {
+      durationMonths: view.duration,
+      matrix: view.matrix,
+      planIds: selectedPlanRefs(),
+      durationMix: view.durationMix,
+      durationMixSource: view.durationMixSource,
+    };
     if (editable) {
-      await patch('/rate-strategy/' + encodeURIComponent(v.id), { version: v.version, levers });
+      await patch('/rate-strategy/' + encodeURIComponent(v.id), { version: v.version, levers, promotionPreview });
       showBanner('Draft saved — you can now Set Active.', true);
     } else {
-      const d = await post('/rate-strategy/' + encodeURIComponent(v.id) + '/revise', { levers });
+      const d = await post('/rate-strategy/' + encodeURIComponent(v.id) + '/revise', { levers, promotionPreview });
       view.versionId = d.id;
       view.previews = {};
       showBanner('Saved as Draft v' + d.versionNo + ' — Set Active to use it; v' + v.versionNo + ' stays Active until then.', true);
@@ -846,6 +873,8 @@ function renderRsKpis() {
   const promoPayload = (view.previews && view.previews[d]) || view.preview;
   const base = basePayload && basePayload.preview && basePayload.preview.summary;
   const promo = promoPayload && promoPayload.preview && promoPayload.preview.summary;
+  const port = (basePayload && basePayload.preview && basePayload.preview.portfolio) ||
+               (promoPayload && promoPayload.preview && promoPayload.preview.portfolio);
   if (!base || !promo) {
     host.innerHTML = '<div class="section-empty">Calculating preview…</div>';
     return;
@@ -854,19 +883,38 @@ function renderRsKpis() {
   const hasFree = !!promo.hasBlended && promo.weightedBlendedPsf != null;
   const noTarget = view.noTarget || promo.gapVsTarget == null;
   const gapClass = noTarget ? 'warn' : (Number(promo.gapVsTarget) >= -0.005 ? 'good' : 'warn');
+
+  const portHasBlended = !!(port && port.hasBlended && port.portfolioBlendedPsf != null);
+  const portNoTarget = !port || port.targetPsf == null || port.gapVsTarget == null;
+  const portGapClass = portNoTarget ? 'warn' : (Number(port.gapVsTarget) >= -0.005 ? 'good' : 'warn');
+  const portStatusText = portNoTarget ? 'Target unavailable' : (port.status === 'MEETS_TARGET' || Number(port.gapVsTarget) >= -0.005 ? 'Meets target' : 'Below target');
+  const portStatusPillClass = portNoTarget ? 'grey' : (port.status === 'MEETS_TARGET' || Number(port.gapVsTarget) >= -0.005 ? 'green' : 'amber');
+
   host.innerHTML =
     '<section class="rs-kpi-group fixed"><header><b>Base rack-rate strategy</b><span>These values do not change when you preview another promotion.</span></header><div class="rs-kpis">' +
     '<div><small>Facility sizes</small><strong>' + rsNum(base.stockedSizeCount) + '</strong><span>' + rsNum(rows.length) + ' one-sq-ft rate points available</span></div>' +
     '<div><small>' + rsTip('Rack rent potential', 'Monthly rent at 100% occupancy before any promotion, using every available unit.') + '</small><strong>' + rsMoney(base.rackPotential) + '</strong><span>per month · 100% occupied</span></div>' +
     '<div><small>' + rsTip('Weighted rack PSF', 'Total monthly rack rent divided by total available unit square feet.') + '</small><strong>' + fmtPsf(base.weightedRackPsf) + '</strong><span>before promotion</span></div>' +
     '</div></section>' +
-    '<section class="rs-kpi-group scenario"><header><div><b>' + d + '-month promotion preview</b><span>Rack rates stay fixed; these values reflect only the selected library plans.</span></div>' +
+
+    '<section class="rs-kpi-group scenario"><header><div><b>Selected-duration preview (' + d + ' mo)</b><span>Rack rates stay fixed; values reflect the selected promotion and duration.</span></div>' +
     rsDurationFilter('Preview duration', false) + '</header><div class="rs-kpis ' + (hasFree ? '' : 'two') + '">' +
-    '<div><small>' + rsTip('Effective PSF after free period', 'The recurring PSF after any percentage discount. Once the free-month period ends, this is the monthly PSF that resumes.') + '</small><strong>' + fmtPsf(promo.weightedEffectivePsf) + '</strong><span>ongoing monthly rate</span></div>' +
-    (hasFree ? '<div><small>' + rsTip('Blended PSF', 'Total rent payable over the commitment divided evenly across its months. Free months reduce this figure during the offer term.') + '</small><strong>' + fmtPsf(promo.weightedBlendedPsf) + '</strong><span>includes applicable free months</span></div>' : '') +
-    '<div class="' + gapClass + '"><small>' + rsTip('Effective PSF vs target', 'Recurring Effective PSF after the approved percentage discount, minus the Financial Model PSF target. Free months do not change this comparison.') + '</small><strong>' +
+    '<div><small>' + rsTip('Selected-duration Effective PSF', 'The recurring PSF for the selected ' + d + '-month duration after percentage discounts.') + '</small><strong>' + fmtPsf(promo.weightedEffectivePsf) + '</strong><span>ongoing monthly rate</span></div>' +
+    (hasFree ? '<div><small>' + rsTip('Selected-duration Blended PSF', 'Total rent payable over the ' + d + '-month commitment divided evenly across its months including free months.') + '</small><strong>' + fmtPsf(promo.weightedBlendedPsf) + '</strong><span>includes applicable free months</span></div>' : '') +
+    '<div class="' + gapClass + '"><small>' + rsTip('Selected Effective vs target', 'Selected-duration Effective PSF minus the Financial Model PSF target.') + '</small><strong>' +
     (noTarget ? '—' : rsSigned(promo.gapVsTarget)) + '</strong><span>' + (noTarget ? 'Target unavailable' : gapClass === 'good' ? 'Meets target' : 'Below target') + '</span></div>' +
-    '</div></section>';
+    '</div></section>' +
+
+    (port ? ('<section class="rs-kpi-group portfolio"><header><div><b>Portfolio validation panel</b><span>Weighted across all 4 durations by occupied NLA mix</span></div>' +
+    '<span class="pill ' + portStatusPillClass + '">' + escapeHtml(portStatusText) + '</span></header>' +
+    '<div class="rs-kpis ' + (portHasBlended ? 'four' : '') + '">' +
+    '<div><small>' + rsTip('Financial Model Target PSF', 'Read-only source from the approved Financial Model version.') + '</small><strong>' + (port.targetPsf != null ? fmtPsf(port.targetPsf) : '—') + '</strong><span>Approved financial benchmark</span></div>' +
+    '<div><small>' + rsTip('Portfolio-weighted Rack PSF', 'Rack PSF weighted across all durations.') + '</small><strong>' + fmtPsf(port.portfolioRackPsf) + '</strong><span>pre-discount benchmark</span></div>' +
+    '<div><small>' + rsTip('Portfolio-weighted Effective PSF', 'Recurring PSF across all 4 storage durations weighted by occupied NLA mix.') + '</small><strong>' + fmtPsf(port.portfolioEffectivePsf) + '</strong><span>recurring occupied rate</span></div>' +
+    (portHasBlended ? ('<div><small>' + rsTip('Portfolio-weighted Blended PSF', 'All four duration scenarios after applicable free-month spreading.') + '</small><strong>' + fmtPsf(port.portfolioBlendedPsf) + '</strong><span>after free months</span></div>') : '') +
+    '<div class="' + portGapClass + '"><small>' + rsTip('Portfolio Effective PSF vs Financial Target', 'Portfolio-weighted Effective PSF minus the approved target. Positive or zero meets target; negative is below target.') + '</small><strong>' +
+    (portNoTarget ? '—' : rsSigned(port.gapVsTarget)) + '</strong><span>' + escapeHtml(portStatusText) + '</span></div>' +
+    '</div></section>') : '');
 }
 
 /** Promotion-preview toggle only: switches Effective/Blended/vs-target
@@ -880,15 +928,18 @@ function renderRsTargetBanner() {
   const host = $('#rsTargetBanner');
   if (!host) return;
   const d = view.duration;
-  const p = view.previews && view.previews[d];
+  const p = (view.previews && view.previews[d]) || view.preview;
   const sum = p && p.preview && p.preview.summary;
   const tgt = p && p.target;
+  const port = p && p.preview && p.preview.portfolio;
   if (!sum) { host.innerHTML = ''; return; }
   if (!tgt || tgt.targetPsf == null || sum.gapVsTarget == null) {
     host.innerHTML = '<div class="rs-decision warn"><div><b>Financial Model target unavailable</b><span>No CURRENT Financial Model is linked for this facility — rack rates still preview and target comparisons show as unavailable. Save draft, Set Active and Apply rates to Units are not blocked.</span></div>' +
       '<button class="btn" type="button" data-rs-action="model">Open Financial Model pricing</button></div>';
   } else {
-    const gap = Number(sum.gapVsTarget);
+    // Primary comparison against Portfolio-weighted Effective PSF per §3.2, §4 item 8, §6.6
+    const portEff = port ? port.portfolioEffectivePsf : sum.weightedEffectivePsf;
+    const gap = port && port.gapVsTarget != null ? Number(port.gapVsTarget) : Number(sum.gapVsTarget);
     const meets = gap >= -0.005;
     const v = view.version || {};
     const refSize = Number(v.levers && v.levers.referenceSize) || 10;
@@ -896,20 +947,29 @@ function renderRsTargetBanner() {
     const required = startRate + Math.max(0, -gap) * refSize;
     const uplift = startRate ? (required / startRate - 1) * 100 : 0;
     const detail = meets
-      ? 'Recurring Effective PSF is ' + fmtPsf(sum.weightedEffectivePsf) + (Math.abs(gap) < 0.005 ? ', exactly matching the target' : ', S$' + Math.abs(gap).toFixed(2) + ' above target') + '. ' +
-        (sum.hasBlended ? 'Blended PSF is shown separately to reveal the cost of free months.' : 'No free-month benefit applies at this duration, so Blended PSF is not shown.')
-      : 'Recurring Effective PSF is ' + fmtPsf(sum.weightedEffectivePsf) + '. Raise the ' + refSize + ' sq ft anchor from ' + rsMoney(startRate) + ' to about ' + rsMoney(required) + ' (' + uplift.toFixed(1) + '%), or review the percentage discount.';
-    host.innerHTML = '<div class="rs-decision ' + (meets ? 'good' : 'warn') + '"><div><b>' + d + '-month Effective PSF ' + (meets ? 'meets the Financial Model target' : 'is below the Financial Model target') + '</b><span>' + escapeHtml(detail) + '</span></div>' +
+      ? 'Portfolio-weighted Effective PSF is ' + fmtPsf(portEff) + (Math.abs(gap) < 0.005 ? ', exactly matching the target' : ', S$' + Math.abs(gap).toFixed(2) + ' above target') + '. ' +
+        (port && port.hasBlended && port.portfolioBlendedPsf != null ? 'Portfolio Blended PSF is ' + fmtPsf(port.portfolioBlendedPsf) + ' reflecting free-month commitments.' : '')
+      : 'Portfolio-weighted Effective PSF is ' + fmtPsf(portEff) + ' (' + rsSigned(gap) + ' vs S$' + Number(tgt.targetPsf).toFixed(2) + ' target). Raise the ' + refSize + ' sq ft anchor from ' + rsMoney(startRate) + ' to about ' + rsMoney(required) + ' (' + uplift.toFixed(1) + '%), or adjust discounts / occupied duration mix.';
+    host.innerHTML = '<div class="rs-decision ' + (meets ? 'good' : 'warn') + '"><div><b>Portfolio Effective PSF ' + (meets ? 'meets the Financial Model target' : 'is below the Financial Model target') + '</b><span>' + escapeHtml(detail) + '</span></div>' +
       '<button class="btn" type="button" data-rs-action="model">Open Financial Model pricing</button></div>';
   }
   const b = host.querySelector('[data-rs-action]');
-  if (b) b.addEventListener('click', (e) => { e.preventDefault(); rsAction('model', rsRoot, b); });
+  if (b) b.addEventListener('click', (e) => { e.preventDefault(); rsAction(b.dataset.rsAction, rsRoot, b); });
 }
 
 async function fetchPreview(durationMonths) {
   const q = new URLSearchParams({ durationMonths: String(durationMonths), matrix: view.matrix });
   if (Array.isArray(view.planIds) && view.planIds.length) {
     q.set('planIds', view.planIds.join(','));
+  }
+  if (view.durationMix) {
+    q.set('mix1', String(view.durationMix[1] != null ? view.durationMix[1] : 25));
+    q.set('mix3', String(view.durationMix[3] != null ? view.durationMix[3] : 25));
+    q.set('mix6', String(view.durationMix[6] != null ? view.durationMix[6] : 25));
+    q.set('mix12', String(view.durationMix[12] != null ? view.durationMix[12] : 25));
+  }
+  if (view.durationMixSource) {
+    q.set('durationMixSource', view.durationMixSource);
   }
   return get('/rate-strategy/' + encodeURIComponent(view.versionId) + '/preview?' + q.toString());
 }
@@ -958,6 +1018,7 @@ function renderWorkbenchViews(root) {
   renderRsChart();
   renderRsCats();
   renderRsDurCards(root || rsRoot);
+  renderRsMixSection(root || rsRoot);
   renderPreviewTables(root || rsRoot);
   renderRsKpis();
   renderRsContext();
@@ -1105,13 +1166,13 @@ function renderRsCats() {
     { label: 'Restricted access', note: pctNote(lv.restrictedAdj), row: adj(Number(lv.restrictedAdj) || 0) },
   ];
   host.innerHTML =
-    '<div class="rs-subsection-head"><div><h4>Size categories and live rate outcomes</h4><p>Facility availability comes from Facilities · Units. Net PSF ranges and rent potential recalculate for the selected storage duration.</p></div>' +
+    '<div class="rs-subsection-head"><div><h4>Size categories and live rate outcomes</h4><p>Facility availability comes from Facilities · Units. Effective PSF ranges and rent potential recalculate for the selected storage duration.</p></div>' +
     '<div class="rs-subsection-actions"><div class="rs-duration-filter rs-category-duration"><span>Storage duration</span><div>' + DURATIONS.map((t) =>
       '<button type="button" class="' + (view.duration === t ? 'active' : '') + '" data-rs-duration="' + t + '">' + t + ' mo</button>').join('') + '</div></div>' +
     '<span class="pill blue">' + stockedSizes + ' available sizes</span></div></div>' +
     '<div class="table-wrap"><table class="rs-category-table"><thead><tr><th>Category</th><th>Size range</th><th>Facility NLA</th><th>Units</th><th>Rack PSF range</th>' +
-    '<th>' + rsTip('Net PSF range', 'The recurring Effective PSF range after the selected percentage promotions. Free months are excluded because rent returns to this rate after the free period.') + '</th>' +
-    '<th>Monthly rack potential</th><th>' + rsTip('Monthly Net Rent Potential', 'Recurring monthly rent from all stocked units after selected percentage promotions, at 100% occupancy. Free-month spreading is not deducted.') + '</th></tr></thead><tbody>' +
+    '<th>' + rsTip('Effective PSF Range', 'Selected duration; recurring after percentage discounts; excludes free-month spreading.') + '</th>' +
+    '<th>Monthly rack potential</th><th>' + rsTip('Monthly Effective Rent Potential', 'Selected duration; recurring monthly rent at 100% occupancy after percentage discounts.') + '</th></tr></thead><tbody>' +
     cats.map((c) => '<tr><td><b>' + escapeHtml(c.label) + '</b></td><td>' + escapeHtml(c.range) + '</td><td>' + (c.area ? rsNum(c.area) + ' sq ft' : '—') + '</td><td>' + (c.units || '—') + '</td>' +
       '<td><b>' + c.rackRange + '</b></td><td><b>' + c.netRange + '</b></td><td>' + (c.units ? rsMoney(c.rack) : 'Not stocked') + '</td><td>' + (c.units ? rsMoney(c.net) : 'Not stocked') + '</td></tr>').join('') +
     '</tbody></table></div>' +
@@ -1119,10 +1180,10 @@ function renderRsCats() {
     '<div><small>Total facility NLA</small><b>' + rsNum(s.totalNla) + ' sq ft</b></div>' +
     '<div><small>Total units</small><b>' + rsNum(s.totalUnits) + '</b></div>' +
     '<div><small>' + rsTip('Weighted-average Rack PSF', 'Total monthly rack rent divided by total stocked facility square feet.') + '</small><b>' + fmtPsf(s.weightedRackPsf) + '</b></div>' +
-    '<div><small>' + rsTip('Weighted-average Net PSF', 'Total recurring Effective/Net rent after percentage promotions divided by total stocked facility square feet.') + '</small><b>' + fmtPsf(s.weightedEffectivePsf) + '</b></div>' +
-    (hasBlended && s.weightedBlendedPsf != null ? '<div><small>' + rsTip('Weighted-average Blended PSF', 'Total rent across the selected commitment, including free months, divided by months and stocked facility square feet.') + '</small><b>' + fmtPsf(s.weightedBlendedPsf) + '</b></div>' : '') +
+    '<div><small>' + rsTip('Selected-duration Effective PSF (' + view.duration + ' mo)', 'The chosen ' + view.duration + '-month scenario only; recurring after percentage discounts.') + '</small><b>' + fmtPsf(s.weightedEffectivePsf) + '</b></div>' +
+    (hasBlended && s.weightedBlendedPsf != null ? '<div><small>' + rsTip('Selected-duration Blended PSF (' + view.duration + ' mo)', 'Total rent across the selected commitment, including free months, divided by months and stocked facility square feet.') + '</small><b>' + fmtPsf(s.weightedBlendedPsf) + '</b></div>' : '') +
     '<div><small>Total monthly Rack Rent Potential</small><b>' + rsMoney(s.rackPotential) + '</b></div>' +
-    '<div><small>Total monthly Net Rent Potential</small><b>' + rsMoney(s.netPotential) + '</b></div>' +
+    '<div><small>Monthly Effective Rent Potential (' + view.duration + ' mo)</small><b>' + rsMoney(s.netPotential) + '</b></div>' +
     '</div>' +
     '<div class="rs-subsection-head compact"><div><h4>Attribute-adjusted example at ' + refSize + ' sq ft</h4><p>These examples isolate each factor. Actual unit rates change only when that attribute is tagged in Facilities · Units.</p></div></div>' +
     '<div class="rs-adjustment-examples">' + examples.map((e) => '<div><span>' + escapeHtml(e.label) + '</span><strong>' + (e.row ? rsMoney(e.row.monthly, 2) : '—') + '</strong><b>' +
@@ -1144,14 +1205,174 @@ function renderRsDurCards(root) {
       '<div><span>' + d + ' month' + (d === 1 ? '' : 's') + '</span>' + (sel ? '<b class="pill blue">Detailed view</b>' : '') + '</div>' +
       (!sum ? '<small>Not loaded</small>' :
         '<dl><div><dt>Rack PSF</dt><dd>' + fmtPsf(sum.weightedRackPsf) + '</dd></div>' +
-        '<div><dt>' + rsTip('Effective PSF', 'Recurring PSF after percentage discounts. This is the value compared with the Financial Model target.') + '</dt><dd>' + fmtPsf(sum.weightedEffectivePsf) + '</dd></div>' +
-        (hasFree ? '<div><dt>' + rsTip('Blended PSF', 'Total rent payable over this commitment divided evenly across every month. Free months reduce this value.') + '</dt><dd>' + fmtPsf(sum.weightedBlendedPsf) + '</dd></div>' : '') +
+        '<div><dt>' + rsTip('Selected-duration Effective PSF', 'Recurring PSF after percentage discounts. This is the value compared with the Financial Model target.') + '</dt><dd>' + fmtPsf(sum.weightedEffectivePsf) + '</dd></div>' +
+        (hasFree ? '<div><dt>' + rsTip('Selected-duration Blended PSF', 'Total rent payable over this commitment divided evenly across every month. Free months reduce this value.') + '</dt><dd>' + fmtPsf(sum.weightedBlendedPsf) + '</dd></div>' : '') +
         '<div><dt>Effective vs target</dt><dd class="' + (noTarget ? '' : Number(sum.gapVsTarget) >= -0.005 ? 'good-text' : 'warn-text') + '">' + (noTarget ? '—' : rsSigned(sum.gapVsTarget)) + '</dd></div></dl>' +
         '<small>' + (hasFree
           ? 'Includes ' + (freeRow ? freeRow.freeMonths : '') + ' free month' + (freeRow && freeRow.freeMonths === 1 ? '' : 's') + ' for eligible sizes; target comparison still uses recurring Effective PSF.'
           : Number(sum.weightedEffectivePsf) >= Number(sum.weightedRackPsf) - 0.005 ? 'No active ' + d + '-month percentage rule; rack rate applies.' : 'No free-month benefit applies at this duration, so Blended PSF is not shown.') + '</small>') +
       '</div>';
   }).join('');
+}
+
+// ---- occupied duration mix planning (v57 §8–§11) ----
+function renderRsMixSection(root) {
+  const host = $('#rsMixSection');
+  if (!host) return;
+  const p = (view.previews && view.previews[12]) || view.preview;
+  const port = p && p.preview && p.preview.portfolio;
+  const mix = view.durationMix || { 1: 25, 3: 25, 6: 25, 12: 25 };
+  const source = view.durationMixSource || 'Equal planning assumption';
+  const total = (mix[1] || 0) + (mix[3] || 0) + (mix[6] || 0) + (mix[12] || 0);
+  const isValid = Math.abs(total - 100) <= 0.005;
+
+  let sourceClass = 'blue';
+  if (source === 'Current occupied contracts') sourceClass = 'green';
+  else if (source === 'Manual planning assumption') sourceClass = 'amber';
+
+  const sumWeights = total > 0 ? total : 100;
+  const norm1 = (((mix[1] || 0) / sumWeights) * 100).toFixed(1);
+  const norm3 = (((mix[3] || 0) / sumWeights) * 100).toFixed(1);
+  const norm6 = (((mix[6] || 0) / sumWeights) * 100).toFixed(1);
+  const norm12 = (((mix[12] || 0) / sumWeights) * 100).toFixed(1);
+
+  const statusText = !port || port.targetPsf == null ? 'Target unavailable' : (port.meetsTarget ? 'Meets target' : 'Below target');
+  const statusCls = !port || port.targetPsf == null ? '' : (port.meetsTarget ? 'good-text' : 'warn-text');
+
+  host.innerHTML =
+    '<div class="rs-mix-header">' +
+    '<div><h4>Occupied duration mix planning</h4><p>Expected share of occupied NLA attributable to each storage duration. Default is equal 25% each; weights must total 100% to submit or apply rates.</p></div>' +
+    '<div class="rs-mix-actions">' +
+    '<span class="pill ' + sourceClass + '" id="rsMixSourceBadge">' + escapeHtml(source) + '</span>' +
+    '<button type="button" class="btn" id="rsMixResetBtn">Reset to equal mix</button>' +
+    '<button type="button" class="btn" id="rsMixActualBtn">Use current occupied mix</button>' +
+    '<button type="button" class="btn" id="rsMixCalcBtn">View calculation</button>' +
+    '</div></div>' +
+    '<div class="rs-mix-inputs-grid">' +
+    [1, 3, 6, 12].map((d) =>
+      '<div class="rs-mix-input-item"><label><span>' + d + ' Month' + (d === 1 ? '' : 's') + ' mix</span>' +
+      '<div class="rs-suffix"><input type="number" min="0" max="100" step="0.1" value="' + (mix[d] != null ? mix[d] : 25) + '" data-rs-mix="' + d + '"><em>% NLA</em></div>' +
+      '</label></div>'
+    ).join('') +
+    '</div>' +
+    '<div class="rs-mix-bar-wrap"><div class="rs-mix-bar">' +
+    '<div class="rs-mix-segment rs-mix-seg-1" style="width:' + norm1 + '%" title="1 mo: ' + mix[1] + '%">1 mo (' + mix[1] + '%)</div>' +
+    '<div class="rs-mix-segment rs-mix-seg-3" style="width:' + norm3 + '%" title="3 mo: ' + mix[3] + '%">3 mo (' + mix[3] + '%)</div>' +
+    '<div class="rs-mix-segment rs-mix-seg-6" style="width:' + norm6 + '%" title="6 mo: ' + mix[6] + '%">6 mo (' + mix[6] + '%)</div>' +
+    '<div class="rs-mix-segment rs-mix-seg-12" style="width:' + norm12 + '%" title="12 mo: ' + mix[12] + '%">12 mo (' + mix[12] + '%)</div>' +
+    '</div></div>' +
+    '<div class="rs-mix-footer">' +
+    '<div class="rs-mix-total ' + (isValid ? 'valid' : 'invalid') + '">' +
+    '<span>Total occupied mix: <strong>' + total.toFixed(1) + '%</strong></span>' +
+    (!isValid
+      ? '<span class="rs-mix-err-msg">Total must equal 100.0% (currently ' + total.toFixed(1) + '%). Submission and rate application are blocked.</span>'
+      : '<span class="rs-mix-ok-msg">✓ Valid 100% occupied NLA distribution</span>') +
+    '</div>' +
+    '<div class="rs-mix-target-status"><span>Portfolio vs Target: <b class="' + statusCls + '">' + escapeHtml(statusText) + '</b></span></div>' +
+    '</div>';
+
+  host.querySelectorAll('[data-rs-mix]').forEach((input) => {
+    input.addEventListener('input', () => {
+      const d = Number(input.dataset.rsMix);
+      const val = parseFloat(input.value);
+      view.durationMix[d] = Number.isFinite(val) ? Math.max(0, Math.min(100, Math.round(val * 10) / 10)) : 0;
+      view.durationMixSource = 'Manual planning assumption';
+      setLiveDirty(true);
+      scheduleLivePreview(root || rsRoot, true);
+    });
+  });
+
+  const resetBtn = host.querySelector('#rsMixResetBtn');
+  if (resetBtn) resetBtn.addEventListener('click', () => {
+    view.durationMix = { 1: 25, 3: 25, 6: 25, 12: 25 };
+    view.durationMixSource = 'Equal planning assumption';
+    setLiveDirty(true);
+    scheduleLivePreview(root || rsRoot, true);
+  });
+
+  const actualBtn = host.querySelector('#rsMixActualBtn');
+  if (actualBtn) actualBtn.addEventListener('click', async () => {
+    const branchId = view.version ? view.version.branchId : '';
+    if (!branchId) return;
+    actualBtn.disabled = true;
+    try {
+      const res = await get('/facilities/' + encodeURIComponent(branchId) + '/occupied-mix');
+      if (res && res.available && res.occupiedCount > 0) {
+        view.durationMix = res.mix;
+        view.durationMixSource = res.source;
+        showBanner('Applied current occupied mix (' + res.occupiedCount + ' occupied units, ' + rsNum(res.totalNla) + ' sq ft occupied NLA).', true);
+      } else {
+        view.durationMix = { 1: 25, 3: 25, 6: 25, 12: 25 };
+        view.durationMixSource = 'Equal planning assumption';
+        showBanner('No active occupied units found. Defaulted to equal 25% mix.', false);
+      }
+      setLiveDirty(true);
+      scheduleLivePreview(root || rsRoot, true);
+    } catch (e) {
+      rsError(root || rsRoot, e);
+    } finally {
+      actualBtn.disabled = false;
+    }
+  });
+
+  const calcBtn = host.querySelector('#rsMixCalcBtn');
+  if (calcBtn) calcBtn.addEventListener('click', () => {
+    openCalculationModal(root || rsRoot);
+  });
+}
+
+function openCalculationModal(root) {
+  const p = (view.previews && view.previews[12]) || view.preview;
+  const port = p && p.preview && p.preview.portfolio;
+  if (!port) {
+    showBanner('Calculation breakdown unavailable — preview not loaded.');
+    return;
+  }
+  const hasBlended = port.hasBlended;
+  const rows = port.breakdown || [];
+
+  const html =
+    '<p class="t-type">Portfolio-weighted Effective PSF combines duration-level Effective PSFs across the occupied NLA storage-duration mix. Free months affect Blended PSF, not recurring Effective PSF.</p>' +
+    '<div class="table-wrap"><table class="rs-calc-table"><thead><tr>' +
+    '<th>Duration</th><th>Selected-duration Effective PSF</th>' +
+    (hasBlended ? '<th>Selected-duration Blended PSF</th>' : '') +
+    '<th>Entered mix</th><th>Normalized weight</th>' +
+    '<th>Effective contribution</th>' +
+    (hasBlended ? '<th>Blended contribution</th>' : '') +
+    '</tr></thead><tbody>' +
+    rows.map((r) =>
+      '<tr><td><b>' + r.durationMonths + ' month' + (r.durationMonths === 1 ? '' : 's') + '</b></td>' +
+      '<td>' + fmtPsf(r.effectivePsf) + '</td>' +
+      (hasBlended ? '<td>' + (r.blendedPsf != null ? fmtPsf(r.blendedPsf) : '—') + '</td>' : '') +
+      '<td>' + r.enteredWeight.toFixed(1) + '%</td>' +
+      '<td>' + r.normalizedWeight.toFixed(1) + '%</td>' +
+      '<td><b>' + fmtPsf(r.effectiveContribution) + '</b></td>' +
+      (hasBlended ? '<td>' + (r.blendedContribution != null ? fmtPsf(r.blendedContribution) : '—') + '</td>' : '') +
+      '</tr>'
+    ).join('') +
+    '</tbody><tfoot><tr>' +
+    '<td>Total</td><td>—</td>' +
+    (hasBlended ? '<td>—</td>' : '') +
+    '<td>' + port.totalMixEntered.toFixed(1) + '%</td><td>100.0%</td>' +
+    '<td><b>' + fmtPsf(port.portfolioEffectivePsf) + '</b></td>' +
+    (hasBlended ? '<td><b>' + (port.portfolioBlendedPsf != null ? fmtPsf(port.portfolioBlendedPsf) : '—') + '</b></td>' : '') +
+    '</tr></tfoot></table></div>' +
+
+    '<div class="rs-calc-summary">' +
+    '<div><small>Financial Model Target PSF</small><strong>' + (port.targetPsf != null ? fmtPsf(port.targetPsf) : '—') + '</strong><span>Approved financial benchmark</span></div>' +
+    '<div><small>Portfolio-weighted Effective PSF</small><strong>' + fmtPsf(port.portfolioEffectivePsf) + '</strong><span>Recurring occupied rate</span></div>' +
+    '<div><small>Portfolio Effective PSF vs Target</small><strong class="' + (port.gapVsTarget == null ? '' : port.gapVsTarget >= -0.005 ? 'good-text' : 'warn-text') + '">' +
+    (port.gapVsTarget != null ? rsSigned(port.gapVsTarget) + ' PSF' : '—') + '</strong><span>' +
+    (port.gapVsTarget == null ? 'Target unavailable' : port.meetsTarget ? 'Meets target' : 'Below target') + '</span></div>' +
+    '</div>' +
+    '<div class="rs-formula" style="margin-top:14px"><b>Authoritative Definition:</b><span>Effective PSF is recurring PSF after percentage discounts. Blended PSF additionally spreads applicable free months across the commitment. Formula: Portfolio Effective PSF = Σ(Duration Effective PSF × Weight) ÷ Total Weight.</span></div>';
+
+  overlay(root, 'Portfolio Effective PSF calculation breakdown', html, '', async () => {}, {
+    noConfirm: true,
+    cancelLabel: 'Close',
+    size: 'wide',
+    subtitle: view.version ? view.version.strategyName + ' · v' + view.version.versionNo : '',
+  });
 }
 
 // ---- promotion library preview panel (§15.13, read-only) ----
@@ -1392,7 +1613,10 @@ async function runValidation(root) {
   const host = $('#rsValidation');
   if (host) host.innerHTML = '<div class="rs-empty">Validating…</div>';
   try {
-    const data = await post('/rate-strategy/' + encodeURIComponent(view.versionId) + '/validate', {});
+    const data = await post('/rate-strategy/' + encodeURIComponent(view.versionId) + '/validate', {
+      durationMix: view.durationMix,
+      durationMixSource: view.durationMixSource,
+    });
     view.validation = data;
     const html = rsValidationHtml(data);
     if (host) host.innerHTML = html;
@@ -1546,7 +1770,10 @@ async function activateStrategy(root, v) {
   }
   let result;
   try {
-    result = await post('/rate-strategy/' + encodeURIComponent(v.id) + '/validate', {});
+    result = await post('/rate-strategy/' + encodeURIComponent(v.id) + '/validate', {
+      durationMix: view.durationMix,
+      durationMixSource: view.durationMixSource,
+    });
   } catch (e) { rsError(root, e); return; }
   if ((result.blockers || []).length) {
     overlay(root, 'Rate strategy validation', '<div class="rs-warning"><b>Resolve blockers before Set Active</b><span>Red blockers must be fixed in the workbench; warnings never block.</span></div>' + rsValidationHtml(result),
@@ -1556,13 +1783,14 @@ async function activateStrategy(root, v) {
   const p = view.previews && view.previews[12];
   const sum = p && p.preview && p.preview.summary;
   const tgt = p && p.target;
+  const port = p && p.preview && p.preview.portfolio;
   const warnings = result.warnings || [];
   const branch = (state.branches || []).find((b) => b.id === v.branchId);
   const body =
     '<div class="rs-modal-note"><b>Set Active creates a dated facility rate version</b><span>The snapshot is frozen and any other Active version of this strategy is superseded. Rates reach Units only when you click Apply rates to Units.</span></div>' +
     '<div class="rs-approval-summary"><div><small>Facility</small><b>' + escapeHtml(branch ? branch.name : (v.branchCode || '—')) + '</b></div>' +
     '<div><small>Effective from</small><b>' + escapeHtml(fmtDay(v.effectiveFrom)) + '</b></div>' +
-    '<div><small>Weighted Effective PSF</small><b>' + (sum ? fmtPsf(sum.weightedEffectivePsf) : '—') + '</b></div>' +
+    '<div><small>Portfolio-weighted Effective PSF</small><b>' + (port ? fmtPsf(port.portfolioEffectivePsf) : (sum ? fmtPsf(sum.weightedEffectivePsf) : '—')) + '</b></div>' +
     '<div><small>Financial target</small><b>' + (tgt && tgt.targetPsf != null ? fmtPsf(tgt.targetPsf) : 'Unavailable') + '</b></div></div>' +
     (warnings.length
       ? '<div class="rs-approval-warnings"><b>' + warnings.length + ' advisory warning' + (warnings.length === 1 ? '' : 's') + '</b>' +

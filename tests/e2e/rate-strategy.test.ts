@@ -19,6 +19,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_LEVERS,
+  DEFAULT_DURATION_MIX,
+  DEFAULT_DURATION_MIX_SOURCE,
   applyAttributeAdjustments,
   applyPromotions,
   baseMonthlyCents,
@@ -29,9 +31,13 @@ import {
   generatedRackCents,
   isBatchEligibleUnit,
   isGroundFloorLevel,
+  portfolioFromDurationSummaries,
   previewFacility,
   rackCentsForUnit,
   solveRequiredBaseRate,
+  validateDurationMix,
+  type DurationMix,
+  type FacilitySummary,
   type PreviewRequest,
   type StrategyLevers,
 } from '../../src/core/pricing/rateStrategy';
@@ -698,6 +704,8 @@ describe('D11 / D12 / D13 engine observables', () => {
         { planId: 'longer-stay', planVersion: 4, status: 'ACTIVE', kind: 'PERCENTAGE' },
         { planId: 'stay-12', planVersion: 2, status: 'ACTIVE', kind: 'FREE_MONTHS' },
       ],
+      durationMix: { 1: 25, 3: 25, 6: 25, 12: 25 },
+      durationMixSource: 'Equal planning assumption',
     });
   });
 
@@ -741,5 +749,131 @@ describe('D11 / D12 / D13 engine observables', () => {
     const flag = p.validation.warnings.find((w) => w.code === 'SIZE_ABOVE_RANGE')!;
     expect(flag.sizes).toEqual([160]);
     expect(flag.reason.trim().length).toBeGreaterThan(0);
+  });
+});
+
+describe('Handoff v2 — Master Rate Strategy Release 57', () => {
+  it('validates duration mix weights (default 25%, 0..100%, 100% total)', () => {
+    // Default
+    const def = validateDurationMix();
+    expect(def.valid).toBe(true);
+    expect(def.total).toBe(100);
+    expect(def.normalized).toEqual({ 1: 25, 3: 25, 6: 25, 12: 25 });
+
+    // Valid custom mix
+    const custom = validateDurationMix({ 1: 10, 3: 20, 6: 30, 12: 40 });
+    expect(custom.valid).toBe(true);
+    expect(custom.total).toBe(100);
+    expect(custom.normalized).toEqual({ 1: 10, 3: 20, 6: 30, 12: 40 });
+
+    // Invalid total > 100%
+    const over = validateDurationMix({ 1: 25, 3: 25, 6: 25, 12: 30 });
+    expect(over.valid).toBe(false);
+    expect(over.total).toBe(105);
+    expect(over.issues.length).toBeGreaterThan(0);
+    // Normalization still allows temporary preview
+    expect(over.normalized[1]).toBeCloseTo((25 / 105) * 100, 2);
+
+    // Negative weight invalid
+    const neg = validateDurationMix({ 1: -5, 3: 25, 6: 25, 12: 55 });
+    expect(neg.valid).toBe(false);
+    expect(neg.issues).toContain('Duration 1 month mix must be zero or more.');
+
+    // Exceeding 100% invalid
+    const excessive = validateDurationMix({ 1: 110, 3: 0, 6: 0, 12: 0 });
+    expect(excessive.valid).toBe(false);
+    expect(excessive.issues).toContain('Duration 1 month mix cannot exceed 100%.');
+  });
+
+  it('pins the §14 worked example: S$5.17 portfolio Effective PSF, -S$0.18 variance vs S$5.35 target, S$4.99 Blended PSF', () => {
+    // Mock duration-level summaries matching §14:
+    // 1 mo: 6.20, 3 mo: 5.51, 6 mo: 4.82, 12 mo: 4.13 (blended 3.44)
+    const mockSummary = (eff: number, blend: number | null = null): FacilitySummary => ({
+      stockedSizeCount: 5,
+      totalUnits: 50,
+      totalNla: 1000,
+      rackPotential: 6500,
+      netPotential: eff * 1000,
+      blendedPotential: (blend ?? eff) * 1000,
+      weightedRackPsf: 6.5,
+      weightedEffectivePsf: eff,
+      weightedBlendedPsf: blend,
+      hasBlended: blend != null && blend !== eff,
+      targetPsf: 5.35,
+      gapVsTarget: eff - 5.35,
+    });
+
+    const summaries = {
+      1: mockSummary(6.20),
+      3: mockSummary(5.51),
+      6: mockSummary(4.82),
+      12: mockSummary(4.13, 3.44),
+    };
+
+    const portfolio = portfolioFromDurationSummaries(
+      summaries,
+      { 1: 25, 3: 25, 6: 25, 12: 25 },
+      'Equal planning assumption',
+      5.35,
+    );
+
+    // §14: Portfolio-weighted Effective PSF = 5.165 -> S$5.17
+    expect(portfolio.portfolioEffectivePsf).toBe(5.165);
+    expect(Number(portfolio.portfolioEffectivePsf.toFixed(2))).toBe(5.17);
+
+    // Variance vs S$5.35 target = 5.165 - 5.35 = -0.185 -> display -S$0.18 (or -S$0.19 at 4dp)
+    expect(portfolio.gapVsTarget).toBe(-0.185);
+    expect(Number(portfolio.portfolioEffectivePsf.toFixed(2)) - 5.35).toBeCloseTo(-0.18, 2);
+    expect(portfolio.meetsTarget).toBe(false);
+    expect(portfolio.status).toBe('BELOW_TARGET');
+
+    // Portfolio-weighted Blended PSF = 4.9925 -> S$4.99
+    expect(portfolio.hasBlended).toBe(true);
+    expect(portfolio.portfolioBlendedPsf).toBe(4.9925);
+    expect(Number(portfolio.portfolioBlendedPsf!.toFixed(2))).toBe(4.99);
+
+    // Breakdown rows
+    expect(portfolio.breakdown.length).toBe(4);
+    const b12 = portfolio.breakdown.find((b) => b.durationMonths === 12)!;
+    expect(b12.effectivePsf).toBe(4.13);
+    expect(b12.blendedPsf).toBe(3.44);
+    expect(b12.enteredWeight).toBe(25);
+    expect(b12.normalizedWeight).toBe(25);
+    expect(b12.effectiveContribution).toBe(1.0325); // 4.13 * 0.25
+    expect(b12.blendedContribution).toBe(0.86); // 3.44 * 0.25
+  });
+
+  it('previewFacility integrates portfolio metrics and reports red blocker on invalid mix total', () => {
+    // Valid 100% mix
+    const validPreview = previewFacility({
+      levers: baseLevers(),
+      inventory: [{ sizePoint: 10, unitCount: 1 }],
+      promotions: [],
+      selectedDurationMonths: 12,
+      targetPsf: 5.35,
+      durationMix: { 1: 25, 3: 25, 6: 25, 12: 25 },
+      durationMixSource: 'Equal planning assumption',
+    });
+    expect(validPreview.portfolio).toBeDefined();
+    expect(validPreview.portfolio?.durationMixValid).toBe(true);
+    expect(validPreview.validation.blockers.some((b) => b.code === 'DURATION_MIX_INVALID_TOTAL')).toBe(false);
+    expect(validPreview.validation.passed.some((p) => p.code === 'DURATION_MIX_VALID')).toBe(true);
+
+    // Invalid 105% mix blocks Set Active / approval
+    const invalidPreview = previewFacility({
+      levers: baseLevers(),
+      inventory: [{ sizePoint: 10, unitCount: 1 }],
+      promotions: [],
+      selectedDurationMonths: 12,
+      targetPsf: 5.35,
+      durationMix: { 1: 25, 3: 25, 6: 25, 12: 30 },
+      durationMixSource: 'Manual planning assumption',
+    });
+    expect(invalidPreview.portfolio).toBeDefined();
+    expect(invalidPreview.portfolio?.durationMixValid).toBe(false);
+    const blocker = invalidPreview.validation.blockers.find((b) => b.code === 'DURATION_MIX_INVALID_TOTAL')!;
+    expect(blocker).toBeDefined();
+    expect(blocker.message).toBe('Duration mix does not total 100%.');
+    expect(blocker.reason).toContain('105.00%');
   });
 });

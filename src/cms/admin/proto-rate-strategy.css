@@ -17,3 +17,42 @@
 @media(max-width:760px){.rs-kpi-group.scenario>header{display:grid}.rs-kpi-group.scenario .rs-duration-filter{margin-top:6px}}
 .rs-kpis.two{grid-template-columns:repeat(2,minmax(0,1fr))}.rs-admin-override{display:grid;gap:4px;padding:13px;margin:12px 0;border:1px solid #d5a15d;border-radius:11px;background:#fffaf1}.rs-admin-override>label:first-child{display:grid;grid-template-columns:20px 1fr;gap:9px;align-items:start}.rs-admin-override input{width:18px;height:18px;accent-color:var(--terra)}.rs-admin-override label>span{display:grid;gap:2px;color:var(--ink)}.rs-admin-override small{color:var(--muted);font-size:12px}.rs-table.no-blended{min-width:1420px}
 @media(max-width:760px){.rs-kpis.two{grid-template-columns:1fr}}
+
+/* Release 57 — Master Rate Strategy v2 (Occupied duration mix & portfolio validation panel) */
+.rs-kpi-group.portfolio{border-color:#b9d4c7;background:#f0f7f4}
+.rs-kpi-group.portfolio>header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.rs-kpi-sections{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:12px;margin-bottom:16px}
+.rs-kpis.four{grid-template-columns:repeat(4,minmax(0,1fr))}
+@media(max-width:1180px){.rs-kpi-sections{grid-template-columns:1fr}}
+
+.rs-mix-section{margin-top:18px;padding-top:16px;border-top:1px solid var(--line);display:grid;gap:12px}
+.rs-mix-header{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap}
+.rs-mix-header h4{margin:0;font-size:15px;color:var(--ink)}
+.rs-mix-header p{margin:2px 0 0;font-size:12px;color:var(--muted)}
+.rs-mix-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.rs-mix-inputs-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+.rs-mix-input-item{background:white;border:1px solid var(--line);border-radius:10px;padding:10px 12px}
+.rs-mix-input-item label{display:grid;gap:5px}
+.rs-mix-input-item label span{font-size:12px;font-weight:700;color:var(--ink)}
+.rs-mix-bar-wrap{display:grid;gap:4px}
+.rs-mix-bar{height:22px;border-radius:6px;overflow:hidden;display:flex;background:#e9ecef}
+.rs-mix-segment{height:100%;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:#fff;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;transition:width .2s ease}
+.rs-mix-seg-1{background:#2a9d8f}
+.rs-mix-seg-3{background:#457b9d}
+.rs-mix-seg-6{background:#e76f51}
+.rs-mix-seg-12{background:#a855f7}
+.rs-mix-footer{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;font-size:12px}
+.rs-mix-total{display:flex;align-items:center;gap:8px}
+.rs-mix-total.valid strong{color:var(--olive2)}
+.rs-mix-total.invalid strong{color:#dc2626}
+.rs-mix-err-msg{color:#dc2626;font-weight:600}
+.rs-mix-ok-msg{color:var(--olive2);font-weight:600}
+.rs-calc-table{width:100%;border-collapse:collapse;margin:12px 0}
+.rs-calc-table th,.rs-calc-table td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);font-size:12px}
+.rs-calc-table th{background:#f8f6f0;font-size:11px;text-transform:uppercase;color:var(--muted)}
+.rs-calc-table tfoot td{font-weight:700;background:#faf9f5;border-top:2px solid var(--line)}
+.rs-calc-summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:14px}
+.rs-calc-summary>div{background:#f8f6f0;border:1px solid var(--line);border-radius:10px;padding:12px;display:grid;gap:4px}
+.rs-calc-summary small{font-size:11px;color:var(--muted)}
+.rs-calc-summary strong{font-size:18px}
+@media(max-width:760px){.rs-mix-inputs-grid,.rs-calc-summary{grid-template-columns:1fr 1fr}}

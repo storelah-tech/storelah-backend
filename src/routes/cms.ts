@@ -94,8 +94,13 @@ import {
   retryFailedBatch as retryFailedRateBatch,
   cancelBatch as cancelRateBatch,
   applyDueBatches as applyDueRateBatches,
+  getOccupiedDurationMix,
   type StrategyActor,
 } from '../core/pricing/rateStrategyService';
+import {
+  type DurationMix,
+  type DurationMixSource,
+} from '../core/pricing/rateStrategy';
 import { getSettings, upsertSettings } from '../core/settings';
 import { listSiteContent, getSiteContentByKey, upsertSiteContent } from '../core/siteContent';
 import { adjustRate, getNetPsf } from '../core/rates';
@@ -2729,10 +2734,23 @@ const rateLeversSchema = z.object({
 });
 const rateDurationSchema = z.union([z.literal(1), z.literal(3), z.literal(6), z.literal(12)]);
 const rateMatrixSchema = z.enum(['Standard', 'Ground floor']);
+const rateDurationMixSchema = z.object({
+  1: z.number().min(0).max(100),
+  3: z.number().min(0).max(100),
+  6: z.number().min(0).max(100),
+  12: z.number().min(0).max(100),
+});
+const rateDurationMixSourceSchema = z.enum([
+  'Manual planning assumption',
+  'Equal planning assumption',
+  'Current occupied contracts',
+]);
 const ratePromotionPreviewSchema = z.object({
   durationMonths: rateDurationSchema.optional(),
   matrix: rateMatrixSchema.optional(),
   planIds: z.array(z.string().min(1)).max(50).optional(),
+  durationMix: rateDurationMixSchema.optional(),
+  durationMixSource: rateDurationMixSourceSchema.optional(),
 });
 function rateActorOf(req: Request): StrategyActor {
   const admin = adminOf(req);
@@ -2808,6 +2826,14 @@ router.patch('/rate-strategy/:id', requireAuth, async (req: Request, res: Respon
   }));
 });
 
+router.get('/facilities/:branchId/occupied-mix', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await getOccupiedDurationMix(String(req.params.branchId)));
+});
+
+router.get('/rate-strategy/branches/:branchId/occupied-mix', requireAuth, async (req: Request, res: Response) => {
+  ok(res, await getOccupiedDurationMix(String(req.params.branchId)));
+});
+
 router.get('/rate-strategy/:id/preview', requireAuth, async (req: Request, res: Response) => {
   const q = req.query as Record<string, unknown>;
   const durationRaw = q.durationMonths === undefined ? undefined : Number(q.durationMonths);
@@ -2820,9 +2846,23 @@ router.get('/rate-strategy/:id/preview', requireAuth, async (req: Request, res: 
     fail(res, 400, 'VALIDATION', "matrix must be 'Standard' or 'Ground floor'.");
     return;
   }
+  let durationMix: DurationMix | undefined;
+  if (q.mix1 !== undefined || q.mix3 !== undefined || q.mix6 !== undefined || q.mix12 !== undefined) {
+    const m1 = Number(q.mix1);
+    const m3 = Number(q.mix3);
+    const m6 = Number(q.mix6);
+    const m12 = Number(q.mix12);
+    if ([m1, m3, m6, m12].some((v) => Number.isNaN(v) || v < 0 || v > 100)) {
+      fail(res, 400, 'VALIDATION', 'mix1, mix3, mix6, mix12 must each be numbers between 0 and 100.');
+      return;
+    }
+    durationMix = { 1: m1, 3: m3, 6: m6, 12: m12 };
+  }
+  const durationMixSource = q.durationMixSource ? (String(q.durationMixSource) as DurationMixSource) : undefined;
   ok(res, await previewRateVersion(String(req.params.id), {
     durationMonths: durationRaw as 1 | 3 | 6 | 12 | undefined,
     matrix, planIds: ratePlanIdsOf(req.query),
+    durationMix, durationMixSource,
   }));
 });
 
@@ -2835,6 +2875,8 @@ router.post('/rate-strategy/:id/preview', requireAuth, async (req: Request, res:
     durationMonths: rateDurationSchema.optional(),
     matrix: rateMatrixSchema.optional(),
     planIds: z.array(z.string().min(1)).max(50).optional(),
+    durationMix: rateDurationMixSchema.optional(),
+    durationMixSource: rateDurationMixSourceSchema.optional(),
   }).safeParse(req.body ?? {});
   if (!parsed.success) {
     fail(res, 400, 'VALIDATION', 'Invalid unsaved-levers preview payload', parsed.error.flatten());
@@ -2844,6 +2886,8 @@ router.post('/rate-strategy/:id/preview', requireAuth, async (req: Request, res:
     durationMonths: parsed.data.durationMonths,
     matrix: parsed.data.matrix,
     planIds: parsed.data.planIds,
+    durationMix: parsed.data.durationMix,
+    durationMixSource: parsed.data.durationMixSource,
   }));
 });
 
@@ -2876,13 +2920,15 @@ router.post('/rate-strategy/:id/revise', requireAuth, async (req: Request, res: 
   const parsed = z.object({
     levers: rateLeversSchema.optional(),
     effectiveFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+    promotionPreview: ratePromotionPreviewSchema.optional(),
   }).safeParse(req.body);
   if (!parsed.success) {
-    fail(res, 400, 'VALIDATION', 'Invalid revise payload (levers/effectiveFrom)', parsed.error.flatten());
+    fail(res, 400, 'VALIDATION', 'Invalid revise payload (levers/effectiveFrom/promotionPreview)', parsed.error.flatten());
     return;
   }
   ok(res, await reviseRateVersion({
     versionId: String(req.params.id), levers: parsed.data.levers, effectiveFrom: parsed.data.effectiveFrom,
+    promotionPreview: parsed.data.promotionPreview,
     actor: rateActorOf(req), correlationId: newCorrelationId(),
   }));
 });

@@ -38,6 +38,54 @@ export type RoundingIncrement = 1 | 5 | 10;
 
 export type DurationMonths = 1 | 3 | 6 | 12;
 
+export type DurationMix = Record<DurationMonths, number>;
+
+export type DurationMixSource =
+  | 'Manual planning assumption'
+  | 'Equal planning assumption'
+  | 'Current occupied contracts';
+
+export const DEFAULT_DURATION_MIX: DurationMix = { 1: 25, 3: 25, 6: 25, 12: 25 };
+export const DEFAULT_DURATION_MIX_SOURCE: DurationMixSource = 'Equal planning assumption';
+
+export interface DurationMixValidation {
+  valid: boolean;
+  total: number;
+  normalized: DurationMix;
+  issues: string[];
+}
+
+export function validateDurationMix(mix?: Partial<DurationMix> | null): DurationMixValidation {
+  const issues: string[] = [];
+  const durations: DurationMonths[] = [1, 3, 6, 12];
+  let total = 0;
+  for (const d of durations) {
+    const val = mix ? Number(mix[d]) : 25;
+    if (!Number.isFinite(val)) {
+      issues.push(`Duration ${d} month mix is not a number.`);
+    } else if (val < 0) {
+      issues.push(`Duration ${d} month mix must be zero or more.`);
+    } else if (val > 100) {
+      issues.push(`Duration ${d} month mix cannot exceed 100%.`);
+    } else {
+      total += val;
+    }
+  }
+  total = Math.round(total * 10000) / 10000;
+  const valid = issues.length === 0 && Math.abs(total - 100) <= 0.005;
+  if (issues.length === 0 && !valid) {
+    issues.push(`Duration mix must total 100% (currently ${total.toFixed(2)}%).`);
+  }
+  const denom = total > 0 ? total : 100;
+  const normalized: DurationMix = {
+    1: total > 0 ? Math.round(((Number(mix?.[1] ?? 25)) / denom) * 10000) / 100 : 25,
+    3: total > 0 ? Math.round(((Number(mix?.[3] ?? 25)) / denom) * 10000) / 100 : 25,
+    6: total > 0 ? Math.round(((Number(mix?.[6] ?? 25)) / denom) * 10000) / 100 : 25,
+    12: total > 0 ? Math.round(((Number(mix?.[12] ?? 25)) / denom) * 10000) / 100 : 25,
+  };
+  return { valid, total, normalized, issues };
+}
+
 /** Prototype §15.8 workbench defaults (business rules, not demo data). */
 export const DEFAULT_LEVERS = {
   referenceSize: 10,
@@ -133,6 +181,9 @@ export interface PreviewRequest {
   targetPsf: number | null;
   /** Which access column is previewed; echoed into previewSelection (D11). */
   matrix?: string;
+  durationMix?: DurationMix;
+  durationMixSource?: DurationMixSource;
+  skipPortfolio?: boolean;
 }
 
 export interface SizeRateRow {
@@ -173,6 +224,33 @@ export interface FacilitySummary {
   gapVsTarget: number | null;
 }
 
+export interface PortfolioDurationBreakdown {
+  durationMonths: DurationMonths;
+  effectivePsf: number;
+  blendedPsf: number | null;
+  enteredWeight: number;
+  normalizedWeight: number;
+  effectiveContribution: number;
+  blendedContribution: number | null;
+  hasBlended: boolean;
+}
+
+export interface PortfolioMetrics {
+  durationMix: DurationMix;
+  durationMixSource: DurationMixSource;
+  durationMixTotal: number;
+  durationMixValid: boolean;
+  targetPsf: number | null;
+  portfolioRackPsf: number;
+  portfolioEffectivePsf: number;
+  portfolioBlendedPsf: number | null;
+  hasBlended: boolean;
+  gapVsTarget: number | null;
+  meetsTarget: boolean | null;
+  status: 'MEETS_TARGET' | 'BELOW_TARGET' | 'TARGET_UNAVAILABLE';
+  breakdown: PortfolioDurationBreakdown[];
+}
+
 export interface PreviewSelectionEcho {
   durationMonths: DurationMonths;
   matrix: string | null;
@@ -182,6 +260,8 @@ export interface PreviewSelectionEcho {
     status: string;
     kind: 'PERCENTAGE' | 'FREE_MONTHS';
   }>;
+  durationMix?: DurationMix;
+  durationMixSource?: DurationMixSource;
 }
 
 export interface ValidationIssue {
@@ -210,6 +290,7 @@ export const PASSED_MESSAGES: Record<string, string> = {
   STEP_SETTINGS_VALID: 'Step-down settings are valid.',
   ROUNDING_VALID: 'Rounding increment is S$1, S$5 or S$10.',
   FLOORS_HOLD: 'Stocked sizes meet the applicable rack PSF floors.',
+  DURATION_MIX_VALID: 'Occupied duration mix totals 100%.',
   NO_WARNINGS: 'No warnings.',
 };
 
@@ -227,6 +308,7 @@ export interface FacilityPreview {
   previewSelection: PreviewSelectionEcho;
   /** Stocked sizes above the 150 commercial window (D13/R15 flag). */
   sizesAboveRange: number[];
+  portfolio?: PortfolioMetrics;
 }
 
 // ---------------------------------------------------------------------------
@@ -540,11 +622,35 @@ export function previewFacility(req: PreviewRequest): FacilityPreview {
 
   const sizesAboveRange = stockedRows.filter((r) => r.size > SCHEDULE_BASE_MAX_SIZE).map((r) => r.size);
 
+  let portfolio: PortfolioMetrics | undefined;
+  if (!req.skipPortfolio) {
+    const DURATIONS: DurationMonths[] = [1, 3, 6, 12];
+    const durSummaries: Record<DurationMonths, FacilitySummary> = {} as any;
+    for (const d of DURATIONS) {
+      if (d === selectedDurationMonths) {
+        durSummaries[d] = summary;
+      } else {
+        const other = previewFacility({
+          ...req,
+          selectedDurationMonths: d,
+          skipPortfolio: true,
+        });
+        durSummaries[d] = other.summary;
+      }
+    }
+    portfolio = portfolioFromDurationSummaries(
+      durSummaries,
+      req.durationMix,
+      req.durationMixSource,
+      targetPsf,
+    );
+  }
+
   return {
     scheduleMax,
     rows,
     summary,
-    validation: validateStrategy(req, rows, summary, sizesAboveRange),
+    validation: validateStrategy(req, rows, summary, sizesAboveRange, portfolio),
     previewSelection: {
       durationMonths: selectedDurationMonths,
       matrix: req.matrix ?? promotions.find((p) => p.matrix)?.matrix ?? null,
@@ -554,8 +660,80 @@ export function previewFacility(req: PreviewRequest): FacilityPreview {
         status: p.status,
         kind: p.kind,
       })),
+      durationMix: portfolio?.durationMix,
+      durationMixSource: portfolio?.durationMixSource,
     },
     sizesAboveRange,
+    portfolio,
+  };
+}
+
+export function portfolioFromDurationSummaries(
+  durationSummaries: Record<DurationMonths, FacilitySummary>,
+  durationMixInput?: Partial<DurationMix> | null,
+  durationMixSourceInput?: DurationMixSource | null,
+  targetPsf: number | null = null,
+): PortfolioMetrics {
+  const validation = validateDurationMix(durationMixInput);
+  const durationMix: DurationMix = {
+    1: durationMixInput?.[1] != null ? Number(durationMixInput[1]) : 25,
+    3: durationMixInput?.[3] != null ? Number(durationMixInput[3]) : 25,
+    6: durationMixInput?.[6] != null ? Number(durationMixInput[6]) : 25,
+    12: durationMixInput?.[12] != null ? Number(durationMixInput[12]) : 25,
+  };
+  const durationMixSource: DurationMixSource =
+    durationMixSourceInput ?? (durationMixInput ? 'Manual planning assumption' : DEFAULT_DURATION_MIX_SOURCE);
+
+  const DURATIONS: DurationMonths[] = [1, 3, 6, 12];
+  const portfolioRackPsf = durationSummaries[12]?.weightedRackPsf ?? 0;
+  const anyHasBlended = DURATIONS.some(
+    (d) => durationSummaries[d]?.hasBlended && durationSummaries[d]?.weightedBlendedPsf != null,
+  );
+
+  let effSum = 0;
+  let blendSum = 0;
+  const breakdown: PortfolioDurationBreakdown[] = DURATIONS.map((d) => {
+    const sum = durationSummaries[d];
+    const e = sum ? sum.weightedEffectivePsf : 0;
+    const b = sum && sum.hasBlended && sum.weightedBlendedPsf != null ? sum.weightedBlendedPsf : e;
+    const wNorm = validation.normalized[d];
+    const effContrib = round4((e * wNorm) / 100);
+    const blendContrib = anyHasBlended ? round4((b * wNorm) / 100) : null;
+    effSum += e * wNorm;
+    blendSum += b * wNorm;
+    return {
+      durationMonths: d,
+      effectivePsf: e,
+      blendedPsf: sum && sum.hasBlended ? sum.weightedBlendedPsf : null,
+      enteredWeight: durationMix[d],
+      normalizedWeight: wNorm,
+      effectiveContribution: effContrib,
+      blendedContribution: blendContrib,
+      hasBlended: sum ? sum.hasBlended : false,
+    };
+  });
+
+  const portfolioEffectivePsf = round4(effSum / 100);
+  const portfolioBlendedPsf = anyHasBlended ? round4(blendSum / 100) : null;
+  const gapVsTarget = targetPsf != null ? round4(portfolioEffectivePsf - targetPsf) : null;
+  const meetsTarget = gapVsTarget != null ? gapVsTarget >= -0.005 : null;
+  const status: 'MEETS_TARGET' | 'BELOW_TARGET' | 'TARGET_UNAVAILABLE' =
+    targetPsf == null ? 'TARGET_UNAVAILABLE' : meetsTarget ? 'MEETS_TARGET' : 'BELOW_TARGET';
+
+  return {
+    durationMix,
+    durationMixSource,
+    durationMixTotal: validation.total,
+    durationMixValid: validation.valid,
+    targetPsf,
+    portfolioRackPsf,
+    portfolioEffectivePsf,
+    portfolioBlendedPsf,
+    hasBlended: anyHasBlended,
+    gapVsTarget,
+    meetsTarget,
+    status,
+    breakdown,
   };
 }
 
@@ -569,6 +747,7 @@ export function validateStrategy(
   rows: SizeRateRow[],
   summary: FacilitySummary,
   sizesAboveRange: number[],
+  portfolio?: PortfolioMetrics,
 ): StrategyValidation {
   const { levers, promotions, targetPsf } = req;
   const blockers: ValidationIssue[] = [];
@@ -688,6 +867,20 @@ export function validateStrategy(
     pass('FLOORS_HOLD');
   }
 
+  // Duration mix must total 100% within tolerance (Handoff v2 §8, §13, §15).
+  const dMixValidation = validateDurationMix(req.durationMix);
+  const mixValid = portfolio ? portfolio.durationMixValid : dMixValidation.valid;
+  const mixTotal = portfolio ? portfolio.durationMixTotal : dMixValidation.total;
+  if (!mixValid) {
+    blockers.push({
+      code: 'DURATION_MIX_INVALID_TOTAL',
+      message: 'Duration mix does not total 100%.',
+      reason: `Occupied duration weights must sum to 100% (currently ${mixTotal.toFixed(2)}%) to submit or approve rates.`,
+    });
+  } else {
+    pass('DURATION_MIX_VALID');
+  }
+
   // Warnings (D12): reason is mandatory; none of these blocks Set Active —
   // an authorised approver accepts them with a note (B3 enforces the note).
   for (let i = 1; i < stockedRows.length; i += 1) {
@@ -717,12 +910,13 @@ export function validateStrategy(
     });
   }
 
-  if (summary.gapVsTarget != null && summary.gapVsTarget < 0) {
+  const effectiveGap = portfolio ? portfolio.gapVsTarget : summary.gapVsTarget;
+  if (effectiveGap != null && effectiveGap < 0) {
     warnings.push({
       code: 'BELOW_TARGET',
-      message: `Weighted Effective PSF is below the Financial Model target (gap ${summary.gapVsTarget}).`,
+      message: `Portfolio-weighted Effective PSF is below the Financial Model target (gap ${effectiveGap}).`,
       reason:
-        'The target comparison uses recurring Effective PSF, never Blended PSF; pricing below target needs commercial sign-off regardless of the size of the gap.',
+        'The target comparison uses recurring Effective PSF across the occupied duration mix, never Blended PSF; pricing below target needs commercial sign-off regardless of the size of the gap.',
     });
   }
 

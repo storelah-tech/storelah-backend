@@ -114,6 +114,9 @@ export const DEFAULT_LEVERS = {
 /** Commercial schedule window; the upper end extends, never hard-coded (§26.15). */
 export const SCHEDULE_MIN_SIZE = 8;
 export const SCHEDULE_BASE_MAX_SIZE = 150;
+/** Half-height locker commercial window (§15.10). */
+export const LOCKER_MIN_SIZE = 8;
+export const LOCKER_MAX_SIZE = 15;
 
 export interface StrategyLevers {
   referenceSize: number;
@@ -162,6 +165,8 @@ export interface PromotionPreviewInput {
   kind: 'PERCENTAGE' | 'FREE_MONTHS';
   /** PERCENTAGE: size point -> discount decimal 0..1 (caller's matrix column). */
   discountsBySize?: Record<number, number>;
+  /** PERCENTAGE: size category -> discount decimal 0..1 (disambiguates LOCKER vs XS and covers unstocked categories). */
+  discountsByCategory?: Partial<Record<SizeCategory, number>>;
   /** FREE_MONTHS: number of free months in the commitment. */
   freeMonths?: number;
   /** FREE_MONTHS: categories eligible; omitted = all stocked categories. */
@@ -305,6 +310,8 @@ export interface StrategyValidation {
 export interface FacilityPreview {
   scheduleMax: number;
   rows: SizeRateRow[];
+  /** Full half-height locker schedule (8–15 sq ft + any stocked locker sizes), with lockerAdj applied. */
+  lockerRows: SizeRateRow[];
   summary: FacilitySummary;
   validation: StrategyValidation;
   previewSelection: PreviewSelectionEcho;
@@ -477,11 +484,16 @@ export function combineDiscounts(discounts: number[]): number {
   return round6(1 - discounts.reduce((acc, d) => acc * (1 - d), 1));
 }
 
-function discountForSize(promos: PromotionPreviewInput[], size: number): number {
+function discountForRow(
+  promos: PromotionPreviewInput[],
+  size: number,
+  category: SizeCategory,
+): number {
   const ds: number[] = [];
   for (const p of promos) {
     if (p.kind !== 'PERCENTAGE') continue;
-    const d = p.discountsBySize?.[size] ?? 0;
+    const byCat = p.discountsByCategory?.[category];
+    const d = byCat !== undefined ? byCat : (p.discountsBySize?.[size] ?? 0);
     if (d > 0) ds.push(d);
   }
   return combineDiscounts(ds);
@@ -544,26 +556,30 @@ function overrideFor(levers: StrategyLevers, size: number): SizeOverride | undef
 export function previewFacility(req: PreviewRequest): FacilityPreview {
   const { levers, inventory, promotions, selectedDurationMonths, targetPsf } = req;
   const scheduleMax = scheduleMaxFor(inventory);
-  const stockedBySize = new Map<number, StockedSizeInput>();
+  const stockedStandardBySize = new Map<number, number>();
+  const stockedLockersBySize = new Map<number, number>();
   for (const s of inventory) {
-    const prev = stockedBySize.get(s.sizePoint);
-    if (prev) {
-      prev.unitCount += s.unitCount;
-      prev.isLocker = prev.isLocker || s.isLocker;
+    if (!(s.unitCount > 0)) continue;
+    if (s.isLocker) {
+      stockedLockersBySize.set(s.sizePoint, (stockedLockersBySize.get(s.sizePoint) ?? 0) + s.unitCount);
     } else {
-      stockedBySize.set(s.sizePoint, { ...s });
+      stockedStandardBySize.set(s.sizePoint, (stockedStandardBySize.get(s.sizePoint) ?? 0) + s.unitCount);
     }
   }
 
-  const rows: SizeRateRow[] = [];
-  for (let size = SCHEDULE_MIN_SIZE; size <= scheduleMax; size += 1) {
-    const stocked = stockedBySize.get(size);
-    const isLocker = stocked?.isLocker ?? false;
+  const buildRow = (size: number, isLocker: boolean, unitCount: number, stocked: boolean): SizeRateRow => {
     const category = categoryForSize(size, isLocker);
     const override = overrideFor(levers, size);
-
-    const rackCents = override ? toCents(override.monthlyRate) : generatedRackCents(size, isLocker, levers);
-    const discount = discountForSize(promotions, size);
+    const rackCents = isLocker
+      ? finalizeRackCents(
+          override ? toCents(override.monthlyRate) : baseMonthlyCents(size, true, levers),
+          { isLocker: true },
+          levers,
+        )
+      : override
+        ? toCents(override.monthlyRate)
+        : generatedRackCents(size, false, levers);
+    const discount = discountForRow(promotions, size, category);
     const free = freeMonthsFor(promotions, category, selectedDurationMonths);
     const promo = applyPromotions(rackCents, discount, free, selectedDurationMonths);
 
@@ -571,11 +587,11 @@ export function previewFacility(req: PreviewRequest): FacilityPreview {
     const effectiveMonthly = toSgd(promo.effectiveMonthlyCents);
     const blendedMonthly = toSgd(promo.blendedMonthlyCents);
     const effectivePsf = round4(promo.effectiveMonthlyCents / 100 / size);
-    rows.push({
+    return {
       size,
       category,
-      stocked: stocked != null,
-      unitCount: stocked?.unitCount ?? 0,
+      stocked,
+      unitCount,
       rackMonthly,
       rackPsf: round4(rackCents / 100 / size),
       combinedDiscount: discount,
@@ -589,7 +605,38 @@ export function previewFacility(req: PreviewRequest): FacilityPreview {
       overridden: override != null,
       targetPsf,
       gapVsTarget: targetPsf == null ? null : round4(effectivePsf - targetPsf),
+    };
+  };
+
+  // Full half-height locker band (8–15 sq ft) plus any stocked locker sizes outside 8–15.
+  const lockerSizeSet = new Set<number>();
+  for (let size = LOCKER_MIN_SIZE; size <= LOCKER_MAX_SIZE; size += 1) {
+    lockerSizeSet.add(size);
+  }
+  for (const size of stockedLockersBySize.keys()) {
+    lockerSizeSet.add(size);
+  }
+  const lockerRows: SizeRateRow[] = [...lockerSizeSet]
+    .sort((a, b) => a - b)
+    .map((size) => {
+      const count = stockedLockersBySize.get(size);
+      return buildRow(size, true, count ?? 0, count != null);
     });
+  const stockedLockerRowBySize = new Map<number, SizeRateRow>();
+  for (const r of lockerRows) {
+    if (r.stocked) stockedLockerRowBySize.set(r.size, r);
+  }
+
+  const rows: SizeRateRow[] = [];
+  // Any stocked locker smaller than SCHEDULE_MIN_SIZE (rare edge case) appears first.
+  for (const r of lockerRows) {
+    if (r.stocked && r.size < SCHEDULE_MIN_SIZE) rows.push(r);
+  }
+  for (let size = SCHEDULE_MIN_SIZE; size <= scheduleMax; size += 1) {
+    const stdCount = stockedStandardBySize.get(size);
+    rows.push(buildRow(size, false, stdCount ?? 0, stdCount != null));
+    const stockedLocker = stockedLockerRowBySize.get(size);
+    if (stockedLocker) rows.push(stockedLocker);
   }
 
   const stockedRows = rows.filter((r) => r.stocked);
@@ -622,7 +669,7 @@ export function previewFacility(req: PreviewRequest): FacilityPreview {
     gapVsTarget: targetPsf == null || totalNla === 0 ? null : round4(weightedEffectivePsf - targetPsf),
   };
 
-  const sizesAboveRange = stockedRows.filter((r) => r.size > SCHEDULE_BASE_MAX_SIZE).map((r) => r.size);
+  const sizesAboveRange = [...new Set(stockedRows.filter((r) => r.size > SCHEDULE_BASE_MAX_SIZE).map((r) => r.size))];
 
   let portfolio: PortfolioMetrics | undefined;
   if (!req.skipPortfolio) {
@@ -652,6 +699,7 @@ export function previewFacility(req: PreviewRequest): FacilityPreview {
   return {
     scheduleMax,
     rows,
+    lockerRows,
     summary,
     validation: validateStrategy(req, rows, summary, sizesAboveRange, portfolio),
     previewSelection: {
@@ -854,17 +902,19 @@ export function validateStrategy(
   // Generated rows are skipped here — rounding to S$1/5/10 can leave the
   // displayed PSF a fraction under the floor, which is presentation, not a
   // breach. Overridden rows are checked exactly.
-  const belowFloor = stockedRows.filter(
-    (r) =>
-      r.overridden && r.rackPsf < applicableFloor(r.size, r.category === 'LOCKER', levers) - 1e-9,
-  );
+  const belowFloor = stockedRows.filter((r) => {
+    if (!r.overridden) return false;
+    const ov = overrideFor(levers, r.size);
+    const preAttrPsf = ov ? ov.monthlyRate / r.size : r.rackPsf;
+    return preAttrPsf < applicableFloor(r.size, r.category === 'LOCKER', levers) - 1e-9;
+  });
   if (belowFloor.length > 0) {
     blockers.push({
       code: 'BELOW_FLOOR',
       message: 'Stocked size breaches the applicable rack PSF floor.',
       reason:
         'The higher of the overall floor and the category floor applies before rounding; a rate below it (only possible via override) must be fixed before Set Active.',
-      sizes: belowFloor.map((r) => r.size),
+      sizes: [...new Set(belowFloor.map((r) => r.size))],
     });
   } else if (stockedRows.length > 0) {
     pass('FLOORS_HOLD');
@@ -886,24 +936,38 @@ export function validateStrategy(
 
   // Warnings (D12): reason is mandatory; none of these blocks Set Active —
   // an authorised approver accepts them with a note (B3 enforces the note).
-  for (let i = 1; i < stockedRows.length; i += 1) {
-    const prev = stockedRows[i - 1];
-    const cur = stockedRows[i];
-    if (toCents(cur.rackMonthly) < toCents(prev.rackMonthly)) {
-      warnings.push({
-        code: 'NON_MONOTONIC_TOTALS',
-        message: `Larger unit total falls below a smaller unit (${prev.size} sq ft S$${prev.rackMonthly} > ${cur.size} sq ft S$${cur.rackMonthly}).`,
-        reason:
-          'Total rent should not fall as size grows; the larger size looks cheaper overall and needs commercial sign-off.',
-        sizes: [prev.size, cur.size],
-      });
-      break;
+  // Check standard walk-in units and half-height lockers separately so a
+  // discounted locker does not trigger a false non-monotonic warning against
+  // a smaller walk-in unit.
+  const checkMonotonic = (group: SizeRateRow[], label?: string): boolean => {
+    for (let i = 1; i < group.length; i += 1) {
+      const prev = group[i - 1];
+      const cur = group[i];
+      if (toCents(cur.rackMonthly) < toCents(prev.rackMonthly)) {
+        const prefix = label ? `${label} ` : '';
+        warnings.push({
+          code: 'NON_MONOTONIC_TOTALS',
+          message: `Larger ${prefix}unit total falls below a smaller ${prefix}unit (${prev.size} sq ft S$${prev.rackMonthly} > ${cur.size} sq ft S$${cur.rackMonthly}).`,
+          reason:
+            'Total rent should not fall as size grows; the larger size looks cheaper overall and needs commercial sign-off.',
+          sizes: [prev.size, cur.size],
+        });
+        return true;
+      }
     }
+    return false;
+  };
+  const standardStocked = stockedRows.filter((r) => r.category !== 'LOCKER').sort((a, b) => a.size - b.size);
+  const lockerStocked = stockedRows.filter((r) => r.category === 'LOCKER').sort((a, b) => a.size - b.size);
+  if (!checkMonotonic(standardStocked)) {
+    checkMonotonic(lockerStocked, 'locker');
   }
 
-  const hasPct = promotions.some(
-    (p) => p.kind === 'PERCENTAGE' && Object.values(p.discountsBySize ?? {}).some((d) => d > 0),
-  );
+  const hasPct =
+    stockedRows.some((r) => r.combinedDiscount > 0) ||
+    promotions.some(
+      (p) => p.kind === 'PERCENTAGE' && Object.values(p.discountsBySize ?? {}).some((d) => d > 0),
+    );
   const hasFree = stockedRows.some((r) => r.freeMonths > 0);
   if (hasPct && hasFree) {
     warnings.push({

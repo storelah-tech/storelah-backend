@@ -1033,14 +1033,16 @@ function rsChartSvg(plotted, targetPsf, hasBlended) {
   const maxY = Math.ceil((Math.max.apply(null, finite) + 0.5) * 2) / 2;
   const x = (val) => left + ((val - minX) / Math.max(1, maxX - minX)) * (width - left - right);
   const y = (val) => top + ((maxY - val) / Math.max(0.1, maxY - minY)) * (height - top - bottom);
-  const pts = (get) => plotted.map((r) => x(r.size).toFixed(1) + ',' + y(get(r)).toFixed(1)).join(' ');
+  const curveRows = plotted.filter((r) => r.category !== 'LOCKER');
+  const lineRows = curveRows.length ? curveRows : plotted;
+  const pts = (get) => lineRows.map((r) => x(r.size).toFixed(1) + ',' + y(get(r)).toFixed(1)).join(' ');
   const ticks = [];
   for (let i = 0; i <= Math.round((maxY - minY) / 0.5); i++) ticks.push(minY + i * 0.5);
   const grid = ticks.map((val) => '<g><line x1="' + left + '" y1="' + y(val) + '" x2="' + (width - right) + '" y2="' + y(val) + '"/><text x="' + (left - 10) + '" y="' + (y(val) + 4) + '" text-anchor="end">S$' + val.toFixed(2) + '</text></g>').join('');
   const pointRows = plotted.filter((r) => r.stocked);
   const points = (get, monthly, cls, label) => pointRows.map((r) =>
     '<circle class="' + cls + '" cx="' + x(r.size).toFixed(1) + '" cy="' + y(get(r)).toFixed(1) + '" r="4.5" tabindex="0"><title>' +
-    r.size + ' sq ft · ' + label + ' S$' + Number(get(r)).toFixed(2) + ' · ' + rsMoney(monthly(r), 2) + '/month</title></circle>').join('');
+    r.size + ' sq ft' + (r.category === 'LOCKER' ? ' (Locker)' : '') + ' · ' + label + ' S$' + Number(get(r)).toFixed(2) + ' · ' + rsMoney(monthly(r), 2) + '/month</title></circle>').join('');
   const target = targetPsf != null
     ? '<line class="rs-target" x1="' + left + '" y1="' + y(targetPsf) + '" x2="' + (width - right) + '" y2="' + y(targetPsf) + '"/>' +
       '<text class="rs-target-label" x="' + (width - right) + '" y="' + (y(targetPsf) - 8) + '" text-anchor="end">Financial Model target S$' + Number(targetPsf).toFixed(2) + '</text>'
@@ -1115,6 +1117,7 @@ function renderRsCats() {
   const host = $('#rsCats');
   if (!host || !view.preview) return;
   const all = view.preview.preview.rows || [];
+  const lockerRows = view.preview.preview.lockerRows || all.filter((r) => r.category === 'LOCKER');
   const s = view.preview.preview.summary || {};
   const stockedSizes = all.filter((r) => r.stocked).length;
   const hasBlended = all.some((r) => r.stocked && r.hasBlended);
@@ -1123,7 +1126,11 @@ function renderRsCats() {
     return vs.length ? 'S$' + Math.min.apply(null, vs).toFixed(2) + '–S$' + Math.max.apply(null, vs).toFixed(2) : '—';
   };
   const cats = RS_CAT_DEFS.map((d) => {
-    const inCat = all.filter((r) => r.category === d.key);
+    const inCat = d.key === 'LOCKER'
+      ? lockerRows
+      : d.key === 'XS'
+        ? all.filter((r) => r.category === 'XS' && (r.size >= 10 || r.stocked))
+        : all.filter((r) => r.category === d.key);
     const stocked = inCat.filter((r) => r.stocked);
     return {
       ...d,
@@ -1137,7 +1144,7 @@ function renderRsCats() {
   });
   const lv = (view.version && view.version.levers) || {};
   const refSize = Math.max(1, Number(lv.referenceSize) || 10);
-  const refRow = all.find((r) => r.size === refSize);
+  const refRow = all.find((r) => r.size === refSize && r.category !== 'LOCKER') || all.find((r) => r.size === refSize);
   const rounding = Number(lv.rounding) || 1;
   const adj = (factor) => {
     if (!refRow) return null;
@@ -1499,9 +1506,12 @@ function renderPreviewTables(root) {
   const host = $('#rsPreview');
   if (!host || !view.preview) return;
   const data = view.preview;
-  const all = (data.preview.rows || []).slice().sort((a, b) => a.size - b.size);
+  const bySizeAndCat = (a, b) => a.size - b.size || (a.category === 'LOCKER' ? -1 : b.category === 'LOCKER' ? 1 : 0);
+  const all = (data.preview.rows || []).slice().sort(bySizeAndCat);
+  const lockerRows = (data.preview.lockerRows || all.filter((r) => r.category === 'LOCKER')).slice();
+  const standardForAll = all.filter((r) => r.category !== 'LOCKER' && (r.size >= 10 || r.stocked));
   const rows = view.range === 'all'
-    ? all.filter((r) => r.size >= view.rangeFrom && r.size <= view.rangeTo)
+    ? lockerRows.concat(standardForAll).filter((r) => r.size >= view.rangeFrom && r.size <= view.rangeTo).sort(bySizeAndCat)
     : all.filter((r) => r.stocked);
   const hasFree = all.some((r) => r.stocked && r.hasBlended);
   const targetPsf = data.target && data.target.targetPsf;
@@ -1586,7 +1596,8 @@ function openOverrideModal(root, size) {
   const v = view.version;
   if (!v || !rsEditable(v.status)) return;
   const existing = ((v.levers && v.levers.sizeOverrides) || []).find((o) => Number(o.size) === size);
-  const row = view.preview && (view.preview.preview.rows || []).find((r) => r.size === size);
+  const previewRows = (view.preview && view.preview.preview.rows) || [];
+  const row = previewRows.find((r) => r.size === size && r.category !== 'LOCKER') || previewRows.find((r) => r.size === size);
   const current = (existing && existing.monthlyRate) ?? (row && row.rackMonthly) ?? '';
   const saveOverrides = async (list, msg) => {
     await patch('/rate-strategy/' + encodeURIComponent(v.id), { version: v.version, levers: { sizeOverrides: list } });

@@ -80,6 +80,7 @@ export interface RollupPreviousRental {
   endedAt: string | null;
   endReason: string;
   replacementUnitCode: string | null;
+  replacementUnitName: string | null;
   pricingSnapshot: unknown;
   billedTotals: unknown;
   transferCredit: number | null;
@@ -94,14 +95,15 @@ export interface CustomerRollup {
   previousRentals: RollupPreviousRental[];
   transferHistory: Array<{
     id: string; ref: string; docType: string; tenantId: string;
-    fromUnitCode: string | null; toUnitCode: string | null;
+    fromUnitCode: string | null; fromUnitName: string | null;
+    toUnitCode: string | null; toUnitName: string | null;
     effectiveDate: string | null; amount: number; status: string;
   }>;
   ledgerLines: Array<{
     id: string; entryType: string; label: string;
     debit: number | null; credit: number | null; currency: string;
     status: string; postedAt: Date; processorRef: string | null;
-    settlementRef: string | null; invoiceRef: string | null; unitCode: string | null;
+    settlementRef: string | null; invoiceRef: string | null; unitCode: string | null; unitName: string | null;
   }>;
   documents: Array<{
     id: string; ref: string; docType: string; kind: string;
@@ -142,7 +144,7 @@ export async function getCustomerRollup(tenantId: string): Promise<CustomerRollu
     prisma.customerLedgerEntry.findMany({
       where: { tenantId: { in: tenantIds } },
       include: {
-        unit: { select: { unitCode: true } },
+        unit: { select: { unitCode: true, name: true } },
         settlement: { select: { ref: true } },
         invoice: { select: { invoiceNo: true } },
       },
@@ -200,9 +202,10 @@ export async function getCustomerRollup(tenantId: string): Promise<CustomerRollu
 
   const replacementIds = [...new Set(histories.map((h) => h.replacementUnitId).filter(Boolean))] as string[];
   const replacementUnits = replacementIds.length
-    ? await prisma.unit.findMany({ where: { id: { in: replacementIds } }, select: { id: true, unitCode: true } })
+    ? await prisma.unit.findMany({ where: { id: { in: replacementIds } }, select: { id: true, unitCode: true, name: true } })
     : [];
   const replacementCode = new Map(replacementUnits.map((u) => [u.id, u.unitCode]));
+  const replacementName = new Map(replacementUnits.map((u) => [u.id, u.name ?? u.unitCode]));
   const previousRentals: RollupPreviousRental[] = histories.map((h) => ({
     tenantId: h.tenantId,
     unitId: h.unitId,
@@ -215,6 +218,7 @@ export async function getCustomerRollup(tenantId: string): Promise<CustomerRollu
     endedAt: ymd(h.endedAt),
     endReason: h.endReason,
     replacementUnitCode: h.replacementUnitId ? (replacementCode.get(h.replacementUnitId) ?? null) : null,
+    replacementUnitName: h.replacementUnitId ? (replacementName.get(h.replacementUnitId) ?? null) : null,
     pricingSnapshot: h.pricingSnapshot,
     billedTotals: h.billedTotals,
     transferCredit: h.transferCredit != null ? toNum(h.transferCredit) : null,
@@ -226,11 +230,15 @@ export async function getCustomerRollup(tenantId: string): Promise<CustomerRollu
   // outcome, with the previous-unit history row as the immutable segment.
   const transferSettlements = settlements.filter((s) => s.kind === 'TRANSFER');
   const transferUnitCodes = new Map<string, string>();
+  const transferUnitNames = new Map<string, string>();
   if (transferSettlements.length) {
     const unitIds = [...new Set(transferSettlements.flatMap((s) => [s.unitId, s.toUnitId]).filter(Boolean))] as string[];
     if (unitIds.length) {
-      const units = await prisma.unit.findMany({ where: { id: { in: unitIds } }, select: { id: true, unitCode: true } });
-      for (const u of units) transferUnitCodes.set(u.id, u.unitCode);
+      const units = await prisma.unit.findMany({ where: { id: { in: unitIds } }, select: { id: true, unitCode: true, name: true } });
+      for (const u of units) {
+        transferUnitCodes.set(u.id, u.unitCode);
+        transferUnitNames.set(u.id, u.name ?? u.unitCode);
+      }
     }
   }
   const transferHistory = transferSettlements.map((s) => ({
@@ -239,7 +247,9 @@ export async function getCustomerRollup(tenantId: string): Promise<CustomerRollu
     docType: s.docType,
     tenantId: s.tenantId,
     fromUnitCode: transferUnitCodes.get(s.unitId) ?? null,
+    fromUnitName: transferUnitNames.get(s.unitId) ?? null,
     toUnitCode: s.toUnitId ? (transferUnitCodes.get(s.toUnitId) ?? null) : null,
+    toUnitName: s.toUnitId ? (transferUnitNames.get(s.toUnitId) ?? null) : null,
     effectiveDate: ymd(s.effectiveDate),
     amount: toNum(s.amount),
     status: s.status,
@@ -258,6 +268,7 @@ export async function getCustomerRollup(tenantId: string): Promise<CustomerRollu
     settlementRef: l.settlement?.ref ?? null,
     invoiceRef: l.invoice?.invoiceNo ?? null,
     unitCode: l.unit?.unitCode ?? null,
+    unitName: l.unit?.name ?? l.unit?.unitCode ?? null,
   }));
 
   const documents = [

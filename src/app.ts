@@ -78,6 +78,7 @@ app.get('/admin', (req, res) => {
   if (resolveHostKind(req) === 'api') {
     throw new AppError(404, 'NOT_FOUND', 'Route not found');
   }
+  res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
   res.sendFile(path.join(__dirname, 'cms', 'admin', 'dashboard.html'));
 });
 
@@ -86,6 +87,7 @@ app.get('/', (req, res) => {
   // other non-CMS host) → Swagger UI docs for the booking API. The legacy
   // terminal dashboard is no longer served on the api host.
   if (resolveHostKind(req) === 'cms') {
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
     res.sendFile(path.join(__dirname, 'cms', 'admin', 'dashboard.html'));
     return;
   }
@@ -103,7 +105,11 @@ app.use(
     }
     next();
   },
-  express.static(path.join(__dirname, 'cms')),
+  express.static(path.join(__dirname, 'cms'), {
+    setHeaders(res) {
+      res.set('Cache-Control', 'no-cache');
+    },
+  }),
 );
 
 app.use((_req, _res) => {

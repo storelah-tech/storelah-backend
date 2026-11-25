@@ -52,10 +52,27 @@ export function setAuthLostHandler(fn) {
   onAuthLost = fn;
 }
 
+async function fetchMeWithTimeout(timeoutMs = 15000) {
+  const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timer = ctrl ? setTimeout(() => ctrl.abort(), timeoutMs) : null;
+  try {
+    const res = await fetch(`${API}/me`, {
+      cache: 'no-store',
+      headers: { Authorization: `Bearer ${token}` },
+      ...(ctrl ? { signal: ctrl.signal } : {}),
+    });
+    if (res.status === 401 || res.status === 403) return { ok: false, unauthorized: true, data: null };
+    if (!res.ok) return { ok: false, unauthorized: false, data: null };
+    const json = await res.json().catch(() => null);
+    return { ok: !!(json && json.data), unauthorized: false, data: (json && json.data) || null };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 async function fetchMe() {
-  const res = await fetch(`${API}/me`, { headers: { Authorization: `Bearer ${token}` } });
-  if (!res.ok) return null;
-  return (await res.json()).data;
+  const r = await fetchMeWithTimeout();
+  return r.ok ? r.data : null;
 }
 
 function settle(data) {
@@ -67,11 +84,24 @@ function settle(data) {
 /** Resumes a stored session. Resolves true when it is still valid. */
 export async function restoreSession() {
   if (!token) return false;
-  let data = null;
-  try { data = await fetchMe(); } catch (e) { return false; }
-  if (!data) { writeToken(null); return false; }
-  settle(data);
-  return true;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const r = await fetchMeWithTimeout();
+      if (r.ok && r.data) {
+        settle(r.data);
+        return true;
+      }
+      if (r.unauthorized) {
+        writeToken(null);
+        return false;
+      }
+    } catch (e) {
+      // Transient network / cold-start timeout: retry once before falling back
+      // to sign-in without wiping a potentially valid token on the first miss.
+    }
+    if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 600));
+  }
+  return false;
 }
 
 /** Signs in; throws ApiError with the server's message on failure. */
@@ -180,7 +210,7 @@ export async function request(path, opts = {}) {
   Object.assign(headers, opts.headers);
   let res;
   try {
-    res = await fetch(`${API}${path}`, { ...opts, headers });
+    res = await fetch(`${API}${path}`, { cache: 'no-store', ...opts, headers });
   } catch (e) {
     throw new ApiError(0, 'NETWORK', 'Network error — is the backend up?');
   }

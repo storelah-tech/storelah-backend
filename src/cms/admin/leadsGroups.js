@@ -129,7 +129,7 @@ export function leadRowHtml(l, extraBadges) {
     '<td><b>' + escapeHtml(enquiryDay(l.enquiryDate)) + '</b><small>Enquiry opened</small></td>' +
     '<td><span class="pill ' + (STAGE_TONE[l.stage] || 'grey') + '">' + escapeHtml(label) + '</span></td>' +
     '<td>' + leadHeatHtml(l.stage) + '</td>' +
-    '<td><b>AC Self-Storage</b><br><small>' + escapeHtml(l.branchName || 'No preference') + '</small></td>' +
+    '<td><b>AC Self-Storage</b><br><small>' + escapeHtml(l.branchName || 'No preference') + (l.unitDisplayName || l.unitCode ? ' · ' + escapeHtml(l.unitDisplayName || l.unitCode) : '') + '</small></td>' +
     '<td><span class="channel">' + escapeHtml(SOURCE_CODE[l.source] || 'W') + '</span> ' + escapeHtml(SOURCE_LABEL[l.source] || l.source || '') + '</td>' +
     '<td>' + escapeHtml(l.owner || 'Unassigned') + '</td>' +
     '<td class="' + (late ? 'late' : '') + '">' + next + '</td>' +

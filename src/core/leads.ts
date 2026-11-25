@@ -1147,11 +1147,16 @@ export interface LeadGroupSummary {
    * "the master lead header shows the most relevant current opportunity"):
    * the newest open enquiry, else the newest enquiry.
    */
-  primary: ReturnType<typeof serializeLead> | null;
+  primary: (ReturnType<typeof serializeLead> & { unitDisplayName: string | null }) | null;
 }
 
 /** Summarize one group's rows (must arrive newest-first). */
-function summarizeGroup(groupKey: string, rowsDesc: LeadWithBranch[], matches?: (r: LeadWithBranch) => boolean): LeadGroupSummary {
+function summarizeGroup(
+  groupKey: string,
+  rowsDesc: LeadWithBranch[],
+  matches?: (r: LeadWithBranch) => boolean,
+  unitNameMap?: Map<string, string>,
+): LeadGroupSummary {
   const email = rowsDesc.map((r) => r.email?.trim() || null).find((e) => e != null) ?? null;
   const topMobile = rowsDesc.map((r) => r.mobile?.trim() || null).find((m) => m != null) ?? null;
   const stages: LeadStage[] = [];
@@ -1182,7 +1187,10 @@ function summarizeGroup(groupKey: string, rowsDesc: LeadWithBranch[], matches?: 
       const pool = matches ? rowsDesc.filter(matches) : [];
       const from = pool.length ? pool : rowsDesc;
       const pick = from.find((r) => r.stage !== 'WON' && r.stage !== 'LOST') ?? from[0];
-      return pick ? serializeLead(pick) : null;
+      if (!pick) return null;
+      const serialized = serializeLead(pick);
+      const code = serialized.unitCode?.trim() || null;
+      return { ...serialized, unitDisplayName: code ? (unitNameMap?.get(code) ?? code) : null };
     })(),
   };
 }
@@ -1236,10 +1244,21 @@ export async function listLeadGroups(q: LeadGroupQuery): Promise<{
   const summaries = [...byKey.entries()].map(([groupKey, rs]) => summarizeGroup(groupKey, rs, filtered ? matches : undefined));
   summaries.sort((a, b) => b.latestAt.getTime() - a.latestAt.getTime());
   const total = summaries.length;
-  return { rows: summaries.slice((page - 1) * perPage, page * perPage), meta: { total, page, perPage } };
+  const pageRows = summaries.slice((page - 1) * perPage, page * perPage);
+  const primaries = pageRows.map((s) => s.primary).filter((p): p is NonNullable<LeadGroupSummary['primary']> => !!p);
+  if (primaries.length) {
+    const enriched = await withUnitDisplayNames(primaries);
+    const byPrimaryId = new Map(enriched.map((p) => [p.id, p]));
+    for (const s of pageRows) {
+      if (s.primary) s.primary = byPrimaryId.get(s.primary.id) ?? s.primary;
+    }
+  }
+  return { rows: pageRows, meta: { total, page, perPage } };
 }
 
 export interface LeadGroupTimelineRow extends ReturnType<typeof serializeLead> {
+  /** Operator-facing Unit no. (name ?? unitCode). */
+  unitDisplayName: string | null;
   /** True when this row's normalized phone differs from a group sibling's. */
   phoneVariance: boolean;
   /** True for terminal WON/LOST rows: linked read-only, never re-opened. */
@@ -1257,7 +1276,7 @@ export async function getLeadGroupTimeline(groupKey: string): Promise<{
   });
   if (!rows.length) throw new AppError(404, 'NOT_FOUND', 'Lead group not found');
   const norms = rows.map((r) => r.mobileNorm ?? normalizeLeadMobile(r.mobile));
-  const timeline = rows.map((r, i) => ({
+  const rawTimeline = rows.map((r, i) => ({
     ...serializeLead(r),
     // Same variance rule as link-time groupStats: any sibling with a
     // different normalized phone (null counts as its own value).
@@ -1266,7 +1285,13 @@ export async function getLeadGroupTimeline(groupKey: string): Promise<{
     // never re-opens them (see createPublicLead link-or-create).
     terminalReadOnly: r.stage === 'WON' || r.stage === 'LOST',
   }));
-  return { group: summarizeGroup(groupKey, rows), timeline };
+  const timeline = await withUnitDisplayNames(rawTimeline);
+  const unitNameMap = new Map(
+    timeline
+      .filter((t) => t.unitCode && t.unitDisplayName)
+      .map((t) => [t.unitCode!.trim(), t.unitDisplayName!]),
+  );
+  return { group: summarizeGroup(groupKey, rows, undefined, unitNameMap), timeline };
 }
 
 // Weekly enquiry/booking series for the analytics chart. Buckets count
@@ -1503,7 +1528,8 @@ export async function listEnquiriesForLead(leadId: string) {
   const rows = key
     ? await prisma.lead.findMany({ where: { leadGroupKey: key }, include: { branch: true } })
     : [base];
-  return rows
+  const serialized = rows
     .map((r) => serializeLead(r))
     .sort((a, b) => String(b.enquiryDate).localeCompare(String(a.enquiryDate)) || b.leadNo - a.leadNo);
+  return withUnitDisplayNames(serialized);
 }

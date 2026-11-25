@@ -30,7 +30,7 @@ export function bindKpis(s) {
 }
 
 export function bindCharts(s) {
-  if (!s) return;
+  if (!s || typeof Chart === 'undefined') return;
   if (s.monthlyRevenue) {
     const rc = Chart.getChart && Chart.getChart('revenueChart');
     if (rc) {
@@ -275,6 +275,7 @@ export function syncFacilityDashboard() {
 
 // ---------- charts (frozen configs) ----------
 export function initCharts() {
+  if (typeof Chart === 'undefined') return;
   const rCtx = $('#revenueChart')?.getContext('2d');
   if (rCtx && !Chart.getChart('revenueChart')) {
     new Chart(rCtx, {

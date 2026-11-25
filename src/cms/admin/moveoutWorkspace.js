@@ -770,7 +770,7 @@ export async function bindMovesQueue() {
 // ---------------------------------------------------------------------------
 
 export async function openChangeStatus(tenantId, rentals, currentStatus) {
-  const options = (rentals || []).map((r) => `<option value="${esc(r.tenantId)}">${esc(r.unitCode || r.unitName || '')} · ${esc(RENTAL_STATUS_LABEL[r.status] || humanMoStatus(r.status))}</option>`).join('');
+  const options = (rentals || []).map((r) => `<option value="${esc(r.tenantId)}">${esc(r.unitName || r.unitCode || '')} · ${esc(RENTAL_STATUS_LABEL[r.status] || humanMoStatus(r.status))}</option>`).join('');
   openModal({
     title: 'Change status', kicker: 'PER-RENTAL · REASON MANDATORY',
     body: `<div class="v29-callout warn"><i>!</i><div><b>${esc(COPY.statusSafeguard)}</b></div></div>
@@ -857,8 +857,8 @@ async function syncMrRentals() {
     const act = rollup?.rentals || [];
     const prev = rollup?.previousRentals || [];
     const opts = [];
-    for (const r of act) opts.push({ value: `${r.tenantId}|${r.unitId}`, label: `${r.unitCode} · Active${r.facility ? ' · ' + r.facility : ''}`, tenantId: r.tenantId, unitId: r.unitId });
-    for (const p of prev) opts.push({ value: `${p.tenantId}|${p.unitId}`, label: `${p.unitCode} · Former customer${p.endedAt ? ' · ended ' + humanDate(p.endedAt) : ''}`, tenantId: p.tenantId, unitId: p.unitId });
+    for (const r of act) opts.push({ value: `${r.tenantId}|${r.unitId}`, label: `${r.unitName || r.unitCode} · Active${r.facility ? ' · ' + r.facility : ''}`, tenantId: r.tenantId, unitId: r.unitId });
+    for (const p of prev) opts.push({ value: `${p.tenantId}|${p.unitId}`, label: `${p.unitName || p.unitCode} · Former customer${p.endedAt ? ' · ended ' + humanDate(p.endedAt) : ''}`, tenantId: p.tenantId, unitId: p.unitId });
     if (!opts.length) opts.push({ value: `${group.repId}|`, label: 'Customer account (no specific unit)' });
     const pre = window.__mrPrefill || {};
     let sel = opts[0];

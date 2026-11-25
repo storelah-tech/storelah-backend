@@ -353,20 +353,22 @@ export async function inventoryOf(branchId: string): Promise<BranchInventory> {
     rateSource: u.rateSource,
     monthlyRate: toNum(u.monthlyRate),
   }));
-  const bySize = new Map<number, { unitCount: number; isLocker: boolean }>();
+  const byBucket = new Map<string, { sizePoint: number; unitCount: number; isLocker: boolean }>();
   for (const u of list) {
-    const prev = bySize.get(u.sizePoint);
+    const key = `${u.sizePoint}:${u.isLocker ? 'L' : 'S'}`;
+    const prev = byBucket.get(key);
     if (prev) {
       prev.unitCount += 1;
-      prev.isLocker = prev.isLocker || u.isLocker;
     } else {
-      bySize.set(u.sizePoint, { unitCount: 1, isLocker: u.isLocker });
+      byBucket.set(key, { sizePoint: u.sizePoint, unitCount: 1, isLocker: u.isLocker });
     }
   }
   return {
     branch: { id: branch.id, code: branch.code },
     units: list,
-    stocked: [...bySize.entries()].map(([sizePoint, s]) => ({ sizePoint, ...s })),
+    stocked: [...byBucket.values()].sort(
+      (a, b) => a.sizePoint - b.sizePoint || Number(b.isLocker) - Number(a.isLocker),
+    ),
     totalUnits: list.length,
     totalNla: list.reduce((sum, u) => sum + u.sizePoint, 0),
   };
@@ -443,20 +445,25 @@ export async function promotionsOf(
       continue;
     }
     if (plan.kind === 'DISCOUNT_MATRIX') {
+      const cells = plan.matrixCells.map((c) => ({
+        sizeCategory: c.sizeCategory,
+        accessType: c.accessType,
+        commitmentMonths: c.commitmentMonths,
+        discountPct: toNum(c.discountPct),
+      }));
       inputs.push({
         planId: plan.id,
         planVersion: plan.version,
         status: plan.status,
         kind: 'PERCENTAGE',
         discountsBySize: discountsForCells(
-          plan.matrixCells.map((c) => ({
-            sizeCategory: c.sizeCategory,
-            accessType: c.accessType,
-            commitmentMonths: c.commitmentMonths,
-            discountPct: toNum(c.discountPct),
-          })),
+          cells,
           { durationMonths: opts.durationMonths, matrix: opts.matrix, branchSizePoints: opts.branchSizePoints },
         ),
+        discountsByCategory: discountsByCategoryForCells(cells, {
+          durationMonths: opts.durationMonths,
+          matrix: opts.matrix,
+        }),
         matrix: opts.matrix,
       });
       refs.push({ planId: plan.id, planVersion: plan.version, status: plan.status, kind: 'PERCENTAGE' });
@@ -487,6 +494,33 @@ interface MatrixCellLike {
   discountPct: number;
 }
 
+function discountForCategoryFromCells(
+  cells: MatrixCellLike[],
+  cat: SizeCategory,
+  opts: { durationMonths: DurationMonths; matrix: string },
+): number {
+  const want = MATRIX_OF_ENGINE[cat];
+  const cell = cells.find(
+    (c) =>
+      c.accessType === opts.matrix &&
+      c.commitmentMonths === opts.durationMonths &&
+      (toCanonicalSizeCategory(c.sizeCategory) === want ||
+        (cat === 'XL' && toCanonicalSizeCategory(c.sizeCategory) === 'XXL')),
+  );
+  return cell ? cell.discountPct / 100 : 0;
+}
+
+function discountsByCategoryForCells(
+  cells: MatrixCellLike[],
+  opts: { durationMonths: DurationMonths; matrix: string },
+): Record<SizeCategory, number> {
+  const out = {} as Record<SizeCategory, number>;
+  for (const cat of SIZE_CATEGORIES) {
+    out[cat] = discountForCategoryFromCells(cells, cat, opts);
+  }
+  return out;
+}
+
 function discountsForCells(
   cells: MatrixCellLike[],
   opts: { durationMonths: DurationMonths; matrix: string; branchSizePoints?: Array<{ sizePoint: number; isLocker: boolean }> },
@@ -495,12 +529,7 @@ function discountsForCells(
   const out: Record<number, number> = {};
   for (const p of points) {
     const cat = categoryForSize(p.sizePoint, p.isLocker);
-    const want = MATRIX_OF_ENGINE[cat];
-    const cell = cells.find(
-      (c) => c.accessType === opts.matrix && c.commitmentMonths === opts.durationMonths
-        && (toCanonicalSizeCategory(c.sizeCategory) === want || (cat === 'XL' && toCanonicalSizeCategory(c.sizeCategory) === 'XXL')),
-    );
-    const d = cell ? cell.discountPct / 100 : 0;
+    const d = discountForCategoryFromCells(cells, cat, opts);
     if (d > 0) out[p.sizePoint] = d;
   }
   return out;

@@ -686,4 +686,50 @@ describe('rate strategy service (scenario E steps 4–7)', () => {
     const v1After = await api.get(`${CMS}/rate-strategy/${v1}`).set('Authorization', world.ownerA.auth);
     expect(v1After.body.data.status).toBe('SUPERSEDED');
   });
+
+  it('prices stocked lockers with lockerAdj, returns 8–15 lockerRows, and separates same-size LOCKER vs XS units (bug/59)', async () => {
+    // Add an XS 12 sq ft unit alongside existing RS-U02 (12 sq ft LOCKER) to prove same-size coexistence.
+    const xs = await prisma.unitSize.findFirstOrThrow({ where: { code: 'XS' } });
+    const l2 = await prisma.floor.findFirstOrThrow({ where: { branchId: world.branchId, level: 2 } });
+    await prisma.unit.create({
+      data: {
+        branchId: world.branchId,
+        floorId: l2.id,
+        sizeId: xs.id,
+        unitCode: 'RS-U07',
+        sqft: 12,
+        status: 'AVAILABLE',
+        monthlyRate: new Prisma.Decimal(105),
+      },
+    });
+
+    const draft = await createDraft(world, world.ownerA, { name: 'RS Locker Parity' });
+    expect(draft.status).toBe(201);
+    const preview = await api.get(`${CMS}/rate-strategy/${draft.body.data.id}/preview`).set('Authorization', world.ownerA.auth);
+    expect(preview.status).toBe(200);
+
+    const rows = preview.body.data.preview.rows as Array<{ size: number; category: string; stocked: boolean; unitCount: number; rackMonthly: number; effectiveMonthly: number }>;
+    const lockerRows = preview.body.data.preview.lockerRows as Array<{ size: number; category: string; stocked: boolean; rackMonthly: number; effectiveMonthly: number }>;
+
+    // Full 8–15 sq ft locker band is returned with lockerAdj (-25%) and LOCKER 50% discount applied.
+    expect(lockerRows.map((r) => r.size)).toEqual([8, 9, 10, 11, 12, 13, 14, 15]);
+    const l8 = lockerRows.find((r) => r.size === 8)!;
+    const l15 = lockerRows.find((r) => r.size === 15)!;
+    expect(l8.rackMonthly).toBe(56);
+    expect(l8.effectiveMonthly).toBe(28); // 50% LOCKER matrix cell in seedWorld
+    expect(l15.rackMonthly).toBe(93);
+    expect(l15.effectiveMonthly).toBe(46.5);
+
+    // 12 sq ft LOCKER (RS-U02) and 12 sq ft XS (RS-U07) remain separate stocked rows with distinct rates & discounts.
+    const stocked12 = rows.filter((r) => r.size === 12 && r.stocked);
+    expect(stocked12).toHaveLength(2);
+    const lk12 = stocked12.find((r) => r.category === 'LOCKER')!;
+    const xs12 = stocked12.find((r) => r.category === 'XS')!;
+    expect(lk12.unitCount).toBe(1);
+    expect(lk12.rackMonthly).toBe(78); // 104.13 * 0.75 = 78.10 → S$78
+    expect(lk12.effectiveMonthly).toBe(39); // 50% LOCKER discount
+    expect(xs12.unitCount).toBe(1);
+    expect(xs12.rackMonthly).toBe(104); // unadjusted XS schedule
+    expect(xs12.effectiveMonthly).toBe(57.2); // 45% XS discount (104 * 0.55)
+  });
 });

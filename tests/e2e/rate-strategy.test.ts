@@ -901,3 +901,108 @@ describe('Handoff v2 — Master Rate Strategy Release 57', () => {
     expect(p.portfolio?.meetsTarget).toBe(true);
   });
 });
+
+describe('Locker size calculations in Pricing Workbench (bug/59)', () => {
+  it('computes full 8–15 sq ft lockerRows with lockerAdj even when no lockers are stocked (prototype parity)', () => {
+    // Prototype default levers: 90 @ 10 sq ft, smooth 0.20, lockerAdj -25%, 45% discount.
+    // 8 sq ft: base 9*(8/10)^-0.2*8 = 75.29 → *0.75 = 56.47 → S$56 (S$7.00 PSF) → 45% off = S$30.80 (S$3.85 PSF).
+    // 15 sq ft: base 9*(15/10)^-0.2*15 = 124.49 → *0.75 = 93.37 → S$93 (S$6.20 PSF) → 45% off = S$51.15 (S$3.41 PSF).
+    const p = previewFacility({
+      levers: baseLevers(),
+      inventory: [{ sizePoint: 10, unitCount: 2 }],
+      promotions: [
+        {
+          planId: 'p1',
+          planVersion: 1,
+          status: 'ACTIVE',
+          kind: 'PERCENTAGE',
+          discountsByCategory: { LOCKER: 0.45, XS: 0.45, S: 0.45, M: 0.42, L: 0.38, XL: 0.35 },
+        },
+      ],
+      selectedDurationMonths: 12,
+      targetPsf: 5.35,
+    });
+    expect(p.lockerRows.map((r) => r.size)).toEqual([8, 9, 10, 11, 12, 13, 14, 15]);
+    expect(p.lockerRows.every((r) => r.category === 'LOCKER' && !r.stocked)).toBe(true);
+    const l8 = p.lockerRows.find((r) => r.size === 8)!;
+    const l15 = p.lockerRows.find((r) => r.size === 15)!;
+    expect(l8.rackMonthly).toBe(56);
+    expect(l8.rackPsf).toBe(7);
+    expect(l8.effectiveMonthly).toBe(30.8);
+    expect(l8.effectivePsf).toBe(3.85);
+    expect(l15.rackMonthly).toBe(93);
+    expect(l15.rackPsf).toBe(6.2);
+    expect(l15.effectiveMonthly).toBe(51.15);
+    expect(l15.effectivePsf).toBe(3.41);
+    // Unstocked L category also receives its category discount for Effective PSF range.
+    const l70 = p.rows.find((r) => r.size === 70 && r.category === 'L')!;
+    expect(l70.combinedDiscount).toBe(0.38);
+  });
+
+  it('keeps same-size LOCKER and XS separate, applies lockerAdj to summary/portfolio, and avoids false non-monotonic warning', () => {
+    // Models live Sembawang overlap: 1× XS 12 sq ft, 8× LOCKER 13 sq ft, 1× XS 13 sq ft.
+    // Default levers:
+    //   12 sq ft XS:     10413c → S$104
+    //   13 sq ft XS:     9*(13/10)^-0.2*13 = 11102c → S$111
+    //   13 sq ft LOCKER: 11102c * 0.75 = 8327c → S$83 (matches rackCentsForUnit)
+    const p = previewFacility({
+      levers: baseLevers(),
+      inventory: [
+        { sizePoint: 12, unitCount: 1, isLocker: false },
+        { sizePoint: 13, unitCount: 8, isLocker: true },
+        { sizePoint: 13, unitCount: 1, isLocker: false },
+      ],
+      promotions: [
+        {
+          planId: 'p1',
+          planVersion: 1,
+          status: 'ACTIVE',
+          kind: 'PERCENTAGE',
+          discountsByCategory: { LOCKER: 0.5, XS: 0.4 },
+        },
+      ],
+      selectedDurationMonths: 12,
+      targetPsf: null,
+    });
+
+    const stocked = p.rows.filter((r) => r.stocked);
+    expect(stocked).toHaveLength(3);
+    const xs12 = stocked.find((r) => r.size === 12 && r.category === 'XS')!;
+    const xs13 = stocked.find((r) => r.size === 13 && r.category === 'XS')!;
+    const lk13 = stocked.find((r) => r.size === 13 && r.category === 'LOCKER')!;
+    expect(xs12.unitCount).toBe(1);
+    expect(xs13.unitCount).toBe(1);
+    expect(lk13.unitCount).toBe(8);
+
+    // Stocked LOCKER rack matches rackCentsForUnit exactly; XS stays unadjusted.
+    expect(lk13.rackMonthly).toBe(rackCentsForUnit(13, { isLocker: true }, baseLevers()) / 100);
+    expect(lk13.rackMonthly).toBe(83);
+    expect(xs13.rackMonthly).toBe(111);
+    // Distinct category discounts applied to 13 sq ft LOCKER (50%) vs 13 sq ft XS (40%).
+    expect(lk13.effectiveMonthly).toBe(41.5);
+    expect(xs13.effectiveMonthly).toBe(66.6);
+
+    // Summary reconciles to adjusted locker rent: 104*1 + 111*1 + 83*8 = 879; NLA = 12 + 13 + 104 = 129.
+    expect(p.summary.totalUnits).toBe(10);
+    expect(p.summary.totalNla).toBe(129);
+    expect(p.summary.rackPotential).toBe(879);
+    expect(p.summary.weightedRackPsf).toBe(Math.round((879 / 129) * 10000) / 10000);
+
+    // Changing lockerAdj from -25% to -10% updates rackPotential & weightedRackPsf live.
+    const pHigher = previewFacility({
+      levers: baseLevers({ lockerAdj: -0.1 }),
+      inventory: [
+        { sizePoint: 12, unitCount: 1, isLocker: false },
+        { sizePoint: 13, unitCount: 8, isLocker: true },
+        { sizePoint: 13, unitCount: 1, isLocker: false },
+      ],
+      promotions: [],
+      selectedDurationMonths: 12,
+      targetPsf: null,
+    });
+    expect(pHigher.summary.rackPotential).toBeGreaterThan(p.summary.rackPotential);
+
+    // 13 sq ft LOCKER (S$83) after 12 sq ft XS (S$104) must NOT trigger NON_MONOTONIC_TOTALS.
+    expect(p.validation.warnings.map((w) => w.code)).not.toContain('NON_MONOTONIC_TOTALS');
+  });
+});

@@ -176,6 +176,8 @@ export interface PreviewRequest {
   levers: StrategyLevers;
   inventory: StockedSizeInput[];
   promotions: PromotionPreviewInput[];
+  /** Per-duration promotions for portfolio weighting across 1/3/6/12 months. */
+  promotionsByDuration?: Partial<Record<DurationMonths, PromotionPreviewInput[]>>;
   selectedDurationMonths: DurationMonths;
   /** Source-agnostic approved-model target (CURRENT FinancialModel KPI). */
   targetPsf: number | null;
@@ -632,6 +634,7 @@ export function previewFacility(req: PreviewRequest): FacilityPreview {
       } else {
         const other = previewFacility({
           ...req,
+          promotions: req.promotionsByDuration?.[d] ?? req.promotions,
           selectedDurationMonths: d,
           skipPortfolio: true,
         });

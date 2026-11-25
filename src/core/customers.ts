@@ -857,7 +857,7 @@ export function quoteDueToday(args: {
   const protection = Math.max(0, toNum(args.protection ?? 0));
   const addons = Math.max(0, toNum(args.addons ?? 0));
 
-  const discPrice = Math.round(base * (1 - pct / 100));
+  const discPrice = Math.round(base * 100 * (1 - pct / 100)) / 100;
   const monthlyStorage = toNum(Math.max(0, discPrice - recurringFixed));
 
   const cal = args.moveInDate ? parseMoveInCalendarDay(args.moveInDate) : null;
@@ -867,14 +867,14 @@ export function quoteDueToday(args: {
   if (cal) {
     totalDays = new Date(Date.UTC(cal.year, cal.month, 0)).getUTCDate();
     remainingDays = totalDays - cal.day + 1; // move-in day inclusive
-    proratedFull = Math.round((monthlyStorage * remainingDays) / totalDays);
+    proratedFull = toNum((monthlyStorage * remainingDays) / totalDays);
   } else {
-    proratedFull = Math.round(monthlyStorage * PRORATION_FALLBACK_FACTOR);
+    proratedFull = toNum(monthlyStorage * PRORATION_FALLBACK_FACTOR);
   }
   // "Clamped to rent": the first-month discount can neither push below zero
   // nor inflate above the full monthly rent.
-  const prorated = Math.min(monthlyStorage, Math.max(0, Math.round(proratedFull - firstMonth)));
-  const total = Math.round(prorated + protection + addons);
+  const prorated = Math.min(monthlyStorage, Math.max(0, toNum(proratedFull - firstMonth)));
+  const total = toNum(prorated + protection + addons);
 
   return {
     total: toNum(total),

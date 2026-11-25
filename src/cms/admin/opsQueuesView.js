@@ -499,7 +499,7 @@ async function refreshQuoteUnitOptions() {
   ).slice(0, 100);
   sel.innerHTML = '<option value="">— No specific unit —</option>' + matches.map((u) => {
     const sizeCode = u.size ? escapeHtml(u.size.code || '') : '';
-    return `<option value="${escapeHtml(u.code)}">${escapeHtml(u.code)} · ${sizeCode} · ${u.sqft} sqft · $${u.rate}/mo</option>`;
+    return `<option value="${escapeHtml(u.code)}">${escapeHtml(u.name || u.code)} · ${sizeCode} · ${u.sqft} sqft · $${u.rate}/mo</option>`;
   }).join('');
   if (keep && matches.some((u) => u.code === keep)) sel.value = keep;
 }
@@ -833,7 +833,7 @@ function refreshQuoteTotalPreview() {
     const branch = branchSel && branchSel.value ? branchSel.selectedOptions[0].textContent : '';
     const size = $('#qf-size')?.value || '';
     unitEl.textContent = u
-      ? `Unit ${u.code} · ${u.size ? u.size.name || u.size.code : ''} · ${u.sqft} sqft`
+      ? `Unit ${u.name || u.code} · ${u.size ? u.size.name || u.size.code : ''} · ${u.sqft} sqft`
       : [branch, size].filter(Boolean).join(' · ') || 'No unit selected';
   }
   const linesEl = $('#qfSumLines');

@@ -12,7 +12,7 @@ import {
   renderLoading, renderDenied, renderError, canViewFin,
   journeyNavHtml, wireJourneyNav, getFinMount,
 } from './financeShared.js';
-import { get, post, request, describeError, can } from './api.js';
+import { get, post, request, describeError, can, getMe, getCurrentUser } from './api.js';
 
 const PANEL = 'bill-credits';
 const RSTATUSES = ['', 'REQUESTED', 'APPROVED', 'REJECTED', 'PAID'];
@@ -203,8 +203,20 @@ function renderCredits(host) {
   });
 
   host.querySelectorAll('[data-fin-approve]').forEach((b) => b.addEventListener('click', async () => {
+    const refund = (viewState.refunds || []).find((x) => x.id === b.dataset.finApprove);
+    const me = getMe();
+    const myEmail = (me?.user?.email || getCurrentUser()?.email || '').trim().toLowerCase();
+    const isSelf = !!(myEmail && refund?.requestedBy && myEmail === String(refund.requestedBy).trim().toLowerCase());
+    const reason = isSelf
+      ? window.prompt('Approval note / reason (required for single-step approval):')
+      : window.prompt('Approval note / reason (optional):', '');
+    if (reason === null) return;
+    if (isSelf && !reason.trim()) { window.alert('A note/reason is required for single-step approval.'); return; }
     try {
-      await post(`/finance/refunds/${encodeURIComponent(b.dataset.finApprove)}/approve`, { version: Number(b.dataset.finVer) });
+      await post(`/finance/refunds/${encodeURIComponent(b.dataset.finApprove)}/approve`, {
+        version: Number(b.dataset.finVer),
+        ...(reason.trim() ? { reason: reason.trim() } : {}),
+      });
       reload(host).catch((e) => window.alert(describeError(e)));
     } catch (e) { window.alert(describeError(e)); }
   }));

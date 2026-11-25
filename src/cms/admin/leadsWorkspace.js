@@ -223,16 +223,23 @@ export async function openLeadPage(id) {
       get('/settings/lead-sla').catch(() => null),
     ]);
     currentLead = lead;
+    try { sessionStorage.setItem('storelah.lastLeadId', lead.id); } catch { /* noop */ }
     const page = ensureLeadPage();
     const name = leadDisplayName(lead);
     const months = lead.durationMonths || 6;
     const slaTarget = sla ? (sla.targets[{ WHATSAPP: 'whatsapp', PHONE: 'phone' }[lead.source] || 'website'] || 15) : 15;
     const slaChannel = { WHATSAPP: 'WhatsApp', PHONE: 'Phone / missed call' }[lead.source] || 'Website';
+    const selectedUnits = [];
+    for (const row of [lead, ...(enquiries || [])]) {
+      const u = row?.unitDisplayName || row?.unitCode || null;
+      if (u && !selectedUnits.includes(u)) selectedUnits.push(u);
+    }
+    const selectedUnitText = selectedUnits.length ? selectedUnits.join(', ') : 'Not selected';
     page.innerHTML = `<div class="v2-lead-hero"><div class="v2-person"><div class="avatar">${esc(initials(name))}</div><div><button class="v2-name" data-lw="lead-back">← Lead database</button><h1>${esc(name)}</h1><p>${esc(lead.displayId)} · ${lead.type === 'BUSINESS' ? 'Business' : 'Personal'}${lead.representative ? ' · Representative ' + esc(lead.representative) : ''}</p><div class="v2-contactline">${lead.email ? `<a href="mailto:${esc(lead.email)}">${esc(lead.email)}</a>` : ''}${lead.mobile ? `<a href="tel:${esc(lead.mobile)}">${esc(lead.mobile)}</a>` : ''}${lead.uen ? `<span>UEN ${esc(lead.uen)}</span>` : ''}</div><div class="v2-tags"><span class="pill ${leadStatusColour(lead.stageLabel)}">${esc(lead.stageLabel)}</span><span class="pill grey">${PRODUCT}</span></div></div></div><div class="v2-hero-actions"><button class="btn" data-lw="enquiry-new" data-lead="${esc(lead.id)}">＋ Add enquiry</button><button class="btn" data-lw="requirement" data-lead="${esc(lead.id)}">Edit requirement</button><button class="btn" data-lw="appointment-new" data-lead="${esc(lead.id)}">Schedule</button>${can('leads:delete') ? `<button class="btn" data-lw="lead-delete" data-lead="${esc(lead.id)}" data-name="${esc(name)}">Delete</button>` : ''}${can('quotes:create') ? `<button class="primary" data-lw="quote-new" data-lead="${esc(lead.id)}">＋ Create quote</button>` : ''}</div></div>
     <div class="v2-profile-kpis"><div class="v2-profile-kpi"><small>Total enquiries</small><b>${enquiries.length}</b><span>Same identity retained</span></div><div class="v2-profile-kpi"><small>Potential value ${tip(potentialText)}</small><b>${lead.potentialValue == null ? '—' : money(lead.potentialValue)}</b><span>${lead.monthlyRate == null ? 'Add the expected rent' : `${money(lead.monthlyRate)}/month × ${months} months`}</span></div><div class="v2-profile-kpi"><small>Probability ${tip(probabilityText(lead.stageLabel, lead.probability))}</small><b>${lead.probability}%</b><span>Explainable stage probability</span></div><div class="v2-profile-kpi"><small>Date of enquiry</small><b>${esc(humanDate(lead.enquiryDate))}</b><span>Editable source date</span></div><div class="v2-profile-kpi"><small>Assigned salesperson</small><b>${esc(lead.owner || 'Unassigned')}</b><span>First response SLA active</span></div></div>
     <div class="v2-tabs" role="tablist"><button class="active" data-lw-tab="overview">Overview</button><button data-lw-tab="enquiries">Enquiries</button><button data-lw-tab="notes">Notes &amp; tasks</button></div>
-    <div class="v2-panel active" data-lw-panel="overview"><div class="v29-customer-grid"><div class="v29-customer-card"><header><div><h3>Current requirement</h3><p>${PRODUCT} enquiry</p></div></header><div class="body"><div class="v29-facts"><div><small>Size</small><b>${esc(sizeText(lead.size))}</b></div><div><small>Access</small><b>${esc(lead.accessFrequency || 'Not sure')}</b></div><div><small>Move-in</small><b>${esc(humanDate(lead.moveInDate))}</b></div><div><small>Customer type</small><b>${lead.type === 'BUSINESS' ? 'Business' : 'Personal'}</b></div><div><small>Facility</small><b>${esc(lead.branchName ? 'StoreLah ' + lead.branchName : 'No preference')}</b></div><div><small>Source</small><b>${esc(SOURCE_LABEL[lead.source] || lead.source)}</b></div></div></div></div><div class="v29-customer-card"><header><div><h3>First response SLA</h3><p>Controlled in Global Settings</p></div></header><div class="body"><b>${esc(slaChannel)}: ${slaTarget} minutes</b><p class="v29-help">Starts when the enquiry is created and stops at the first human response. Business-hours and escalation rules apply.</p></div></div></div></div>
-    <div class="v2-panel" data-lw-panel="enquiries"><div class="v2-card"><div class="v2-card-head"><h3>Enquiry history</h3><button class="primary" data-lw="enquiry-new" data-lead="${esc(lead.id)}">＋ Add enquiry</button></div><div class="table-wrap"><table class="v2-table"><thead><tr><th>Enquiry</th><th>Date</th><th>Product</th><th>Source</th><th>Size / access</th><th>Status</th></tr></thead><tbody>${enquiries.map((e) => `<tr><td><b>${esc(e.displayId)}</b></td><td>${esc(humanDate(e.enquiryDate))}</td><td>${PRODUCT}<small>${esc(e.branchName ? 'StoreLah ' + e.branchName : 'No preference')}</small></td><td>${esc(SOURCE_LABEL[e.source] || e.source)}</td><td>${esc(sizeText(e.size))}<small>${esc(e.accessFrequency || 'Not sure')}</small></td><td><span class="pill ${leadStatusColour(e.stageLabel)}">${esc(e.stageLabel)}</span></td></tr>`).join('')}</tbody></table></div></div></div>
+    <div class="v2-panel active" data-lw-panel="overview"><div class="v29-customer-grid"><div class="v29-customer-card"><header><div><h3>Current requirement</h3><p>${PRODUCT} enquiry</p></div></header><div class="body"><div class="v29-facts"><div><small>Selected unit${selectedUnits.length > 1 ? 's' : ''}</small><b>${esc(selectedUnitText)}</b></div><div><small>Size</small><b>${esc(sizeText(lead.size))}</b></div><div><small>Access</small><b>${esc(lead.accessFrequency || 'Not sure')}</b></div><div><small>Move-in</small><b>${esc(humanDate(lead.moveInDate))}</b></div><div><small>Customer type</small><b>${lead.type === 'BUSINESS' ? 'Business' : 'Personal'}</b></div><div><small>Facility</small><b>${esc(lead.branchName ? 'StoreLah ' + lead.branchName : 'No preference')}</b></div><div><small>Source</small><b>${esc(SOURCE_LABEL[lead.source] || lead.source)}</b></div></div></div></div><div class="v29-customer-card"><header><div><h3>First response SLA</h3><p>Controlled in Global Settings</p></div></header><div class="body"><b>${esc(slaChannel)}: ${slaTarget} minutes</b><p class="v29-help">Starts when the enquiry is created and stops at the first human response. Business-hours and escalation rules apply.</p></div></div></div></div>
+    <div class="v2-panel" data-lw-panel="enquiries"><div class="v2-card"><div class="v2-card-head"><h3>Enquiry history</h3><button class="primary" data-lw="enquiry-new" data-lead="${esc(lead.id)}">＋ Add enquiry</button></div><div class="table-wrap"><table class="v2-table"><thead><tr><th>Enquiry</th><th>Date</th><th>Product</th><th>Source</th><th>Unit / size</th><th>Status</th></tr></thead><tbody>${enquiries.map((e) => { const uLabel = e.unitDisplayName || e.unitCode || ''; return `<tr><td><b>${esc(e.displayId)}</b></td><td>${esc(humanDate(e.enquiryDate))}</td><td>${PRODUCT}<small>${esc(e.branchName ? 'StoreLah ' + e.branchName : 'No preference')}</small></td><td>${esc(SOURCE_LABEL[e.source] || e.source)}</td><td>${uLabel ? `<b>${esc(uLabel)}</b> · ` : ''}${esc(sizeText(e.size))}<small>${esc(e.accessFrequency || 'Not sure')}</small></td><td><span class="pill ${leadStatusColour(e.stageLabel)}">${esc(e.stageLabel)}</span></td></tr>`; }).join('')}</tbody></table></div></div></div>
     <div class="v2-panel" data-lw-panel="notes"><div class="note-composer"><textarea id="lwNoteBody" data-mention="1" placeholder="Add an internal note. Type @ to mention a colleague…"></textarea><div class="note-composer-foot"><span class="mention-hint">Mentioned users receive an overview notification</span><button class="primary" data-lw="note-save" data-entity="lead" data-id="${esc(lead.id)}">Add note</button></div></div><div id="lwNotes">${notesHtml(notes)}</div></div>`;
     goPage('lead-profile');
     document.body.classList.add('lead-context');
@@ -275,21 +282,43 @@ async function saveEnquiry(btn) {
   });
 }
 
-function openRequirement() {
+async function openRequirement() {
   const l = currentLead;
   if (!l) { notify('Open a lead first.'); return; }
+  const initialUnitOpt = l.unitCode ? option(l.unitCode, l.unitDisplayName || l.unitCode, l.unitCode) : '';
   openModal({
     title: 'Edit lead requirement', kicker: 'CURRENT AC SELF-STORAGE ENQUIRY', wide: true,
-    body: `<div class="v29-callout"><i>i</i><div><b>Updates the active opportunity</b>These fields drive unit recommendations, quotation inputs and the lead summary. They do not alter older enquiries.</div></div><div class="v29-grid three"><label class="v29-field"><span>Product</span><input value="${PRODUCT}" readonly></label><label class="v29-field"><span>Preferred facility</span><select id="lwReqBranch">${branchOptions((state.branches || []).find((b) => b.code === l.branchCode)?.id || '')}</select></label><label class="v29-field"><span>Required size</span><select id="lwReqSize">${sizeOptions(l.size || '')}</select></label><label class="v29-field"><span>Monthly budget</span><input id="lwReqBudget" type="number" min="0" value="${esc(l.monthlyRate ?? '')}"></label><label class="v29-field"><span>Expected duration</span><select id="lwReqDuration">${[['', 'Not sure'], ['3', '3 months'], ['6', '6 months'], ['12', '12 months']].map(([v, t]) => option(v, t, l.durationMonths ?? '')).join('')}</select></label><label class="v29-field"><span>Expected move-in</span><input id="lwReqMove" type="date" value="${esc(l.moveInDate ? String(l.moveInDate).slice(0, 10) : '')}"></label><label class="v29-field"><span>Access frequency</span><select id="lwReqAccess">${ACCESS.map((s) => option(s, s, l.accessFrequency || 'Not sure')).join('')}</select></label><label class="v29-field"><span>Date of enquiry</span><input id="lwReqDate" type="date" value="${esc(l.enquiryDate || '')}"></label><label class="v29-field full"><span>Requirement note</span><textarea id="lwReqNote" placeholder="Special access, shelving, unit location or decision constraints…">${esc(l.note || '')}</textarea></label></div>`,
+    body: `<div class="v29-callout"><i>i</i><div><b>Updates the active opportunity</b>These fields drive unit recommendations, quotation inputs and the lead summary. They do not alter older enquiries.</div></div><div class="v29-grid three"><label class="v29-field"><span>Product</span><input value="${PRODUCT}" readonly></label><label class="v29-field"><span>Preferred facility</span><select id="lwReqBranch">${branchOptions((state.branches || []).find((b) => b.code === l.branchCode)?.id || '')}</select></label><label class="v29-field"><span>Selected unit</span><select id="lwReqUnit"><option value="">No specific unit</option>${initialUnitOpt}</select></label><label class="v29-field"><span>Required size</span><select id="lwReqSize">${sizeOptions(l.size || '')}</select></label><label class="v29-field"><span>Monthly budget</span><input id="lwReqBudget" type="number" min="0" value="${esc(l.monthlyRate ?? '')}"></label><label class="v29-field"><span>Expected duration</span><select id="lwReqDuration">${[['', 'Not sure'], ['3', '3 months'], ['6', '6 months'], ['12', '12 months']].map(([v, t]) => option(v, t, l.durationMonths ?? '')).join('')}</select></label><label class="v29-field"><span>Expected move-in</span><input id="lwReqMove" type="date" value="${esc(l.moveInDate ? String(l.moveInDate).slice(0, 10) : '')}"></label><label class="v29-field"><span>Access frequency</span><select id="lwReqAccess">${ACCESS.map((s) => option(s, s, l.accessFrequency || 'Not sure')).join('')}</select></label><label class="v29-field"><span>Date of enquiry</span><input id="lwReqDate" type="date" value="${esc(l.enquiryDate || '')}"></label><label class="v29-field full"><span>Requirement note</span><textarea id="lwReqNote" placeholder="Special access, shelving, unit location or decision constraints…">${esc(l.note || '')}</textarea></label></div>`,
     footer: '<button class="btn" data-lw="close">Cancel</button><button class="primary" data-lw="requirement-save">Update requirement</button>',
   });
+  const loadReqUnits = async () => {
+    const sel = document.getElementById('lwReqUnit');
+    if (!sel) return;
+    const keep = sel.value || l.unitCode || '';
+    const branchId = val('lwReqBranch');
+    const branchCode = branchId ? (state.branches || []).find((b) => b.id === branchId)?.code : '';
+    try {
+      const qs = new URLSearchParams({ status: 'AVAILABLE', perPage: '200' });
+      if (branchCode) qs.set('branch', branchCode);
+      const units = (await get('/units?' + qs)) || [];
+      const list = Array.isArray(units) ? units : [];
+      const opts = list.slice(0, 200).map((u) => option(u.unitCode || u.code, `${u.name ?? u.unitCode ?? u.code} · ${u.sqft} sq ft${u.rate ? ' · ' + money(u.rate) : ''}`, keep));
+      if (keep && !list.some((u) => (u.unitCode || u.code) === keep)) {
+        const curLabel = keep === l.unitCode ? (l.unitDisplayName || l.unitCode) : keep;
+        opts.unshift(option(keep, curLabel, keep));
+      }
+      sel.innerHTML = '<option value="">No specific unit</option>' + opts.join('');
+    } catch { /* unit dropdown keeps initial option */ }
+  };
+  document.getElementById('lwReqBranch')?.addEventListener('change', () => loadReqUnits());
+  loadReqUnits();
 }
 
 async function saveRequirement(btn) {
   const l = currentLead;
   await busy(btn, async () => {
     await patch('/leads/' + encodeURIComponent(l.id), {
-      preferredBranchId: val('lwReqBranch') || null, preferredSize: val('lwReqSize'), monthlyRate: val('lwReqBudget') === '' ? null : Number(val('lwReqBudget')),
+      preferredBranchId: val('lwReqBranch') || null, unitCode: val('lwReqUnit') || null, preferredSize: val('lwReqSize'), monthlyRate: val('lwReqBudget') === '' ? null : Number(val('lwReqBudget')),
       durationMonths: val('lwReqDuration') ? Number(val('lwReqDuration')) : null, moveInDate: val('lwReqMove') || null,
       accessFrequency: val('lwReqAccess'), enquiryDate: val('lwReqDate') || null, note: val('lwReqNote').trim() || null,
     });

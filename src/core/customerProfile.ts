@@ -96,11 +96,77 @@ async function identityGroup(tenantId: string): Promise<TenantRow[]> {
 async function protectionFor(unitCode: string | null | undefined, email: string | null) {
   if (!unitCode) return null;
   const lead = await prisma.lead.findFirst({
-    where: { unitCode, ...(email ? { emailNorm: normalizeEmail(email) } : {}), protectionCost: { not: null } },
+    where: { unitCode, ...(email ? { emailNorm: normalizeEmail(email) } : {}) },
     orderBy: { updatedAt: 'desc' },
-    select: { protectionCost: true, protectionTier: true, movingService: true },
+    select: { protectionCost: true, protectionTier: true, movingService: true, promoCode: true, promoDiscountAmt: true },
   });
   return lead;
+}
+
+function summarizePromotion(
+  reds: Array<{
+    code: string | null;
+    amount: Prisma.Decimal | number | null;
+    freeMonths: number[];
+    discountPct: Prisma.Decimal | number | null;
+    plan: { name: string; kind: string } | null;
+  }>,
+  lead: { promoCode: string | null; promoDiscountAmt: Prisma.Decimal | number | null } | null,
+  rackRate: number,
+  netRent: number,
+): { promotionLabel: string | null; promotionDetail: string | null; promoCode: string | null; promoDiscountAmt: number | null } {
+  if (reds.length) {
+    const labels: string[] = [];
+    const details: string[] = [];
+    let code: string | null = null;
+    let totalDiscount = 0;
+    for (const r of reds) {
+      if (r.code && !code) code = r.code;
+      const pct = r.discountPct != null ? toNum(r.discountPct) : null;
+      const amt = r.amount != null ? toNum(r.amount) : 0;
+      totalDiscount += amt;
+      const name = r.plan?.name?.trim() || r.code || 'Promotion';
+      if (r.freeMonths?.length) {
+        labels.push(name);
+        details.push(`${r.freeMonths.length} free month${r.freeMonths.length === 1 ? '' : 's'} (month${r.freeMonths.length === 1 ? '' : 's'} ${r.freeMonths.join(', ')})`);
+      } else if (pct != null && pct > 0) {
+        labels.push(`${name} (${pct}% off)`);
+        if (amt > 0) details.push(`−S$${amt.toFixed(2)}/mo`);
+      } else if (r.code) {
+        labels.push(r.code);
+        if (amt > 0) details.push(`−S$${amt.toFixed(2)}`);
+      } else {
+        labels.push(name);
+        if (amt > 0) details.push(`−S$${amt.toFixed(2)}`);
+      }
+    }
+    return {
+      promotionLabel: [...new Set(labels)].join(' + '),
+      promotionDetail: details.length ? details.join(' · ') : null,
+      promoCode: code,
+      promoDiscountAmt: totalDiscount > 0 ? r2(totalDiscount) : null,
+    };
+  }
+  const leadAmt = lead?.promoDiscountAmt != null ? toNum(lead.promoDiscountAmt) : null;
+  if (lead?.promoCode || (leadAmt != null && leadAmt > 0)) {
+    return {
+      promotionLabel: lead?.promoCode ? lead.promoCode : 'Promotion applied',
+      promotionDetail: leadAmt != null && leadAmt > 0 ? `−S$${leadAmt.toFixed(2)}/mo` : null,
+      promoCode: lead?.promoCode ?? null,
+      promoDiscountAmt: leadAmt,
+    };
+  }
+  const diff = r2(rackRate - netRent);
+  if (rackRate > 0 && diff > 0.005) {
+    const pct = Math.round((diff / rackRate) * 100);
+    return {
+      promotionLabel: pct > 0 ? `${pct}% off rack rate` : 'Discounted rate',
+      promotionDetail: `−S$${diff.toFixed(2)}/mo`,
+      promoCode: null,
+      promoDiscountAmt: diff,
+    };
+  }
+  return { promotionLabel: null, promotionDetail: null, promoCode: null, promoDiscountAmt: null };
 }
 
 export async function getCustomerProfile(tenantId: string) {
@@ -119,6 +185,22 @@ export async function getCustomerProfile(tenantId: string) {
     getCustomerRollup(tenantId),
   ]);
 
+  const bookingIds = bookings.map((b) => b.id);
+  const redemptions = bookingIds.length
+    ? await prisma.promotionRedemption.findMany({
+        where: { bookingId: { in: bookingIds } },
+        include: { plan: { select: { name: true, kind: true } } },
+        orderBy: { createdAt: 'asc' },
+      })
+    : [];
+  const redemptionsByBooking = new Map<string, typeof redemptions>();
+  for (const r of redemptions) {
+    if (!r.bookingId) continue;
+    const list = redemptionsByBooking.get(r.bookingId);
+    if (list) list.push(r);
+    else redemptionsByBooking.set(r.bookingId, [r]);
+  }
+
   const units = await Promise.all(group.filter((g) => g.unit).map(async (g) => {
     const booking = bookings.find((b) => b.tenantId === g.id && (b.status === 'CONFIRMED' || b.paidAt)) ?? bookings.find((b) => b.tenantId === g.id) ?? null;
     const moveIn = g.moveInDate ?? booking?.moveInDate ?? null;
@@ -126,6 +208,9 @@ export async function getCustomerProfile(tenantId: string) {
     const end = moveIn && months ? commitmentEnd(moveIn, months) : null;
     const prot = await protectionFor(g.unit!.unitCode, g.email);
     const notice = notices.find((n) => n.tenantId === g.id) ?? null;
+    const netRent = toNum(g.monthlyRate);
+    const rackRate = toNum(g.unit!.monthlyRate);
+    const promo = summarizePromotion(booking ? (redemptionsByBooking.get(booking.id) ?? []) : [], prot, rackRate, netRent);
     return {
       tenantId: g.id,
       unitId: g.unitId,
@@ -146,8 +231,13 @@ export async function getCustomerProfile(tenantId: string) {
       commitmentEnd: ymd(end),
       remaining: end ? remainingText(end) : null,
       withinCommitment: end ? end.getTime() >= Date.now() : false,
-      netRent: toNum(g.monthlyRate),
-      grossRent: toNum(g.unit!.monthlyRate),
+      netRent,
+      grossRent: rackRate,
+      rackRate,
+      promotionLabel: promo.promotionLabel,
+      promotionDetail: promo.promotionDetail,
+      promoCode: promo.promoCode,
+      promoDiscountAmt: promo.promoDiscountAmt,
       protectionMonthly: prot?.protectionCost != null ? toNum(prot.protectionCost) : null,
       protectionTier: prot?.protectionTier ?? null,
       movingService: prot?.movingService ?? null,

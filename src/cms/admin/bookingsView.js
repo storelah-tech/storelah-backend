@@ -35,7 +35,7 @@ function bookingRowHtml(r) {
   return `<tr>
     <td><strong>${escapeHtml(r.ref)}</strong></td>
     <td><div class="t-name">${escapeHtml(r.tenant)}</div>${custSub ? `<div class="t-type">${custSub}</div>` : ''}</td>
-    <td><strong>${escapeHtml(r.unit)}</strong>${unitSub ? `<div class="t-type">${escapeHtml(unitSub)}</div>` : ''}</td>
+    <td><strong>${escapeHtml(r.unitName || r.unit)}</strong>${unitSub ? `<div class="t-type">${escapeHtml(unitSub)}</div>` : ''}</td>
     <td>${fmtDay(r.moveInDate)}</td>
     <td>${escapeHtml(r.duration)}</td>
     <td><strong>${fmtMoney(r.amount)}</strong></td>
@@ -88,7 +88,7 @@ export function bindBookingsTable() {
     if (facility && r.branch !== facility) return false;
     if (st && r.status !== st) return false;
     if (!q) return true;
-    return [r.ref, r.tenant, r.tenantEmail, r.unit].filter(Boolean).some((v) => String(v).toLowerCase().includes(q));
+    return [r.ref, r.tenant, r.tenantEmail, r.unitName, r.unit].filter(Boolean).some((v) => String(v).toLowerCase().includes(q));
   });
   syncNavBadge('navBookingsBadge', rows.length);
   const sub = $('#bookingsViewSub');

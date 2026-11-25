@@ -819,8 +819,8 @@ async function bindPipeline() {
         .filter((l) => !branchFilter || l.branchCode === branchFilter)
         .map((l) => {
           totalValue += l.potentialValue || 0;
-          // Prototype pipeline card: product, facility, potential value, stage probability, owner, enquiry date.
-          return '<div class="deal" draggable="true" tabindex="0" role="button" aria-label="Open lead ' + escapeHtml(leadDisplayName(l)) + '" data-lead-id="' + escapeHtml(l.id) + '" data-stage="' + col.stage + '"><div class="deal-top"><div><h4>' + escapeHtml(leadDisplayName(l)) + '</h4><p>AC Self-Storage · ' + escapeHtml(l.branchName || 'No preference') + '</p></div><span class="pill ' + (l.type === 'BUSINESS' ? 'blue' : 'grey') + '">' + (l.type === 'BUSINESS' ? 'Business' : 'Personal') + '</span></div><div class="deal-value">' + (l.potentialValue != null ? '$' + Number(l.potentialValue).toLocaleString('en-SG', { maximumFractionDigits: 2 }) : '—') + ' <small>' + l.probability + '%</small></div><div class="deal-meta"><span>' + escapeHtml(l.owner || 'Unassigned') + '</span><span>' + escapeHtml(l.displayId) + ' · ' + fmtDay(l.enquiryDate) + '</span></div></div>';
+          // Prototype pipeline card: product, facility, selected unit, potential value, stage probability, owner, enquiry date.
+          return '<div class="deal" draggable="true" tabindex="0" role="button" aria-label="Open lead ' + escapeHtml(leadDisplayName(l)) + '" data-lead-id="' + escapeHtml(l.id) + '" data-stage="' + col.stage + '"><div class="deal-top"><div><h4>' + escapeHtml(leadDisplayName(l)) + '</h4><p>AC Self-Storage · ' + escapeHtml(l.branchName || 'No preference') + (l.unitDisplayName || l.unitCode ? ' · ' + escapeHtml(l.unitDisplayName || l.unitCode) : '') + '</p></div><span class="pill ' + (l.type === 'BUSINESS' ? 'blue' : 'grey') + '">' + (l.type === 'BUSINESS' ? 'Business' : 'Personal') + '</span></div><div class="deal-value">' + (l.potentialValue != null ? '$' + Number(l.potentialValue).toLocaleString('en-SG', { maximumFractionDigits: 2 }) : '—') + ' <small>' + l.probability + '%</small></div><div class="deal-meta"><span>' + escapeHtml(l.owner || 'Unassigned') + '</span><span>' + escapeHtml(l.displayId) + ' · ' + fmtDay(l.enquiryDate) + '</span></div></div>';
         }).join('');
       return '<div class="column" data-stage="' + col.stage + '"><div class="col-head"><span>' + (stageKanbanLabel[col.stage] || col.stage) + ' <small>' + col.count + '</small></span></div>' + (cards || '<div class="deal"><p style="color:var(--muted)">No leads</p></div>') + '</div>';
     }).join('');
@@ -4032,10 +4032,14 @@ function bindActivity(items) {
 
 // ====================== REFERENCE DATA ======================
 async function loadRefs() {
-  const [branches, floors, sizes] = await Promise.all([get('/branches'), get('/floors'), get('/sizes')]);
-  state.branches = branches;
-  state.floors = floors;
-  state.sizes = sizes;
+  const [branches, floors, sizes] = await Promise.all([
+    get('/branches').catch(() => state.branches || []),
+    get('/floors').catch(() => state.floors || []),
+    get('/sizes').catch(() => state.sizes || []),
+  ]);
+  state.branches = branches || [];
+  state.floors = floors || [];
+  state.sizes = sizes || [];
   renderWorkspaceSelect();
 }
 
@@ -4923,18 +4927,22 @@ async function boot() {
     applyUser();
     applySidebar();
     watchActions();
-    initCharts();
-    await Promise.all([loadRefs(), refreshAll()]);
+    try { initCharts(); } catch (chartErr) { console.warn('[storelah admin] initCharts skipped', chartErr); }
+    await Promise.all([
+      loadRefs().catch((refErr) => console.warn('[storelah admin] loadRefs failed', refErr)),
+      refreshAll().catch((refErr) => console.warn('[storelah admin] refreshAll failed', refErr)),
+    ]);
     // B-10: post-auth/permissions-ready — can() is trustworthy only now.
     refreshUnitsRateEntry().catch(() => {});
     // Navigate to initial page from hash (unknown hashes fall back to command,
     // which covers retired views without a dedicated route).
     const hash = location.hash ? location.hash.slice(1) : 'command';
-    if (['command', 'portfolio', 'leads', 'pipeline', 'inbox', 'calendar', 'analytics', 'automation', 'customers', 'moveout-notices', 'facilities', 'extras', 'content', 'promotions', 'billing', 'settings'].includes(hash)) {
+    if (['command', 'portfolio', 'leads', 'pipeline', 'quotes', 'inbox', 'calendar', 'analytics', 'automation', 'customers', 'moveout-notices', 'facilities', 'extras', 'content', 'promotions', 'billing', 'settings'].includes(hash)) {
       if (hash === 'command') openPage('command');
       else if (hash === 'portfolio') openPage('portfolio');
       else if (hash === 'analytics') openPage('analytics');
-      else if (['leads', 'pipeline', 'inbox', 'calendar', 'automation'].includes(hash)) openCoreDefault('leads');
+      else if (hash === 'quotes') openPage('quotes');
+      else if (['leads', 'pipeline', 'inbox', 'calendar', 'automation'].includes(hash)) openPage(hash);
       else if (hash === 'customers') openCoreDefault('customers');
       // Track A A7: deep link into the move-out notices register.
       else if (hash === 'moveout-notices') openPage('moveout-notices');
@@ -4944,6 +4952,16 @@ async function boot() {
       else if (hash === 'promotions') openCoreDefault('promotions');
       else if (hash === 'billing') openCoreDefault('billing');
       else if (hash === 'settings') openCoreDefault('settings');
+    } else if (hash === 'customer-profile') {
+      const savedTid = (() => { try { return sessionStorage.getItem('storelah.lastCustomerId'); } catch { return null; } })();
+      if (savedTid && window.StoreLahCustomer?.openProfile) window.StoreLahCustomer.openProfile(savedTid);
+      else openCoreDefault('customers');
+    } else if (hash === 'lead-profile') {
+      const savedLid = (() => { try { return sessionStorage.getItem('storelah.lastLeadId'); } catch { return null; } })();
+      if (savedLid) openLeadPage(savedLid);
+      else openCoreDefault('leads');
+    } else if (hash === 'moveout-case') {
+      openPage('moveout-notices');
     } else if (hash.startsWith('bill-')) {
       // Deep link into a finance submodule (#bill-models, …): never PII/draft.
       openPanel('billing', hash);
@@ -4953,6 +4971,12 @@ async function boot() {
     } else if (hash.startsWith('facility-')) {
       // Deep link into a facility sub-panel.
       openPanel('facilities', hash);
+    } else if (hash.startsWith('customer-')) {
+      openPanel('customers', hash);
+    } else if (hash.startsWith('promo-')) {
+      openPanel('promotions', hash);
+    } else if (hash.startsWith('settings-')) {
+      openPanel('settings', hash);
     } else {
       openPage('command');
     }
@@ -4963,9 +4987,15 @@ async function boot() {
       else if (h === 'facility-rate-strategy') openPanel('promotions', h);
       else if (h.startsWith('facility-')) openPanel('facilities', h);
     });
+    // Guard against stale bfcache restores when navigating back/reloading.
+    window.addEventListener('pageshow', (ev) => {
+      if (ev.persisted) location.reload();
+    });
   } catch (e) {
     console.error('[storelah admin] boot failed', e);
+    document.body.classList.remove('auth-pending');
     showBanner('Data layer error: ' + (e && e.message ? e.message : e));
+    try { openPage('command'); } catch { /* noop */ }
   }
 }
 

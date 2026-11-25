@@ -876,4 +876,28 @@ describe('Handoff v2 — Master Rate Strategy Release 57', () => {
     expect(blocker.message).toBe('Duration mix does not total 100%.');
     expect(blocker.reason).toContain('105.00%');
   });
+
+  it('previewFacility uses per-duration promotionsByDuration when aggregating portfolio PSF across 1/3/6/12 mo', () => {
+    const p = previewFacility({
+      levers: baseLevers(),
+      inventory: [{ sizePoint: 10, unitCount: 1 }], // rack = S$90, rackPsf = S$9.00
+      promotions: [{ planId: 'p1', planVersion: 1, status: 'ACTIVE', kind: 'PERCENTAGE', discountsBySize: { 10: 0.4 } }],
+      promotionsByDuration: {
+        1: [{ planId: 'p1', planVersion: 1, status: 'ACTIVE', kind: 'PERCENTAGE', discountsBySize: { 10: 0.1 } }],
+        3: [{ planId: 'p1', planVersion: 1, status: 'ACTIVE', kind: 'PERCENTAGE', discountsBySize: { 10: 0.2 } }],
+        6: [{ planId: 'p1', planVersion: 1, status: 'ACTIVE', kind: 'PERCENTAGE', discountsBySize: { 10: 0.3 } }],
+        12: [{ planId: 'p1', planVersion: 1, status: 'ACTIVE', kind: 'PERCENTAGE', discountsBySize: { 10: 0.4 } }],
+      },
+      selectedDurationMonths: 12,
+      targetPsf: 6.5,
+      durationMix: { 1: 25, 3: 25, 6: 25, 12: 25 },
+      durationMixSource: 'Equal planning assumption',
+    });
+    // 1m: 9.00*0.9=8.10, 3m: 9.00*0.8=7.20, 6m: 9.00*0.7=6.30, 12m: 9.00*0.6=5.40
+    // Equal 25% portfolio weighted average = (8.10 + 7.20 + 6.30 + 5.40) / 4 = 6.75
+    expect(p.portfolio?.breakdown.map((b) => b.effectivePsf)).toEqual([8.1, 7.2, 6.3, 5.4]);
+    expect(p.portfolio?.portfolioEffectivePsf).toBe(6.75);
+    expect(p.portfolio?.gapVsTarget).toBe(0.25);
+    expect(p.portfolio?.meetsTarget).toBe(true);
+  });
 });

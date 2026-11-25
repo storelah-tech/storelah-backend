@@ -85,21 +85,21 @@ describe('booking due-today proration parity', () => {
     const { token } = await registerOwner();
     const data = await book(token, { moveInDate: MID_MONTH });
 
-    expect(data.dueToday).toBe(66); // round(120 * 17/31)
+    expect(data.dueToday).toBe(65.81); // round2(120 * 17/31)
     expect(data.amount).toBe(120); // monthly-rate snapshot untouched
     expect(data.breakdown).toMatchObject({
       base: 120,
       monthlyStorage: 120,
-      proratedFull: 66,
-      prorated: 66,
+      proratedFull: 65.81,
+      prorated: 65.81,
       remainingDays: 17,
       totalDays: 31,
     });
-    await expect(invoicedAmount(data.bookingRef)).resolves.toBe(66);
-    expect(Math.round(data.dueToday * 100)).toBe(6600);
+    await expect(invoicedAmount(data.bookingRef)).resolves.toBe(65.81);
+    expect(Math.round(data.dueToday * 100)).toBe(6581);
   });
 
-  it('plan-matrix pct discounts the rent before proration', async () => {
+  it('plan-matrix pct discounts the rent before proration (exact cents)', async () => {
     await prisma.promotionPlan.create({
       data: {
         kind: 'DISCOUNT_MATRIX',
@@ -114,10 +114,34 @@ describe('booking due-today proration parity', () => {
     const { token } = await registerOwner();
     const data = await book(token, { moveInDate: MID_MONTH });
 
-    // discPrice round(120 * 0.9) = 108 → round(108 * 17/31) = 59.
-    expect(data.dueToday).toBe(59);
-    expect(data.breakdown).toMatchObject({ discountPct: 10, discPrice: 108, prorated: 59 });
-    await expect(invoicedAmount(data.bookingRef)).resolves.toBe(59);
+    // discPrice 120 * 0.9 = 108 → round2(108 * 17/31) = 59.23.
+    expect(data.dueToday).toBe(59.23);
+    expect(data.breakdown).toMatchObject({ discountPct: 10, discPrice: 108, prorated: 59.23 });
+    await expect(invoicedAmount(data.bookingRef)).resolves.toBe(59.23);
+  });
+
+  it('non-whole discounted monthly rate preserves cents matching CMS (e.g. $201 × 30% = $140.70)', async () => {
+    await prisma.unit.update({
+      where: { unitCode: PIN.rentableUnit },
+      data: { monthlyRate: 201 },
+    });
+    await prisma.promotionPlan.create({
+      data: {
+        kind: 'DISCOUNT_MATRIX',
+        name: 'E2E 30% plan',
+        status: 'ACTIVE',
+        effectiveFrom: new Date('2026-01-01'),
+        matrixCells: {
+          create: { sizeCategory: 'SMALL', accessType: 'Standard', commitmentMonths: 6, discountPct: 30 },
+        },
+      },
+    });
+    const { token } = await registerOwner();
+    const data = await book(token, { durationMonths: 6, moveInDate: FULL_MONTH });
+
+    expect(data.breakdown).toMatchObject({ base: 201, discountPct: 30, discPrice: 140.7, monthlyStorage: 140.7, prorated: 140.7 });
+    expect(data.dueToday).toBe(140.7);
+    await expect(invoicedAmount(data.bookingRef)).resolves.toBe(140.7);
   });
 
   it('first-month promo + catalog protection/addons land post-proration at catalog prices', async () => {
@@ -151,15 +175,15 @@ describe('booking due-today proration parity', () => {
       addons: [{ name: 'Medium Box', qty: 3, price: 999 }],
     });
 
-    // 66 (prorated) − 20 (first-month) + 8 (protection) + 15 (addons) = 69.
-    expect(data.dueToday).toBe(69);
+    // 65.81 (prorated) − 20 (first-month) + 8 (protection) + 15 (addons) = 68.81.
+    expect(data.dueToday).toBe(68.81);
     expect(data.breakdown).toMatchObject({
-      prorated: 46,
+      prorated: 45.81,
       firstMonthDiscount: 20,
       protection: 8,
       addons: 15,
     });
-    await expect(invoicedAmount(data.bookingRef)).resolves.toBe(69);
+    await expect(invoicedAmount(data.bookingRef)).resolves.toBe(68.81);
   });
 
   it('recurring percent promo defines the discounted rent (full month)', async () => {

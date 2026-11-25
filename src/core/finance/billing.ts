@@ -614,13 +614,13 @@ export async function agreementMonthFor(
 
 /**
  * Rent actually charged for agreement month `a` at monthly `rate`: $0 for a
- * free month; the term-discounted rent inside the booked term (whole
- * dollars, the same rounding checkout uses); the full rate otherwise.
+ * free month; the term-discounted rent inside the booked term (exact cents,
+ * matching CMS Master Rate Strategy and booking checkout); the full rate otherwise.
  */
 export function rentChargedFor(a: AgreementMonth | null, rate: number): number {
   if (!a) return rate;
   if (a.free) return 0;
-  if (a.discountPct > 0) return Math.round(rate * (1 - a.discountPct / 100));
+  if (a.discountPct > 0) return Math.round(rate * 100 * (1 - a.discountPct / 100)) / 100;
   if (a.legacySaving > 0) return Math.max(0, round2(rate - a.legacySaving));
   return rate;
 }

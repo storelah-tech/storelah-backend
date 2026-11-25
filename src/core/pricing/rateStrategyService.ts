@@ -805,15 +805,32 @@ async function buildPreview(versionId: string, opts: PreviewOpts, scope: string[
       throw e;
     }
   }
-  const { inputs, refs } = noTarget
-    ? { inputs: [] as PromotionPreviewInput[], refs: [] as Array<{ planId: string; planVersion: number; status: string; kind: string }> }
-    : await promotionsOf(branch, {
-      durationMonths: sel.durationMonths as DurationMonths,
-      matrix: sel.matrix as string,
-      planIds: sel.planIds,
-      branchSizePoints: inv.stocked,
-      lenient: sel.fromStored,
-    });
+  const ALL_DURATIONS: readonly DurationMonths[] = [1, 3, 6, 12];
+  let inputs: PromotionPreviewInput[] = [];
+  let refs: Array<{ planId: string; planVersion: number; status: string; kind: string }> = [];
+  let promotionsByDuration: Partial<Record<DurationMonths, PromotionPreviewInput[]>> | undefined;
+  if (!noTarget) {
+    const resolvedAll = await Promise.all(
+      ALL_DURATIONS.map(async (d) => [
+        d,
+        await promotionsOf(branch, {
+          durationMonths: d,
+          matrix: sel.matrix as string,
+          planIds: sel.planIds,
+          branchSizePoints: inv.stocked,
+          lenient: sel.fromStored,
+        }),
+      ] as const),
+    );
+    promotionsByDuration = {};
+    for (const [d, res] of resolvedAll) {
+      promotionsByDuration[d] = res.inputs;
+      if (d === sel.durationMonths) {
+        inputs = res.inputs;
+        refs = res.refs;
+      }
+    }
+  }
   // B-4 live workbench: unsaved lever edits preview through the same pure
   // engine (server is the only calculator) without touching the draft.
   const levers = mergeLevers(leversOf(v), opts.levers);
@@ -821,6 +838,7 @@ async function buildPreview(versionId: string, opts: PreviewOpts, scope: string[
     levers,
     inventory: inv.stocked,
     promotions: inputs,
+    promotionsByDuration,
     selectedDurationMonths: sel.durationMonths as DurationMonths,
     targetPsf: target ? target.targetPsf : null,
     matrix: sel.matrix,

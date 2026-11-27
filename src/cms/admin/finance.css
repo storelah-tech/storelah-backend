@@ -142,12 +142,16 @@ details.fm-details summary{cursor:pointer;font-size:11px;color:var(--ink)}
 #bill-models .fm-lease-year-table .fm-rf-pair input{padding:6px;font-size:11.5px;min-width:112px}
 #bill-models .fm-lease-year-table .fm-term-error{display:block;margin-top:4px}
 /* Variable (% of revenue) budget rows in Budgets & Expenses */
-.fm-budget-input-cell{display:grid;gap:3px;min-width:0}
-.fm-budget-input-wrap{display:flex;align-items:stretch;border:1px solid var(--line);border-radius:8px;background:#fffaf2;overflow:hidden}
-.fm-budget-input-wrap input{flex:1;min-width:0;border:0!important;border-radius:0!important;background:transparent!important;padding:7px 6px!important;text-align:right;color:#2662a8;font-weight:700}
-.fm-basis-toggle{flex:none;border:0;border-right:1px solid var(--line);background:#f3eee6;color:var(--muted);font-size:10px;font-weight:800;padding:0 7px;cursor:pointer;line-height:1;transition:background .12s,color .12s}
-.fm-basis-toggle:hover{background:#e7dfd4;color:var(--ink)}
-.fm-basis-toggle.is-pct{background:#edf3e9;color:var(--olive2);border-right-color:#cfe0c7}
+.fm-budget-row{grid-template-columns:1.2fr minmax(145px,.98fr) repeat(3,.62fr) 74px minmax(140px,1fr)}
+.fm-budget-input-cell{display:grid;gap:4px;min-width:0}
+.fm-basis-seg{display:inline-flex;border:1px solid var(--line);border-radius:7px;overflow:hidden;background:#f5f1ea;justify-self:end}
+.fm-basis-seg button{border:0;background:transparent;color:var(--muted);font-size:9px;font-weight:800;padding:3px 7px;cursor:pointer;line-height:1.1;white-space:nowrap}
+.fm-basis-seg button:first-child{border-right:1px solid var(--line)}
+.fm-basis-seg button.active{background:var(--olive);color:#fff}
+.fm-basis-seg button.is-pct.active{background:var(--terra);color:#fff}
+.fm-budget-input-wrap{display:flex;align-items:center;border:1px solid var(--line);border-radius:8px;background:#fffaf2;overflow:hidden}
+.fm-budget-input-wrap input{flex:1;min-width:0;border:0!important;border-radius:0!important;background:transparent!important;padding:6px 6px!important;text-align:right;color:#2662a8;font-weight:700}
+.fm-budget-input-wrap em{flex:none;padding:0 7px 0 2px;font-style:normal;font-size:10px;font-weight:800;color:var(--muted)}
 .fm-pct-calc{font-size:9px;color:var(--olive2);font-weight:700;text-align:right;white-space:nowrap}
 .fm-budget-name-wrap{display:flex;align-items:flex-start;justify-content:space-between;gap:6px;min-width:0}
 .fm-budget-name-wrap>span{min-width:0;text-align:left}
@@ -156,3 +160,7 @@ details.fm-details summary{cursor:pointer;font-size:11px;color:var(--ink)}
 .fm-rev-pill{background:#f2f6ef;color:var(--olive2);border:1px solid #d4dfcf}
 .fm-basis-preview{margin-top:8px;padding:9px 11px;border-radius:9px;background:#f2f6ef;border:1px solid #d4dfcf;font-size:11px;color:var(--ink)}
 .fm-basis-preview b{color:var(--olive2)}
+.fm-stripe-callout{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-top:10px;padding:10px 12px;border:1px solid #e6c3b2;border-left:4px solid var(--terra);border-radius:10px;background:#fff8f3;font-size:11px;color:var(--ink)}
+.fm-stripe-callout>div{display:grid;gap:2px}
+.fm-stripe-callout b{font-size:11.5px;color:var(--ink)}
+.fm-stripe-callout span{font-size:10px;color:var(--muted)}

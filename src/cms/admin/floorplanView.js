@@ -631,6 +631,10 @@ function fpOnCanvasHover(e) {
     fpPenHover(e); // rubber band / measure / snap indicator own the readout
     return;
   }
+  if (state.fp.outlineMode === 'draw' && state.fp.outlineDraft) {
+    fpOutlineDrawHover(e);
+    return;
+  }
   if (state.fp.doorMove && !fpDoorDrag && !fpLayerLocked('units') && !fpLayerHidden('units')) {
     const hit = fpDoorHitAt(e.clientX, e.clientY);
     if (hit) {
@@ -1914,16 +1918,16 @@ function fpRenderCanvas() {
     }
     canvas.appendChild(el);
   }
-  // Odd-shaped outline tools paint above the tiles: edit handles (●/■) and
-  // the in-progress draw draft.
-  fpRenderOutlineHandles(canvas, u);
-  fpRenderOutlineDraft(canvas, u);
+  // Odd-shaped outline tools paint above the tiles: wall badges / door hover
+  // highlight, live notch preview + handle, edit handles + live drag polygon,
+  // and the live rubber-band draw draft.
+  fpRenderOutlineOverlay(canvas, u);
   // Line-tool affordance: crosshair while draw mode is armed (mode-gated —
   // placement/block drags only run when the tool is toggled off). An armed
   // marker (Markers/Safety group) behaves the same — the next canvas click
   // places it, so the crosshair applies there too. The move-door tool shows a
   // grab hand (grabbing mid-drag) so doors read as grabbable while armed.
-  canvas.style.cursor = fpDoorDrag ? 'grabbing' : state.fp.doorMove ? 'grab' : state.fp.underlayMode === 'move' ? 'move' : state.fp.drawMode || state.fp.armedMarker || state.fp.measureMode || state.fp.underlayMode || state.fp.newUnitMode || state.fp.outlineMode ? 'crosshair' : '';
+  canvas.style.cursor = fpDoorDrag ? 'grabbing' : state.fp.doorMove ? 'grab' : state.fp.underlayMode === 'move' ? 'move' : state.fp.drawMode || state.fp.armedMarker || state.fp.measureMode || state.fp.underlayMode || state.fp.newUnitMode || state.fp.outlineMode === 'draw' ? 'crosshair' : '';
   if (fpNewDraft) fpRenderNewUnitGhost(canvas, u);
   // Safety/facility point icons render LAST (top of the z-order) so a marker
   // never hides under a placement.
@@ -3800,6 +3804,7 @@ function fpRenderSelInfo() {
   }
   const sel = key && typeof a.selectionStart === 'number' ? [a.selectionStart, a.selectionEnd] : null;
   fpRenderSelInfoInner();
+  fpRenderOutlineHud();
   if (!key || !info) return;
   const next = info.querySelector(key);
   if (!next || next === a) return;
@@ -3943,36 +3948,30 @@ function fpRenderSelInfoInner() {
   }
   // Odd-shaped unit (D1–D6): X/Y move only (a move never resizes — the
   // polygon translates with the bbox); no resize handle (option A), no
-  // rotate, no stacking. Shape tools live here: Notch corner, Draw outline,
-  // Edit vertices, Reset to rectangle.
+  // rotate, no stacking. Shape tools live here and open the contextual
+  // #fpOutlineHud bar above the stage.
   const shapedOutline = fpIsShaped(pl) ? fpOutlineOf(pl.outline) : null;
   if (shapedOutline) {
-    const editMode = state.fp.outlineMode; // null | 'draw' | 'edit'
+    const editMode = state.fp.outlineMode; // null | 'notch' | 'draw' | 'edit'
     info.innerHTML =
-      `<span class="t-type">${escapeHtml(fpUnitNo(pl))} · custom shape · ${shapedOutline.length} corners · ${pl.sqft} sqft${lockNote}</span>` +
+      `<span class="t-type" title="Custom shape — use Edit corners to reshape">${escapeHtml(fpUnitNo(pl))} · Custom shape (${shapedOutline.length} corners) · ${fpFmtArea(pl.sqft)} sqft${lockNote}</span>` +
       fpNumFieldsHTML({ x: pl.x, y: pl.y }) +
       fpAreaNoteHTML(pl, pl.sqft, pl) +
       `<span class="t-type">Shape:</span>` +
-      `<button class="act-btn${editMode === 'notch' ? ' primary' : ''}" id="fpOutlineNotchBtn" style="padding:2px 9px;font-size:10px;" title="Cut a W×H ft notch out of one corner (turns a rectangle into the client's L example)">▙ Notch corner</button>` +
-      `<button class="act-btn${editMode === 'draw' ? ' primary' : ''}" id="fpOutlineDrawBtn" style="padding:2px 9px;font-size:10px;" title="Redraw the outline: click corners (15° snap, Shift = free, snap to grid/vertices, tracing underlay), double-click or Close loop to finish">✎ Draw outline</button>` +
-      `<button class="act-btn${editMode === 'edit' ? ' primary' : ''}" id="fpOutlineEditBtn" style="padding:2px 9px;font-size:10px;" title="Drag ● corners to move them, drag ■ midpoints to add corners, double-click a corner to remove it">⬡ Edit outline</button>` +
-      `<button class="act-btn" id="fpOutlineResetBtn" style="padding:2px 9px;font-size:10px;" title="Clear the outline back to the bounding-box rectangle">Reset to rectangle</button>` +
-      `<span class="t-type" title="Shaped units resize through Edit outline (move, add or remove corners)">Edit outline to resize — no corner handle on custom shapes</span>` +
+      `<button class="act-btn${editMode === 'edit' ? ' primary' : ''}" id="fpOutlineEditBtn" style="padding:2px 9px;font-size:10px;" title="Drag corners to reshape, drag + midpoints to split walls, right-click or double-click a corner to remove it">⬡ Edit corners</button>` +
+      `<button class="act-btn${editMode === 'notch' ? ' primary' : ''}" id="fpOutlineNotchBtn" style="padding:2px 9px;font-size:10px;" title="Cut a W×H ft notch from a corner with live preview and draggable handle">▙ Notch corner</button>` +
+      `<button class="act-btn${editMode === 'draw' ? ' primary' : ''}" id="fpOutlineDrawBtn" style="padding:2px 9px;font-size:10px;" title="Trace a new shape point by point with live rubber-band preview">✎ Redraw</button>` +
+      `<button class="act-btn" id="fpOutlineResetBtn" style="padding:2px 9px;font-size:10px;" title="Clear the custom shape back to its bounding-box rectangle">↺ Reset to rect</button>` +
       fpDoorControlsHTML(pl, false) +
       `<button class="act-btn danger" id="fpRemoveBtn" style="padding:2px 9px;font-size:10px;">${fpIsDraftUnit(pl) ? 'Discard new unit' : 'Remove from floor'}</button>`;
-    fpRenderOutlineNotchForm(pl);
     return;
   }
   // Lone locker placements offer Stack when exactly one same-rect partner is
   // possible (one unplaced locker with a matching footprint).
   const stackable = (pl.stackTier || 0) === 0 && fpIsLockerPlacement(pl) ? fpStackCandidates(pl) : [];
-  // Shape entry points (rect → odd shape): Notch corner cuts a W×H ft notch
-  // out of one corner (rect becomes the client's L example), Draw outline
-  // redraws the polygon freehand. Edit outline + Reset stay shaped-only.
-  // Occupied-locked placements return earlier; stacked pairs return earlier
-  // (outlining a stacked unit stays blocked); contracted/overlap rules are
-  // enforced in fpApplyOutlineEdit with the server as final arbiter.
-  const editMode = state.fp.outlineMode; // null | 'notch' | 'draw' ('edit' is shaped-only)
+  // Shape entry points (rect → odd shape): Notch corner, Edit corners (starts
+  // directly from the rectangle's 4 corners!), and Draw shape.
+  const editMode = state.fp.outlineMode; // null | 'notch' | 'draw' | 'edit'
   // Door authoring (Phase 3): N/S/E/W toggles persisted per placement via the
   // existing PUT units endpoint (additive doorEdges). Null = unauthored (AUTO
   // all edges in metrics); toggling one edge off authors the rest.
@@ -3991,12 +3990,10 @@ function fpRenderSelInfoInner() {
       ? fpArrayFormHTML()
       : `<button class="act-btn" id="fpArrayBtn" style="padding:2px 9px;font-size:10px;" title="Array — place the next unplaced units of this size in a row from here">⇶ Array</button>`) +
     `<span class="t-type">Shape:</span>` +
-    `<button class="act-btn${editMode === 'notch' ? ' primary' : ''}" id="fpOutlineNotchBtn" style="padding:2px 9px;font-size:10px;" title="Cut a W×H ft notch out of one corner (turns a rectangle into the client's L example)">▙ Notch corner</button>` +
-    `<button class="act-btn${editMode === 'draw' ? ' primary' : ''}" id="fpOutlineDrawBtn" style="padding:2px 9px;font-size:10px;" title="Redraw the outline: click corners (15° snap, Shift = free, snap to grid/vertices, tracing underlay), double-click or Close loop to finish">✎ Draw outline</button>` +
+    `<button class="act-btn${editMode === 'notch' ? ' primary' : ''}" id="fpOutlineNotchBtn" style="padding:2px 9px;font-size:10px;" title="Cut a W×H ft notch from a corner with live preview and draggable handle">▙ Notch corner</button>` +
+    `<button class="act-btn${editMode === 'edit' ? ' primary' : ''}" id="fpOutlineEditBtn" style="padding:2px 9px;font-size:10px;" title="Drag corners or + midpoints directly to create angled walls or notches">⬡ Edit corners</button>` +
+    `<button class="act-btn${editMode === 'draw' ? ' primary' : ''}" id="fpOutlineDrawBtn" style="padding:2px 9px;font-size:10px;" title="Trace a custom shape point by point with live rubber-band preview">✎ Draw shape</button>` +
     `<button class="act-btn danger" id="fpRemoveBtn" style="padding:2px 9px;font-size:10px;">${fpIsDraftUnit(pl) ? 'Discard new unit' : 'Remove from floor'}</button>`;
-  // Notch/draw form rows only — 'edit' mode is meaningless on a rect (no
-  // outline vertices exist yet), so its hint row stays shaped-only.
-  if (editMode === 'notch' || editMode === 'draw') fpRenderOutlineNotchForm(pl);
 }
 
 // N/S/E/W door toggles (+ Auto) for a single or a stacked pair's door host.
@@ -4129,72 +4126,245 @@ async function fpToggleDoor(edge) {
   await fpSaveDoors(pl, next);
 }
 
-// ---------- odd-shaped outline tools (inspector: notch / draw / edit / reset) ----------
+// ---------- odd-shaped outline tools (contextual HUD + interactive canvas) ----------
 // One undo step per outline edit (same batch path as moves). The server stays
 // the final arbiter (409 on contracted-shape change, stacking, overlap); the
-// client pre-checks the same rules so failures toast without stuck state.
+// client pre-checks the same rules live during drag/notch/draw so operators
+// see instant visual feedback without losing work.
+let fpOutlineEditDrag = null; // { pl, pts, index, kind, before, guides, validation }
+let fpNotchDragActive = false;
+
 function fpSelectedShaped() {
   const pl = (state.fp.placements || []).find((p) => p.unitId === state.fp.selected);
   return pl && fpOutlineOf(pl.outline) ? pl : null;
 }
 
-function fpSetOutlineMode(mode) {
-  state.fp.outlineMode = mode || null;
-  if (mode !== 'draw') state.fp.outlineDraft = null;
-  state.fp.drawAngle = null;
-  fpRenderCanvas();
-  fpRenderSelInfo();
+// Any selected unit eligible for outline editing (both rectangular and shaped,
+// provided it is not occupied-locked or in a stacked pair).
+function fpSelectedOutlineTarget() {
+  const pl = (state.fp.placements || []).find((p) => p.unitId === state.fp.selected);
+  if (!pl || fpIsOccupiedLocked(pl) || fpStackMate(pl)) return null;
+  return pl;
 }
 
-// Notch-corner form (appended to the inspector branch by
-// fpRenderOutlineNotchForm): W×H ft + corner + Apply/Cancel. Draw/edit modes
-// render a hint row with Finish/Cancel instead.
-function fpRenderOutlineNotchForm(pl) {
-  const info = $('#fpSelInfo');
-  if (!info) return;
-  const old = $('#fpOutlineForm');
-  if (old) old.remove();
-  const wrap = document.createElement('span');
-  wrap.id = 'fpOutlineForm';
-  wrap.className = 't-type';
+// Editable polygon vertices for either a shaped unit or a rectangular unit.
+function fpEditablePolygon(pl) {
+  if (!pl) return null;
+  const o = fpOutlineOf(pl.outline);
+  if (o && o.length >= 3) return o.map(([x, y]) => [x, y]);
+  return rectToPolygon(pl);
+}
+
+// Pure live validation for any candidate polygon (used in notch preview,
+// vertex drag, and draw preview so invalid/overlapping shapes show red live).
+function fpValidateOutlineCandidate(pl, rawPts) {
+  if (!pl || !Array.isArray(rawPts) || rawPts.length < 3) {
+    return { ok: false, reason: 'Needs at least 3 corners', area: 0, normalized: null, isRect: false, bbox: null };
+  }
+  const { w: cw, h: ch } = fpCanvasDims();
+  for (const [x, y] of rawPts) {
+    if (x < -1e-6 || y < -1e-6 || x > cw + 1e-6 || y > ch + 1e-6) {
+      return { ok: false, reason: 'Outside canvas bounds', area: outlineArea(rawPts), normalized: null, isRect: false, bbox: null };
+    }
+  }
+  let normalized;
+  try {
+    normalized = normalizeOutline(rawPts, { minAreaSqft: 1, maxAreaSqft: 2000 });
+  } catch (err) {
+    return {
+      ok: false,
+      reason: err instanceof Error ? err.message : String(err),
+      area: outlineArea(rawPts),
+      normalized: null,
+      isRect: false,
+      bbox: null,
+    };
+  }
+  const isRect = normalized === null;
+  const effectivePts = isRect ? rawPts : normalized;
+  const bb = outlineBBox(effectivePts);
+  const area = isRect ? rectAreaSqft(bb) : outlineArea(normalized);
+  if (fpIsContracted(pl) && pl.sqft > 0) {
+    const dev = Math.abs(area - pl.sqft) / pl.sqft;
+    if (dev > AREA_TOLERANCE) {
+      return {
+        ok: false,
+        reason: `${pl.status.toLowerCase()} unit — stay within ${Math.round(AREA_TOLERANCE * 100)}% of ${pl.sqft} sqft`,
+        area,
+        normalized,
+        isRect,
+        bbox: bb,
+      };
+    }
+  }
+  const clash = fpOverlapAt(bb.x, bb.y, bb.width, bb.height, [pl.unitId], pl.stackTier || 0, isRect ? null : normalized);
+  if (clash) {
+    return { ok: false, reason: `Overlaps ${fpUnitNo(clash)}`, area, normalized, isRect, bbox: bb };
+  }
+  return { ok: true, reason: '', area, normalized, isRect, bbox: bb };
+}
+
+function fpDefaultNotchDims(pl) {
+  const roundHalf = (v) => Math.max(MIN_OUTLINE_EDGE_FT, Math.round(v * 2) / 2);
+  const nw = Math.min(quantizeFt(pl.width - 0.5), roundHalf(pl.width * 0.35));
+  const nh = Math.min(quantizeFt(pl.height - 0.5), roundHalf(pl.height * 0.35));
+  return {
+    nw: nw >= MIN_OUTLINE_EDGE_FT && nw < pl.width ? nw : quantizeFt(pl.width * 0.35),
+    nh: nh >= MIN_OUTLINE_EDGE_FT && nh < pl.height ? nh : quantizeFt(pl.height * 0.35),
+  };
+}
+
+function fpCurrentNotchState(pl) {
+  const nw = fpParseLen(state.fp.notchW);
+  const nh = fpParseLen(state.fp.notchH);
+  const corner = state.fp.notchCorner || 'NW';
+  return { nw, nh, corner };
+}
+
+function fpSetOutlineMode(mode) {
+  fpOutlineEditDrag = null;
+  fpNotchDragActive = false;
+  const target = mode ? fpSelectedOutlineTarget() : null;
+  state.fp.outlineMode = target ? mode : null;
+  state.fp.outlineUnitId = target ? target.unitId : null;
+  state.fp.outlineSelectedVertex = null;
+  if (state.fp.outlineMode !== 'draw') state.fp.outlineDraft = null;
+  state.fp.drawAngle = null;
+  if (state.fp.outlineMode === 'notch' && target) {
+    const curW = fpParseLen(state.fp.notchW);
+    const curH = fpParseLen(state.fp.notchH);
+    if (curW === null || !(curW >= MIN_OUTLINE_EDGE_FT && curW < target.width) || curH === null || !(curH >= MIN_OUTLINE_EDGE_FT && curH < target.height)) {
+      const def = fpDefaultNotchDims(target);
+      state.fp.notchW = formatFt(def.nw);
+      state.fp.notchH = formatFt(def.nh);
+    }
+    if (!state.fp.notchCorner) state.fp.notchCorner = 'NW';
+  }
+  fpRenderCanvas();
+  fpRenderSelInfo();
+  if (state.fp.outlineMode === 'edit') {
+    fpSetReadout('Edit corners: drag ● to move · drag + to add a corner · right-click or double-click ● to delete · Shift = free · Esc done');
+  } else if (state.fp.outlineMode === 'notch') {
+    fpSetReadout('Notch corner: drag the ◆ handle on the unit or type W × H ft · Enter applies · Esc cancels');
+  } else if (!state.fp.outlineMode) {
+    fpSetReadout('');
+  }
+}
+
+// Dedicated contextual Shape Editor HUD (#fpOutlineHud above #fpStage).
+// Replaces the cramped inline text in #fpSelInfo and never covers the canvas.
+function fpRenderOutlineHud() {
+  const hud = $('#fpOutlineHud');
+  if (!hud) return;
+  if (state.fp.outlineMode && state.fp.outlineUnitId && state.fp.selected !== state.fp.outlineUnitId) {
+    state.fp.outlineMode = null;
+    state.fp.outlineUnitId = null;
+    state.fp.outlineDraft = null;
+    state.fp.outlineSelectedVertex = null;
+    fpOutlineEditDrag = null;
+  }
   const mode = state.fp.outlineMode;
-  if (mode === 'notch') {
-    const nw = state.fp.notchW ?? '';
-    const nh = state.fp.notchH ?? '';
-    const corner = state.fp.notchCorner || 'NW';
-    wrap.innerHTML =
-      `<span class="t-type">Notch:</span>` +
-      `<input type="number" id="fpNotchW" class="tbl-search" min="0.1" step="0.1" inputmode="decimal" value="${nw}" placeholder="W" title="Notch width in feet" style="width:56px;padding:2px 6px;font-size:10px;" aria-label="Notch width in feet">` +
-      `<span class="t-type">×</span>` +
-      `<input type="number" id="fpNotchH" class="tbl-search" min="0.1" step="0.1" inputmode="decimal" value="${nh}" placeholder="H" title="Notch height in feet" style="width:56px;padding:2px 6px;font-size:10px;" aria-label="Notch height in feet">` +
-      `<span class="t-type">ft from</span>` +
-      ['NW', 'NE', 'SW', 'SE'].map((c) => `<button class="act-btn${corner === c ? ' primary' : ''}" data-notch-corner="${c}" style="padding:2px 8px;font-size:10px;" title="Cut the notch out of the ${c} corner">${c}</button>`).join('') +
-      `<button class="act-btn primary" id="fpOutlineApplyBtn" style="padding:2px 9px;font-size:10px;" title="Cut the notch — one undo step">Apply notch</button>` +
-      `<button class="act-btn" id="fpOutlineCancelBtn" style="padding:2px 9px;font-size:10px;">Cancel</button>`;
-  } else if (mode === 'draw') {
-    const n = (state.fp.outlineDraft && state.fp.outlineDraft.points.length) || 0;
-    wrap.innerHTML =
-      `<span class="t-type">Draw: click corners (${n} placed) · 15° snap, Shift = free · snap to grid/vertices · underlay traces underneath · double-click or Close loop to finish (3–24 corners)</span>` +
-      `<input type="text" id="fpDrawLen" class="tbl-search" inputmode="decimal" placeholder="Length ft" title="Length in feet — Enter appends a corner at the current angle" style="width:76px;padding:2px 6px;font-size:10px;" aria-label="Next edge length in feet" autocomplete="off" spellcheck="false">` +
-      `<button class="act-btn primary" id="fpOutlineCloseBtn" style="padding:2px 9px;font-size:10px;" title="Close the loop and save the outline">Close loop</button>` +
-      `<button class="act-btn" id="fpOutlineCancelBtn" style="padding:2px 9px;font-size:10px;">Cancel</button>`;
-  } else if (mode === 'edit') {
-    wrap.innerHTML =
-      `<span class="t-type">Edit: drag a ● corner to move it · drag a ■ midpoint to add a corner · double-click a corner to remove it · release saves (one undo step)</span>` +
-      `<button class="act-btn" id="fpOutlineCancelBtn" style="padding:2px 9px;font-size:10px;">Done</button>`;
-  } else {
+  const pl = mode ? fpSelectedOutlineTarget() : null;
+  if (!mode || !pl) {
+    hud.hidden = true;
+    hud.innerHTML = '';
     return;
   }
-  info.appendChild(wrap);
-  const first = wrap.querySelector('input');
-  if (first && mode === 'notch') first.select();
+  const activeEl = document.activeElement;
+  const keepFocusId = activeEl && hud.contains(activeEl) && activeEl.id ? activeEl.id : null;
+  const keepSel = keepFocusId && typeof activeEl.selectionStart === 'number' ? [activeEl.selectionStart, activeEl.selectionEnd] : null;
+
+  hud.hidden = false;
+  const curSqft = fpFmtArea(fpSqftForPlacement(pl));
+
+  if (mode === 'notch') {
+    const { nw, nh, corner } = fpCurrentNotchState(pl);
+    const poly = nw !== null && nh !== null ? fpNotchPolygon(pl, nw, nh, corner, true) : null;
+    const check = poly ? fpValidateOutlineCandidate(pl, poly) : { ok: false, reason: `Enter W < ${formatFt(pl.width)} and H < ${formatFt(pl.height)} ft`, area: 0 };
+    const nextSqft = poly ? fpFmtArea(check.area) : '—';
+    const corners = [
+      ['NW', '↖ Top-Left'],
+      ['NE', '↗ Top-Right'],
+      ['SW', '↙ Bottom-Left'],
+      ['SE', '↘ Bottom-Right'],
+    ];
+    hud.innerHTML =
+      `<span class="fp-hud-title">▙ Notch corner · ${escapeHtml(fpUnitNo(pl))}</span>` +
+      `<span class="fp-hud-badge${check.ok ? '' : ' warn'}">${check.ok ? `${curSqft} → ${nextSqft} sqft` : escapeHtml(check.reason)}</span>` +
+      `<span class="fp-corner-pick" role="group" aria-label="Notch corner">` +
+      corners.map(([c, lbl]) => `<button type="button" class="act-btn${corner === c ? ' primary' : ''}" data-notch-corner="${c}" title="Cut notch from ${lbl}">${lbl}</button>`).join('') +
+      `</span>` +
+      `<span class="fp-hud-group">` +
+      `<label class="t-type" for="fpNotchW">W</label>` +
+      `<input type="number" id="fpNotchW" class="tbl-search" min="0.1" step="0.1" inputmode="decimal" value="${escapeHtml(state.fp.notchW ?? '')}" placeholder="W" aria-label="Notch width in feet">` +
+      `<span class="t-type">×</span>` +
+      `<label class="t-type" for="fpNotchH">H</label>` +
+      `<input type="number" id="fpNotchH" class="tbl-search" min="0.1" step="0.1" inputmode="decimal" value="${escapeHtml(state.fp.notchH ?? '')}" placeholder="H" aria-label="Notch height in feet">` +
+      `<span class="t-type">ft</span>` +
+      `</span>` +
+      `<span class="fp-hud-hint">or drag ◆ handle on canvas</span>` +
+      `<span class="fp-hud-sp"></span>` +
+      `<button type="button" class="act-btn primary" id="fpOutlineApplyBtn" ${check.ok ? '' : 'disabled'} title="Cut the notch (Enter)">Apply notch</button>` +
+      `<button type="button" class="act-btn" id="fpOutlineCancelBtn" title="Cancel (Esc)">Cancel</button>`;
+  } else if (mode === 'edit') {
+    const pts = fpOutlineEditDrag ? fpOutlineEditDrag.pts : fpEditablePolygon(pl);
+    const n = pts ? pts.length : 0;
+    const dragCheck = fpOutlineEditDrag ? fpOutlineEditDrag.validation : null;
+    const areaTxt = dragCheck ? fpFmtArea(dragCheck.area) : curSqft;
+    const selV = state.fp.outlineSelectedVertex;
+    const canDel = selV != null && n > MIN_OUTLINE_VERTICES;
+    hud.innerHTML =
+      `<span class="fp-hud-title">⬡ Edit corners · ${escapeHtml(fpUnitNo(pl))}</span>` +
+      `<span class="fp-hud-badge${dragCheck && !dragCheck.ok ? ' warn' : ''}">${dragCheck && !dragCheck.ok ? escapeHtml(dragCheck.reason) : `${n} corners · ${areaTxt} sqft`}</span>` +
+      `<span class="fp-hud-hint">Drag ● to move · Drag + to add corner · Right-click or double-click ● to delete · Shift = free</span>` +
+      `<span class="fp-hud-sp"></span>` +
+      (canDel ? `<button type="button" class="act-btn danger" id="fpOutlineDelVertexBtn" title="Remove selected corner (Delete / Backspace)">Delete corner #${selV + 1}</button>` : '') +
+      `<button type="button" class="act-btn primary" id="fpOutlineCancelBtn" title="Finish editing corners (Esc)">Done</button>`;
+  } else if (mode === 'draw') {
+    const draft = state.fp.outlineDraft;
+    const pts = draft ? draft.points : [];
+    const n = pts.length;
+    const previewPts = draft && draft.cursor && !draft.closing ? pts.concat([draft.cursor]) : pts;
+    const estArea = previewPts.length >= 3 ? outlineArea(previewPts) : 0;
+    const check = n >= 3 ? fpValidateOutlineCandidate(pl, pts) : null;
+    const badgeCls = check && !check.ok ? ' warn' : '';
+    const badgeTxt = n < 3
+      ? `${n} corner${n === 1 ? '' : 's'} placed (min 3)`
+      : check && !check.ok
+        ? check.reason
+        : `${n} corners · ~${fpFmtArea(estArea)} sqft`;
+    hud.innerHTML =
+      `<span class="fp-hud-title">✎ Draw shape · ${escapeHtml(fpUnitNo(pl))}</span>` +
+      `<span class="fp-hud-badge${badgeCls}">${escapeHtml(badgeTxt)}</span>` +
+      `<span class="fp-hud-group">` +
+      `<input type="text" id="fpDrawLen" class="tbl-search" inputmode="decimal" placeholder="Edge ft" title="Type exact wall length in ft and press Enter" style="width:70px;" aria-label="Next edge length in feet" autocomplete="off" spellcheck="false">` +
+      `<button type="button" class="act-btn" id="fpOutlineUndoPtBtn" ${n > 0 ? '' : 'disabled'} title="Undo last corner (Backspace)">↶ Undo corner</button>` +
+      `</span>` +
+      `<span class="fp-hud-hint">${n >= 3 ? 'Click corner 1, double-click or Enter to close' : 'Click corners · 15° snap (Shift = free)'}</span>` +
+      `<span class="fp-hud-sp"></span>` +
+      `<button type="button" class="act-btn primary" id="fpOutlineCloseBtn" ${n >= 3 ? '' : 'disabled'} title="Close the loop and save (Enter / C)">Close loop</button>` +
+      `<button type="button" class="act-btn" id="fpOutlineCancelBtn" title="Cancel drawing (Esc)">Cancel</button>`;
+  }
+
+  if (keepFocusId) {
+    const next = hud.querySelector(`#${keepFocusId}`);
+    if (next) {
+      next.focus({ preventScroll: true });
+      try {
+        if (keepSel && typeof next.setSelectionRange === 'function') next.setSelectionRange(keepSel[0], keepSel[1]);
+      } catch (e) { /* noop */ }
+    }
+  }
 }
 
 // Cut a W×H ft notch out of one bbox corner (clockwise outline, y-down).
-function fpNotchPolygon(pl, nw, nh, corner) {
+// `silent` suppresses toast during live preview typing.
+function fpNotchPolygon(pl, nw, nh, corner, silent) {
   const { x, y, width: w, height: h } = pl;
   if (!(nw >= MIN_OUTLINE_EDGE_FT) || !(nh >= MIN_OUTLINE_EDGE_FT) || nw >= w || nh >= h) {
-    fpToast(`Notch must be at least ${MIN_OUTLINE_EDGE_FT} ft and smaller than the ${formatFt(w)}×${formatFt(h)} ft tile.`, false);
+    if (!silent) {
+      fpToast(`Notch must be at least ${MIN_OUTLINE_EDGE_FT} ft and smaller than the ${formatFt(w)}×${formatFt(h)} ft tile.`, false);
+    }
     return null;
   }
   const q = (v) => quantizeFt(v);
@@ -4202,14 +4372,27 @@ function fpNotchPolygon(pl, nw, nh, corner) {
     case 'NE': return [[x, y], [q(x + w - nw), y], [q(x + w - nw), q(y + nh)], [q(x + w), q(y + nh)], [q(x + w), q(y + h)], [x, q(y + h)]];
     case 'SW': return [[x, y], [q(x + w), y], [q(x + w), q(y + h)], [q(x + nw), q(y + h)], [q(x + nw), q(y + h - nh)], [x, q(y + h - nh)]];
     case 'SE': return [[x, y], [q(x + w), y], [q(x + w), q(y + h - nh)], [q(x + w - nw), q(y + h - nh)], [q(x + w - nw), q(y + h)], [x, q(y + h)]];
-    default: return [[q(x + nw), y], [q(x + w), y], [q(x + w), q(y + h)], [x, q(y + h)], [x, q(y + nh)], [q(x + nw), q(y)]];
+    default: return [[q(x + nw), y], [q(x + w), y], [q(x + w), q(y + h)], [x, q(y + h)], [x, q(y + nh)], [q(x + nw), q(y + nh)]];
+  }
+}
+
+// Cutout rectangle + draggable inner-corner coordinates for the live notch preview.
+function fpNotchCutoutGeom(pl, nw, nh, corner) {
+  const { x, y, width: w, height: h } = pl;
+  const q = (v) => quantizeFt(v);
+  switch (corner) {
+    case 'NE': return { rx: q(x + w - nw), ry: y, rw: nw, rh: nh, hx: q(x + w - nw), hy: q(y + nh) };
+    case 'SW': return { rx: x, ry: q(y + h - nh), rw: nw, rh: nh, hx: q(x + nw), hy: q(y + h - nh) };
+    case 'SE': return { rx: q(x + w - nw), ry: q(y + h - nh), rw: nw, rh: nh, hx: q(x + w - nw), hy: q(y + h - nh) };
+    default: return { rx: x, ry: y, rw: nw, rh: nh, hx: q(x + nw), hy: q(y + nh) };
   }
 }
 
 // Validate + persist an outline edit as ONE undo step. `prev` is the
 // pre-edit element state (captured before live drag mutations); omitted means
-// "snapshot now" (notch/draw/reset). Returns true when saved.
-async function fpApplyOutlineEdit(pl, outline, verb, prev) {
+// "snapshot now" (notch/draw/reset). When `opts.keepMode` is true (edit mode),
+// edit mode stays active so operators can reshape multiple corners fluidly.
+async function fpApplyOutlineEdit(pl, outline, verb, prev, opts) {
   let next;
   try {
     next = normalizeOutline(outline, { minAreaSqft: 1, maxAreaSqft: 2000 });
@@ -4217,35 +4400,34 @@ async function fpApplyOutlineEdit(pl, outline, verb, prev) {
     fpToast(`Outline: ${err instanceof Error ? err.message : err}`, false);
     return false;
   }
-  if (!next) {
-    fpToast('That outline is a rectangle — use Reset to rectangle instead.', false);
-    return false;
-  }
   if (fpGuardLocked(pl)) return false;
   if (fpStackMate(pl)) {
     fpToast(`Cannot outline ${fpUnitNo(pl)} — it is in a stacked pair. Unstack it first.`, false);
     return false;
   }
+  // If the edited polygon simplifies back to an axis-aligned rectangle, save
+  // cleanly with outline: null and the new bbox instead of rejecting the edit.
+  const isRect = next === null;
+  const bb = outlineBBox(isRect ? outline : next);
+  const nextArea = isRect ? rectAreaSqft(bb) : outlineArea(next);
   if (fpIsContracted(pl) && pl.sqft > 0) {
-    const dev = Math.abs(outlineArea(next) - pl.sqft) / pl.sqft;
+    const dev = Math.abs(nextArea - pl.sqft) / pl.sqft;
     if (dev > AREA_TOLERANCE) {
       fpToast(`${fpUnitNo(pl)} is ${pl.status.toLowerCase()} — its ${pl.sqft} sqft can't change shape while contracted (reshape within ${Math.round(AREA_TOLERANCE * 100)}%).`, false);
       return false;
     }
   }
-  // Local overlap pre-check (bbox reject + polygon intersection, self ignored).
-  const bb = outlineBBox(next);
-  const clash = fpOverlapAt(bb.x, bb.y, bb.width, bb.height, [pl.unitId], pl.stackTier || 0, next);
+  const clash = fpOverlapAt(bb.x, bb.y, bb.width, bb.height, [pl.unitId], pl.stackTier || 0, isRect ? null : next);
   if (clash) {
     fpToast(`Cannot reshape ${fpUnitNo(pl)} — the new outline overlaps ${fpUnitNo(clash)}.`, false);
     return false;
   }
   const before = prev || fpElemState('placement', pl.unitId);
   const prevOutline = fpOutlineOf(pl.outline);
-  const remapped = prevOutline ? fpRemapDoorsToOutline(prevOutline, next, pl.doorEdges, pl.doorOffsets) : { doorEdges: null, doorOffsets: null };
+  const remapped = !isRect && prevOutline ? fpRemapDoorsToOutline(prevOutline, next, pl.doorEdges, pl.doorOffsets) : { doorEdges: null, doorOffsets: null };
   const prevEdgeSet = new Set(Array.isArray(pl.doorEdges) ? pl.doorEdges : []);
   const nextEdgeSet = new Set(Array.isArray(remapped.doorEdges) ? remapped.doorEdges : []);
-  const doorMoved = [...prevEdgeSet].some((e) => FP_OUTLINE_EDGE_RE.test(e) && !nextEdgeSet.has(e));
+  const doorMoved = !isRect && [...prevEdgeSet].some((e) => FP_OUTLINE_EDGE_RE.test(e) && !nextEdgeSet.has(e));
   try {
     const res = await fpMutate(`/floor-plans/${encodeURIComponent(state.fp.floorId)}/units/${encodeURIComponent(pl.unitId)}`, {
       method: 'PUT',
@@ -4254,17 +4436,25 @@ async function fpApplyOutlineEdit(pl, outline, verb, prev) {
         y: bb.y,
         width: bb.width,
         height: bb.height,
-        outline: next,
-        doorEdges: remapped.doorEdges ? remapped.doorEdges : null,
-        doorOffsets: remapped.doorOffsets,
+        outline: isRect ? null : next,
+        doorEdges: isRect ? null : (remapped.doorEdges ? remapped.doorEdges : null),
+        doorOffsets: isRect ? null : remapped.doorOffsets,
       }),
     });
     fpAdoptPlacement(pl, res && res.data);
-    fpSetOutlineMode(null);
+    if (!(opts && opts.keepMode)) {
+      state.fp.outlineMode = null;
+      state.fp.outlineDraft = null;
+      state.fp.outlineSelectedVertex = null;
+      state.fp.drawAngle = null;
+    }
     fpPushUndo({ kind: 'placement', unitId: pl.unitId, prev: before });
     fpRender();
     notifyMetricsFloorChanged();
-    fpToast(`${verb} ${fpUnitNo(pl)} → ${next.length} corners, ${fpFmtArea(fpSqftForPlacement(pl))} sqft${doorMoved ? ' · door moved to the nearest remaining wall' : ''}.`, true);
+    const msg = isRect
+      ? `${verb} ${fpUnitNo(pl)} → rectangle (${formatFt(bb.width)}×${formatFt(bb.height)} ft, ${fpFmtArea(fpSqftForPlacement(pl))} sqft).`
+      : `${verb} ${fpUnitNo(pl)} → ${next.length} corners, ${fpFmtArea(fpSqftForPlacement(pl))} sqft${doorMoved ? ' · door moved to nearest wall' : ''}.`;
+    fpToast(msg, true);
     return true;
   } catch (err) {
     fpToast(`${verb} ${fpUnitNo(pl)}: ${describeError(err)}`, false);
@@ -4301,17 +4491,16 @@ async function fpResetOutline() {
   }
 }
 
-// Apply the notch form (W×H from the corner buttons row). Works from a plain
-// rectangle (first outline) as well as from an existing shaped outline — the
-// guards in fpApplyOutlineEdit (occupied lock, stacked pair, contracted-area,
-// overlap pre-check, one undo step) cover both starting points.
+// Apply the notch form (W×H from the HUD or dragged handle).
 async function fpOutlineApplyNotch() {
-  const pl = (state.fp.placements || []).find((p) => p.unitId === state.fp.selected);
+  const pl = fpSelectedOutlineTarget();
   if (!pl) return;
-  const nw = fpParseLen(($('#fpNotchW') || {}).value);
-  const nh = fpParseLen(($('#fpNotchH') || {}).value);
-  state.fp.notchW = ($('#fpNotchW') || {}).value;
-  state.fp.notchH = ($('#fpNotchH') || {}).value;
+  const wEl = $('#fpNotchW');
+  const hEl = $('#fpNotchH');
+  if (wEl) state.fp.notchW = wEl.value;
+  if (hEl) state.fp.notchH = hEl.value;
+  const nw = fpParseLen(state.fp.notchW);
+  const nh = fpParseLen(state.fp.notchH);
   if (nw === null || nh === null) {
     fpToast('Enter the notch width and height in feet first.', false);
     return;
@@ -4321,26 +4510,81 @@ async function fpOutlineApplyNotch() {
   await fpApplyOutlineEdit(pl, poly, 'Notched');
 }
 
-// ---------- draw outline (redraw the polygon corner by corner) ----------
-// Clicks add snapped vertices (15° angle snap unless Shift, grid + vertex
-// snap, tracing underlay underneath); double-click or Close loop finishes.
-function fpOutlineStartDraw() {
-  const pl = (state.fp.placements || []).find((p) => p.unitId === state.fp.selected);
-  if (!pl) return;
-  if (fpGuardLocked(pl)) return;
-  if (fpStackMate(pl)) {
-    fpToast(`Cannot outline ${fpUnitNo(pl)} — it is in a stacked pair. Unstack it first.`, false);
-    return;
-  }
-  state.fp.outlineDraft = { unitId: pl.unitId, points: [] };
-  fpSetOutlineMode('draw');
-  fpSetReadout('Draw outline: click corners · 15° snap (Shift = free) · double-click or Close loop to finish · Esc cancels');
+// Interactive dragging of the ◆ inner notch corner on the canvas.
+function fpNotchHandleHitAt(clientX, clientY) {
+  if (state.fp.outlineMode !== 'notch') return null;
+  const pl = fpSelectedOutlineTarget();
+  if (!pl) return null;
+  const { nw, nh, corner } = fpCurrentNotchState(pl);
+  if (nw === null || nh === null) return null;
+  const geom = fpNotchCutoutGeom(pl, nw, nh, corner);
+  const raw = fpCanvasRawAt(clientX, clientY);
+  if (!raw) return null;
+  const tol = 14 / fpPx();
+  if (Math.hypot(raw[0] - geom.hx, raw[1] - geom.hy) <= tol) return { pl, corner };
+  return null;
 }
 
-// Snap a draw click: object snap (nearby unit/wall vertices) wins, else grid;
-// the angle from the last vertex snaps to 15° unless Shift is held.
-// Extra object-snap candidates: every shaped outline vertex (tracing one
-// unit's walls off its neighbour's corners), minus the unit being drawn.
+function fpNotchHandleStartDrag(e, hit) {
+  e.preventDefault();
+  const { pl, corner } = hit;
+  fpNotchDragActive = true;
+  const move = (ev) => {
+    const raw = fpCanvasRawAt(ev.clientX, ev.clientY);
+    if (!raw) return;
+    const step = fpSnapStep(ev);
+    const gx = snapFt(raw[0], step);
+    const gy = snapFt(raw[1], step);
+    let nw;
+    let nh;
+    if (corner === 'NE') {
+      nw = pl.x + pl.width - gx;
+      nh = gy - pl.y;
+    } else if (corner === 'SW') {
+      nw = gx - pl.x;
+      nh = pl.y + pl.height - gy;
+    } else if (corner === 'SE') {
+      nw = pl.x + pl.width - gx;
+      nh = pl.y + pl.height - gy;
+    } else {
+      nw = gx - pl.x;
+      nh = gy - pl.y;
+    }
+    const maxW = Math.max(MIN_OUTLINE_EDGE_FT, quantizeFt(pl.width - MIN_OUTLINE_EDGE_FT));
+    const maxH = Math.max(MIN_OUTLINE_EDGE_FT, quantizeFt(pl.height - MIN_OUTLINE_EDGE_FT));
+    nw = clampFt(quantizeFt(nw), MIN_OUTLINE_EDGE_FT, maxW);
+    nh = clampFt(quantizeFt(nh), MIN_OUTLINE_EDGE_FT, maxH);
+    state.fp.notchW = formatFt(nw);
+    state.fp.notchH = formatFt(nh);
+    fpRefreshOutlineOverlay();
+    fpRenderOutlineHud();
+    fpSetReadout(`Notch ${formatFt(nw)} × ${formatFt(nh)} ft · release then click Apply notch (or Enter)`);
+  };
+  const up = () => {
+    fpNotchDragActive = false;
+    document.removeEventListener('pointermove', move);
+    document.removeEventListener('pointerup', up);
+    fpRefreshOutlineOverlay();
+    fpRenderOutlineHud();
+  };
+  document.addEventListener('pointermove', move);
+  document.addEventListener('pointerup', up);
+}
+
+// ---------- draw shape (interactive rubber-band polygon tracing) ----------
+function fpOutlineStartDraw() {
+  const pl = fpSelectedOutlineTarget();
+  if (!pl) {
+    const raw = (state.fp.placements || []).find((p) => p.unitId === state.fp.selected);
+    if (raw && fpGuardLocked(raw)) return;
+    if (raw && fpStackMate(raw)) fpToast(`Cannot outline ${fpUnitNo(raw)} — it is in a stacked pair. Unstack it first.`, false);
+    return;
+  }
+  state.fp.outlineDraft = { unitId: pl.unitId, points: [], cursor: null, snapType: 'grid', closing: false };
+  fpSetOutlineMode('draw');
+  fpSetReadout('Draw shape: click corners · 15° snap (Shift = free) · Backspace undoes · click corner 1 or Enter to close');
+}
+
 function fpOutlineSnapExtra(excludeUnitId) {
   const out = [];
   for (const p of state.fp.placements || []) {
@@ -4351,25 +4595,79 @@ function fpOutlineSnapExtra(excludeUnitId) {
   return out;
 }
 
+// Returns { x, y, type, closing } for both hover preview and click landing.
+// Object snap runs even on Corner 1 so tracing starts flush on walls/neighbours.
 function fpOutlineDrawSnap(raw, ev) {
   const draft = state.fp.outlineDraft;
-  const last = draft && draft.points.length ? draft.points[draft.points.length - 1] : null;
-  if (ev.shiftKey || !last) {
-    // Shift (or the first corner) = free placement on the grid step.
-    const step = fpSnapStep(ev);
-    return [snapFt(raw[0], step), snapFt(raw[1], step)];
-  }
-  const snapped = fpObjectSnap(raw, ev, { extra: fpOutlineSnapExtra(draft.unitId) });
-  if (snapped && snapped.type !== 'grid') return [snapped.x, snapped.y];
-  const dx = raw[0] - last[0];
-  const dy = raw[1] - last[1];
-  const dist = Math.hypot(dx, dy);
-  if (!(dist > 0)) return [last[0], last[1]];
-  const deg = Math.round(angleDeg(last, raw) / 15) * 15;
-  const p = pointAtAngle(last, dist, deg);
+  const pts = draft ? draft.points : [];
+  const last = pts.length ? pts[pts.length - 1] : null;
   const { w: cw, h: ch } = fpCanvasDims();
   const step = fpSnapStep(ev);
-  return [clampFt(snapFt(p[0], step), 0, cw), clampFt(snapFt(p[1], step), 0, ch)];
+
+  // Snap-to-close on Corner 1 once >= 3 corners are placed.
+  if (pts.length >= 3) {
+    const first = pts[0];
+    const closeTol = 12 / fpPx();
+    if (Math.hypot(raw[0] - first[0], raw[1] - first[1]) <= closeTol) {
+      return { x: first[0], y: first[1], type: 'close', closing: true };
+    }
+  }
+
+  // Object snap to nearby walls/unit corners unless Shift (free).
+  if (!ev.shiftKey) {
+    const extra = fpOutlineSnapExtra(draft ? draft.unitId : null);
+    const snapped = fpObjectSnap(raw, ev, { extra });
+    if (snapped && snapped.type !== 'grid') {
+      return { x: clampFt(snapped.x, 0, cw), y: clampFt(snapped.y, 0, ch), type: snapped.type, closing: false };
+    }
+  }
+
+  // Free placement on first corner or when Shift is held.
+  if (ev.shiftKey || !last) {
+    return {
+      x: clampFt(snapFt(raw[0], step), 0, cw),
+      y: clampFt(snapFt(raw[1], step), 0, ch),
+      type: 'grid',
+      closing: false,
+    };
+  }
+
+  // 15° angle snap from the previous corner.
+  const dist = Math.hypot(raw[0] - last[0], raw[1] - last[1]);
+  if (!(dist > 0)) return { x: last[0], y: last[1], type: 'grid', closing: false };
+  const deg = Math.round(angleDeg(last, raw) / 15) * 15;
+  const p = pointAtAngle(last, dist, deg);
+  return {
+    x: clampFt(snapFt(p[0], step), 0, cw),
+    y: clampFt(snapFt(p[1], step), 0, ch),
+    type: 'grid',
+    closing: false,
+  };
+}
+
+function fpOutlineDrawHover(e) {
+  const draft = state.fp.outlineDraft;
+  if (!draft) return;
+  const raw = fpCanvasRawAt(e.clientX, e.clientY);
+  if (!raw) return;
+  const s = fpOutlineDrawSnap(raw, e);
+  draft.cursor = [s.x, s.y];
+  draft.snapType = s.type;
+  draft.closing = s.closing;
+  const last = draft.points.length ? draft.points[draft.points.length - 1] : null;
+  if (last && !s.closing) {
+    const dist = segmentLengthFt(last, [s.x, s.y]);
+    if (dist > 0.01) state.fp.drawAngle = angleDeg(last, [s.x, s.y]);
+    fpSetReadout(
+      `Draw: ${formatFt(Math.round(dist * 100) / 100)} ft · ∠${Math.round(angleDeg(last, [s.x, s.y]) * 10) / 10}°${s.type !== 'grid' ? ` · snap ${s.type}` : ''} · Backspace undoes`,
+    );
+  } else if (s.closing) {
+    fpSetReadout(`Click to close shape (${draft.points.length} corners)`);
+  } else {
+    fpSetReadout(`Click first corner · x ${formatFt(s.x)} · y ${formatFt(s.y)} ft${s.type !== 'grid' ? ` · snap ${s.type}` : ''}`);
+  }
+  fpRefreshOutlineOverlay();
+  fpRenderOutlineHud();
 }
 
 function fpOutlineDrawClick(e) {
@@ -4381,17 +4679,39 @@ function fpOutlineDrawClick(e) {
   }
   const raw = fpCanvasRawAt(e.clientX, e.clientY);
   if (!raw) return true;
-  const [gx, gy] = fpOutlineDrawSnap(raw, e);
-  if (draft.points.length >= MAX_OUTLINE_VERTICES) {
-    fpToast(`Outlines hold at most ${MAX_OUTLINE_VERTICES} corners — double-click or Close loop to finish.`, false);
+  const s = fpOutlineDrawSnap(raw, e);
+  if (s.closing && draft.points.length >= 3) {
+    void fpOutlineFinishDraw();
     return true;
   }
-  // Double-click the first vertex also closes the loop (handled by dblclick).
-  draft.points.push([gx, gy]);
-  state.fp.drawAngle = draft.points.length > 1 ? angleDeg(draft.points[draft.points.length - 2], [gx, gy]) : null;
-  fpRenderCanvas();
-  fpRenderSelInfo();
-  fpSetReadout(`Draw outline: ${draft.points.length} corner${draft.points.length === 1 ? '' : 's'} · double-click or Close loop to finish · Esc cancels`);
+  if (draft.points.length >= MAX_OUTLINE_VERTICES) {
+    fpToast(`Outlines hold at most ${MAX_OUTLINE_VERTICES} corners — click corner 1 or Close loop to finish.`, false);
+    return true;
+  }
+  // Guard accidental double-tap on the exact same spot as the last point.
+  const prev = draft.points.length ? draft.points[draft.points.length - 1] : null;
+  if (prev && Math.hypot(s.x - prev[0], s.y - prev[1]) < 1e-4) return true;
+
+  draft.points.push([s.x, s.y]);
+  draft.cursor = [s.x, s.y];
+  draft.closing = false;
+  state.fp.drawAngle = draft.points.length > 1 ? angleDeg(draft.points[draft.points.length - 2], [s.x, s.y]) : null;
+  fpRefreshOutlineOverlay();
+  fpRenderOutlineHud();
+  fpSetReadout(`Draw: ${draft.points.length} corner${draft.points.length === 1 ? '' : 's'} · ${draft.points.length >= 3 ? 'click corner 1, Enter or Close loop to finish' : 'keep clicking'} · Backspace undoes`);
+  return true;
+}
+
+function fpOutlineDrawUndoPoint() {
+  const draft = state.fp.outlineDraft;
+  if (!draft || !draft.points.length) return false;
+  draft.points.pop();
+  draft.closing = false;
+  const n = draft.points.length;
+  state.fp.drawAngle = n > 1 ? angleDeg(draft.points[n - 2], draft.points[n - 1]) : null;
+  fpRefreshOutlineOverlay();
+  fpRenderOutlineHud();
+  fpSetReadout(n ? `Removed last corner (${n} remaining)` : 'Draw: click the first corner');
   return true;
 }
 
@@ -4407,14 +4727,14 @@ function fpOutlineDrawAppendLength(rawLen) {
   const deg = state.fp.drawAngle != null ? state.fp.drawAngle : 0;
   const p = pointAtAngle(last, len, deg);
   const { w: cw, h: ch } = fpCanvasDims();
-  draft.points.push([clampFt(p[0], 0, cw), clampFt(p[1], 0, ch)]);
+  draft.points.push([clampFt(quantizeFt(p[0]), 0, cw), clampFt(quantizeFt(p[1]), 0, ch)]);
   const input = $('#fpDrawLen');
   if (input) {
     input.value = '';
     input.focus();
   }
-  fpRenderCanvas();
-  fpRenderSelInfo();
+  fpRefreshOutlineOverlay();
+  fpRenderOutlineHud();
 }
 
 async function fpOutlineFinishDraw() {
@@ -4428,22 +4748,24 @@ async function fpOutlineFinishDraw() {
     fpToast('An outline needs at least 3 corners — keep clicking or Esc to cancel.', false);
     return;
   }
-  state.fp.outlineDraft = null;
-  await fpApplyOutlineEdit(pl, draft.points.map(([x, y]) => [x, y]), 'Redrew');
+  // Keep draft intact if validation or save fails so the operator can press
+  // Backspace and fix the last corner instead of redrawing from scratch.
+  const ok = await fpApplyOutlineEdit(pl, draft.points.map(([x, y]) => [x, y]), 'Redrew');
+  if (!ok) {
+    fpRefreshOutlineOverlay();
+    fpRenderOutlineHud();
+  }
 }
 
-// ---------- edit outline (vertex / midpoint handles) ----------
-// Handles render on the selected shaped unit while edit mode is armed (see
-// fpRenderOutlineHandles, called from fpRenderCanvas). ● drag moves the
-// corner; ■ drag inserts a corner; double-click a ● removes it.
+// ---------- edit corners (works on BOTH rectangular & shaped units) ----------
 function fpOutlineHandleHitAt(clientX, clientY) {
   if (state.fp.outlineMode !== 'edit') return null;
-  const pl = fpSelectedShaped();
-  const o = pl && fpOutlineOf(pl.outline);
+  const pl = fpSelectedOutlineTarget();
+  const o = fpEditablePolygon(pl);
   if (!o) return null;
   const raw = fpCanvasRawAt(clientX, clientY);
   if (!raw) return null;
-  const tol = 9 / fpPx();
+  const tol = 12 / fpPx();
   for (let i = 0; i < o.length; i++) {
     if (Math.hypot(raw[0] - o[i][0], raw[1] - o[i][1]) <= tol) return { pl, type: 'vertex', index: i };
   }
@@ -4460,138 +4782,497 @@ function fpOutlineVertexStartDrag(e, hit) {
   const pl = hit.pl;
   if (fpGuardLocked(pl)) return;
   const before = fpElemState('placement', pl.unitId);
-  let pts = fpOutlineOf(pl.outline).map(([x, y]) => [x, y]);
+  const pts = fpEditablePolygon(pl);
   let index = hit.index;
   if (hit.type === 'mid') {
+    if (pts.length >= MAX_OUTLINE_VERTICES) {
+      fpToast(`Outlines hold at most ${MAX_OUTLINE_VERTICES} corners.`, false);
+      return;
+    }
     const a = pts[hit.index];
     const b = pts[(hit.index + 1) % pts.length];
     pts.splice(hit.insertAt, 0, [quantizeFt((a[0] + b[0]) / 2), quantizeFt((a[1] + b[1]) / 2)]);
     index = hit.insertAt;
-    pl.outline = pts.map(([x, y]) => [x, y]);
   }
   const downX = e.clientX;
   const downY = e.clientY;
   let moved = hit.type === 'mid';
-  fpRenderCanvas();
+  let cancelled = false;
+  const { w: cw, h: ch } = fpCanvasDims();
+
+  fpOutlineEditDrag = {
+    pl,
+    pts,
+    index,
+    kind: hit.type,
+    before,
+    guides: [],
+    validation: fpValidateOutlineCandidate(pl, pts),
+  };
+  state.fp.outlineSelectedVertex = index;
+  fpRefreshOutlineOverlay();
+  fpRenderOutlineHud();
+
+  const onKey = (ev) => {
+    if (ev.key !== 'Escape') return;
+    ev.preventDefault();
+    ev.stopImmediatePropagation();
+    cancelled = true;
+    cleanup();
+    fpOutlineEditDrag = null;
+    fpRefreshOutlineOverlay();
+    fpRenderOutlineHud();
+    fpSetReadout('Corner drag cancelled — still in Edit corners mode');
+  };
+
   const move = (ev) => {
+    if (cancelled) return;
     if (!moved && Math.hypot(ev.clientX - downX, ev.clientY - downY) <= 3) return;
     moved = true;
     const raw = fpCanvasRawAt(ev.clientX, ev.clientY);
     if (!raw) return;
-    const s = fpSnapPointer(ev, pts[(index - 1 + pts.length) % pts.length], { extra: fpOutlineSnapExtra(pl.unitId) });
-    const nx = s ? s.x : quantizeFt(raw[0]);
-    const ny = s ? s.y : quantizeFt(raw[1]);
+    const prevPt = pts[(index - 1 + pts.length) % pts.length];
+    const nextPt = pts[(index + 1) % pts.length];
+    const s = fpSnapPointer(ev, prevPt, { extra: fpOutlineSnapExtra(pl.unitId) });
+    let nx = s ? s.x : quantizeFt(raw[0]);
+    let ny = s ? s.y : quantizeFt(raw[1]);
+    const guides = [];
+
+    // Soft orthogonal alignment to adjacent corners unless Shift is held.
+    if (!ev.shiftKey) {
+      const alignTol = 7 / fpPx();
+      for (const ref of [prevPt, nextPt]) {
+        if (Math.abs(nx - ref[0]) <= alignTol) {
+          nx = ref[0];
+          guides.push([ref, [nx, ny]]);
+          break;
+        }
+      }
+      for (const ref of [prevPt, nextPt]) {
+        if (Math.abs(ny - ref[1]) <= alignTol) {
+          ny = ref[1];
+          guides.push([ref, [nx, ny]]);
+          break;
+        }
+      }
+    }
+    nx = clampFt(quantizeFt(nx), 0, cw);
+    ny = clampFt(quantizeFt(ny), 0, ch);
     pts[index] = [nx, ny];
-    pl.outline = pts.map(([x, y]) => [x, y]);
-    fpRenderCanvas();
-    fpSetReadout(`Corner ${index + 1} → ${formatFt(nx)}, ${formatFt(ny)} ft · release saves · Esc cancels`);
+    const validation = fpValidateOutlineCandidate(pl, pts);
+    fpOutlineEditDrag = { pl, pts, index, kind: hit.type, before, guides, validation };
+    fpRefreshOutlineOverlay();
+    fpRenderOutlineHud();
+    fpSetReadout(
+      validation.ok
+        ? `Corner ${index + 1} → ${formatFt(nx)}, ${formatFt(ny)} ft · ${fpFmtArea(validation.area)} sqft · release saves · Esc cancels`
+        : `Corner ${index + 1}: ${validation.reason}`,
+    );
   };
-  const up = async () => {
+
+  const cleanup = () => {
     document.removeEventListener('pointermove', move);
     document.removeEventListener('pointerup', up);
+    document.removeEventListener('keydown', onKey, true);
+  };
+
+  const up = async () => {
+    if (cancelled) return;
+    cleanup();
+    const dragState = fpOutlineEditDrag;
+    fpOutlineEditDrag = null;
     if (!moved) {
-      fpRenderCanvas(); // a click just selects the handle
+      // Plain click selects this corner so Delete / Backspace or HUD button can remove it.
+      state.fp.outlineSelectedVertex = index;
+      fpRefreshOutlineOverlay();
+      fpRenderOutlineHud();
       return;
     }
-    const ok = await fpApplyOutlineEdit(pl, pts.map(([x, y]) => [x, y]), hit.type === 'mid' ? 'Added a corner to' : 'Moved a corner of', before);
+    const ok = await fpApplyOutlineEdit(
+      pl,
+      dragState.pts.map(([x, y]) => [x, y]),
+      hit.type === 'mid' ? 'Added a corner to' : 'Moved a corner of',
+      before,
+      { keepMode: true },
+    );
     if (!ok) {
-      const b = before;
-      pl.outline = b.outline ? b.outline.map(([x, y]) => [x, y]) : null;
-      pl.x = b.x;
-      pl.y = b.y;
-      pl.width = b.width;
-      pl.height = b.height;
-      fpRenderCanvas();
-      fpRenderSelInfo();
+      fpRefreshOutlineOverlay();
+      fpRenderOutlineHud();
     }
   };
   document.addEventListener('pointermove', move);
   document.addEventListener('pointerup', up);
+  document.addEventListener('keydown', onKey, true);
+}
+
+async function fpOutlineRemoveVertexAt(index) {
+  const pl = fpSelectedOutlineTarget();
+  if (!pl) return false;
+  if (fpGuardLocked(pl)) return true;
+  const pts = fpEditablePolygon(pl);
+  if (!pts || index < 0 || index >= pts.length) return false;
+  if (pts.length <= MIN_OUTLINE_VERTICES) {
+    fpToast('An outline needs at least 3 corners — use Reset to rect instead.', false);
+    return true;
+  }
+  pts.splice(index, 1);
+  state.fp.outlineSelectedVertex = null;
+  await fpApplyOutlineEdit(pl, pts, 'Removed a corner from', undefined, { keepMode: true });
+  return true;
 }
 
 async function fpOutlineRemoveVertex(e) {
   const hit = fpOutlineHandleHitAt(e.clientX, e.clientY);
   if (!hit || hit.type !== 'vertex') return false;
-  const pl = hit.pl;
-  if (fpGuardLocked(pl)) return true;
-  const pts = fpOutlineOf(pl.outline).map(([x, y]) => [x, y]);
-  if (pts.length <= 4) {
-    // Dropping to 3 corners is allowed; below that the shape collapses.
-    if (pts.length <= 3) {
-      fpToast('An outline needs at least 3 corners — use Reset to rectangle instead.', false);
-      return true;
+  return fpOutlineRemoveVertexAt(hit.index);
+}
+
+// Fast overlay-only refresh during hover / drag without rebuilding every tile.
+function fpRefreshOutlineOverlay() {
+  const canvas = $('#fpCanvas');
+  if (!canvas) return;
+  canvas.querySelectorAll('.fp-outline-layer, .fp-outline-handle').forEach((n) => n.remove());
+  fpRenderOutlineOverlay(canvas, fpPx());
+}
+
+// Unified canvas overlay for odd-shaped tools:
+// 1. Selected shaped unit wall tags (e0, e1, ...) + hovered door-wall highlight
+// 2. Live notch preview (resulting shape + hatched red cutout + dims + draggable ◆ handle)
+// 3. Edit corners mode (live full-canvas drag polygon, orthogonal snap guides, wall lengths, ● & + handles)
+// 4. Draw shape mode (fill preview, solid walls + lengths, dashed rubber band + length/angle, close ring)
+function fpRenderOutlineOverlay(canvas, u) {
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+  const makeSvg = (z) => {
+    const svg = document.createElementNS(SVG_NS, 'svg');
+    svg.classList.add('fp-outline-layer');
+    svg.setAttribute('width', canvas.style.width);
+    svg.setAttribute('height', canvas.style.height);
+    svg.style.position = 'absolute';
+    svg.style.inset = '0';
+    svg.style.overflow = 'visible';
+    svg.style.pointerEvents = 'none';
+    svg.style.zIndex = String(z);
+    return svg;
+  };
+  const svgEl = (svg, tag, attrs, text) => {
+    const n = document.createElementNS(SVG_NS, tag);
+    for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, String(v));
+    if (text !== undefined) n.textContent = text;
+    svg.appendChild(n);
+    return n;
+  };
+  const P = ([x, y]) => `${(x * u).toFixed(1)},${(y * u).toFixed(1)}`;
+
+  const mode = state.fp.outlineMode;
+
+  // 1) Wall badges on the selected shaped unit (helps identify e0, e1, ... for door buttons).
+  const selShaped = fpSelectedShaped();
+  if (selShaped && mode !== 'draw' && mode !== 'notch' && !fpOutlineEditDrag) {
+    const o = fpOutlineOf(selShaped.outline);
+    if (o && o.length >= 3) {
+      const svg = makeSvg(4);
+      const hotEdge = state.fp.hoverDoorEdge || null;
+      for (let i = 0; i < o.length; i++) {
+        const a = o[i];
+        const b = o[(i + 1) % o.length];
+        const len = segmentLengthFt(a, b);
+        const mx = ((a[0] + b[0]) / 2) * u;
+        const my = ((a[1] + b[1]) / 2) * u;
+        const key = `e${i}`;
+        const isHot = hotEdge === key;
+        if (isHot) {
+          svgEl(svg, 'line', {
+            x1: (a[0] * u).toFixed(1),
+            y1: (a[1] * u).toFixed(1),
+            x2: (b[0] * u).toFixed(1),
+            y2: (b[1] * u).toFixed(1),
+            stroke: '#C1664C',
+            'stroke-width': '5',
+            'stroke-linecap': 'round',
+          });
+        }
+        if (mode !== 'edit' && (len * u >= 24 || isHot)) {
+          svgEl(
+            svg,
+            'text',
+            { x: mx.toFixed(1), y: (my - 5).toFixed(1), class: 'fp-ol-wall-tag' + (isHot ? ' hot' : ''), 'text-anchor': 'middle' },
+            key,
+          );
+        }
+      }
+      canvas.appendChild(svg);
     }
   }
-  pts.splice(hit.index, 1);
-  await fpApplyOutlineEdit(pl, pts, 'Removed a corner from');
-  return true;
-}
 
-// Vertex/midpoint handles for the selected shaped unit (edit mode only).
-// Inline styles only — no dashboard CSS changes.
-function fpRenderOutlineHandles(canvas, u) {
-  if (state.fp.outlineMode !== 'edit') return;
-  const pl = fpSelectedShaped();
-  const o = pl && fpOutlineOf(pl.outline);
-  if (!o) return;
-  const size = Math.max(10, Math.round(u * 0.45));
-  const add = (x, y, kind, label) => {
-    const el = document.createElement('div');
-    el.className = 'fp-outline-handle';
-    el.dataset.outlineHandle = kind;
-    el.title = label;
-    el.style.position = 'absolute';
-    el.style.left = x * u - size / 2 + 'px';
-    el.style.top = y * u - size / 2 + 'px';
-    el.style.width = size + 'px';
-    el.style.height = size + 'px';
-    el.style.background = kind === 'vertex' ? '#7A3B28' : '#fff';
-    el.style.border = '2px solid #7A3B28';
-    el.style.borderRadius = kind === 'vertex' ? '50%' : '2px';
-    el.style.cursor = 'grab';
-    el.style.zIndex = '4';
-    el.style.boxSizing = 'border-box';
-    el.style.pointerEvents = 'auto';
-    canvas.appendChild(el);
-  };
-  for (let i = 0; i < o.length; i++) add(o[i][0], o[i][1], 'vertex', `Corner ${i + 1} — drag to move, double-click to remove`);
-  for (let i = 0; i < o.length; i++) {
-    const a = o[i];
-    const b = o[(i + 1) % o.length];
-    add((a[0] + b[0]) / 2, (a[1] + b[1]) / 2, 'mid', 'Midpoint — drag to insert a corner');
-  }
-}
+  // 2) Live Notch preview + draggable ◆ inner handle.
+  if (mode === 'notch') {
+    const pl = fpSelectedOutlineTarget();
+    if (!pl) return;
+    const { nw, nh, corner } = fpCurrentNotchState(pl);
+    const poly = nw !== null && nh !== null ? fpNotchPolygon(pl, nw, nh, corner, true) : null;
+    if (!poly) return;
+    const check = fpValidateOutlineCandidate(pl, poly);
+    const cut = fpNotchCutoutGeom(pl, nw, nh, corner);
+    const svg = makeSvg(5);
+    // Resulting L-shape fill + outline
+    svgEl(svg, 'polygon', {
+      points: poly.map(P).join(' '),
+      fill: check.ok ? 'rgba(90, 122, 96, 0.22)' : 'rgba(196, 61, 46, 0.14)',
+      stroke: check.ok ? '#7A3B28' : '#c43d2e',
+      'stroke-width': '2.5',
+      'stroke-linejoin': 'round',
+    });
+    // Cutout zone in soft red dashed hatch
+    svgEl(svg, 'rect', {
+      x: (cut.rx * u).toFixed(1),
+      y: (cut.ry * u).toFixed(1),
+      width: (cut.rw * u).toFixed(1),
+      height: (cut.rh * u).toFixed(1),
+      fill: 'rgba(196, 61, 46, 0.16)',
+      stroke: '#c43d2e',
+      'stroke-width': '1.5',
+      'stroke-dasharray': '4 3',
+    });
+    // Dimension labels on the cutout edges
+    svgEl(
+      svg,
+      'text',
+      { x: ((cut.rx + cut.rw / 2) * u).toFixed(1), y: (cut.ry * u - 5).toFixed(1), class: 'fp-ol-edge-lbl', 'text-anchor': 'middle' },
+      `${formatFt(nw)}′`,
+    );
+    svgEl(
+      svg,
+      'text',
+      { x: (cut.rx * u - 6).toFixed(1), y: ((cut.ry + cut.rh / 2) * u + 3).toFixed(1), class: 'fp-ol-edge-lbl', 'text-anchor': 'end' },
+      `${formatFt(nh)}′`,
+    );
+    canvas.appendChild(svg);
 
-// In-progress draw draft: dashed polyline + corner dots (SVG overlay).
-function fpRenderOutlineDraft(canvas, u) {
-  const draft = state.fp.outlineDraft;
-  if (state.fp.outlineMode !== 'draw' || !draft || !draft.points.length) return;
-  const ns = 'http://www.w3.org/2000/svg';
-  const svg = document.createElementNS(ns, 'svg');
-  svg.setAttribute('width', canvas.style.width);
-  svg.setAttribute('height', canvas.style.height);
-  svg.style.position = 'absolute';
-  svg.style.inset = '0';
-  svg.style.overflow = 'visible';
-  svg.style.pointerEvents = 'none';
-  svg.style.zIndex = '5';
-  const pts = draft.points.map(([x, y]) => `${(x * u).toFixed(1)},${(y * u).toFixed(1)}`).join(' ');
-  const line = document.createElementNS(ns, 'polyline');
-  line.setAttribute('points', pts);
-  line.setAttribute('fill', 'none');
-  line.setAttribute('stroke', '#7A3B28');
-  line.setAttribute('stroke-width', '2');
-  line.setAttribute('stroke-dasharray', '5 3');
-  svg.appendChild(line);
-  for (const [x, y] of draft.points) {
-    const c = document.createElementNS(ns, 'circle');
-    c.setAttribute('cx', (x * u).toFixed(1));
-    c.setAttribute('cy', (y * u).toFixed(1));
-    c.setAttribute('r', '4');
-    c.setAttribute('fill', '#7A3B28');
-    svg.appendChild(c);
+    // Draggable ◆ handle at the inner notch corner
+    const hSize = 14;
+    const hEl = document.createElement('div');
+    hEl.className = 'fp-outline-handle fp-notch-handle';
+    hEl.dataset.outlineHandle = 'notch';
+    hEl.title = `Drag to resize notch (${formatFt(nw)} × ${formatFt(nh)} ft)`;
+    hEl.style.left = cut.hx * u - hSize / 2 + 'px';
+    hEl.style.top = cut.hy * u - hSize / 2 + 'px';
+    hEl.style.width = hSize + 'px';
+    hEl.style.height = hSize + 'px';
+    canvas.appendChild(hEl);
+    return;
   }
-  canvas.appendChild(svg);
+
+  // 3) Edit corners mode (live polygon + edge lengths + ● corners + + midpoints).
+  if (mode === 'edit') {
+    const pl = fpSelectedOutlineTarget();
+    if (!pl) return;
+    const o = fpOutlineEditDrag ? fpOutlineEditDrag.pts : fpEditablePolygon(pl);
+    if (!o || o.length < 3) return;
+    const svg = makeSvg(5);
+    const valid = !fpOutlineEditDrag || fpOutlineEditDrag.validation.ok;
+
+    // Orthogonal alignment guide lines during drag
+    if (fpOutlineEditDrag && fpOutlineEditDrag.guides.length) {
+      for (const [ga, gb] of fpOutlineEditDrag.guides) {
+        svgEl(svg, 'line', {
+          x1: (ga[0] * u).toFixed(1),
+          y1: (ga[1] * u).toFixed(1),
+          x2: (gb[0] * u).toFixed(1),
+          y2: (gb[1] * u).toFixed(1),
+          stroke: '#3B82C4',
+          'stroke-width': '1.25',
+          'stroke-dasharray': '4 3',
+        });
+      }
+    }
+
+    // Live full-canvas polygon overlay (never clipped by stale bbox while dragging!)
+    svgEl(svg, 'polygon', {
+      points: o.map(P).join(' '),
+      fill: fpOutlineEditDrag
+        ? (valid ? 'rgba(90, 122, 96, 0.24)' : 'rgba(196, 61, 46, 0.20)')
+        : 'rgba(193, 102, 76, 0.08)',
+      stroke: valid ? '#7A3B28' : '#c43d2e',
+      'stroke-width': fpOutlineEditDrag ? '2.5' : '2',
+      'stroke-linejoin': 'round',
+    });
+
+    // Edge length labels on every wall
+    for (let i = 0; i < o.length; i++) {
+      const a = o[i];
+      const b = o[(i + 1) % o.length];
+      const len = segmentLengthFt(a, b);
+      if (len * u >= 26) {
+        const mx = ((a[0] + b[0]) / 2) * u;
+        const my = ((a[1] + b[1]) / 2) * u;
+        svgEl(
+          svg,
+          'text',
+          { x: mx.toFixed(1), y: (my - 9).toFixed(1), class: 'fp-ol-edge-lbl', 'text-anchor': 'middle' },
+          `${formatFt(Math.round(len * 100) / 100)}′`,
+        );
+      }
+    }
+    canvas.appendChild(svg);
+
+    // Midpoint + handles (hidden mid-drag so the canvas stays clean)
+    if (!fpOutlineEditDrag) {
+      const mSize = 15;
+      for (let i = 0; i < o.length; i++) {
+        const a = o[i];
+        const b = o[(i + 1) % o.length];
+        if (segmentLengthFt(a, b) * u < 20) continue;
+        const mx = (a[0] + b[0]) / 2;
+        const my = (a[1] + b[1]) / 2;
+        const el = document.createElement('div');
+        el.className = 'fp-outline-handle fp-ol-mid';
+        el.dataset.outlineHandle = 'mid';
+        el.title = 'Drag to add a new corner on this wall';
+        el.textContent = '+';
+        el.style.left = mx * u - mSize / 2 + 'px';
+        el.style.top = my * u - mSize / 2 + 'px';
+        el.style.width = mSize + 'px';
+        el.style.height = mSize + 'px';
+        canvas.appendChild(el);
+      }
+    }
+
+    // Corner ● handles
+    const vSize = 13;
+    for (let i = 0; i < o.length; i++) {
+      const el = document.createElement('div');
+      const isSel = state.fp.outlineSelectedVertex === i || (fpOutlineEditDrag && fpOutlineEditDrag.index === i);
+      el.className = 'fp-outline-handle fp-ol-vertex' + (isSel ? ' selected' : '');
+      el.dataset.outlineHandle = 'vertex';
+      el.title = `Corner ${i + 1} (${formatFt(o[i][0])}, ${formatFt(o[i][1])} ft) — drag to move, right-click or double-click to remove`;
+      el.style.left = o[i][0] * u - vSize / 2 + 'px';
+      el.style.top = o[i][1] * u - vSize / 2 + 'px';
+      el.style.width = vSize + 'px';
+      el.style.height = vSize + 'px';
+      canvas.appendChild(el);
+    }
+    return;
+  }
+
+  // 4) Draw shape mode: live rubber-band, closing chord, fill preview, dims & close target.
+  if (mode === 'draw') {
+    const draft = state.fp.outlineDraft;
+    if (!draft) return;
+    const pts = draft.points || [];
+    const cur = draft.cursor;
+    if (!pts.length && !cur) return;
+    const svg = makeSvg(5);
+
+    const previewPts = cur && !draft.closing ? pts.concat([cur]) : pts;
+    if (previewPts.length >= 3) {
+      svgEl(svg, 'polygon', {
+        points: previewPts.map(P).join(' '),
+        fill: 'rgba(90, 122, 96, 0.16)',
+        stroke: 'none',
+      });
+    }
+    if (pts.length > 1) {
+      svgEl(svg, 'polyline', {
+        points: pts.map(P).join(' '),
+        fill: 'none',
+        stroke: '#7A3B28',
+        'stroke-width': '2.5',
+        'stroke-linejoin': 'round',
+        'stroke-linecap': 'round',
+      });
+      // Wall length labels on placed edges
+      for (let i = 0; i < pts.length - 1; i++) {
+        const len = segmentLengthFt(pts[i], pts[i + 1]);
+        if (len * u >= 24) {
+          svgEl(
+            svg,
+            'text',
+            {
+              x: (((pts[i][0] + pts[i + 1][0]) / 2) * u).toFixed(1),
+              y: (((pts[i][1] + pts[i + 1][1]) / 2) * u - 6).toFixed(1),
+              class: 'fp-ol-edge-lbl',
+              'text-anchor': 'middle',
+            },
+            `${formatFt(Math.round(len * 100) / 100)}′`,
+          );
+        }
+      }
+    }
+    if (pts.length && cur) {
+      const last = pts[pts.length - 1];
+      const segLen = segmentLengthFt(last, cur);
+      if (segLen > 1e-4) {
+        svgEl(svg, 'line', {
+          x1: (last[0] * u).toFixed(1),
+          y1: (last[1] * u).toFixed(1),
+          x2: (cur[0] * u).toFixed(1),
+          y2: (cur[1] * u).toFixed(1),
+          stroke: draft.closing ? '#2E6B46' : '#C1664C',
+          'stroke-width': '2',
+          'stroke-dasharray': '6 4',
+        });
+        const deg = Math.round(angleDeg(last, cur) * 10) / 10;
+        svgEl(
+          svg,
+          'text',
+          {
+            x: (((last[0] + cur[0]) / 2) * u + 6).toFixed(1),
+            y: (((last[1] + cur[1]) / 2) * u - 7).toFixed(1),
+            class: 'fp-dim-label',
+          },
+          `${formatFt(Math.round(segLen * 100) / 100)} ft ∠${deg}°`,
+        );
+      }
+      // Subtle closing chord back to corner 1 once >= 2 corners exist
+      if (pts.length >= 2 && !draft.closing) {
+        svgEl(svg, 'line', {
+          x1: (cur[0] * u).toFixed(1),
+          y1: (cur[1] * u).toFixed(1),
+          x2: (pts[0][0] * u).toFixed(1),
+          y2: (pts[0][1] * u).toFixed(1),
+          stroke: '#7A3B28',
+          'stroke-width': '1.25',
+          'stroke-dasharray': '3 4',
+          opacity: '0.55',
+        });
+      }
+    }
+    // Placed vertices (Corner 1 turns into a close target once >= 3 corners exist)
+    pts.forEach(([x, y], i) => {
+      const isCloseTarget = i === 0 && pts.length >= 3;
+      if (isCloseTarget) {
+        svgEl(svg, 'circle', {
+          cx: (x * u).toFixed(1),
+          cy: (y * u).toFixed(1),
+          r: draft.closing ? '11' : '8',
+          fill: draft.closing ? 'rgba(46, 107, 70, 0.25)' : 'rgba(193, 102, 76, 0.16)',
+          stroke: draft.closing ? '#2E6B46' : '#C1664C',
+          'stroke-width': '1.5',
+        });
+      }
+      svgEl(svg, 'circle', {
+        cx: (x * u).toFixed(1),
+        cy: (y * u).toFixed(1),
+        r: isCloseTarget ? '5.5' : '4',
+        fill: isCloseTarget ? (draft.closing ? '#2E6B46' : '#C1664C') : '#fff',
+        stroke: isCloseTarget ? '#fff' : '#7A3B28',
+        'stroke-width': '2',
+      });
+    });
+    // Snap marker at cursor
+    if (cur && !draft.closing) {
+      const cx = cur[0] * u;
+      const cy = cur[1] * u;
+      if (draft.snapType === 'endpoint' || draft.snapType === 'corner') {
+        svgEl(svg, 'rect', { x: cx - 5, y: cy - 5, width: 10, height: 10, class: 'fp-snap-mark' });
+      } else if (draft.snapType === 'midpoint') {
+        svgEl(svg, 'polygon', { points: `${cx},${cy - 6} ${cx + 6},${cy + 5} ${cx - 6},${cy + 5}`, class: 'fp-snap-mark' });
+      } else {
+        svgEl(svg, 'circle', { cx, cy, r: 3.5, class: 'fp-snap-mark grid' });
+      }
+    }
+    canvas.appendChild(svg);
+  }
 }
 
 // Door width (ft) from the inspector field: applies to every door of the unit
@@ -6996,10 +7677,15 @@ function fpOnEscapeTool(e) {
     fpCancelDoorDrag();
     return;
   }
+  if (fpOutlineEditDrag) {
+    // Active vertex drag owns its own Escape listener; never exit edit mode.
+    return;
+  }
   if (state.fp.outlineMode) {
     e.preventDefault();
+    const wasEdit = state.fp.outlineMode === 'edit';
     fpSetOutlineMode(null);
-    fpToast('Outline edit cancelled.', true);
+    fpToast(wasEdit ? 'Finished editing corners.' : 'Shape edit cancelled.', true);
     return;
   }
   if (state.fp.doorMove) {
@@ -9386,9 +10072,38 @@ export function fpInitEvents() {
   // Modifier-gated canvas zoom (see fpOnCanvasWheel) + editor Delete shortcut
   // (see fpOnDeleteKey) — both attached once here, never per-render.
   $('#fpCanvasWrap').addEventListener('wheel', fpOnCanvasWheel, { passive: false });
-  // Pen + tool shortcuts first: fpPenKey stops propagation for the keys it
-  // consumes (Backspace / Enter / Esc / digits) so Delete / arrows never fire.
+  // Pen + outline + tool shortcuts first: fpPenKey / fpOutlineKey stop
+  // propagation for the keys they consume so Delete / arrows never fire.
   document.addEventListener('keydown', fpPenKey);
+  document.addEventListener('keydown', (e) => {
+    if (!state.fp.outlineMode || e.metaKey || e.ctrlKey) return;
+    const t = e.target;
+    if (t && typeof t.closest === 'function' && t.closest('input, textarea, select, [contenteditable]')) return;
+    if (state.fp.outlineMode === 'draw') {
+      if (e.key === 'Backspace') {
+        if (fpOutlineDrawUndoPoint()) {
+          e.preventDefault();
+          e.stopImmediatePropagation();
+        }
+      } else if ((e.key === 'Enter' || e.key === 'c' || e.key === 'C') && state.fp.outlineDraft && state.fp.outlineDraft.points.length >= 3) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        void fpOutlineFinishDraw();
+      }
+    } else if (state.fp.outlineMode === 'edit') {
+      if ((e.key === 'Delete' || e.key === 'Backspace') && state.fp.outlineSelectedVertex != null) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        void fpOutlineRemoveVertexAt(state.fp.outlineSelectedVertex);
+      }
+    } else if (state.fp.outlineMode === 'notch') {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        void fpOutlineApplyNotch();
+      }
+    }
+  });
   document.addEventListener('keydown', fpOnToolKey);
   document.addEventListener('keydown', fpOnEditKey);
   // Never lose a pending write (debounced nudge, in-flight save) on unload.
@@ -9613,13 +10328,20 @@ export function fpInitEvents() {
       }
     }
     // Odd-shaped outline tools own the canvas while armed (same mode-gated
-    // contract as the line tool): draw clicks append corners, edit handles
-    // win over tiles.
+    // contract as the line tool): draw clicks append corners, notch/edit
+    // handles win over tiles.
     if (state.fp.outlineMode === 'draw' && !fpLayerLocked('units')) {
       const canvas = $('#fpCanvas');
       if (canvas && canvas.contains(e.target) && e.button === 0 && fpOutlineDrawClick(e)) return;
     }
-    if (state.fp.outlineMode === 'edit' && !fpLayerLocked('units')) {
+    if (state.fp.outlineMode === 'notch' && !fpLayerLocked('units') && e.button === 0) {
+      const nHit = fpNotchHandleHitAt(e.clientX, e.clientY);
+      if (nHit) {
+        fpNotchHandleStartDrag(e, nHit);
+        return;
+      }
+    }
+    if (state.fp.outlineMode === 'edit' && !fpLayerLocked('units') && e.button === 0) {
       const oHit = fpOutlineHandleHitAt(e.clientX, e.clientY);
       if (oHit) {
         fpOutlineVertexStartDrag(e, oHit);
@@ -9696,19 +10418,97 @@ export function fpInitEvents() {
     // Empty canvas: drag = marquee select (Shift adds); a plain click deselects.
     if (e.button === 0) fpMarqueeStart(e);
   });
-  // Odd-shaped outlines: double-click finishes a draw loop; double-clicking a
-  // ● edit handle removes that corner.
+  // Odd-shaped outlines: double-click finishes a draw loop; double-click or
+  // right-click on a ● edit handle removes that corner.
   $('#fpCanvasWrap').addEventListener('dblclick', (e) => {
     if (state.fp.outlineMode === 'draw' && state.fp.outlineDraft && state.fp.outlineDraft.points.length >= 3) {
       e.preventDefault();
-      // The double-click itself landed two pointerdowns (two corners) — drop
-      // the second landing before closing the loop.
-      state.fp.outlineDraft.points.pop();
-      fpOutlineFinishDraw();
+      void fpOutlineFinishDraw();
       return;
     }
-    if (state.fp.outlineMode === 'edit' && fpOutlineRemoveVertex(e)) {
-      e.preventDefault();
+    if (state.fp.outlineMode === 'edit') {
+      const hit = fpOutlineHandleHitAt(e.clientX, e.clientY);
+      if (hit && hit.type === 'vertex') {
+        e.preventDefault();
+        void fpOutlineRemoveVertexAt(hit.index);
+      }
+    }
+  });
+  $('#fpCanvasWrap').addEventListener('contextmenu', (e) => {
+    if (state.fp.outlineMode === 'edit') {
+      const hit = fpOutlineHandleHitAt(e.clientX, e.clientY);
+      if (hit && hit.type === 'vertex') {
+        e.preventDefault();
+        void fpOutlineRemoveVertexAt(hit.index);
+      }
+    }
+  });
+  // Contextual Shape Editor HUD (#fpOutlineHud) wiring: notch corners/inputs,
+  // undo point, delete selected corner, apply / close / done / cancel.
+  const outlineHud = $('#fpOutlineHud');
+  if (outlineHud) {
+    outlineHud.addEventListener('click', (e) => {
+      const cornerBtn = e.target && e.target.closest ? e.target.closest('[data-notch-corner]') : null;
+      if (cornerBtn) {
+        state.fp.notchCorner = cornerBtn.dataset.notchCorner;
+        fpRefreshOutlineOverlay();
+        fpRenderOutlineHud();
+        return;
+      }
+      const btn = e.target && e.target.closest ? e.target.closest('button') : null;
+      const bid = btn && btn.id;
+      if (bid === 'fpOutlineApplyBtn') void fpOutlineApplyNotch();
+      else if (bid === 'fpOutlineCloseBtn') void fpOutlineFinishDraw();
+      else if (bid === 'fpOutlineUndoPtBtn') fpOutlineDrawUndoPoint();
+      else if (bid === 'fpOutlineDelVertexBtn' && state.fp.outlineSelectedVertex != null) void fpOutlineRemoveVertexAt(state.fp.outlineSelectedVertex);
+      else if (bid === 'fpOutlineCancelBtn') fpSetOutlineMode(null);
+    });
+    outlineHud.addEventListener('input', (e) => {
+      const id = e.target && e.target.id;
+      if (id === 'fpNotchW' || id === 'fpNotchH') {
+        if (id === 'fpNotchW') state.fp.notchW = e.target.value;
+        else state.fp.notchH = e.target.value;
+        fpRefreshOutlineOverlay();
+        fpRenderOutlineHud();
+      }
+    });
+    outlineHud.addEventListener('keydown', (e) => {
+      const id = e.target && e.target.id;
+      if (id === 'fpNotchW' || id === 'fpNotchH') {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          void fpOutlineApplyNotch();
+        } else if (e.key === 'Escape') {
+          e.preventDefault();
+          fpSetOutlineMode(null);
+        }
+      } else if (id === 'fpDrawLen') {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          fpOutlineDrawAppendLength(e.target.value);
+        } else if (e.key === 'Escape') {
+          e.preventDefault();
+          fpSetOutlineMode(null);
+        }
+      }
+    });
+  }
+  // Highlight the matching wall on the canvas when hovering e0/e1/... door buttons.
+  $('#fpSelInfo').addEventListener('pointerover', (e) => {
+    const btn = e.target && e.target.closest ? e.target.closest('[data-door]') : null;
+    const edge = btn && FP_OUTLINE_EDGE_RE.test(btn.dataset.door) ? btn.dataset.door : null;
+    if (edge !== (state.fp.hoverDoorEdge || null)) {
+      state.fp.hoverDoorEdge = edge;
+      if (fpSelectedShaped()) fpRefreshOutlineOverlay();
+    }
+  });
+  $('#fpSelInfo').addEventListener('pointerout', (e) => {
+    if (!state.fp.hoverDoorEdge) return;
+    const rel = e.relatedTarget;
+    const btn = rel && rel.closest ? rel.closest('[data-door]') : null;
+    if (!btn || !FP_OUTLINE_EDGE_RE.test(btn.dataset.door)) {
+      state.fp.hoverDoorEdge = null;
+      if (fpSelectedShaped()) fpRefreshOutlineOverlay();
     }
   });
   $('#fpSelInfo').addEventListener('click', (e) => {

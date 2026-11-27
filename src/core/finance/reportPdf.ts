@@ -436,7 +436,13 @@ export async function buildFinanceReportPdf(r: FinanceReport): Promise<Buffer> {
           ['Annual rent increase', pct(i.pricing.annualIncreasePct)],
           ['Lease (monthly, by model year)', leaseYears || '-'],
           ['Rent-free (landlord lease)', rentFreeLabel(i.lease)],
-          ['Non-lease operating costs', `${sgd(i.opex.baseMonthly, 0)}/month, growing ${pct(i.opex.annualGrowthPct)} a year`],
+          ['Non-lease operating costs', (() => {
+            const varPct = Array.isArray(i.opex.categories)
+              ? i.opex.categories.filter((c) => c.basis === 'pct_of_revenue').reduce((s, c) => s + (Number(c.pctOfRevenue) || 0), 0)
+              : (Number(i.opex.revenuePctTotal) || 0);
+            const varPart = varPct > 0 ? ` + ${Math.round(varPct * 100) / 100}% of revenue` : '';
+            return `${sgd(i.opex.baseMonthly, 0)}/month${varPart}, growing ${pct(i.opex.annualGrowthPct)} a year`;
+          })()],
         ],
       );
       if (i.sizeMix.length) {

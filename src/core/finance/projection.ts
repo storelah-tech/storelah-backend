@@ -121,21 +121,26 @@ export function hasV2LeaseBlock(input: ProjectionInput): boolean {
   );
 }
 
+export type OpexBasis = 'fixed' | 'pct_of_revenue';
+
 export interface OpexCategoryInput {
   name: string;
-  budget: number; // monthly non-lease budget for this category
+  budget: number; // monthly non-lease fixed SGD when basis is 'fixed' (or omitted); 0 when 'pct_of_revenue'
+  basis?: OpexBasis; // omitted | 'fixed' = flat SGD/month; 'pct_of_revenue' = % of monthly rental revenue
+  pctOfRevenue?: number; // 0..100 (e.g. 3.4 for 3.4% of revenue); used when basis === 'pct_of_revenue'
   owner?: string;
   note?: string;
 }
 
 export interface OpexInput {
-  baseMonthly: number; // base non-lease opex (Σ active category budgets)
+  baseMonthly: number; // base fixed non-lease opex (Σ active fixed category budgets)
   annualGrowthPct: number;
-  categories?: OpexCategoryInput[]; // when present, baseMonthly = Σ budget
+  revenuePctTotal?: number; // derived Σ pctOfRevenue of active pct_of_revenue categories (0..100)
+  categories?: OpexCategoryInput[]; // when present, baseMonthly = Σ fixed budget, revenuePctTotal = Σ pctOfRevenue
   // Approved monthly budget overrides (§13.3 scoped Update): YYYY-MM → that
-  // month's total non-lease budget, used as-is (no growth, no proration).
+  // month's fixed non-lease budget (or total when no pct_of_revenue overrideLines).
   overrides?: Record<string, number>;
-  overrideLines?: Record<string, OpexCategoryInput[]>; // display detail per month
+  overrideLines?: Record<string, OpexCategoryInput[]>; // display & calculation detail per month
 }
 
 export interface CapitalItemInput {
@@ -295,6 +300,31 @@ function validateInput(input: ProjectionInput): void {
   if (input.capitalTotal < 0) fail('Capital values cannot be negative.');
   if (input.opex.baseMonthly < 0) fail('Opex values cannot be negative.');
   if (Object.values(input.opex.overrides ?? {}).some((v) => !(v >= 0))) fail('Monthly budget overrides cannot be negative.');
+  if (input.opex.revenuePctTotal !== undefined) {
+    if (!Number.isFinite(input.opex.revenuePctTotal) || input.opex.revenuePctTotal < 0 || input.opex.revenuePctTotal > 100) {
+      fail('Opex revenuePctTotal must be between 0 and 100.');
+    }
+  }
+  for (const c of input.opex.categories ?? []) {
+    if (c.basis === 'pct_of_revenue') {
+      if (!Number.isFinite(c.pctOfRevenue) || (c.pctOfRevenue as number) < 0 || (c.pctOfRevenue as number) > 100) {
+        fail(`Opex category ${c.name}: percentage of revenue must be between 0 and 100.`);
+      }
+    } else if (!(c.budget >= 0)) {
+      fail(`Opex category ${c.name}: budget cannot be negative.`);
+    }
+  }
+  for (const [m, lines] of Object.entries(input.opex.overrideLines ?? {})) {
+    for (const c of lines ?? []) {
+      if (c.basis === 'pct_of_revenue') {
+        if (!Number.isFinite(c.pctOfRevenue) || (c.pctOfRevenue as number) < 0 || (c.pctOfRevenue as number) > 100) {
+          fail(`Budget override ${m} category ${c.name}: percentage of revenue must be between 0 and 100.`);
+        }
+      } else if (!(c.budget >= 0)) {
+        fail(`Budget override ${m} category ${c.name}: budget cannot be negative.`);
+      }
+    }
+  }
   if ((input.capitalItems ?? []).some((c) => !(c.amount >= 0))) fail('Capital item amounts cannot be negative.');
   if (input.lease.rentFreeMonths < 0 || !Number.isInteger(input.lease.rentFreeMonths)) {
     fail('rentFreeMonths cannot be negative.');
@@ -367,6 +397,56 @@ export function annualisedIrr(cashflows: number[]): number | null {
   return (1 + r) ** 12 - 1;
 }
 
+/**
+ * Computes non-lease operating cost for one projected month (§8.5).
+ * - Fixed categories scale by growth^modelYear × period factor (or use an
+ *   approved monthly override as-is).
+ * - Variable (`pct_of_revenue`) categories equal `round2(revenue × pct / 100)`
+ *   each month — revenue is already prorated and zeroed pre-opening, and a %
+ *   fee scales naturally with revenue rather than fixed-opex inflation.
+ * - When no `pct_of_revenue` line exists, arithmetic is byte-identical to the
+ *   original fixed-only formula.
+ */
+export function computeMonthlyNonLeaseOpex(
+  opex: OpexInput,
+  monthKey: string,
+  modelYear: number,
+  growth: number,
+  factor: number,
+  revenue: number,
+): number {
+  const ovLines = opex.overrideLines?.[monthKey];
+  if (Array.isArray(ovLines) && ovLines.some((c) => c.basis === 'pct_of_revenue')) {
+    let total = 0;
+    for (const c of ovLines) {
+      if (c.basis === 'pct_of_revenue') {
+        total += round2(revenue * ((Number(c.pctOfRevenue) || 0) / 100));
+      } else {
+        total += round2(Number(c.budget) || 0);
+      }
+    }
+    return round2(total);
+  }
+  const override = opex.overrides?.[monthKey];
+  if (Number.isFinite(override)) return round2(override as number);
+
+  const fixedPart = round2(opex.baseMonthly * growth ** modelYear * factor);
+  const pctCategories = Array.isArray(opex.categories)
+    ? opex.categories.filter((c) => c.basis === 'pct_of_revenue')
+    : null;
+  if (pctCategories && pctCategories.length > 0) {
+    let varPart = 0;
+    for (const c of pctCategories) {
+      varPart += round2(revenue * ((Number(c.pctOfRevenue) || 0) / 100));
+    }
+    return round2(fixedPart + varPart);
+  }
+  if (!pctCategories && (opex.revenuePctTotal ?? 0) > 0) {
+    return round2(fixedPart + round2(revenue * ((opex.revenuePctTotal as number) / 100)));
+  }
+  return fixedPart;
+}
+
 // ---------- main projection (§§8.2–8.7) ----------
 
 /**
@@ -424,11 +504,9 @@ export function projectV1(rawInput: ProjectionInput): ProjectionResult {
     const paidLease = t <= input.lease.rentFreeMonths ? 0 : round2(contractual * (t === 1 ? factor : 1));
 
     // §8.5 opex — an approved monthly override replaces the base for that
-    // month only; otherwise base × growth^modelYear × period factor.
-    const override = input.opex.overrides?.[label];
-    const opexNonLease = Number.isFinite(override)
-      ? round2(override as number)
-      : round2(input.opex.baseMonthly * growth ** modelYear * factor);
+    // month only; otherwise base × growth^modelYear × period factor, plus any
+    // % of revenue variable categories (e.g. Stripe transaction fees).
+    const opexNonLease = computeMonthlyNonLeaseOpex(input.opex, label, modelYear, growth, factor, revenue);
     const operatingCost = round2(paidLease + opexNonLease);
 
     // §8.6 NOI / margin / cash.
@@ -522,6 +600,31 @@ export function projectV2(rawInput: ProjectionInput): ProjectionResult {
   if (input.capitalTotal < 0) fail('Capital values cannot be negative.');
   if (input.opex.baseMonthly < 0) fail('Opex values cannot be negative.');
   if (Object.values(input.opex.overrides ?? {}).some((v) => !(v >= 0))) fail('Monthly budget overrides cannot be negative.');
+  if (input.opex.revenuePctTotal !== undefined) {
+    if (!Number.isFinite(input.opex.revenuePctTotal) || input.opex.revenuePctTotal < 0 || input.opex.revenuePctTotal > 100) {
+      fail('Opex revenuePctTotal must be between 0 and 100.');
+    }
+  }
+  for (const c of input.opex.categories ?? []) {
+    if (c.basis === 'pct_of_revenue') {
+      if (!Number.isFinite(c.pctOfRevenue) || (c.pctOfRevenue as number) < 0 || (c.pctOfRevenue as number) > 100) {
+        fail(`Opex category ${c.name}: percentage of revenue must be between 0 and 100.`);
+      }
+    } else if (!(c.budget >= 0)) {
+      fail(`Opex category ${c.name}: budget cannot be negative.`);
+    }
+  }
+  for (const [m, lines] of Object.entries(input.opex.overrideLines ?? {})) {
+    for (const c of lines ?? []) {
+      if (c.basis === 'pct_of_revenue') {
+        if (!Number.isFinite(c.pctOfRevenue) || (c.pctOfRevenue as number) < 0 || (c.pctOfRevenue as number) > 100) {
+          fail(`Budget override ${m} category ${c.name}: percentage of revenue must be between 0 and 100.`);
+        }
+      } else if (!(c.budget >= 0)) {
+        fail(`Budget override ${m} category ${c.name}: budget cannot be negative.`);
+      }
+    }
+  }
   if ((input.capitalItems ?? []).some((c) => !(c.amount >= 0))) fail('Capital item amounts cannot be negative.');
   if (!Array.isArray(lease.monthlyByYear) || !lease.monthlyByYear.length) {
     fail('Lease schedule must cover at least model year 1.');
@@ -534,7 +637,14 @@ export function projectV2(rawInput: ProjectionInput): ProjectionResult {
   for (const r of lease.monthlyByYear) assertCents(r, 'Lease monthly rent');
   assertCents(input.opex.baseMonthly, 'Monthly non-lease opex');
   for (const [m, v] of Object.entries(input.opex.overrides ?? {})) assertCents(v, `Budget override ${m}`);
-  for (const c of input.opex.categories ?? []) assertCents(c.budget, `Opex category ${c.name}`);
+  for (const c of input.opex.categories ?? []) {
+    if (c.basis !== 'pct_of_revenue') assertCents(c.budget, `Opex category ${c.name}`);
+  }
+  for (const [m, lines] of Object.entries(input.opex.overrideLines ?? {})) {
+    for (const c of lines ?? []) {
+      if (c.basis !== 'pct_of_revenue') assertCents(c.budget, `Budget override ${m} category ${c.name}`);
+    }
+  }
   assertCents(input.capitalTotal, 'Capital total');
   for (const c of input.capitalItems ?? []) assertCents(c.amount, `Capital item ${c.name}`);
   if (!Number.isInteger(lease.rentFreeMonths) || lease.rentFreeMonths < 0) {
@@ -692,11 +802,9 @@ export function projectV2(rawInput: ProjectionInput): ProjectionResult {
     }
 
     // §8.5 opex — an approved monthly override replaces the base for that
-    // month only (as-is, like v1); otherwise base × growth^modelYear × factor.
-    const override = input.opex.overrides?.[cal.calendarMonth];
-    const opexNonLease = Number.isFinite(override)
-      ? round2(override as number)
-      : round2(input.opex.baseMonthly * growth ** modelYear * factor);
+    // month only (as-is, like v1); otherwise base × growth^modelYear × factor,
+    // plus any % of revenue variable categories (e.g. Stripe transaction fees).
+    const opexNonLease = computeMonthlyNonLeaseOpex(input.opex, cal.calendarMonth, modelYear, growth, factor, revenue);
     const operatingCost = round2(paidLease + opexNonLease);
 
     // §8.6 NOI / margin / cash.

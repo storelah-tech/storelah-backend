@@ -121,12 +121,64 @@ export function normaliseInputs(inputs: ProjectionInput): ProjectionInput {
     out.capitalTotal = Math.round(out.capitalItems.reduce((s, c) => s + (Number(c.amount) || 0), 0) * 100) / 100;
   }
   if (out.opex && Array.isArray(out.opex.categories)) {
-    for (const c of out.opex.categories) {
+    let fixedTotal = 0;
+    let pctTotal = 0;
+    let hasPct = false;
+    const normCat = (c: typeof out.opex.categories[number]) => {
       if (isProtectedCategory(c.name)) {
         throw new AppError(400, 'VALIDATION', `Category "${c.name}" is reserved for the landlord lease line — the lease is linked from the Financial Model, not an opex category.`);
       }
+      if (c.basis === 'pct_of_revenue') {
+        const pct = Number(c.pctOfRevenue);
+        if (!Number.isFinite(pct) || pct < 0 || pct > 100) {
+          throw new AppError(400, 'VALIDATION', `Opex category "${c.name}" percentage of revenue must be between 0 and 100.`);
+        }
+        hasPct = true;
+        pctTotal += pct;
+        return { ...c, basis: 'pct_of_revenue' as const, pctOfRevenue: Math.round(pct * 10000) / 10000, budget: 0 };
+      }
+      const b = Number(c.budget) || 0;
+      fixedTotal += b;
+      const copy = { ...c, budget: b };
+      delete copy.pctOfRevenue;
+      if (copy.basis === 'fixed') delete copy.basis;
+      return copy;
+    };
+    const categories = out.opex.categories.map(normCat);
+    const nextOpex = {
+      ...out.opex,
+      categories,
+      baseMonthly: Math.round(fixedTotal * 100) / 100,
+    };
+    if (hasPct) {
+      nextOpex.revenuePctTotal = Math.round(pctTotal * 10000) / 10000;
+    } else {
+      delete nextOpex.revenuePctTotal;
     }
-    out.opex = { ...out.opex, baseMonthly: Math.round(out.opex.categories.reduce((s, c) => s + (Number(c.budget) || 0), 0) * 100) / 100 };
+    if (nextOpex.overrideLines && typeof nextOpex.overrideLines === 'object') {
+      const nextOvLines: Record<string, typeof categories> = {};
+      for (const [m, lines] of Object.entries(nextOpex.overrideLines)) {
+        if (!Array.isArray(lines)) continue;
+        nextOvLines[m] = lines.map((line) => {
+          if (isProtectedCategory(line.name)) {
+            throw new AppError(400, 'VALIDATION', `Category "${line.name}" is reserved for the landlord lease line — the lease is linked from the Financial Model, not an opex category.`);
+          }
+          if (line.basis === 'pct_of_revenue') {
+            const pct = Number(line.pctOfRevenue);
+            if (!Number.isFinite(pct) || pct < 0 || pct > 100) {
+              throw new AppError(400, 'VALIDATION', `Budget override ${m} category "${line.name}" percentage of revenue must be between 0 and 100.`);
+            }
+            return { ...line, basis: 'pct_of_revenue' as const, pctOfRevenue: Math.round(pct * 10000) / 10000, budget: 0 };
+          }
+          const copy = { ...line, budget: Number(line.budget) || 0 };
+          delete copy.pctOfRevenue;
+          if (copy.basis === 'fixed') delete copy.basis;
+          return copy;
+        });
+      }
+      nextOpex.overrideLines = nextOvLines;
+    }
+    out.opex = nextOpex;
   }
   return out;
 }

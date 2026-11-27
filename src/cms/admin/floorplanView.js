@@ -1074,32 +1074,38 @@ function fpBoundaryMetricsLocal() {
 
 const fpFmt1 = (n) => Number(n || 0).toLocaleString('en-SG', { maximumFractionDigits: 1 });
 
-// Odd-shaped tile content (editor + read-only viewer): the bbox div clips
-// paint to the polygon; an SVG overlay draws the outline stroke (+ selection
-// ring when selected). Labels anchor at labelAt. No resize handle (option A).
+// Odd-shaped tile content (editor + read-only viewer): the bbox div has
+// border:0 + overflow:visible + transparent background so the SVG polygon
+// renders all outer & inner walls at full stroke weight with zero clipping
+// (no 2px border-box shift). Labels & status dot anchor at labelAt (pole of
+// inaccessibility) so nothing floats inside a cut-out notch.
 function fpShapedTileInnerHTML(pl, u, selected) {
   const [lx, ly] = fpLabelAtOf(pl);
-  const lxPx = ((lx - pl.x) * u).toFixed(1);
-  const lyPx = ((ly - pl.y) * u).toFixed(1);
+  const lxPx = (lx - pl.x) * u;
+  const lyPx = (ly - pl.y) * u;
   const o = fpOutlineOf(pl.outline);
   const pts = o.map(([x, y]) => `${((x - pl.x) * u).toFixed(1)},${((y - pl.y) * u).toFixed(1)}`).join(' ');
+  const wPx = (pl.width * u).toFixed(1);
+  const hPx = (pl.height * u).toFixed(1);
   return (
-    `<svg class="fp-shape-svg" width="${(pl.width * u).toFixed(1)}" height="${(pl.height * u).toFixed(1)}" viewBox="0 0 ${(pl.width * u).toFixed(1)} ${(pl.height * u).toFixed(1)}" style="position:absolute;inset:0;overflow:visible;pointer-events:none;" aria-hidden="true">` +
-    `<polygon points="${pts}" fill="var(--sage, #DCE5D8)" stroke="var(--olive2, #5B6B4C)" stroke-width="2"/>` +
-    (selected ? `<polygon points="${pts}" fill="none" stroke="#7A3B28" stroke-width="3"/>` : '') +
+    `<svg class="fp-shape-svg" width="${wPx}" height="${hPx}" viewBox="0 0 ${wPx} ${hPx}" style="position:absolute;left:0;top:0;width:100%;height:100%;overflow:visible;pointer-events:none;" aria-hidden="true">` +
+    `<polygon points="${pts}" fill="var(--sage, #DCE5D8)" stroke="var(--olive2, #5B6B4C)" stroke-width="2" stroke-linejoin="round"/>` +
+    (selected ? `<polygon points="${pts}" fill="none" stroke="#7A3B28" stroke-width="3" stroke-linejoin="round"/>` : '') +
     `</svg>` +
-    `<div class="fp-status" style="background:${fpStatusColor(pl.status)};"></div>` +
-    `<div class="fp-code" style="position:absolute;left:${lxPx}px;top:${lyPx}px;transform:translate(-50%,-50%);">${escapeHtml(fpUnitNo(pl))}</div>` +
-    `<div class="fp-sqft" style="position:absolute;left:${lxPx}px;top:${(Number(lyPx) + 11).toFixed(1)}px;transform:translate(-50%,-50%);">${fpFmtArea(pl.sqft)} sqft</div>` +
+    `<div class="fp-status" style="background:${fpStatusColor(pl.status)};left:${lxPx.toFixed(1)}px;top:${Math.max(4, lyPx - 14).toFixed(1)}px;right:auto;transform:translate(-50%,-50%);"></div>` +
+    `<div class="fp-code" style="position:absolute;left:${lxPx.toFixed(1)}px;top:${lyPx.toFixed(1)}px;transform:translate(-50%,-50%);">${escapeHtml(fpUnitNo(pl))}</div>` +
+    `<div class="fp-sqft" style="position:absolute;left:${lxPx.toFixed(1)}px;top:${(lyPx + 11).toFixed(1)}px;transform:translate(-50%,-50%);">${fpFmtArea(pl.sqft)} sqft</div>` +
     fpUnitTagsHTML(pl) +
     fpDoorMarkersHTML(pl, u)
   );
 }
 function fpApplyShapedTileStyle(el, pl) {
-  const clip = fpClipPathFor(pl);
-  if (clip) el.style.clipPath = clip;
-  el.style.borderColor = 'transparent';
+  el.style.clipPath = '';
+  el.style.border = '0';
+  el.style.borderRadius = '0';
   el.style.background = 'transparent';
+  el.style.overflow = 'visible';
+  el.style.boxShadow = 'none';
 }
 
 // Status-bar metrics (plain text, not a badge — it isn't clickable): the live

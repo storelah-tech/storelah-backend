@@ -500,9 +500,13 @@ export function initFinanceWorkspace() {
         <button type="button" class="fm-budget-row-remove" data-budget-remove="${i}" title="Remove ${escapeHtml(x.name)} from budget" aria-label="Remove ${escapeHtml(x.name)}">×</button>
       </div>
       <div class="fm-budget-input-cell">
+        <div class="fm-basis-seg" role="group" aria-label="${escapeHtml(x.name)} cost basis">
+          <button type="button" class="${isPct?'':'active'}" data-budget-basis="${i}" data-basis-target="fixed" title="Flat monthly SGD">Flat $</button>
+          <button type="button" class="is-pct ${isPct?'active':''}" data-budget-basis="${i}" data-basis-target="pct_of_revenue" title="Percentage of monthly revenue (e.g. Stripe fee)">% rev</button>
+        </div>
         <div class="fm-budget-input-wrap">
-          <button type="button" class="fm-basis-toggle ${isPct?'is-pct':''}" data-budget-basis="${i}" title="${isPct?'Variable (% of monthly revenue) — click to switch to flat SGD/month':'Flat monthly SGD — click to switch to % of monthly revenue'}">${isPct?'%':'$'}</button>
           <input data-budget-index="${i}" type="number" min="0" ${isPct?'max="100" step="0.1"':'step="50"'} value="${isPct?pctLabel:x.budget}" aria-label="${escapeHtml(x.name)} ${isPct?'percent of revenue':'monthly budget SGD'}">
+          <em>${isPct?'%':'$'}</em>
         </div>
         ${isPct?`<small class="fm-pct-calc">= ${money(effBudget)}</small>`:''}
       </div>
@@ -528,22 +532,25 @@ export function initFinanceWorkspace() {
     const otherActual=sum(details.map(x=>x.actual)),otherCommitted=sum(details.map(x=>x.committed));
     const fixedOtherBudget=r2Local(sum(details.filter(d=>!isPctOpex(d.x)).map(d=>d.effBudget)));
     const varOtherBudget=r2Local(sum(details.filter(d=>isPctOpex(d.x)).map(d=>d.effBudget)));
+    const hasPctLine=lines.some(isPctOpex);
     const varPctSum=r4Local(sum(lines.filter(isPctOpex).map(x=>Number(x.pctOfRevenue)||0)));
     const otherBudget=r2Local(fixedOtherBudget+varOtherBudget);
     const otherForecast=r2Local(sum(details.map(x=>Math.max(x.effBudget,x.actual+x.committed+x.draft))));
     const actual=otherActual,committed=lease+otherCommitted,total=r2Local(lease+otherBudget),forecast=r2Local(lease+otherForecast),variance=r2Local(forecast-total),ledger=state.expenses.filter(x=>x.month===state.budgetMonth);
     const leaseNote=lease===0?'No landlord rent for this month under the committed rent-free terms.':`${money(lease)} is pulled directly from Financial Model → Landlord lease${modelRow?.periodFactor<.999?' and prorated for the partial opening month':''}.`;
     finMount('bill-budgets').innerHTML=toolbar()+financeJourney('costs')+`<div class="fm-filter-bar"><label class="fm-select-wrap"><small>Budget month</small><select class="fm-select" data-budget-month>${monthKeys.map(value=>`<option value="${value}" ${value===state.budgetMonth?'selected':''}>${monthName(value)}</option>`).join('')}</select></label><label class="fm-select-wrap"><small>View</small><select class="fm-select"><option>Budget + commitments + actuals</option><option>Budget only</option><option>Individual expenditure only</option></select></label><label class="fm-select-wrap"><small>When Update is clicked</small><select class="fm-select" data-budget-scope><option value="future" ${state.budgetApplyScope!=='month'?'selected':''}>Apply this month onward</option><option value="month" ${state.budgetApplyScope==='month'?'selected':''}>Selected month only</option></select></label><span class="spacer"></span><span class="pill fm-rev-pill" title="Projected rental revenue for ${monthName(state.budgetMonth)} — used to compute % of revenue expense lines">Projected rev: ${money(monthRevenue)}</span><span class="pill ${actual?'green':'amber'}">${actual?'Actuals posted':'Forecast month · no actuals yet'}</span></div>
-      <div class="fm-budget-grid"><div class="card"><div class="card-head"><div><h3>Monthly operating budget</h3><small style="color:var(--muted)">${monthName(state.budgetMonth)} · click $ / % on any row to switch between a flat monthly fee and a % of revenue</small></div><div class="actions"><button class="btn" data-fm-action="add-expense">＋ Add category</button><button class="primary" data-fm-action="add-transaction">＋ Add expenditure</button><span class="fm-unsaved" data-budget-unsaved style="display:${dirty?'inline-flex':'none'}">Unsaved changes</span><button class="btn" data-budget-undo ${dirty?'':'disabled'}>Undo</button><button class="primary" data-budget-update ${dirty?'':'disabled'}>Update</button></div></div><div class="card-body"><div class="fm-budget-row header"><span class="name">Category</span><span>Budget ($ / %)</span><span>Actual</span><span>Committed</span><span>Forecast</span><span>Variance</span><span>Note</span></div>
-      <div class="fm-budget-row fm-model-linked-row"><b class="name">Lease expense<small>Model-linked · read only</small></b><input value="${num(lease)}" disabled title="Managed in Financial Models → Landlord lease"><span>—</span><span>${money(lease)}</span><span>${money(lease)}</span><span class="fm-variance neutral">$0</span><input class="fm-line-note" value="${leaseNote}" disabled></div>${details.map(d=>controlledBudgetRow(d)).join('')}<div class="fm-budget-row total"><b class="name">Total monthly operating cost</b><b>${money(total)}</b><b>${money(actual)}</b><b>${money(committed)}</b><b>${money(forecast)}</b><span class="fm-variance ${variance<=0?'good':'bad'}">${money(variance)}</span><span></span></div><div class="fm-note fm-lease-sync-note"><b>Single-source calculation:</b> landlord lease is pulled from Financial Model → Landlord lease and cannot be edited here. Total operating cost for ${monthName(state.budgetMonth)}: ${money(lease)} lease + ${money(fixedOtherBudget)} fixed opex${varPctSum>0?` + ${money(varOtherBudget)} variable (${varPctSum}% of ${money(monthRevenue)} rev)`:''} = ${money(total)}. Variable % of revenue lines automatically recalculate every month as revenue changes.</div><div class="fm-note fm-persistence-note"><b>Saved model values:</b> Update saves this budget to the model and, by default, carries it into every future forecast month. Use “Selected month only” only for a genuine one-off budget.</div></div></div>
-      <div class="fm-stack"><div class="card"><div class="card-head"><h3>Expense mix</h3></div><div class="card-body"><div class="fm-donut"><div><b>${money(total)}</b><small>Total operating budget</small></div></div><div class="fm-note">Linked landlord lease ${money(lease)} · Fixed opex ${money(fixedOtherBudget)}${varPctSum>0?` · Variable (${varPctSum}% rev) ${money(varOtherBudget)}`:''}</div></div></div><div class="card"><div class="card-head"><h3>How the figures work</h3></div><div class="card-body fm-health"><div class="fm-check"><i>B</i><div><b>Budget ($ or % of revenue)</b><small>Landlord lease is model-linked. Other lines can be a flat monthly SGD amount or a % of monthly revenue (e.g. Stripe transaction fees) that scales automatically every month.</small></div></div><div class="fm-check"><i>A</i><div><b>Actual</b><small>Paid non-lease expenditure posted in the detailed ledger after month-end processing.</small></div></div><div class="fm-check"><i>C</i><div><b>Committed</b><small>Linked contractual lease plus approved non-lease purchase orders and contracts.</small></div></div><div class="fm-check"><i>F</i><div><b>Forecast</b><small>Linked lease plus the higher of each non-lease expense budget or its actual, committed and draft spend.</small></div></div><button class="primary" data-fm-action="approve-budget">Submit revised budget</button></div></div></div></div>
+      <div class="fm-budget-grid"><div class="card"><div class="card-head"><div><h3>Monthly operating budget</h3><small style="color:var(--muted)">${monthName(state.budgetMonth)} · each line can be a flat monthly fee ($) or a % of revenue (e.g. Stripe fees)</small></div><div class="actions"><button class="btn" data-fm-action="add-pct-expense">＋ Add % of revenue</button><button class="btn" data-fm-action="add-expense">＋ Add category</button><button class="primary" data-fm-action="add-transaction">＋ Add expenditure</button><span class="fm-unsaved" data-budget-unsaved style="display:${dirty?'inline-flex':'none'}">Unsaved changes</span><button class="btn" data-budget-undo ${dirty?'':'disabled'}>Undo</button><button class="primary" data-budget-update ${dirty?'':'disabled'}>Update</button></div></div><div class="card-body"><div class="fm-budget-row header"><span class="name">Category</span><span>Budget (Flat $ / % rev)</span><span>Actual</span><span>Committed</span><span>Forecast</span><span>Variance</span><span>Note</span></div>
+      <div class="fm-budget-row fm-model-linked-row"><b class="name">Lease expense<small>Model-linked · read only</small></b><input value="${num(lease)}" disabled title="Managed in Financial Models → Landlord lease"><span>—</span><span>${money(lease)}</span><span>${money(lease)}</span><span class="fm-variance neutral">$0</span><input class="fm-line-note" value="${leaseNote}" disabled></div>${details.map(d=>controlledBudgetRow(d)).join('')}<div class="fm-budget-row total"><b class="name">Total monthly operating cost</b><b>${money(total)}</b><b>${money(actual)}</b><b>${money(committed)}</b><b>${money(forecast)}</b><span class="fm-variance ${variance<=0?'good':'bad'}">${money(variance)}</span><span></span></div>${!hasPctLine?`<div class="fm-stripe-callout"><div><b>Need variable costs like Stripe transaction fees?</b><span>Add a % of monthly revenue line — it recalculates automatically every month as rental revenue changes (or toggle any row above to <b>% rev</b>).</span></div><button type="button" class="primary" data-fm-action="add-stripe-fee">＋ Add Stripe fee (% of revenue)</button></div>`:''}<div class="fm-note fm-lease-sync-note"><b>Single-source calculation:</b> landlord lease is pulled from Financial Model → Landlord lease and cannot be edited here. Total operating cost for ${monthName(state.budgetMonth)}: ${money(lease)} lease + ${money(fixedOtherBudget)} fixed opex${varPctSum>0?` + ${money(varOtherBudget)} variable (${varPctSum}% of ${money(monthRevenue)} rev)`:''} = ${money(total)}. Variable % of revenue lines automatically recalculate every month as revenue changes.</div><div class="fm-note fm-persistence-note"><b>Saved model values:</b> Update saves this budget to the model and, by default, carries it into every future forecast month. Use “Selected month only” only for a genuine one-off budget.</div></div></div>
+      <div class="fm-stack"><div class="card"><div class="card-head"><h3>Expense mix</h3></div><div class="card-body"><div class="fm-donut"><div><b>${money(total)}</b><small>Total operating budget</small></div></div><div class="fm-note">Linked landlord lease ${money(lease)} · Fixed opex ${money(fixedOtherBudget)}${varPctSum>0?` · Variable (${varPctSum}% rev) ${money(varOtherBudget)}`:''}</div></div></div><div class="card"><div class="card-head"><h3>How the figures work</h3></div><div class="card-body fm-health"><div class="fm-check"><i>B</i><div><b>Budget (Flat $ or % of revenue)</b><small>Landlord lease is model-linked. Other lines can be a flat monthly SGD amount or a % of monthly revenue (e.g. Stripe transaction fees) that scales automatically every month.</small></div></div><div class="fm-check"><i>A</i><div><b>Actual</b><small>Paid non-lease expenditure posted in the detailed ledger after month-end processing.</small></div></div><div class="fm-check"><i>C</i><div><b>Committed</b><small>Linked contractual lease plus approved non-lease purchase orders and contracts.</small></div></div><div class="fm-check"><i>F</i><div><b>Forecast</b><small>Linked lease plus the higher of each non-lease expense budget or its actual, committed and draft spend.</small></div></div><button class="primary" data-fm-action="approve-budget">Submit revised budget</button></div></div></div></div>
       <div class="card fm-ledger-card"><div class="card-head"><div><h3>Individual expenditure · ${monthName(state.budgetMonth)}</h3><small style="color:var(--muted)">This is where invoices, receipts, purchase orders and one-off expenses are updated</small></div><div class="actions"><button class="filter" data-fm-action="expense-filter">Status: All</button><button class="primary" data-fm-action="add-transaction">＋ Add expenditure</button></div></div><div class="table-wrap"><table class="fm-table fm-ledger-table"><thead><tr><th>Date</th><th>Reference</th><th>Vendor</th><th>Description</th><th>Category</th><th>Amount</th><th>Status</th><th>Note</th><th></th></tr></thead><tbody>${ledger.map(x=>`<tr><td>${new Date(x.date+'T00:00:00').toLocaleDateString('en-SG',{day:'2-digit',month:'short'})}</td><td>${x.id}</td><td>${x.vendor}</td><td>${x.description}</td><td>${x.category}</td><td>${money(x.amount)}</td><td><span class="pill ${x.status==='Paid'?'green':x.status==='Committed'?'amber':'grey'}">${x.status}</span></td><td class="fm-note-cell">${x.note}</td><td><button class="btn" data-fm-action="edit-transaction" data-expense-id="${x.id}">Edit</button></td></tr>`).join('')||'<tr><td colspan="9" style="text-align:center;color:var(--muted)">No expenditure entered for this month.</td></tr>'}</tbody></table></div></div>`;
     bindCommon();
     document.querySelector('[data-budget-month]')?.addEventListener('change',e=>{clearBudgetDraft();state.budgetMonth=e.target.value;renderBudgetsControlled()});
     document.querySelector('[data-budget-scope]')?.addEventListener('change',e=>{state.budgetApplyScope=e.target.value;persistFinanceState();renderBudgetsControlled()});
     document.querySelectorAll('[data-budget-basis]').forEach(btn=>btn.addEventListener('click',()=>{
-      const idx=Number(btn.dataset.budgetBasis),line=ensureBudgetDraft().lines[idx];if(!line)return;
-      if(isPctOpex(line)){
+      const idx=Number(btn.dataset.budgetBasis),target=btn.dataset.basisTarget,line=ensureBudgetDraft().lines[idx];if(!line)return;
+      const wantPct=target?target==='pct_of_revenue':!isPctOpex(line);
+      if(wantPct===isPctOpex(line))return;
+      if(!wantPct){
         line.basis='fixed';
         line.budget=opexLineDollar(line,monthRevenue);
         line.pctOfRevenue=0;
@@ -2428,6 +2435,78 @@ export function initFinanceWorkspace() {
   function expenseForm(x){const cats=state.opex.map(c=>`<option ${x&&x.category===c.name?'selected':''}>${escapeHtml(c.name)}</option>`).join('');return `<div class="form-grid"><label class="field"><span>Date *</span><input type="date" id="fmExpDate" value="${x?x.date:state.budgetMonth+'-01'}"></label><label class="field"><span>Reference</span><input id="fmExpRef" value="${escapeHtml(x?.ref||'')}" placeholder="Invoice / receipt / PO"></label><label class="field"><span>Vendor</span><input id="fmExpVendor" value="${escapeHtml(x&&x.vendor!=='—'?x.vendor:'')}"></label><label class="field"><span>Category *</span><select id="fmExpCat">${cats}</select></label><label class="field full"><span>Description</span><input id="fmExpDesc" value="${escapeHtml(x&&x.description!=='—'?x.description:'')}"></label><label class="field"><span>Amount *</span><input type="number" min="0" step="0.01" id="fmExpAmt" value="${x?x.amount:''}"></label><label class="field"><span>Status</span><select id="fmExpStatus">${['Draft','Committed','Paid'].map(s=>`<option ${x&&x.status===s?'selected':''}>${s}</option>`).join('')}</select></label><label class="field full"><span>Note</span><textarea id="fmExpNote" rows="2">${escapeHtml(x?.note||'')}</textarea></label></div>`}
   function expensePayload(){const v=id=>document.getElementById(id)?.value??'';return {incurredAt:v('fmExpDate'),category:v('fmExpCat'),amount:Number(v('fmExpAmt')),vendor:v('fmExpVendor')||undefined,receiptRef:v('fmExpRef')||undefined,description:v('fmExpDesc')||undefined,status:EXP_CODE[v('fmExpStatus')]||'PAID',note:v('fmExpNote')||undefined}}
 
+  function openAddExpenseCategoryModal(preset={}){
+    const rev=monthRevenueForBudget(state.budgetMonth);
+    const initBasis=preset.basis==='pct_of_revenue'?'pct_of_revenue':'fixed';
+    const initName=preset.name||'';
+    const initVal=preset.val!=null?String(preset.val):'0';
+    const initOwner=preset.owner||(initBasis==='pct_of_revenue'?'Finance':'Operations');
+    const initNote=preset.note||'';
+    showModal(
+      initBasis==='pct_of_revenue'?'Add % of revenue operating cost':'Add non-lease expense category',
+      'Add a flat monthly fee or a % of monthly revenue cost (e.g. Stripe transaction fees). Landlord rent is linked separately from the Financial Model.',
+      `<div class="form-grid">
+        <label class="field"><span>Category *</span><input id="fmCatName" value="${escapeHtml(initName)}" placeholder="e.g. Stripe transaction fees"></label>
+        <label class="field"><span>Cost basis *</span><select id="fmCatBasis"><option value="fixed" ${initBasis==='fixed'?'selected':''}>Flat monthly amount (SGD)</option><option value="pct_of_revenue" ${initBasis==='pct_of_revenue'?'selected':''}>% of monthly revenue (variable)</option></select></label>
+        <label class="field"><span id="fmCatValLabel">${initBasis==='pct_of_revenue'?'Percentage of revenue (%)':'Monthly budget (SGD)'}</span><input id="fmCatBudget" type="number" min="0" step="${initBasis==='pct_of_revenue'?'0.1':'50'}" ${initBasis==='pct_of_revenue'?'max="100"':''} value="${escapeHtml(initVal)}" placeholder="${initBasis==='pct_of_revenue'?'e.g. 3.4':'e.g. 500'}"></label>
+        <label class="field"><span>Owner</span><input id="fmCatOwner" value="${escapeHtml(initOwner)}"></label>
+        <label class="field full"><span>Note</span><input id="fmCatNote" value="${escapeHtml(initNote)}" placeholder="e.g. 3.4% card processing fee on monthly rental revenue"></label>
+      </div>
+      <div class="fm-basis-preview" id="fmCatPreview" style="display:none"></div>`,
+      'Add category',
+      ()=>{
+        const name=document.getElementById('fmCatName').value.trim();
+        if(!name){notify('Name the category.');return false}
+        if(/lease|landlord|premises rent|property rent/i.test(name)){notify('Lease and landlord rent are linked from the Financial Model and cannot be an expense category.');return false}
+        const basis=document.getElementById('fmCatBasis')?.value==='pct_of_revenue'?'pct_of_revenue':'fixed';
+        const rawVal=Number(document.getElementById('fmCatBudget').value)||0;
+        if(basis==='pct_of_revenue'&&(rawVal<0||rawVal>100)){notify('Percentage of revenue must be between 0 and 100.');return false}
+        if(rawVal<0){notify('Budget amount cannot be negative.');return false}
+        const newLine=basis==='pct_of_revenue'
+          ?{name,basis:'pct_of_revenue',pctOfRevenue:r4Local(rawVal),budget:0,owner:document.getElementById('fmCatOwner').value.trim()||'Finance',note:document.getElementById('fmCatNote').value.trim()}
+          :{name,basis:'fixed',budget:r2Local(rawVal),owner:document.getElementById('fmCatOwner').value.trim()||'Operations',note:document.getElementById('fmCatNote').value.trim()};
+        if(budgetDraft?.month===state.budgetMonth){
+          budgetDraft.lines.push(newLine);
+          renderBudgets();
+          notify(name+' staged in '+monthName(state.budgetMonth)+'. Click Update to save.');
+        }else{
+          state.opex.push(newLine);
+          markDirty('opex');
+          persistFinanceState();
+          renderBudgets();
+          notify(name+' added to the operating budget'+(basis==='pct_of_revenue'?' ('+newLine.pctOfRevenue+'% of revenue)':''));
+        }
+      }
+    );
+    const basisSel=document.getElementById('fmCatBasis');
+    const valInput=document.getElementById('fmCatBudget');
+    const valLabel=document.getElementById('fmCatValLabel');
+    const preview=document.getElementById('fmCatPreview');
+    const ownerIn=document.getElementById('fmCatOwner');
+    const syncBasisUi=()=>{
+      const isPct=basisSel?.value==='pct_of_revenue';
+      if(valLabel)valLabel.textContent=isPct?'Percentage of revenue (%)':'Monthly budget (SGD)';
+      if(valInput){valInput.step=isPct?'0.1':'50';valInput.max=isPct?'100':'';valInput.placeholder=isPct?'e.g. 3.4':'e.g. 500'}
+      if(preview){
+        if(isPct){
+          const pct=Math.min(100,Math.max(0,Number(valInput?.value)||0));
+          const est=r2Local(rev*pct/100);
+          preview.style.display='block';
+          preview.innerHTML=`In <b>${escapeHtml(monthName(state.budgetMonth))}</b>: ${pct}% × ${money(rev)} projected revenue = <b>${money(est)}</b>. Automatically recalculates each month as revenue changes.`;
+        }else{
+          preview.style.display='none';
+        }
+      }
+    };
+    basisSel?.addEventListener('change',()=>{
+      if(basisSel.value==='pct_of_revenue'&&ownerIn&&ownerIn.value==='Operations')ownerIn.value='Finance';
+      syncBasisUi();
+    });
+    valInput?.addEventListener('input',syncBasisUi);
+    syncBasisUi();
+    if(initName&&valInput){valInput.focus();valInput.select()}
+  }
+
   function isActive(id){return !!document.getElementById(id)?.classList.contains('active')}
 
   // Actions that must reach the API run first (capture, registered before the
@@ -2470,71 +2549,9 @@ export function initFinanceWorkspace() {
       'audit-export':async()=>{if(!srv.model)return;try{const rows=await get(`/finance/library/${srv.model.id}/audit`);const ver=r=>(r.before&&typeof r.before==='object'&&!Array.isArray(r.before)&&r.before.version!=null)?('v'+r.before.version):'';const res=r=>(r.after&&typeof r.after==='object'&&!Array.isArray(r.after)&&r.after.version!=null)?('v'+r.after.version):'';const calc=r=>(r.after&&typeof r.after==='object'&&!Array.isArray(r.after)&&r.after.calculationStatus!=null)?String(r.after.calculationStatus):'';downloadCsv('StoreLah_Model_Audit.csv',[['Time','User','Action','Before','After','Source version','Resulting version','Calculation status','Reason','Correlation ID'],...rows.map(x=>[x.occurredAt||x.createdAt,x.actor,x.action||x.eventType,JSON.stringify(x.before??''),JSON.stringify(x.after??''),ver(x),res(x),calc(x),x.reason||'',x.correlationId||''])]);notify('Audit log downloaded')}catch(err){notify(describeError(err))}},
       'add-transaction':()=>{if(!srv.branchId)return;showModal('Add individual expenditure','Enter an invoice, receipt, purchase order, recurring charge or one-off expense. Saved immediately to the ledger.',expenseForm(null),'Save expenditure',()=>{const p=expensePayload();if(!p.incurredAt||!p.category||!(p.amount>0)){notify('Date, category and a positive amount are required.');return false}act(async()=>{await post('/finance/expenses',{branchId:srv.branchId,...p});await loadExpenses();renderBudgets()},'Expenditure saved')})},
       'edit-transaction':()=>{const x=state.expenses.find(r=>r.id===b.dataset.expenseId);if(!x)return;showModal('Edit '+x.id,'Update the individual expenditure line. Lines in a closed month are locked.',expenseForm(x),'Save changes',()=>{const p=expensePayload();act(async()=>{await put(`/finance/expenses/${x._id}`,p);await loadExpenses();renderBudgets()},x.id+' updated')})},
-      'add-expense':()=>{
-        const rev=monthRevenueForBudget(state.budgetMonth);
-        showModal(
-          'Add non-lease expense category',
-          'Add a flat monthly fee or a % of monthly revenue cost (e.g. Stripe transaction fees). Landlord rent is linked separately from the Financial Model.',
-          `<div class="form-grid">
-            <label class="field"><span>Category *</span><input id="fmCatName" placeholder="e.g. Stripe transaction fees"></label>
-            <label class="field"><span>Cost basis *</span><select id="fmCatBasis"><option value="fixed">Flat monthly amount (SGD)</option><option value="pct_of_revenue">% of monthly revenue (variable)</option></select></label>
-            <label class="field"><span id="fmCatValLabel">Monthly budget (SGD)</span><input id="fmCatBudget" type="number" min="0" step="50" value="0" placeholder="e.g. 500"></label>
-            <label class="field"><span>Owner</span><input id="fmCatOwner" value="Operations"></label>
-            <label class="field full"><span>Note</span><input id="fmCatNote" placeholder="e.g. 3.4% card processing fee on monthly rental revenue"></label>
-          </div>
-          <div class="fm-basis-preview" id="fmCatPreview" style="display:none"></div>`,
-          'Add category',
-          ()=>{
-            const name=document.getElementById('fmCatName').value.trim();
-            if(!name){notify('Name the category.');return false}
-            if(/lease|landlord|premises rent|property rent/i.test(name)){notify('Lease and landlord rent are linked from the Financial Model and cannot be an expense category.');return false}
-            const basis=document.getElementById('fmCatBasis')?.value==='pct_of_revenue'?'pct_of_revenue':'fixed';
-            const rawVal=Number(document.getElementById('fmCatBudget').value)||0;
-            if(basis==='pct_of_revenue'&&(rawVal<0||rawVal>100)){notify('Percentage of revenue must be between 0 and 100.');return false}
-            if(rawVal<0){notify('Budget amount cannot be negative.');return false}
-            const newLine=basis==='pct_of_revenue'
-              ?{name,basis:'pct_of_revenue',pctOfRevenue:r4Local(rawVal),budget:0,owner:document.getElementById('fmCatOwner').value.trim()||'Finance',note:document.getElementById('fmCatNote').value.trim()}
-              :{name,basis:'fixed',budget:r2Local(rawVal),owner:document.getElementById('fmCatOwner').value.trim()||'Operations',note:document.getElementById('fmCatNote').value.trim()};
-            if(budgetDraft?.month===state.budgetMonth){
-              budgetDraft.lines.push(newLine);
-              renderBudgets();
-              notify(name+' staged in '+monthName(state.budgetMonth)+'. Click Update to save.');
-            }else{
-              state.opex.push(newLine);
-              markDirty('opex');
-              persistFinanceState();
-              renderBudgets();
-              notify(name+' added to the operating budget'+(basis==='pct_of_revenue'?' ('+newLine.pctOfRevenue+'% of revenue)':''));
-            }
-          }
-        );
-        const basisSel=document.getElementById('fmCatBasis');
-        const valInput=document.getElementById('fmCatBudget');
-        const valLabel=document.getElementById('fmCatValLabel');
-        const preview=document.getElementById('fmCatPreview');
-        const ownerIn=document.getElementById('fmCatOwner');
-        const syncBasisUi=()=>{
-          const isPct=basisSel?.value==='pct_of_revenue';
-          if(valLabel)valLabel.textContent=isPct?'Percentage of revenue (%)':'Monthly budget (SGD)';
-          if(valInput){valInput.step=isPct?'0.1':'50';valInput.max=isPct?'100':'';valInput.placeholder=isPct?'e.g. 3.4':'e.g. 500'}
-          if(preview){
-            if(isPct){
-              const pct=Math.min(100,Math.max(0,Number(valInput?.value)||0));
-              const est=r2Local(rev*pct/100);
-              preview.style.display='block';
-              preview.innerHTML=`In <b>${escapeHtml(monthName(state.budgetMonth))}</b>: ${pct}% × ${money(rev)} projected revenue = <b>${money(est)}</b>. Automatically recalculates each month as revenue changes.`;
-            }else{
-              preview.style.display='none';
-            }
-          }
-        };
-        basisSel?.addEventListener('change',()=>{
-          if(basisSel.value==='pct_of_revenue'&&ownerIn&&ownerIn.value==='Operations')ownerIn.value='Finance';
-          syncBasisUi();
-        });
-        valInput?.addEventListener('input',syncBasisUi);
-        syncBasisUi();
-      },
+      'add-expense':()=>openAddExpenseCategoryModal({basis:'fixed'}),
+      'add-pct-expense':()=>openAddExpenseCategoryModal({basis:'pct_of_revenue',owner:'Finance'}),
+      'add-stripe-fee':()=>openAddExpenseCategoryModal({basis:'pct_of_revenue',name:'Stripe transaction fees',val:'3.4',owner:'Finance',note:'Stripe card processing fee (% of monthly rental revenue)'}),
       'sync-units':async()=>{await loadInventory();const inv=srv.inventory;if(!inv){notify('Unit inventory could not load. Try again.');return}if(!inv.items.length){notify('No live units at '+state.facility+' yet. Add units in Facilities › Units first.');return}const items=inv.items;const curMix=mixView().mix;const FIXED_MIX=[{size:'Locker',range:'8–15 sq ft'},{size:'XS',range:'10–19 sq ft'},{size:'S',range:'20–39 sq ft'},{size:'M',range:'40–69 sq ft'},{size:'L',range:'70–99 sq ft'},{size:'XL',range:'100–150 sq ft'}];const BUCKET_TO_SIZE={LOCKER:'Locker',XS:'XS',SMALL:'S',MEDIUM:'M',LARGE:'L',XL:'XL',XLBIZ:'XL'};const bucketOf=it=>{const b=String(it.bucket||'').trim().toUpperCase();return BUCKET_TO_SIZE[b]||null};const catalogueShaped=(()=>{const n=new Set(curMix.map(r=>String(r.size||'').trim().toUpperCase()));return n.has('LOCKER')&&n.has('XS')})();const LEGACY_TO_SIZE={LOCKER:'XS',XS:'XS',S:'S',SMALL:'S',M:'M',MEDIUM:'M',L:'L',LARGE:'L',XL:'XL',XLBIZ:'XL'};const curFor=size=>curMix.find(r=>String(r.size||'').trim().toUpperCase()===size.toUpperCase())||(!catalogueShaped?(curMix.find(r=>(LEGACY_TO_SIZE[String(r.size||'').trim().toUpperCase()]||null)===size)||null):null);const plan=FIXED_MIX.map(f=>{const group=items.filter(it=>bucketOf(it)===f.size);const area=r2(sum(group.map(x=>x.area)));const units=sum(group.map(x=>x.units));const cur=curFor(f.size);const rentBase=sum(group.filter(x=>x.livePsf>0).map(x=>x.area*x.livePsf));const rentArea=sum(group.filter(x=>x.livePsf>0).map(x=>x.area));const rate=cur?cur.rate:(rentArea>0?r2(rentBase/rentArea):0);return {size:f.size,range:f.range,area,units,rate,cur:cur||null,live:rentArea>0}});const unmapped=items.filter(it=>!bucketOf(it));const totalArea=r2(sum(plan.map(x=>x.area)));const totalUnits=sum(plan.map(x=>x.units));const treat=p=>p.cur?`Keep $${num(p.rate,2)}${String(p.cur.size||'').trim().toUpperCase()!==p.size.toUpperCase()?' (was '+escapeHtml(p.cur.size)+')':''}`:p.live?`New size · live average $${num(p.rate,2)}`:'No live units · kept at $0.00';showModal('Sync from Facilities unit inventory','Live units are mapped into the fixed size buckets — only NLA and unit counts change. Ranges never change; net PSF rates of matching sizes stay unchanged.',`<div class="fm-note"><b>${escapeHtml(inv.facility)}</b> · ${num(totalUnits)} units · ${sqftText(totalArea)} sq ft NLA<br>Inventory updated ${escapeHtml(inv.updated)}${inv.warning?'<br>'+escapeHtml(inv.warning):''}</div><div class="table-wrap" style="margin-top:12px"><table class="fm-table" style="min-width:560px"><thead><tr><th>Size</th><th>Range</th><th>Units</th><th>NLA sq ft</th><th>Net PSF treatment</th></tr></thead><tbody>${plan.map(p=>`<tr><td>${escapeHtml(p.size)}</td><td>${escapeHtml(p.range)}</td><td>${p.units}</td><td>${sqftText(p.area)}</td><td>${treat(p)}</td></tr>`).join('')}</tbody></table></div>${unmapped.length?`<div class="fm-note" style="margin-top:12px"><b>Not mapped to a planning bucket — excluded from the sync:</b> ${unmapped.map(u=>escapeHtml(u.size)).join(', ')}. Map the size taxonomy before approval.</div>`:''}`,'Stage sync',()=>{mixDraft={mix:plan.map(p=>({size:p.size,range:p.range,area:p.area,units:p.units,rate:p.rate})),nla:totalArea,units:totalUnits,inventorySynced:true};renderMix();notify('Facilities unit inventory staged in the fixed size mix — click Update to apply it to the model')})},
       'view-units':()=>{const go=document.querySelector('[data-side-panel="facility-units"]')||document.querySelector('[data-tabs="facility"] [data-tab="facility-units"]');if(!go){notify('Facilities › Units is not available for your role.');return}const code=srv.branches.find(b=>b.id===srv.branchId)?.code;if(code){cmsState.unitBranchFilter=code;cmsState.unitLevelFilter='';cmsState.page=1}go.click()},
       'investor-access':()=>showPanel('bill-investor'),
